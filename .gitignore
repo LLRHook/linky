@@ -37,3 +37,7 @@ Thumbs.db
 
 # Test coverage
 coverage/
+
+# Local agent context
+CLAUDE.md
+.claude/
