@@ -57,6 +57,8 @@ Reposts use quoted **Shared by @author** credit and plain leading context, follo
 
 The bot sends and checks the copy, reads the source again, then deletes it if unchanged. Failed permissions, copies or size checks keep the original; edits during copying discard the stale repost. Limits are 2,000 characters including credit, 10 attachments, and 25 MiB total. Polls, stickers, components, forwards, voice messages, ephemeral attachments, pinned messages, thread starters and crossposts are skipped.
 
+Set `TRANSLATE_TWEETS=true` to auto-translate non-English tweets: for each reposted status link the bot looks up its language via `api.fxtwitter.com`, then appends fxtwitter's translate modifier (e.g. `/en`) so the embed shows an English translation alongside the original. English tweets and lookups that fail or time out repost untranslated.
+
 Discord sends and deletes are separate requests: failed final reads/deletions can leave both messages, and edits after the final check can still race deletion. Check logs by source message ID. See Discord's [intent](https://docs.discord.com/developers/events/gateway) and [permission](https://docs.discord.com/developers/topics/permissions) references.
 
 ## Commands

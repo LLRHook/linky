@@ -14,6 +14,7 @@ import {
   PermissionsBitField,
 } from 'discord.js';
 import {
+  addTranslationSuffixes,
   createXLinkHandler,
   downloadAttachment,
   formatXLinkRepost,
@@ -150,7 +151,7 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
   } as Attachment;
 }
 
-function fixture() {
+function fixture(translateLang?: (statusId: string) => Promise<string | null>) {
   const events: string[] = [];
   const sent: MessageCreateOptions[] = [];
   const logs: unknown[] = [];
@@ -187,7 +188,7 @@ function fixture() {
     fetch: async (_force: boolean) => { events.push('fetch'); return source; },
     delete: async () => { events.push('delete original'); },
   };
-  const handler = createXLinkHandler(CHANNEL_ID, log);
+  const handler = createXLinkHandler(CHANNEL_ID, log, undefined, translateLang);
   return { source, replacement, handler, log, logs, permissions, events, sent,
     run: () => handler(source as unknown as Message) };
 }
@@ -466,4 +467,88 @@ test('removes a stale repost if the original was deleted during upload', async (
   };
   await f.run();
   assert.deepEqual(f.events, ['send', 'original gone', 'delete replacement']);
+});
+
+// ─── Translation ────────────────────────────────────────────────────────────
+
+test('appends the translate suffix for a non-English tweet', async () => {
+  const content = await addTranslationSuffixes(
+    'https://fixupx.com/user/status/123', async () => 'ja'
+  );
+  assert.equal(content, 'https://fixupx.com/user/status/123/en');
+});
+
+test('leaves an English tweet unchanged', async () => {
+  const content = await addTranslationSuffixes(
+    'https://fixupx.com/user/status/123', async () => 'en'
+  );
+  assert.equal(content, 'https://fixupx.com/user/status/123');
+});
+
+test('leaves a tweet with unknown language unchanged', async () => {
+  const content = await addTranslationSuffixes(
+    'https://fixupx.com/user/status/123', async () => null
+  );
+  assert.equal(content, 'https://fixupx.com/user/status/123');
+});
+
+test('a failing language lookup fails open instead of throwing', async () => {
+  const content = await addTranslationSuffixes(
+    'https://fixupx.com/user/status/123', async () => { throw new Error('network error'); }
+  );
+  assert.equal(content, 'https://fixupx.com/user/status/123');
+});
+
+test('a link with an existing path modifier is left untouched', async () => {
+  let called = false;
+  const content = await addTranslationSuffixes(
+    'https://fixupx.com/user/status/123/photo/1', async () => { called = true; return 'ja'; }
+  );
+  assert.equal(content, 'https://fixupx.com/user/status/123/photo/1');
+  assert.equal(called, false);
+});
+
+test('a link with no status path is left untouched', async () => {
+  let called = false;
+  const content = await addTranslationSuffixes(
+    'https://fixupx.com/user', async () => { called = true; return 'ja'; }
+  );
+  assert.equal(content, 'https://fixupx.com/user');
+  assert.equal(called, false);
+});
+
+test('the suffix is inserted before a trailing query or fragment', async () => {
+  assert.equal(
+    await addTranslationSuffixes('https://fixupx.com/user/status/123?s=20', async () => 'ja'),
+    'https://fixupx.com/user/status/123/en?s=20'
+  );
+  assert.equal(
+    await addTranslationSuffixes('https://fixupx.com/user/status/123#part', async () => 'ja'),
+    'https://fixupx.com/user/status/123/en#part'
+  );
+});
+
+test('the same status ID is looked up once even if it appears twice', async () => {
+  let calls = 0;
+  const content = await addTranslationSuffixes(
+    'https://fixupx.com/user/status/123 https://fixupx.com/user/status/123',
+    async () => { calls++; return 'ja'; }
+  );
+  assert.equal(calls, 1);
+  assert.equal(content, 'https://fixupx.com/user/status/123/en https://fixupx.com/user/status/123/en');
+});
+
+test('translation is applied end-to-end when a lookup function is provided', async () => {
+  const f = fixture(async () => 'ja');
+  await f.run();
+  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1\/en\?/);
+});
+
+test('translation is skipped entirely, with no lookup call, when disabled', async () => {
+  let called = false;
+  const f = fixture(async () => { called = true; return 'ja'; });
+  const handler = createXLinkHandler(CHANNEL_ID, f.log);
+  await handler(f.source as unknown as Message);
+  assert.equal(called, false);
+  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1\?/);
 });

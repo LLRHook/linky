@@ -11,6 +11,8 @@ import type { Logger } from 'pino';
 const MAX_CONTENT_LENGTH = 2_000;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
+const TRANSLATE_TIMEOUT_MS = 5_000;
+const TRANSLATE_TARGET_LANG = 'en';
 const RECENT_MESSAGE_LIMIT = 1_000;
 const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
 // Discord's IS_SPOILER attachment flag is not named in the installed v14 enum.
@@ -67,6 +69,49 @@ export function formatXLinkRepost(content: string, authorId: string, replyUrl?: 
     !line || /^\s|\s$/.test(line) || /^(?:[-+]|\d+[.)])\s/.test(line)
   )) return fallback;
   return `${credit}\n${lines.map((line) => `> ${line}`).join('\n')}\n${content.slice(firstUrl.index)}`;
+}
+
+/** api.fxtwitter.com's public instance allows 1000 req/min/IP; one call per unique tweet is well under that. */
+export async function fetchTweetLang(
+  statusId: string,
+  fetchJson: typeof fetch = fetch
+): Promise<string | null> {
+  try {
+    const response = await fetchJson(`https://api.fxtwitter.com/2/status/${statusId}`, {
+      signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const json = await response.json() as { status?: { lang?: string | null } };
+    return json.status?.lang ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append FxEmbed's translate URL modifier (a language-code path segment) to fixupx.com
+ * status links whose tweet is not in the target language. Fails open: any lookup failure
+ * or unknown language leaves the link untouched rather than blocking the repost.
+ */
+export async function addTranslationSuffixes(
+  content: string,
+  fetchLang: (statusId: string) => Promise<string | null> = fetchTweetLang
+): Promise<string> {
+  const statusLink = /https:\/\/fixupx\.com\/[^\s/?#]+\/status\/(\d+)(?=[?#\s]|$)/g;
+  const statusIds = [...content.matchAll(statusLink)].map((match) => match[1]!);
+  if (statusIds.length === 0) return content;
+
+  const langs = new Map<string, string | null>();
+  await Promise.all([...new Set(statusIds)].map(async (statusId) => {
+    langs.set(statusId, await fetchLang(statusId).catch(() => null));
+  }));
+
+  return content.replace(statusLink, (match, statusId: string) => {
+    const lang = langs.get(statusId);
+    return lang && lang !== TRANSLATE_TARGET_LANG
+      ? match.replace(`/status/${statusId}`, `/status/${statusId}/${TRANSLATE_TARGET_LANG}`)
+      : match;
+  });
 }
 
 function isSpoiler(attachment: Attachment): boolean {
@@ -171,7 +216,8 @@ function sourceVersion(message: Message): string {
 export function createXLinkHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
-  copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment
+  copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
+  translateLang?: (statusId: string) => Promise<string | null>
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
   const inFlight = new Set<string>();
@@ -208,7 +254,8 @@ export function createXLinkHandler(
       const replyUrl = message.reference?.messageId
         ? `https://discord.com/channels/${message.guildId}/${message.reference.channelId ?? channelId}/${message.reference.messageId}`
         : undefined;
-      const content = formatXLinkRepost(rewritten, message.author.id, replyUrl);
+      const translated = translateLang ? await addTranslationSuffixes(rewritten, translateLang) : rewritten;
+      const content = formatXLinkRepost(translated, message.author.id, replyUrl);
       const attachments = [...message.attachments.values()];
       if (content.length > MAX_CONTENT_LENGTH || attachments.length > 10 ||
           attachments.reduce((total, attachment) => total + attachment.size, 0) > MAX_ATTACHMENT_BYTES) {

@@ -21,10 +21,13 @@ export interface Config {
   nodeEnv: string;
   /** Exact channels for X link replacement; an empty list disables the feature. */
   fixupXChannelIds: readonly string[];
+  /** Append fxtwitter.com's translate modifier to non-English reposted tweets. */
+  translateTweets: boolean;
 }
 
 export const config: Config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   nodeEnv: process.env['NODE_ENV'] ?? 'development',
   fixupXChannelIds: parseFixupXChannelIds(process.env['FIXUPX_CHANNEL_IDS'], process.env['FIXUPX_CHANNEL_ID']),
+  translateTweets: process.env['TRANSLATE_TWEETS']?.toLowerCase() === 'true',
 };
