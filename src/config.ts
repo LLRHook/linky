@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { parseFixupXChannelIds } from './services/XLinkService';
 
 /**
  * Typed configuration object loaded from environment variables.
@@ -18,9 +19,12 @@ export interface Config {
   discordToken: string;
   /** Node environment */
   nodeEnv: string;
+  /** Exact channels for X link replacement; an empty list disables the feature. */
+  fixupXChannelIds: readonly string[];
 }
 
 export const config: Config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   nodeEnv: process.env['NODE_ENV'] ?? 'development',
+  fixupXChannelIds: parseFixupXChannelIds(process.env['FIXUPX_CHANNEL_IDS'], process.env['FIXUPX_CHANNEL_ID']),
 };

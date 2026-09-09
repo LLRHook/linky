@@ -8,7 +8,7 @@ A Discord gambling-economy bot. Per-guild virtual currency, two-sided bet pools 
 > **[➤ Add Wanna Bet Bot to your Discord server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147568640&integration_type=0&scope=bot+applications.commands)**
 > No setup, no hosting, no `.env` — click, pick a server, authorize, then run `/help`.
 
-The Quickstart below is for **self-hosting** your own copy of the bot. If you just want to use the existing public bot in your Discord server, the link above is all you need.
+The Quickstart below is for **self-hosting** your own copy of the bot. The invite above enables the public bot's slash commands. X link replacement also needs the channel configuration and permissions described below; the public bot's operator manages its channel configuration.
 
 ## Quickstart
 
@@ -16,7 +16,7 @@ The Quickstart below is for **self-hosting** your own copy of the bot. If you ju
 
 1. https://discord.com/developers/applications → New Application → Bot tab → Add Bot
 2. Enable **SERVER MEMBERS INTENT** (required)
-3. OAuth2 → URL Generator → scopes: `bot` + `applications.commands`, permissions: Send Messages, Embed Links, Read Message History
+3. OAuth2 → URL Generator → scopes: `bot` + `applications.commands`, permissions: View Channel, Send Messages, Embed Links, Read Message History
 4. Visit the generated URL, add the bot to your server
 5. Copy the bot token
 
@@ -45,6 +45,30 @@ docker compose run --rm wannabet node dist/commands/register.js
 ```
 
 `docker compose down` stops it (data preserved in named volume), `docker compose logs -f` tails logs.
+
+### Optional: replace X links in selected channels
+
+Set `FIXUPX_CHANNEL_IDS` in `.env` to a comma-separated list of exact Discord channel IDs where the bot should replace links. Channels may belong to different servers where the bot is installed. Enable Developer Mode in Discord, then right-click each channel and choose **Copy Channel ID**. Only the listed channels are included; other channels, DMs and child threads are excluded. To use a thread, include that thread's own ID.
+
+The existing `FIXUPX_CHANNEL_ID` setting remains supported. If both settings are present, their channel IDs are combined and duplicates are removed. Leave both settings empty or unset to disable this feature. Malformed IDs or empty entries within a comma-separated list stop startup; a trailing comma is invalid.
+
+Before starting the bot with this setting:
+
+1. In the [Discord developer portal](https://discord.com/developers/applications), open your application, select **Bot**, and enable **Message Content Intent**. Keep the existing **Server Members Intent** enabled. Apps that require approval for privileged intents must obtain it first.
+2. Grant the bot **View Channel**, **Embed Links**, **Read Message History**, and **Manage Messages** in every configured channel. Text channels also need **Send Messages**; configured threads need **Send Messages in Threads**. Grant **Attach Files** to copy attachments; without it, messages containing attachments stay untouched. Check channel permission overrides as well as the bot's role in each server. The existing invite link does not grant all of these additional permissions.
+3. Set `FIXUPX_CHANNEL_IDS=first_channel_id,second_channel_id` alongside your existing token, then build and restart the bot through your normal deployment process. A single ID is also valid. Slash commands do not need to be registered again.
+
+Reauthorizing the same bot in the same server preserves balances and bets as long as the existing SQLite database is kept. Updating Discord permissions does not reset the bot's economy data.
+
+For each new human message, the bot changes literal `https://x.com` links to `https://fixupx.com`, preserving paths, query strings, fragments and surrounding text. Host matching is case-insensitive. Subdomains, credentials, explicit ports, HTTP links and lookalike domains are left alone. Existing messages and edits do not trigger replacement.
+
+The bot posts quoted, bold `Shared by @author` credit. Plain leading context is quoted beneath it, followed by the first URL and all remaining text in their original order. A single space between inline context and its URL becomes a line break. If quoting could alter Markdown, link wrappers, code, lists, indentation, trailing whitespace or blank lines, the full rewritten body stays unchanged beneath the quoted credit. The bot keeps reply context as a link in the credit and disables all mention notifications, including `@everyone`, role mentions and the author credit. Attachments are downloaded and checked before upload; filenames, descriptions and spoiler markings are retained. Native previews are generated from the rewritten links, while an author's suppressed-embed setting and existing URL formatting are respected.
+
+The original is deleted only after the repost succeeds, every attachment is present in Discord's response, and a fresh read confirms the source content and relevant settings have not changed. Missing permissions, failed downloads/uploads, or content that will not fit leave the original in place. Copying is limited to 2,000 characters including attribution and quote formatting, 10 attachments and 25 MiB of attachments in total. The bot skips voice messages, crossposts, pinned messages, messages with attached threads, and messages containing polls, stickers, components, forwarded snapshots or ephemeral attachments.
+
+Discord sends and deletes are separate requests. If deletion or the final read fails, both messages may remain; check the logs for the source message ID. If the author edits the original during copying, the bot keeps it and attempts to remove its stale repost. If Discord confirms the original was deleted during copying, the bot attempts to remove the repost too. An edit arriving after the final check can still race deletion. Bot and webhook messages are ignored to prevent repost loops.
+
+To disable replacement, clear both `FIXUPX_CHANNEL_IDS` and `FIXUPX_CHANNEL_ID` and restart. When disabled, the bot does not request the additional Guild Messages or Message Content gateway intents. The underlying requirements are documented in Discord's [gateway intent reference](https://docs.discord.com/developers/events/gateway) and [channel permission reference](https://docs.discord.com/developers/topics/permissions).
 
 ## Commands
 
@@ -86,7 +110,7 @@ Slash commands are registered globally — first registration takes up to ~1 hou
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). The short version: clone, install, `npm run dev`, follow the BalanceService rule, run the build before opening a PR.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). The short version: clone, install, `npm run dev`, follow the BalanceService rule, run the build and tests before opening a PR.
 
 ## License
 

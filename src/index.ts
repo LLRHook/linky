@@ -15,6 +15,7 @@ import { ensureGuild, getGuild } from './services/PlayerService';
 import { revokeAdmin, getOpenElection, scheduleElectionFinalization } from './services/ElectionService';
 import { audit } from './services/AuditService';
 import { errorEmbed, welcomeEmbed } from './ui/embeds';
+import { createXLinkHandler } from './services/XLinkService';
 
 // ─── Discord Client ────────────────────────────────────────────────────────────
 
@@ -22,9 +23,15 @@ export const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers, // Privileged — must be enabled in dev portal
+    ...(config.fixupXChannelIds.length ? [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : []),
   ],
   partials: [Partials.GuildMember],
 });
+
+if (config.fixupXChannelIds.length) {
+  client.on('messageCreate', createXLinkHandler(config.fixupXChannelIds, logger));
+  logger.info({ channelIds: config.fixupXChannelIds }, 'X link replacement enabled for configured channels');
+}
 
 // ─── Interaction Dispatcher ────────────────────────────────────────────────────
 
