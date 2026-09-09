@@ -6,8 +6,7 @@ import { getDb } from '../../db/connection';
 import { unregisterPlayer, getGuild, getPlayer } from '../../services/PlayerService';
 import { revokeAdmin } from '../../services/ElectionService';
 import { audit } from '../../services/AuditService';
-import { unregisterEmbed } from '../../ui/embeds';
-import { errorEmbed } from '../../ui/embeds';
+import { errorEmbed, unregisterEmbed } from '../../ui/embeds';
 
 export const data = new SlashCommandBuilder()
   .setName('unregister')
@@ -26,7 +25,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  // Check if player is current admin
   const guild = getGuild(db, guildId);
   const isAdmin = guild?.current_admin_id === userId;
 
@@ -39,7 +37,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  // Auto-revoke admin if applicable
   if (isAdmin) {
     revokeAdmin(db, guildId, userId);
     audit(db, {

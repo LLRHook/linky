@@ -10,8 +10,7 @@ import { transfer, formatCents, dollarsToCents } from '../../services/BalanceSer
 import { getBet, getParticipants, adminCancelBet, settleBet } from '../../services/BetService';
 import { audit } from '../../services/AuditService';
 import { client } from '../../index';
-import { errorEmbed } from '../../ui/embeds';
-import { COLORS } from '../../ui/embeds';
+import { COLORS, errorEmbed } from '../../ui/embeds';
 
 export const data = new SlashCommandBuilder()
   .setName('admin')
@@ -301,7 +300,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       ],
     });
 
-    // DM all participants
     const bet = getBet(db, guildId, betId);
     if (bet) {
       const participants = getParticipants(db, betId, guildId);
@@ -333,32 +331,34 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  if (sub === 'ban') {
+  if (sub === 'ban' || sub === 'unban') {
+    const banning = sub === 'ban';
     const target = interaction.options.getUser('user', true);
     const targetPlayer = getPlayer(db, guildId, target.id);
-
-    if (!targetPlayer) {
+    let error: string | undefined;
+    if (banning && !targetPlayer) {
+      error = 'is not registered.';
+    } else if (banning && targetPlayer?.status === 'banned') {
+      error = 'is already banned.';
+    } else if (!banning && targetPlayer?.status !== 'banned') {
+      error = 'is not banned.';
+    }
+    if (error) {
       await interaction.editReply({
-        embeds: [errorEmbed(`<@${target.id}> is not registered.`)],
+        embeds: [errorEmbed(`<@${target.id}> ${error}`)],
       });
       return;
     }
-    if (targetPlayer.status === 'banned') {
-      await interaction.editReply({
-        embeds: [errorEmbed(`<@${target.id}> is already banned.`)],
-      });
-      return;
-    }
 
-    db.prepare<[string, string]>(
-      "UPDATE players SET status='banned' WHERE guild_id=? AND user_id=?"
-    ).run(guildId, target.id);
+    db.prepare<[string, string, string]>(
+      'UPDATE players SET status=? WHERE guild_id=? AND user_id=?'
+    ).run(banning ? 'banned' : 'active', guildId, target.id);
 
     await interaction.editReply({
       embeds: [
         new EmbedBuilder()
-          .setColor(COLORS.RED)
-          .setTitle('Player Banned')
+          .setColor(banning ? COLORS.RED : COLORS.GREEN)
+          .setTitle(banning ? 'Player Banned' : 'Player Unbanned')
           .addFields({ name: 'Player', value: `<@${target.id}>`, inline: true })
           .setTimestamp(),
       ],
@@ -368,42 +368,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     audit(db, {
       guildId,
       actorId: userId,
-      actionType: 'ADMIN_BAN',
-      payload: { targetId: target.id },
-    });
-    return;
-  }
-
-  if (sub === 'unban') {
-    const target = interaction.options.getUser('user', true);
-    const targetPlayer = getPlayer(db, guildId, target.id);
-
-    if (!targetPlayer || targetPlayer.status !== 'banned') {
-      await interaction.editReply({
-        embeds: [errorEmbed(`<@${target.id}> is not banned.`)],
-      });
-      return;
-    }
-
-    db.prepare<[string, string]>(
-      "UPDATE players SET status='active' WHERE guild_id=? AND user_id=?"
-    ).run(guildId, target.id);
-
-    await interaction.editReply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(COLORS.GREEN)
-          .setTitle('Player Unbanned')
-          .addFields({ name: 'Player', value: `<@${target.id}>`, inline: true })
-          .setTimestamp(),
-      ],
-    });
-
-    touchPlayer(db, guildId, userId);
-    audit(db, {
-      guildId,
-      actorId: userId,
-      actionType: 'ADMIN_UNBAN',
+      actionType: banning ? 'ADMIN_BAN' : 'ADMIN_UNBAN',
       payload: { targetId: target.id },
     });
     return;
@@ -418,37 +383,24 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
 
   interface BetRow { bet_id: string; description: string }
 
-  if (sub === 'resolve') {
-    const bets = db
-      .prepare<[string], BetRow>(
-        `SELECT bet_id, description FROM bets
-         WHERE guild_id=? AND status NOT IN ('resolved','cancelled')
-         LIMIT 25`
-      )
-      .all(guildId);
-    await interaction.respond(
-      bets
-        .filter((b) => b.bet_id.startsWith(focused))
-        .map((b) => ({ name: `#${b.bet_id} — ${b.description.slice(0, 80)}`, value: b.bet_id }))
-    );
+  const statusFilter = sub === 'resolve'
+    ? "status NOT IN ('resolved','cancelled')"
+    : sub === 'cancel' ? "status IN ('open','locked','proposed','disputed')" : null;
+  if (!statusFilter) {
+    await interaction.respond([]);
     return;
   }
 
-  if (sub === 'cancel') {
-    const bets = db
-      .prepare<[string], BetRow>(
-        `SELECT bet_id, description FROM bets
-         WHERE guild_id=? AND status IN ('open','locked','proposed','disputed')
-         LIMIT 25`
-      )
-      .all(guildId);
-    await interaction.respond(
-      bets
-        .filter((b) => b.bet_id.startsWith(focused))
-        .map((b) => ({ name: `#${b.bet_id} — ${b.description.slice(0, 80)}`, value: b.bet_id }))
-    );
-    return;
-  }
-
-  await interaction.respond([]);
+  const bets = db
+    .prepare<[string], BetRow>(
+      `SELECT bet_id, description FROM bets
+       WHERE guild_id=? AND ${statusFilter}
+       LIMIT 25`
+    )
+    .all(guildId);
+  await interaction.respond(
+    bets
+      .filter((b) => b.bet_id.startsWith(focused))
+      .map((b) => ({ name: `#${b.bet_id} — ${b.description.slice(0, 80)}`, value: b.bet_id }))
+  );
 }

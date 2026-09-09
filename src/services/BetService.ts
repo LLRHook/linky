@@ -3,12 +3,8 @@ import { transfer, computeFee, dollarsToCents, formatCents } from './BalanceServ
 import { logger } from '../logger';
 
 /**
- * BetService — manages the full bet lifecycle.
- *
- * create → join (escrow) → propose → confirm/dispute → settle / cancel
- *
- * ALL balance mutations go through BalanceService.transfer().
- * This service owns the proportional payout calculation.
+ * create → join (escrow) → propose → confirm/dispute → settle/cancel.
+ * Payout math lives here; all balance changes use BalanceService.transfer().
  */
 
 export interface BetRow {
@@ -97,9 +93,6 @@ export interface CreateBetResult {
   netStake?: number;
 }
 
-/**
- * Creates a new bet and escrows the creator's wager.
- */
 export function createBet(db: Database.Database, params: CreateBetParams): CreateBetResult {
   const {
     guildId,
@@ -163,15 +156,12 @@ export function createBet(db: Database.Database, params: CreateBetParams): Creat
       return { success: false, error: xfer.error };
     }
 
-    // Record participant
     db.prepare<[string, string, string, string, number, number]>(
       `INSERT INTO bet_participants (bet_id, guild_id, user_id, side, stake, fee_paid)
        VALUES (?, ?, ?, ?, ?, ?)`
     ).run(betId, guildId, creatorId, initiatorSide, netStake, fee);
 
-    const bet = db
-      .prepare<[string, string], BetRow>('SELECT * FROM bets WHERE bet_id = ? AND guild_id = ?')
-      .get(betId, guildId);
+    const bet = getBet(db, guildId, betId);
 
     return { success: true, bet: bet ?? undefined, fee, netStake };
   });
@@ -195,10 +185,7 @@ export interface JoinBetResult {
   poolTotals?: PoolTotals;
 }
 
-/**
- * Joins an existing bet (escrows the joiner's wager).
- * Race-safe: uses BEGIN IMMEDIATE and re-validates inside transaction.
- */
+/** Escrow the joiner's wager, rechecking eligibility inside BEGIN IMMEDIATE. */
 export function joinBet(db: Database.Database, params: JoinBetParams): JoinBetResult {
   const { guildId, betId, userId, side, wagerDollars } = params;
   const wagerCents = dollarsToCents(wagerDollars);
@@ -206,12 +193,7 @@ export function joinBet(db: Database.Database, params: JoinBetParams): JoinBetRe
   const netStake = wagerCents - fee;
 
   const txn = db.transaction((): JoinBetResult => {
-    // Re-read bet inside transaction
-    const bet = db
-      .prepare<[string, string], BetRow>(
-        'SELECT * FROM bets WHERE bet_id = ? AND guild_id = ?'
-      )
-      .get(betId, guildId);
+    const bet = getBet(db, guildId, betId);
 
     if (!bet) {
       return { success: false, error: 'Bet not found.' };
@@ -223,13 +205,7 @@ export function joinBet(db: Database.Database, params: JoinBetParams): JoinBetRe
       return { success: false, error: 'The betting window has closed.' };
     }
 
-    // Check if already a participant
-    const existing = db
-      .prepare<[string, string, string], { id: number }>(
-        'SELECT id FROM bet_participants WHERE bet_id = ? AND guild_id = ? AND user_id = ?'
-      )
-      .get(betId, guildId, userId);
-    if (existing) {
+    if (isParticipant(db, betId, guildId, userId)) {
       return { success: false, error: 'You are already a participant in this bet.' };
     }
 
@@ -261,7 +237,6 @@ export function joinBet(db: Database.Database, params: JoinBetParams): JoinBetRe
       return { success: false, error: xfer.error };
     }
 
-    // Record participant
     db.prepare<[string, string, string, string, number, number]>(
       `INSERT INTO bet_participants (bet_id, guild_id, user_id, side, stake, fee_paid)
        VALUES (?, ?, ?, ?, ?, ?)`
@@ -274,19 +249,13 @@ export function joinBet(db: Database.Database, params: JoinBetParams): JoinBetRe
   return txn.immediate();
 }
 
-/**
- * Gets pool totals for a bet.
- */
 export function getPoolTotals(
   db: Database.Database,
   betId: string,
   guildId: string
 ): PoolTotals {
   const row = db
-    .prepare<
-      [string, string],
-      { poolA: number; poolB: number; participantCount: number }
-    >(
+    .prepare<[string, string], PoolTotals>(
       `SELECT
          SUM(CASE WHEN side='A' THEN stake ELSE 0 END) as poolA,
          SUM(CASE WHEN side='B' THEN stake ELSE 0 END) as poolB,
@@ -307,10 +276,7 @@ export interface DeclineBetResult {
   error?: string;
 }
 
-/**
- * Declines a direct bet invitation.
- * Refunds the creator's stake AND fee (bet never became bilateral).
- */
+/** Declining a direct invite refunds both stake and fee: the bet never became bilateral. */
 export function declineBet(
   db: Database.Database,
   guildId: string,
@@ -318,11 +284,7 @@ export function declineBet(
   callerId: string
 ): DeclineBetResult {
   const txn = db.transaction((): DeclineBetResult => {
-    const bet = db
-      .prepare<[string, string], BetRow>(
-        'SELECT * FROM bets WHERE bet_id = ? AND guild_id = ?'
-      )
-      .get(betId, guildId);
+    const bet = getBet(db, guildId, betId);
 
     if (!bet) return { success: false, error: 'Bet not found.' };
     if (bet.status !== 'open') return { success: false, error: 'Bet is not open.' };
@@ -330,29 +292,16 @@ export function declineBet(
       return { success: false, error: 'You are not the invited opponent for this bet.' };
     }
 
-    // Make sure caller hasn't already joined
-    const callerPart = db
-      .prepare<[string, string, string], { id: number }>(
-        'SELECT id FROM bet_participants WHERE bet_id=? AND guild_id=? AND user_id=?'
-      )
-      .get(betId, guildId, callerId);
-    if (callerPart) {
+    if (isParticipant(db, betId, guildId, callerId)) {
       return { success: false, error: 'You have already joined this bet. Use /resolve instead.' };
     }
 
-    // Get all current participants (only creator at this point)
-    const participants = db
-      .prepare<[string, string], ParticipantRow>(
-        'SELECT * FROM bet_participants WHERE bet_id=? AND guild_id=?'
-      )
-      .all(betId, guildId);
+    const participants = getParticipants(db, betId, guildId);
 
-    // Mark cancelled
     db.prepare<[number, string, string]>(
       "UPDATE bets SET status='cancelled', resolved_at=? WHERE bet_id=? AND guild_id=?"
     ).run(Date.now(), betId, guildId);
 
-    // Refund: on decline, fees ARE refunded (bet never bilateral)
     for (const p of participants) {
       const refund = p.stake + p.fee_paid;
       const xfer = transfer(db, {
@@ -377,31 +326,21 @@ export interface CancelBetResult {
   refunds?: Array<{ userId: string; amount: number }>;
 }
 
-/**
- * Admin cancels a bet. Stakes refunded; fees retained by bank.
- */
+/** Admin cancellation returns stakes but retains fees in the bank. */
 export function adminCancelBet(
   db: Database.Database,
   guildId: string,
   betId: string
 ): CancelBetResult {
   const txn = db.transaction((): CancelBetResult => {
-    const bet = db
-      .prepare<[string, string], BetRow>(
-        'SELECT * FROM bets WHERE bet_id = ? AND guild_id = ?'
-      )
-      .get(betId, guildId);
+    const bet = getBet(db, guildId, betId);
 
     if (!bet) return { success: false, error: 'Bet not found.' };
     if (!['open', 'locked', 'proposed', 'disputed'].includes(bet.status)) {
       return { success: false, error: `Cannot cancel a bet with status '${bet.status}'.` };
     }
 
-    const participants = db
-      .prepare<[string, string], ParticipantRow>(
-        'SELECT * FROM bet_participants WHERE bet_id=? AND guild_id=?'
-      )
-      .all(betId, guildId);
+    const participants = getParticipants(db, betId, guildId);
 
     db.prepare<[number, string, string]>(
       "UPDATE bets SET status='cancelled', resolved_at=? WHERE bet_id=? AND guild_id=?"
@@ -409,7 +348,6 @@ export function adminCancelBet(
 
     const refunds: Array<{ userId: string; amount: number }> = [];
 
-    // On admin cancel: stakes returned, fees retained by bank
     for (const p of participants) {
       const xfer = transfer(db, {
         guildId,
@@ -435,15 +373,8 @@ export interface SettleResult {
 }
 
 /**
- * Settles a bet by paying out winners proportionally.
- *
- * Proportional payout formula:
- *   winner_payout = winner.stake + floor(winner.stake / total_winner_stake * total_loser_pool)
- *
- * Rounding remainder is assigned to the winner with the largest stake
- * to minimize visible unfairness. This choice is documented here and in comments below.
- *
- * For "neither" outcome: each participant gets back their stake only. Fees stay in bank.
+ * Winners recover their stake plus floor(stake / winner_pool * loser_pool).
+ * The largest stake gets the rounding remainder. "Neither" returns stakes only.
  */
 export function settleBet(
   db: Database.Database,
@@ -465,98 +396,57 @@ export function settleBet(
       return { success: false, error: 'Bet has already been resolved or cannot be settled.' };
     }
 
-    const participants = db
-      .prepare<[string, string], ParticipantRow>(
-        'SELECT * FROM bet_participants WHERE bet_id=? AND guild_id=?'
-      )
-      .all(betId, guildId);
+    const participants = getParticipants(db, betId, guildId);
 
     const payouts: Array<{ userId: string; payout: number }> = [];
 
-    // Helper: record gross payout on the participant row for stats accounting.
-    // Losers who never get a payout call still get a payout_received=0 row update.
     const recordPayout = db.prepare<[number, string, string, string]>(
       `UPDATE bet_participants SET payout_received=?
        WHERE bet_id=? AND guild_id=? AND user_id=?`
     );
 
-    if (outcome === 'neither') {
-      // Each participant gets back their stake; fees stay in bank
-      for (const p of participants) {
-        const xfer = transfer(db, {
-          guildId,
-          toWallet: { userId: p.user_id, amount: p.stake },
-        });
-        if (xfer.success) {
-          payouts.push({ userId: p.user_id, payout: p.stake });
-          recordPayout.run(p.stake, betId, guildId, p.user_id);
-        } else {
-          logger.error({ betId, userId: p.user_id }, 'Failed to return stake on neither');
-        }
+    const pay = (participant: ParticipantRow, payout: number, error?: string): void => {
+      const userId = participant.user_id;
+      const result = transfer(db, { guildId, toWallet: { userId, amount: payout } });
+      if (result.success) {
+        payouts.push({ userId, payout });
+        recordPayout.run(payout, betId, guildId, userId);
+      } else if (error) {
+        logger.error({ betId, userId }, error);
       }
-    } else {
-      // Winning side takes loser pool proportionally
-      const winners = participants.filter((p) => p.side === outcome);
-      const losers = participants.filter((p) => p.side !== outcome);
+    };
 
-      const totalWinnerStake = winners.reduce((sum, p) => sum + p.stake, 0);
-      const totalLoserPool = losers.reduce((sum, p) => sum + p.stake, 0);
-
-      if (winners.length === 0) {
-        // Edge case: no one on winning side — return all stakes
-        for (const p of participants) {
-          const xfer = transfer(db, {
-            guildId,
-            toWallet: { userId: p.user_id, amount: p.stake },
-          });
-          if (xfer.success) {
-            payouts.push({ userId: p.user_id, payout: p.stake });
-            recordPayout.run(p.stake, betId, guildId, p.user_id);
-          }
-        }
-        return { success: true, payouts };
+    const winners = participants.filter((p) => p.side === outcome);
+    if (outcome === 'neither' || winners.length === 0) {
+      // With no winning side, return stakes in participant order; retain fees.
+      for (const participant of participants) {
+        pay(participant, participant.stake, outcome === 'neither' ? 'Failed to return stake on neither' : undefined);
       }
+      return { success: true, payouts };
+    }
 
-      // Sort winners descending by stake for rounding assignment
-      const sortedWinners = [...winners].sort((a, b) => b.stake - a.stake);
+    const losers = participants.filter((p) => p.side !== outcome);
+    const totalWinnerStake = winners.reduce((sum, p) => sum + p.stake, 0);
+    const totalLoserPool = losers.reduce((sum, p) => sum + p.stake, 0);
+    const sortedWinners = [...winners].sort((a, b) => b.stake - a.stake);
+    let distributed = 0;
+    const winnerPayouts = sortedWinners.map((participant) => {
+      const share = totalWinnerStake > 0
+        ? Math.floor((participant.stake / totalWinnerStake) * totalLoserPool)
+        : 0;
+      distributed += share;
+      return { participant, share };
+    });
 
-      let distributed = 0;
-      const winnerPayouts: Array<{ participant: ParticipantRow; share: number }> = [];
-
-      for (const winner of sortedWinners) {
-        // Pro-rata share of loser pool (floor to avoid over-distribution)
-        const share =
-          totalWinnerStake > 0
-            ? Math.floor((winner.stake / totalWinnerStake) * totalLoserPool)
-            : 0;
-        winnerPayouts.push({ participant: winner, share });
-        distributed += share;
-      }
-
-      // Assign remainder (due to floor rounding) to winner with largest stake (first in sorted list)
-      const remainder = totalLoserPool - distributed;
-      if (winnerPayouts[0] && remainder > 0) {
-        winnerPayouts[0].share += remainder;
-      }
-
-      for (const { participant, share } of winnerPayouts) {
-        const payout = participant.stake + share;
-        const xfer = transfer(db, {
-          guildId,
-          toWallet: { userId: participant.user_id, amount: payout },
-        });
-        if (xfer.success) {
-          payouts.push({ userId: participant.user_id, payout });
-          recordPayout.run(payout, betId, guildId, participant.user_id);
-        } else {
-          logger.error({ betId, userId: participant.user_id }, 'Failed payout on settlement');
-        }
-      }
-
-      // Losers receive nothing — record 0 explicitly so stats can compute net P/L
-      for (const loser of losers) {
-        recordPayout.run(0, betId, guildId, loser.user_id);
-      }
+    // Give rounding remainder to the largest stake; ties retain participant order.
+    const remainder = totalLoserPool - distributed;
+    if (winnerPayouts[0] && remainder > 0) winnerPayouts[0].share += remainder;
+    for (const { participant, share } of winnerPayouts) {
+      pay(participant, participant.stake + share, 'Failed payout on settlement');
+    }
+    // Explicit zero payouts let stats distinguish settled losses from pending bets.
+    for (const loser of losers) {
+      recordPayout.run(0, betId, guildId, loser.user_id);
     }
 
     return { success: true, payouts };
@@ -565,9 +455,6 @@ export function settleBet(
   return txn.immediate();
 }
 
-/**
- * Gets a bet by ID within a guild.
- */
 export function getBet(
   db: Database.Database,
   guildId: string,
@@ -582,9 +469,6 @@ export function getBet(
   );
 }
 
-/**
- * Gets all participants for a bet.
- */
 export function getParticipants(
   db: Database.Database,
   betId: string,
@@ -597,9 +481,6 @@ export function getParticipants(
     .all(betId, guildId);
 }
 
-/**
- * Checks if a user is a participant in a bet.
- */
 export function isParticipant(
   db: Database.Database,
   betId: string,
@@ -614,9 +495,7 @@ export function isParticipant(
   return row != null;
 }
 
-/**
- * Proposes a resolution outcome. Marks bet as 'proposed' and records proposer's confirm.
- */
+/** Open a resolution proposal with the proposer's confirmation already recorded. */
 export function proposeResolution(
   db: Database.Database,
   guildId: string,
@@ -625,11 +504,7 @@ export function proposeResolution(
   outcome: 'A' | 'B' | 'neither'
 ): { success: boolean; error?: string } {
   const txn = db.transaction(() => {
-    const bet = db
-      .prepare<[string, string], BetRow>(
-        'SELECT * FROM bets WHERE bet_id=? AND guild_id=?'
-      )
-      .get(betId, guildId);
+    const bet = getBet(db, guildId, betId);
 
     if (!bet) return { success: false, error: 'Bet not found.' };
     if (!['open', 'locked'].includes(bet.status)) {
@@ -656,10 +531,7 @@ export function proposeResolution(
   return txn.immediate();
 }
 
-/**
- * Records a participant's confirm or dispute response.
- * Returns the current tally and whether all have responded.
- */
+/** Record a response, then check for disputes or unanimous confirmation. */
 export function recordResolutionResponse(
   db: Database.Database,
   guildId: string,
@@ -678,7 +550,6 @@ export function recordResolutionResponse(
        VALUES (?, ?, ?, ?)`
     ).run(betId, guildId, userId, response);
 
-    // Check for any dispute
     const disputeCount = db
       .prepare<[string, string], { count: number }>(
         `SELECT COUNT(*) as count FROM resolution_responses
@@ -693,7 +564,6 @@ export function recordResolutionResponse(
       return { success: true, hasDispute: true, allConfirmed: false };
     }
 
-    // Check if all participants have confirmed
     const participantCount = db
       .prepare<[string, string], { count: number }>(
         'SELECT COUNT(*) as count FROM bet_participants WHERE bet_id=? AND guild_id=?'

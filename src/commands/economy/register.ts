@@ -3,11 +3,9 @@ import {
   ChatInputCommandInteraction,
 } from 'discord.js';
 import { getDb } from '../../db/connection';
-import { registerPlayer } from '../../services/PlayerService';
-import { touchPlayer } from '../../services/PlayerService';
+import { registerPlayer, touchPlayer } from '../../services/PlayerService';
 import { audit } from '../../services/AuditService';
-import { registerEmbed } from '../../ui/embeds';
-import { errorEmbed } from '../../ui/embeds';
+import { errorEmbed, registerEmbed } from '../../ui/embeds';
 
 export const data = new SlashCommandBuilder()
   .setName('register')

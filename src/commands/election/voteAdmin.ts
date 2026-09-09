@@ -14,8 +14,7 @@ import {
 } from '../../services/ElectionService';
 import { audit } from '../../services/AuditService';
 import { client } from '../../index';
-import { errorEmbed } from '../../ui/embeds';
-import { COLORS } from '../../ui/embeds';
+import { COLORS, errorEmbed } from '../../ui/embeds';
 
 export const data = new SlashCommandBuilder()
   .setName('vote-admin')
@@ -77,7 +76,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
     await interaction.editReply({ embeds: [embed] });
 
-    // Schedule finalization timer
     scheduleElectionFinalization(db, client, guildId, result.election);
 
     touchPlayer(db, guildId, userId);

@@ -8,9 +8,7 @@ import {
 import { getDb } from '../../db/connection';
 import { getPlayer } from '../../services/PlayerService';
 import { formatCents } from '../../services/BalanceService';
-import { errorEmbed } from '../../ui/embeds';
-import { paginationButtons } from '../../ui/embeds';
-import { COLORS } from '../../ui/embeds';
+import { COLORS, errorEmbed, paginationButtons } from '../../ui/embeds';
 
 const PAGE_SIZE = 5;
 
@@ -110,7 +108,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  // Count total bets for pagination
   const totalCount = db
     .prepare<[string, string], { count: number }>(
       `SELECT COUNT(*) as count
@@ -122,7 +119,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
   const total = totalCount?.count ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  let page = 0;
 
   const getPageRows = (p: number): HistoryRow[] =>
     db
@@ -138,27 +134,25 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       )
       .all(guildId, targetId, PAGE_SIZE, p * PAGE_SIZE);
 
-  const rows = getPageRows(page);
-  const embed = buildHistoryEmbed(
-    targetUser.displayName,
-    targetUser.displayAvatarURL(),
-    rows,
-    page,
-    totalPages
-  );
-
   const prefix = `history:${targetId}`;
-  const components =
-    totalPages > 1 ? [paginationButtons(page, totalPages, prefix)] : [];
-
-  const message = await interaction.editReply({
-    embeds: [embed],
-    components,
-  });
+  const pageReply = (page: number) => {
+    const rows = getPageRows(page);
+    const embed = buildHistoryEmbed(
+      targetUser.displayName,
+      targetUser.displayAvatarURL(),
+      rows,
+      page,
+      totalPages
+    );
+    return {
+      embeds: [embed],
+      components: totalPages > 1 ? [paginationButtons(page, totalPages, prefix)] : [],
+    };
+  };
+  const message = await interaction.editReply(pageReply(0));
 
   if (totalPages <= 1) return;
 
-  // Set up pagination collector
   const collector = message.createMessageComponentCollector({
     componentType: ComponentType.Button,
     time: 5 * 60 * 1000, // 5 minutes
@@ -168,22 +162,9 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   collector.on('collect', async (btnInteraction: ButtonInteraction) => {
     const [, , action, currentPageStr] = btnInteraction.customId.split(':');
     const currentPage = parseInt(currentPageStr ?? '0', 10);
-    page = action === 'next' ? currentPage + 1 : currentPage - 1;
-    page = Math.max(0, Math.min(page, totalPages - 1));
-
-    const newRows = getPageRows(page);
-    const newEmbed = buildHistoryEmbed(
-      targetUser.displayName,
-      targetUser.displayAvatarURL(),
-      newRows,
-      page,
-      totalPages
-    );
-
-    await btnInteraction.update({
-      embeds: [newEmbed],
-      components: [paginationButtons(page, totalPages, prefix)],
-    });
+    const requestedPage = action === 'next' ? currentPage + 1 : currentPage - 1;
+    const page = Math.max(0, Math.min(requestedPage, totalPages - 1));
+    await btnInteraction.update(pageReply(page));
   });
 
   collector.on('end', async () => {

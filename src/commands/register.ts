@@ -1,16 +1,4 @@
-/**
- * Standalone command registration script.
- * Registers all slash commands GLOBALLY against the application.
- *
- * Run via: npm run register-commands
- *
- * Requires: DISCORD_TOKEN in .env
- *
- * Uses global registration (Routes.applicationCommands). Global commands do NOT
- * require the applications.commands OAuth scope to be granted on a per-guild
- * install — they're application-level. They take up to ~1 hour to propagate to
- * existing guild caches the first time, but updates are near-instant after that.
- */
+/** Registers slash commands globally; run npm run register-commands with DISCORD_TOKEN set. */
 import 'dotenv/config';
 import { REST, Routes } from 'discord.js';
 import { config } from '../config';

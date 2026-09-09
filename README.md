@@ -3,115 +3,93 @@
 [![CI](https://github.com/llrhook/wanna-bet/actions/workflows/ci.yml/badge.svg)](https://github.com/llrhook/wanna-bet/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A Discord gambling-economy bot. Per-guild virtual currency, two-sided bet pools with escrow, an elected admin who can grant/seize/force-resolve, and a daily inflation tap. TypeScript + discord.js v14 + SQLite.
+A Discord bot with per-server virtual balances, two-sided bet pools, elected admins, and optional X-to-FixupX reposting. Built with TypeScript, discord.js v14, and SQLite.
 
-> **[➤ Add Wanna Bet Bot to your Discord server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147568640&integration_type=0&scope=bot+applications.commands)**
-> No setup, no hosting, no `.env` — click, pick a server, authorize, then run `/help`.
+**[Add Wanna Bet to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147568640&integration_type=0&scope=bot+applications.commands)**, then run `/help`. The public bot's operator must configure channels for X link replacement.
 
-The Quickstart below is for **self-hosting** your own copy of the bot. The invite above enables the public bot's slash commands. X link replacement also needs the channel configuration and permissions described below; the public bot's operator manages its channel configuration.
+## Self-hosting
 
-## Quickstart
+Requires Node.js 20+ and npm, or Docker Compose on a Linux host.
 
-### 1. Create the bot in Discord
-
-1. https://discord.com/developers/applications → New Application → Bot tab → Add Bot
-2. Enable **SERVER MEMBERS INTENT** (required)
-3. OAuth2 → URL Generator → scopes: `bot` + `applications.commands`, permissions: View Channel, Send Messages, Embed Links, Read Message History
-4. Visit the generated URL, add the bot to your server
-5. Copy the bot token
-
-### 2. Run it locally
+1. Create an application in the [Discord developer portal](https://discord.com/developers/applications). Enable **Server Members Intent** on its Bot page and copy the token.
+2. Generate an invite with scopes `bot` and `applications.commands`. Grant **View Channel**, **Send Messages**, **Embed Links**, and **Read Message History**.
+3. Add the bot to your server, then configure and run your copy:
 
 ```bash
-git clone https://github.com/llrhook/wanna-bet.git
+git clone https://github.com/LLRHook/wanna-bet.git
 cd wanna-bet
-npm install
-cp .env.example .env        # paste your DISCORD_TOKEN
-npm run db:migrate          # creates data/wanna-bet.db
-npm run register-commands   # one-time, registers slash commands
-npm run dev                 # tsx watch — auto-reloads on save
+npm ci
+cp .env.example .env       # set DISCORD_TOKEN
+npm run db:migrate
+npm run register-commands  # register slash commands before first use
+npm run dev
 ```
 
-> ⚠️ On macOS, **don't use Docker for local dev**. Docker Desktop's network layer adds multi-second latency to Discord's gateway and breaks interaction acks. Run natively as above. Docker on Linux is fine.
+Use native Node.js for local development, especially on macOS where Docker Desktop gateway latency has caused interaction timeouts in this project.
 
-### 3. Deploy to a VPS (Docker)
+For a Linux VPS, clone the repository and set `.env`, then run:
 
 ```bash
-git clone https://github.com/llrhook/wanna-bet.git
-cd wanna-bet
-cp .env.example .env && nano .env
 docker compose up -d --build
 docker compose run --rm wannabet node dist/commands/register.js
 ```
 
-`docker compose down` stops it (data preserved in named volume), `docker compose logs -f` tails logs.
+`docker compose logs -f` shows logs. `docker compose down` stops the bot while retaining its database volume. Keep that volume and the `backups/` directory when updating; never commit `.env` or database files.
 
-### Optional: replace X links in selected channels
+## X link replacement
 
-Set `FIXUPX_CHANNEL_IDS` in `.env` to a comma-separated list of exact Discord channel IDs where the bot should replace links. Channels may belong to different servers where the bot is installed. Enable Developer Mode in Discord, then right-click each channel and choose **Copy Channel ID**. Only the listed channels are included; other channels, DMs and child threads are excluded. To use a thread, include that thread's own ID.
+Enable **Message Content Intent**, then set `FIXUPX_CHANNEL_IDS` to comma-separated channel IDs in `.env` and rebuild/restart. Use Discord's Developer Mode → **Copy Channel ID**. Channels can span servers; only exact IDs are included. Threads need their own IDs, and DMs are excluded.
 
-The existing `FIXUPX_CHANNEL_ID` setting remains supported. If both settings are present, their channel IDs are combined and duplicates are removed. Leave both settings empty or unset to disable this feature. Malformed IDs or empty entries within a comma-separated list stop startup; a trailing comma is invalid.
+| Permission | Required in each configured channel |
+| --- | --- |
+| View Channel, Read Message History, Embed Links, Manage Messages | Always |
+| Send Messages | Text channels |
+| Send Messages in Threads | Threads |
+| Attach Files | Messages with attachments; otherwise they stay untouched |
 
-Before starting the bot with this setting:
+Check role and channel overrides. The public invite above omits reposting permissions; an admin can [reauthorize the public bot](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147609600&integration_type=0&scope=bot+applications.commands). Permission updates preserve balances and bets when the existing SQLite database is retained. Apps requiring privileged-intent approval must obtain it before enabling this feature.
 
-1. In the [Discord developer portal](https://discord.com/developers/applications), open your application, select **Bot**, and enable **Message Content Intent**. Keep the existing **Server Members Intent** enabled. Apps that require approval for privileged intents must obtain it first.
-2. Grant the bot **View Channel**, **Embed Links**, **Read Message History**, and **Manage Messages** in every configured channel. Text channels also need **Send Messages**; configured threads need **Send Messages in Threads**. Grant **Attach Files** to copy attachments; without it, messages containing attachments stay untouched. Check channel permission overrides as well as the bot's role in each server. The existing invite link does not grant all of these additional permissions.
-3. Set `FIXUPX_CHANNEL_IDS=first_channel_id,second_channel_id` alongside your existing token, then build and restart the bot through your normal deployment process. A single ID is also valid. Slash commands do not need to be registered again.
+The legacy `FIXUPX_CHANNEL_ID` is combined with the list and deduplicated. Invalid IDs or empty list entries, including trailing commas, stop startup. Clear both settings and restart to disable replacement and its extra gateway intents. Slash commands need no re-registration.
 
-Reauthorizing the same bot in the same server preserves balances and bets as long as the existing SQLite database is kept. Updating Discord permissions does not reset the bot's economy data.
+For new human messages, literal `https://x.com` links become `https://fixupx.com` with paths, queries, fragments and surrounding text preserved. Host matching ignores case; HTTP, subdomains, credentials, explicit ports, nested URLs inside other URLs, and lookalike hosts stay unchanged. Existing messages, edits, bots and webhooks do not trigger reposting.
 
-For each new human message, the bot changes literal `https://x.com` links to `https://fixupx.com`, preserving paths, query strings, fragments and surrounding text. Host matching is case-insensitive. Subdomains, credentials, explicit ports, HTTP links and lookalike domains are left alone. Existing messages and edits do not trigger replacement.
+Reposts use quoted **Shared by @author** credit and plain leading context, followed by the URL and its full native preview. One separator space may become a newline. Complex Markdown or whitespace keeps the full rewritten body beneath the credit. Reply links, suppressed embeds, and attachment names, descriptions and spoilers are retained. All mention notifications are disabled.
 
-The bot posts quoted, bold `Shared by @author` credit. Plain leading context is quoted beneath it, followed by the first URL and all remaining text in their original order. A single space between inline context and its URL becomes a line break. If quoting could alter Markdown, link wrappers, code, lists, indentation, trailing whitespace or blank lines, the full rewritten body stays unchanged beneath the quoted credit. The bot keeps reply context as a link in the credit and disables all mention notifications, including `@everyone`, role mentions and the author credit. Attachments are downloaded and checked before upload; filenames, descriptions and spoiler markings are retained. Native previews are generated from the rewritten links, while an author's suppressed-embed setting and existing URL formatting are respected.
+The bot sends and checks the copy, reads the source again, then deletes it if unchanged. Failed permissions, copies or size checks keep the original; edits during copying discard the stale repost. Limits are 2,000 characters including credit, 10 attachments, and 25 MiB total. Polls, stickers, components, forwards, voice messages, ephemeral attachments, pinned messages, thread starters and crossposts are skipped.
 
-The original is deleted only after the repost succeeds, every attachment is present in Discord's response, and a fresh read confirms the source content and relevant settings have not changed. Missing permissions, failed downloads/uploads, or content that will not fit leave the original in place. Copying is limited to 2,000 characters including attribution and quote formatting, 10 attachments and 25 MiB of attachments in total. The bot skips voice messages, crossposts, pinned messages, messages with attached threads, and messages containing polls, stickers, components, forwarded snapshots or ephemeral attachments.
-
-Discord sends and deletes are separate requests. If deletion or the final read fails, both messages may remain; check the logs for the source message ID. If the author edits the original during copying, the bot keeps it and attempts to remove its stale repost. If Discord confirms the original was deleted during copying, the bot attempts to remove the repost too. An edit arriving after the final check can still race deletion. Bot and webhook messages are ignored to prevent repost loops.
-
-To disable replacement, clear both `FIXUPX_CHANNEL_IDS` and `FIXUPX_CHANNEL_ID` and restart. When disabled, the bot does not request the additional Guild Messages or Message Content gateway intents. The underlying requirements are documented in Discord's [gateway intent reference](https://docs.discord.com/developers/events/gateway) and [channel permission reference](https://docs.discord.com/developers/topics/permissions).
+Discord sends and deletes are separate requests: failed final reads/deletions can leave both messages, and edits after the final check can still race deletion. Check logs by source message ID. See Discord's [intent](https://docs.discord.com/developers/events/gateway) and [permission](https://docs.discord.com/developers/topics/permissions) references.
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `/register` | Join the economy. New players start with $100. |
-| `/unregister` | Leave the economy. Balance preserved for re-registration. |
-| `/balance` | Your wallet balance. |
-| `/daily` | Claim $5/day. Resets at UTC midnight. |
-| `/wanna-bet` | Create a two-sided pool. Pick Side A label, Side B label, your side, your wager. |
-| `/accept <bet-id>` | Join an open bet on either side. |
-| `/decline <bet-id>` | Decline a direct bet (full refund — fee included). |
-| `/resolve <bet-id> <A\|B\|neither>` | Propose an outcome. Other participants confirm or dispute via DM buttons. |
+| Command | Purpose |
+| --- | --- |
+| `/register`, `/unregister` | Join with $100; leave with your balance preserved. |
+| `/balance`, `/daily`, `/bank` | Wallet, $5 daily claim at UTC midnight, bank balance/cap. |
+| `/leaderboard`, `/stats [@user]`, `/history [@user]` | Rankings, performance, paginated bet history. |
+| `/wanna-bet` | Create a pool with two labels, your side and wager. |
+| `/accept <bet-id>` | Join either side of an open bet. |
+| `/decline <bet-id>` | Decline a direct invite; refund stake and fee. |
+| `/resolve <bet-id> <A\|B\|neither>` | Propose an outcome; participants confirm or dispute through DM buttons. |
 | `/bets active` | List open bets. |
-| `/bank` | Bank balance + cap. |
-| `/leaderboard` | Top 10 by balance. |
-| `/stats [@user]` | W/L, total wagered, net P/L, biggest win/loss, current streak. |
-| `/history [@user]` | Paginated bet history. |
-| `/vote-admin start\|nominate\|cast\|status` | Elect a server admin. 1-hour window, ≥50% quorum, plurality wins, ties random. |
-| `/admin grant\|seize\|resolve\|cancel\|ban\|unban` | Admin powers (elected admin only). Cannot print money or change rates. |
-| `/setup role` | Set the gambler role required for lobby bets (Manage Guild permission). |
+| `/vote-admin start\|nominate\|cast\|status` | One-hour election, ≥50% quorum, plurality wins, random ties. |
+| `/admin grant\|seize\|resolve\|cancel\|ban\|unban` | Elected-admin controls; no money printing or rate changes. |
+| `/setup role` | Set the role for lobby bets; requires Manage Guild. |
+| `/help` | Show commands and getting-started steps. |
 
-## Economy model
+## Economy and code
 
-All amounts stored as integer **cents**. $1.00 = 100.
+Amounts are integer cents. The fee is `max(100, floor(wager * 0.01))`, deducted from the wager: a $5 wager sends $1 to the bank and $4 to the pool. Winners recover their stake plus `floor(stake / winner_pool * loser_pool)`; the largest stake receives the rounding remainder. "Neither" returns stakes and retains fees. Registration and daily claims mint $100 and $5 respectively; the bank grows only from fees, with no automatic seeding.
 
-- **Fee per bet side**: `max($1, 1% of wager)`, deducted from the wager (not on top). $5 wager → $5 leaves your wallet, $1 to bank, $4 enters the pool.
-- **Settlement**: winners get their stake back plus a pro-rata share of the loser pool (`floor(stake / total_winner_stake * loser_pool)`). Rounding remainder goes to the largest-stake winner.
-- **"Neither" outcome**: each participant gets their stake back, fees stay in bank.
-- **Inflation taps**: starting balance $100, daily $5 (per-user, UTC midnight). The bank only grows from bet fees — no automatic seeding.
+**Only `BalanceService.transfer()` may update wallet or bank balances**, inside `BEGIN IMMEDIATE`. `BetService` owns the lifecycle and payouts, `PlayerService` registration/activity, `ElectionService` elections, and `AuditService` the audit log. `XLinkService` handles reposts. Commands use these services and the shared embeds. SQLite uses one WAL connection.
 
-## Architecture
+## Development
 
-`BalanceService.transfer()` is the **only** function that mutates `players.balance` or `bank.balance`. Every grant, payout, fee, escrow, and refund goes through it, wrapped in a `BEGIN IMMEDIATE` transaction. No exceptions. This is the load-bearing invariant of the codebase.
+```bash
+npm test           # strict typecheck + isolated regression tests; no Discord token needed
+npm run build      # compile production TypeScript
+npm run db:migrate # apply the schema to data/wanna-bet.db
+```
 
-Other services: `BetService` (bet lifecycle, settlement math), `PlayerService` (registration, lifecycle), `ElectionService` (admin elections), `AuditService` (synchronous append to the `audit_log` table). One SQLite connection in WAL mode.
+CI runs the build, tests and fresh migration on Node 20 and 22. See [CONTRIBUTING.md](CONTRIBUTING.md) for the balance invariant, local setup and Discord smoke checks.
 
-Slash commands are registered globally — first registration takes up to ~1 hour to propagate, updates are near-instant.
-
-## Contributing
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). The short version: clone, install, `npm run dev`, follow the BalanceService rule, run the build and tests before opening a PR.
-
-## License
-
-MIT — see [`LICENSE`](LICENSE).
+MIT license. See [LICENSE](LICENSE).

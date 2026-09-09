@@ -3,17 +3,8 @@ import type { Client } from 'discord.js';
 import { logger } from '../logger';
 
 /**
- * ElectionService — manages the admin election state machine.
- *
- * State machine:
- *   NONE (no election row) → OPEN → CLOSED (winner found) | FAILED (quorum not met)
- *
- * Guild's current_admin_id:
- *   NULL → (CLOSED election) → <user_id>
- *   <user_id> → (auto-revoke: leave/unregister) → NULL
- *   <user_id> → (new CLOSED election) → <new_user_id>
- *
- * Tie-breaking: Math.random() pick among tied candidates. This is intentional for a fun economy bot.
+ * Elections move from open to closed (winner chosen) or failed (no quorum).
+ * Ties are intentionally random. Leaving/unregistering revokes the current admin.
  */
 
 export interface ElectionRow {
@@ -46,16 +37,12 @@ export interface StartElectionResult {
   election?: ElectionRow;
 }
 
-/**
- * Starts a new admin election. Validates cooldown and no open election.
- * Sets a setTimeout for finalization at ends_at.
- */
+/** Start a one-hour election after checking player count, cooldown and active elections. */
 export function startElection(
   db: Database.Database,
   guildId: string
 ): StartElectionResult {
   const txn = db.transaction((): StartElectionResult => {
-    // Check player count >= 2
     const playerCount = db
       .prepare<[string], { count: number }>(
         `SELECT COUNT(*) as count FROM players WHERE guild_id=? AND status='active'`
@@ -66,7 +53,6 @@ export function startElection(
       return { success: false, error: 'At least 2 registered players are required to start an election.' };
     }
 
-    // Check for existing open election
     const openElection = db
       .prepare<[string], { id: number }>(
         `SELECT id FROM elections WHERE guild_id=? AND status='open'`
@@ -77,7 +63,6 @@ export function startElection(
       return { success: false, error: 'An election is already in progress.' };
     }
 
-    // Check cooldown (24 hours) unless waived
     const guild = db
       .prepare<[string], { last_vote_started_at: number | null; vote_cooldown_waived: number }>(
         `SELECT last_vote_started_at, vote_cooldown_waived FROM guilds WHERE guild_id=?`
@@ -99,12 +84,10 @@ export function startElection(
     const now = Date.now();
     const endsAt = now + 60 * 60 * 1000; // 1 hour
 
-    // Update guild: set last_vote_started_at, clear cooldown waiver
     db.prepare<[number, string]>(
       `UPDATE guilds SET last_vote_started_at=?, vote_cooldown_waived=0 WHERE guild_id=?`
     ).run(now, guildId);
 
-    // Insert election
     db.prepare<[string, number, number]>(
       `INSERT INTO elections (guild_id, started_at, ends_at) VALUES (?, ?, ?)`
     ).run(guildId, now, endsAt);
@@ -127,9 +110,6 @@ export interface NominateResult {
   election?: ElectionRow;
 }
 
-/**
- * Self-nominates the caller as a candidate in the current election.
- */
 export function nominateCandidate(
   db: Database.Database,
   guildId: string,
@@ -161,9 +141,6 @@ export interface VoteResult {
   error?: string;
 }
 
-/**
- * Casts a vote for a candidate.
- */
 export function castVote(
   db: Database.Database,
   guildId: string,
@@ -178,7 +155,6 @@ export function castVote(
     return { success: false, error: 'The election window has closed.' };
   }
 
-  // Check candidate is nominated
   const nomination = db
     .prepare<[number, string], { id: number }>(
       `SELECT id FROM nominations WHERE election_id=? AND candidate_id=?`
@@ -211,9 +187,6 @@ export interface ElectionStatus {
   tallies: Array<{ candidateId: string; count: number }>;
 }
 
-/**
- * Gets the current election status for display.
- */
 export function getElectionStatus(db: Database.Database, guildId: string): ElectionStatus {
   const election = getOpenElection(db, guildId);
 
@@ -258,10 +231,7 @@ export interface FinalizeResult {
   reason?: string;
 }
 
-/**
- * Finalizes an election when the timer fires.
- * Called by setTimeout in vote-admin start and on bot restart for open elections.
- */
+/** Finalize an election from its timer or when restoring timers after restart. */
 export async function finalizeElection(
   db: Database.Database,
   client: Client,
@@ -298,7 +268,6 @@ export async function finalizeElection(
       return { success: true, status: 'failed', reason: `Quorum not met (${voteCount}/${quorum} votes).` };
     }
 
-    // Tally votes
     const tallies = db
       .prepare<[number], { candidate_id: string; tally: number }>(
         `SELECT candidate_id, COUNT(*) as tally FROM votes WHERE election_id=? GROUP BY candidate_id ORDER BY tally DESC`
@@ -315,7 +284,6 @@ export async function finalizeElection(
     const maxTally = tallies[0]!.tally;
     const topCandidates = tallies.filter((t) => t.tally === maxTally);
 
-    // Tie-break: random pick
     const winner = topCandidates[Math.floor(Math.random() * topCandidates.length)]!;
 
     db.prepare<[string, number]>(
@@ -339,12 +307,11 @@ export async function finalizeElection(
         await guild.members.fetch(result.winnerId);
       }
     } catch {
-      // Winner left the guild — revoke and try next candidate
+      // An unverifiable winner invalidates the result.
       logger.warn({ guildId, winnerId: result.winnerId }, 'Election winner is no longer in guild; revoking');
       db.prepare<[string]>(
         `UPDATE guilds SET current_admin_id=NULL WHERE guild_id=?`
       ).run(guildId);
-      // Mark election as failed since winner is gone
       db.prepare<[number]>(
         `UPDATE elections SET status='failed' WHERE id=?`
       ).run(electionId);
@@ -355,9 +322,6 @@ export async function finalizeElection(
   return result;
 }
 
-/**
- * Returns the open election for a guild, or null if none.
- */
 export function getOpenElection(db: Database.Database, guildId: string): ElectionRow | null {
   return (
     db
@@ -368,10 +332,7 @@ export function getOpenElection(db: Database.Database, guildId: string): Electio
   );
 }
 
-/**
- * Revokes admin access for a user and waives the vote cooldown.
- * Called on guildMemberRemove or unregister when user is current admin.
- */
+/** Revoke an admin who left/unregistered and allow a replacement election immediately. */
 export function revokeAdmin(
   db: Database.Database,
   guildId: string,
@@ -391,10 +352,6 @@ export function revokeAdmin(
   }
 }
 
-/**
- * Schedules election finalization using setTimeout.
- * Returns the timer handle.
- */
 export function scheduleElectionFinalization(
   db: Database.Database,
   client: Client,

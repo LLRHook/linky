@@ -4,8 +4,7 @@ import {
 } from 'discord.js';
 import { getDb } from '../../db/connection';
 import { getPlayer, touchPlayer } from '../../services/PlayerService';
-import { balanceEmbed } from '../../ui/embeds';
-import { errorEmbed } from '../../ui/embeds';
+import { balanceEmbed, errorEmbed } from '../../ui/embeds';
 
 export const data = new SlashCommandBuilder()
   .setName('balance')

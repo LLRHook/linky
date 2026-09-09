@@ -9,8 +9,7 @@ import { getPlayer, touchPlayer } from '../../services/PlayerService';
 import { declineBet, getBet } from '../../services/BetService';
 import { audit } from '../../services/AuditService';
 import { client } from '../../index';
-import { errorEmbed } from '../../ui/embeds';
-import { COLORS } from '../../ui/embeds';
+import { COLORS, errorEmbed } from '../../ui/embeds';
 
 export const data = new SlashCommandBuilder()
   .setName('decline')
@@ -61,7 +60,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
   await interaction.editReply({ embeds: [embed] });
 
-  // DM the creator
   try {
     const creator = await client.users.fetch(bet.creator_id);
     await creator.send({

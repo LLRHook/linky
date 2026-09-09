@@ -6,8 +6,7 @@ import {
 import { getDb } from '../../db/connection';
 import { getPlayer } from '../../services/PlayerService';
 import { formatCents } from '../../services/BalanceService';
-import { errorEmbed } from '../../ui/embeds';
-import { COLORS } from '../../ui/embeds';
+import { COLORS, errorEmbed } from '../../ui/embeds';
 
 interface BetHistoryRow {
   bet_id: string;

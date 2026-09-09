@@ -1,21 +1,11 @@
 import type Database from 'better-sqlite3';
 
 /**
- * BalanceService — THE SINGLE GATEWAY FOR ALL BALANCE MUTATIONS.
- *
- * INVARIANT: This is the ONLY file that may UPDATE players.balance or bank.balance.
- * No other service, command handler, or utility may directly mutate these columns.
- * Every monetary transfer — grants, seizures, fees, payouts, daily claims, escrow —
- * must go through BalanceService.transfer().
- *
- * All amounts are in INTEGER CENTS. $1.00 = 100. Never use floats for money.
- *
- * Every transfer executes inside a BEGIN IMMEDIATE transaction to prevent
- * concurrent balance races (see plan section 7).
+ * Only this service may UPDATE players.balance or bank.balance.
+ * Amounts are integer cents; transfers use BEGIN IMMEDIATE to prevent balance races.
  */
 
 export interface TransferParams {
-  /** Guild scope — required for all operations */
   guildId: string;
   /** Debit this amount from a player's wallet (cents). */
   fromWallet?: { userId: string; amount: number };
@@ -30,9 +20,7 @@ export interface TransferParams {
 }
 
 export interface TransferResult {
-  /** True if the transfer completed successfully. */
   success: boolean;
-  /** Human-readable error if success is false. */
   error?: string;
   /** New balance of the fromWallet player after transfer (cents). */
   fromWalletBalance?: number;
@@ -43,22 +31,13 @@ export interface TransferResult {
 }
 
 /**
- * Executes a monetary transfer atomically inside BEGIN IMMEDIATE.
- *
- * Supports any combination of:
- *   - wallet → wallet (player to player)
- *   - wallet → bank   (fee collection, seizure)
- *   - bank → wallet   (payout, grant)
- *   - bank only delta (seeding)
- *
- * Validates sufficient funds before mutating.
- * Returns { success: false, error } on validation failure — no exception thrown.
+ * Debit/credit any combination of wallets and bank atomically.
+ * Insufficient funds return { success: false, error } before any mutation.
  */
 export function transfer(db: Database.Database, params: TransferParams): TransferResult {
   const { guildId, fromWallet, toWallet, fromBank, toBank } = params;
 
   const txn = db.transaction((): TransferResult => {
-    // ─── Validate fromWallet balance ────────────────────────────────────────
     if (fromWallet) {
       const row = db
         .prepare<[string, string], { balance: number }>(
@@ -77,7 +56,6 @@ export function transfer(db: Database.Database, params: TransferParams): Transfe
       }
     }
 
-    // ─── Validate fromBank balance ──────────────────────────────────────────
     if (fromBank !== undefined && fromBank > 0) {
       const bankRow = db
         .prepare<[string], { balance: number }>('SELECT balance FROM bank WHERE guild_id = ?')
@@ -93,8 +71,6 @@ export function transfer(db: Database.Database, params: TransferParams): Transfe
         };
       }
     }
-
-    // ─── Apply mutations ────────────────────────────────────────────────────
 
     let fromWalletBalance: number | undefined;
     let toWalletBalance: number | undefined;
@@ -126,7 +102,6 @@ export function transfer(db: Database.Database, params: TransferParams): Transfe
       toWalletBalance = updated?.balance;
     }
 
-    // Bank mutations: toBank adds to bank, fromBank subtracts from bank
     const netBankDelta = (toBank ?? 0) - (fromBank ?? 0);
     if (netBankDelta !== 0) {
       db.prepare<[number, string]>(
@@ -150,30 +125,16 @@ export function transfer(db: Database.Database, params: TransferParams): Transfe
   return txn.immediate();
 }
 
-/**
- * Computes the fee for a given wager amount (in cents).
- * Formula: max(100, floor(wager * 0.01))
- * - Minimum fee: $1.00 (100 cents)
- * - Above $100 wager: 1% of wager
- *
- * @param wagerCents - Raw wager amount in cents
- * @returns Fee in cents
- */
+/** Fee in cents: 1% of the wager, with a $1 minimum. */
 export function computeFee(wagerCents: number): number {
   return Math.max(100, Math.floor(wagerCents * 0.01));
 }
 
-/**
- * Converts dollar amount (user-provided) to cents.
- * Uses Math.round to avoid floating-point issues (e.g., $10.50 → 1050).
- */
+/** Round user-provided dollars to integer cents. */
 export function dollarsToCents(dollars: number): number {
   return Math.round(dollars * 100);
 }
 
-/**
- * Formats cents as a dollar string (e.g., 1050 → "$10.50").
- */
 export function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }

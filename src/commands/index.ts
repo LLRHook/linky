@@ -1,11 +1,6 @@
 import { ChatInputCommandInteraction } from 'discord.js';
 import type { RESTPostAPIChatInputApplicationCommandsJSONBody } from 'discord.js';
 
-/**
- * Command module interface.
- * Every command file must export `data` (builder) and `execute` (handler).
- * Optionally exports `autocomplete` for autocomplete interactions.
- */
 export interface CommandModule {
   data: { name: string; toJSON(): RESTPostAPIChatInputApplicationCommandsJSONBody };
   execute(interaction: ChatInputCommandInteraction): Promise<void>;
@@ -50,7 +45,6 @@ export const commands: CommandModule[] = [
   help,
 ];
 
-/** Map of command name → module for fast dispatch */
 export const commandMap = new Map<string, CommandModule>(
   commands.map((cmd) => [cmd.data.name, cmd])
 );

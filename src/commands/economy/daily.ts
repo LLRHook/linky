@@ -5,8 +5,7 @@ import {
 import { getDb } from '../../db/connection';
 import { claimDaily, touchPlayer } from '../../services/PlayerService';
 import { audit } from '../../services/AuditService';
-import { dailyEmbed } from '../../ui/embeds';
-import { errorEmbed } from '../../ui/embeds';
+import { dailyEmbed, errorEmbed } from '../../ui/embeds';
 
 export const data = new SlashCommandBuilder()
   .setName('daily')

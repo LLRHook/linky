@@ -7,8 +7,7 @@ import { getDb } from '../../db/connection';
 import { getPlayer, ensureGuild, touchPlayer } from '../../services/PlayerService';
 import { createBet } from '../../services/BetService';
 import { audit } from '../../services/AuditService';
-import { errorEmbed } from '../../ui/embeds';
-import { COLORS } from '../../ui/embeds';
+import { COLORS, errorEmbed } from '../../ui/embeds';
 import { formatCents, dollarsToCents } from '../../services/BalanceService';
 
 export const data = new SlashCommandBuilder()
@@ -174,7 +173,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
   await interaction.editReply({ embeds: [embed] });
 
-  // DM opponent if direct bet
   if (opponent) {
     try {
       await opponent.send({

@@ -1,13 +1,6 @@
 import type Database from 'better-sqlite3';
 import { transfer } from './BalanceService';
 
-/**
- * PlayerService — registration, lifecycle, activity tracking.
- *
- * Manages player rows in the `players` table. Does NOT directly mutate
- * `balance` — uses BalanceService for that.
- */
-
 export interface Player {
   guild_id: string;
   user_id: string;
@@ -29,10 +22,7 @@ export interface GuildRow {
   created_at: number;
 }
 
-/**
- * Ensures both the guilds row and bank row exist for a guild.
- * Safe to call repeatedly (uses INSERT OR IGNORE).
- */
+/** Create missing guild and bank rows without resetting existing data. */
 export function ensureGuild(db: Database.Database, guildId: string): void {
   db.prepare<[string]>(
     `INSERT OR IGNORE INTO guilds (guild_id) VALUES (?)`
@@ -43,9 +33,6 @@ export function ensureGuild(db: Database.Database, guildId: string): void {
   ).run(guildId);
 }
 
-/**
- * Fetches a player row, or null if not found.
- */
 export function getPlayer(
   db: Database.Database,
   guildId: string,
@@ -60,9 +47,6 @@ export function getPlayer(
   );
 }
 
-/**
- * Fetches the guild row, or null if not found.
- */
 export function getGuild(db: Database.Database, guildId: string): GuildRow | null {
   return (
     db
@@ -78,10 +62,7 @@ export interface RegisterResult {
   player?: Player;
 }
 
-/**
- * Registers a new player or reactivates an inactive one.
- * New players receive $100.00 (10000 cents) starting balance.
- */
+/** New players receive $100; inactive players retain their existing balance. */
 export function registerPlayer(
   db: Database.Database,
   guildId: string,
@@ -98,7 +79,6 @@ export function registerPlayer(
     if (existing.status === 'banned') {
       return { success: false, error: 'You are banned from this server\'s economy.', isReactivation: false };
     }
-    // Reactivate inactive player
     const now = Date.now();
     db.prepare<[number, string, string]>(
       `UPDATE players SET status='active', last_active_at=? WHERE guild_id=? AND user_id=?`
@@ -108,19 +88,13 @@ export function registerPlayer(
     return { success: true, isReactivation: true, player: updated ?? undefined };
   }
 
-  // New player — grant $100 via BalanceService
   const now = Date.now();
   db.prepare<[string, string, number, number]>(
     `INSERT INTO players (guild_id, user_id, balance, status, registered_at, last_active_at)
      VALUES (?, ?, 0, 'active', ?, ?)`
   ).run(guildId, userId, now, now);
 
-  // The new player was inserted with balance=0 above.
-  // Use BalanceService to credit $100. The bank may not have enough yet on first guild interaction.
-  // Solution: We treat the registration grant as a system mint — we call transfer with toWallet only
-  // (no fromBank) which credits the player without deducting from bank. This is the only exception
-  // to the bank-deduction pattern, and it's documented here. Bank fees from bets will naturally
-  // build up the bank over time. The bank seeding cron tops it up weekly.
+  // Registration mints money without debiting the bank, as does the daily grant.
   transfer(db, {
     guildId,
     toWallet: { userId, amount: 10000 },
@@ -136,10 +110,7 @@ export interface UnregisterResult {
   finalBalance?: number;
 }
 
-/**
- * Marks a player as inactive (unregisters them).
- * Blocked if they have open/locked/proposed/disputed bets.
- */
+/** Preserve the balance on unregister; unresolved bets prevent it. */
 export function unregisterPlayer(
   db: Database.Database,
   guildId: string,
@@ -150,7 +121,6 @@ export function unregisterPlayer(
     return { success: false, error: 'You must be a registered active player to unregister.' };
   }
 
-  // Check for active bets
   const activeBetCount = db
     .prepare<[string, string], { count: number }>(
       `SELECT COUNT(*) as count
@@ -177,10 +147,7 @@ export function unregisterPlayer(
   return { success: true, finalBalance: player.balance };
 }
 
-/**
- * Updates last_active_at for a player. Called at the END of every command.
- * Silently no-ops if the player doesn't exist.
- */
+/** Update activity after a command; no-op for an unregistered user. */
 export function touchPlayer(
   db: Database.Database,
   guildId: string,
@@ -191,9 +158,6 @@ export function touchPlayer(
   ).run(Date.now(), guildId, userId);
 }
 
-/**
- * Returns today's UTC date as 'YYYY-MM-DD'.
- */
 export function todayUtcDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -204,10 +168,7 @@ export interface DailyResult {
   newBalance?: number;
 }
 
-/**
- * Claims the daily $5 bonus (500 cents).
- * Uses double-check pattern inside BEGIN IMMEDIATE to prevent race conditions.
- */
+/** Check and credit the daily $5 grant inside one immediate transaction. */
 export function claimDaily(
   db: Database.Database,
   guildId: string,
@@ -230,13 +191,12 @@ export function claimDaily(
       return { success: false, error: 'Daily already claimed today. Resets at UTC midnight.' };
     }
 
-    // Apply daily claim: update date/activity stamp, then credit via BalanceService
     db.prepare<[string, number, string, string]>(
       `UPDATE players SET last_daily_utc_date=?, last_active_at=?
        WHERE guild_id=? AND user_id=?`
     ).run(today, Date.now(), guildId, userId);
 
-    // Credit $5 (500 cents) — daily grant treated as system mint (no bank deduction)
+    // Daily grants mint money without debiting the bank.
     const xfer = transfer(db, {
       guildId,
       toWallet: { userId, amount: 500 },

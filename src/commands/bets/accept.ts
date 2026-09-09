@@ -8,8 +8,7 @@ import { getDb } from '../../db/connection';
 import { getPlayer, getGuild, touchPlayer } from '../../services/PlayerService';
 import { joinBet, getBet } from '../../services/BetService';
 import { audit } from '../../services/AuditService';
-import { errorEmbed } from '../../ui/embeds';
-import { COLORS } from '../../ui/embeds';
+import { COLORS, errorEmbed } from '../../ui/embeds';
 import { formatCents, dollarsToCents } from '../../services/BalanceService';
 
 export const data = new SlashCommandBuilder()
@@ -74,7 +73,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  // Eligibility check
   if (bet.direct_opponent_id && bet.direct_opponent_id !== userId) {
     await interaction.editReply({
       embeds: [errorEmbed('This is a direct bet — only the invited opponent can accept it.')],
@@ -96,7 +94,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     }
   }
 
-  // Determine side
   let side: 'A' | 'B';
   if (sideOption) {
     side = sideOption;

@@ -116,11 +116,6 @@ export async function sendResolutionDMs(
   }
 }
 
-/**
- * Attaches a button collector to a resolution proposal message.
- * Handles confirm/dispute responses.
- * Timeout: 48 hours (contact admin after timeout).
- */
 export function attachButtonCollector(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   message: any,
@@ -143,7 +138,6 @@ export function attachButtonCollector(
     const response = action as 'confirm' | 'dispute';
     const db = getDb();
 
-    // Check bet is still proposed
     const currentBet = getBet(db, guildId, betId);
     if (!currentBet || currentBet.status !== 'proposed') {
       await btnInteraction.update({ components: [] });
@@ -169,7 +163,6 @@ export function attachButtonCollector(
         components: [],
       });
 
-      // Notify the bet channel
       try {
         const channel = client.channels.cache.get(bet.channel_id) as TextChannel | undefined;
         if (channel) {
@@ -194,7 +187,6 @@ export function attachButtonCollector(
         payload: { betId },
       });
     } else if (result.allConfirmed) {
-      // All confirmed — settle the bet
       const updatedBet = getBet(db, guildId, betId);
       if (!updatedBet?.proposed_outcome) return;
 
@@ -218,7 +210,6 @@ export function attachButtonCollector(
       });
 
       if (settleResult.success) {
-        // Notify bet channel with payouts
         try {
           const channel = client.channels.cache.get(bet.channel_id) as TextChannel | undefined;
           if (channel) {
@@ -258,7 +249,6 @@ export function attachButtonCollector(
         });
       }
     } else {
-      // Just confirmed — waiting for others
       await btnInteraction.update({
         embeds: [
           new EmbedBuilder()
@@ -385,7 +375,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  // Send DMs to other participants
   await sendResolutionDMs(betId, guildId, userId, outcome, bet);
 
   touchPlayer(db, guildId, userId);

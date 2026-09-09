@@ -7,14 +7,14 @@ Patches and bug reports welcome.
 ```bash
 git clone https://github.com/llrhook/wanna-bet.git
 cd wanna-bet
-npm install
+npm ci
 cp .env.example .env   # add your DISCORD_TOKEN
 npm run db:migrate
 npm run register-commands
 npm run dev            # tsx watch — auto-reloads on save
 ```
 
-**Don't use Docker on macOS for local dev.** Docker Desktop's network layer adds multi-second latency to Discord's WebSocket gateway, which causes interactions to expire before the bot can ack them. Run natively with `npm run dev`. Docker on Linux (the production VPS deploy) is fine.
+Use native Node.js for local development. Docker Desktop on macOS has caused gateway latency and interaction timeouts in this project; production uses Docker on Linux.
 
 ## The one rule
 
@@ -23,12 +23,14 @@ npm run dev            # tsx watch — auto-reloads on save
 ## Before opening a PR
 
 - `npm run build` passes cleanly under strict TypeScript
-- `npm test` passes (type-checks and runs the offline message replacement tests; no token needed)
+- `npm test` passes (strict typecheck, message replacement, bet lifecycle and command tests; no token needed)
 - `npm run db:migrate` succeeds against a fresh database
 - If you touched a command, you tested it in a real Discord server
 - No `.env` or token in the diff
 
-For message replacement changes, follow the optional channel setup in [`README.md`](README.md). The offline tests exercise rewriting, quoted context, Markdown and whitespace preservation, explicit channel lists across servers, legacy configuration, mentions, attachments, permission failures and send-before-delete behavior. They also verify that Discord's link-warning metadata can change without discarding an unchanged repost, while content edits and changes to Suppress Embeds still preserve the original. Before activating a release, smoke-test in a configured Discord test channel with a plain X link, a message with an attachment, and a lookalike domain. Confirm attribution, native previews and attachment preservation, and that only the successful replacements delete their originals. Then remove Manage Messages temporarily and confirm a new matching message stays untouched. A local test run does not verify live Discord permissions or link previews.
+Add characterization tests before refactoring untested behavior. Bet tests use in-memory SQLite; command tests isolate the existing bot/database entry points to avoid login and persistent writes. Keep payout rounding, transaction boundaries, command responses and audit ordering intact.
+
+For repost changes, follow the [README setup](README.md). In a Discord test channel, check a plain X link, an attached file and a lookalike domain; verify attribution, native previews, preserved attachments and source deletion. Temporarily remove Manage Messages and confirm new matching messages stay untouched. Offline tests cover formatting, scope, copy failures, mentions and source edits, including Discord's automatic link-warning metadata. They cannot prove live permissions or preview rendering.
 
 ## Reporting bugs
 

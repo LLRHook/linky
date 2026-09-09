@@ -4,8 +4,7 @@ import {
   EmbedBuilder,
 } from 'discord.js';
 import { getDb } from '../../db/connection';
-import { buildLeaderboardTable, LeaderboardRow } from '../../ui/embeds';
-import { COLORS } from '../../ui/embeds';
+import { buildLeaderboardTable, COLORS, LeaderboardRow } from '../../ui/embeds';
 
 interface LeaderboardQueryRow {
   user_id: string;
@@ -50,7 +49,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  // Fetch display names from Discord
   const guild = interaction.guild!;
   const tableRows: LeaderboardRow[] = await Promise.all(
     rows.map(async (row, index) => {
@@ -73,7 +71,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
   const table = buildLeaderboardTable(tableRows);
 
-  // Medal lines for top 3
   const medalLines: string[] = [];
   if (tableRows[0]) medalLines.push(`🥇 <@${rows[0]!.user_id}>`);
   if (tableRows[1]) medalLines.push(`🥈 <@${rows[1]!.user_id}>`);
