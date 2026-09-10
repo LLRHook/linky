@@ -51,7 +51,7 @@ Check role and channel overrides. The public invite above omits reposting permis
 
 The legacy `FIXUPX_CHANNEL_ID` is combined with the list and deduplicated. Invalid IDs or empty list entries, including trailing commas, stop startup. Clear both settings and restart to disable replacement and its extra gateway intents. Slash commands need no re-registration.
 
-For new human messages, literal `https://x.com` links become `https://fixupx.com` with paths, queries, fragments and surrounding text preserved. Host matching ignores case; HTTP, subdomains, credentials, explicit ports, nested URLs inside other URLs, and lookalike hosts stay unchanged. Existing messages, edits, bots and webhooks do not trigger reposting.
+For new human messages, literal `https://x.com` links become `https://fixupx.com` with paths, fragments and surrounding text preserved; the query string (share/tracking params like `?s=..&t=..`) is dropped. Host matching ignores case; HTTP, subdomains, credentials, explicit ports, nested URLs inside other URLs, and lookalike hosts stay unchanged. Existing messages, edits, bots and webhooks do not trigger reposting.
 
 Reposts use quoted **Shared by @author** credit and plain leading context, followed by the URL and its full native preview. One separator space may become a newline. Complex Markdown or whitespace keeps the full rewritten body beneath the credit. Reply links, suppressed embeds, and attachment names, descriptions and spoilers are retained. All mention notifications are disabled.
 

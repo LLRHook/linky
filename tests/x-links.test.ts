@@ -79,23 +79,26 @@ test('quoted layout preserves complex whitespace without trimming or reordering'
   }
 });
 
-test('rewrites links while preserving text, punctuation, paths, queries and fragments', () => {
+test('rewrites links while preserving text, punctuation, paths and fragments, and dropping queries', () => {
   const original = 'See [this](HTTPS://X.COM/user/status/1?a=%2F+b&c=2#part), ' +
     '<https://x.com/u/status/2> and https://x.com.\nKeep @everyone and **text**.';
   assert.equal(rewriteXLinks(original),
-    'See [this](https://fixupx.com/user/status/1?a=%2F+b&c=2#part), ' +
+    'See [this](https://fixupx.com/user/status/1#part), ' +
     '<https://fixupx.com/u/status/2> and https://fixupx.com.\nKeep @everyone and **text**.');
   assert.equal(rewriteXLinks('[a](https://x.com/a)[b](https://x.com/b)'),
     '[a](https://fixupx.com/a)[b](https://fixupx.com/b)');
 });
 
-test('preserves nested URLs inside balanced path and query punctuation', () => {
+test('strips the tracking query string, including any share params or nested URLs within it', () => {
+  const original = 'https://x.com/venturetwins/status/2097769059937047002?s=46&t=JnU-mg-_ruRIqJJQHP3cxg';
+  assert.equal(rewriteXLinks(original), 'https://fixupx.com/venturetwins/status/2097769059937047002');
   for (const nested of ['(https://x.com/a)', '[https://x.com/a]', '{https://x.com/a}', '([https://x.com/a])']) {
-    assert.equal(rewriteXLinks(`https://x.com/a?url=${nested}`), `https://fixupx.com/a?url=${nested}`);
+    assert.equal(rewriteXLinks(`https://x.com/a?url=${nested}`), 'https://fixupx.com/a');
+    // A query on an unrelated host is untouched — only x.com links have their query dropped.
     assert.equal(rewriteXLinks(`https://other.test/?url=${nested}`), `https://other.test/?url=${nested}`);
   }
   assert.equal(rewriteXLinks('[a](https://x.com/a?x=(https://x.com/b))[b](https://x.com/c)'),
-    '[a](https://fixupx.com/a?x=(https://x.com/b))[b](https://fixupx.com/c)');
+    '[a](https://fixupx.com/a)[b](https://fixupx.com/c)');
 });
 
 for (const url of [
@@ -197,7 +200,7 @@ test('reposts with credit and all mentions disabled, then fetches and deletes or
   await f.run();
   assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
   assert.equal(f.sent[0].content,
-    `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1?q=%2F+ok#part @everyone <@&999> <@888>`);
+    `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1#part @everyone <@&999> <@888>`);
   assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
   assert.equal(f.sent[0].nonce, f.source.id);
   assert.equal(f.sent[0].enforceNonce, true);

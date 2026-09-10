@@ -42,7 +42,8 @@ export function rewriteXLinks(content: string): string {
     const withoutPunctuation = url.replace(/[.,!?:;}]+$/, '');
     rewritten += content.slice(cursor, match.index) +
       (/^https:\/\/x\.com(?=[/?#]|$)/i.test(withoutPunctuation)
-        ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com')
+        // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
+        ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com').replace(/\?[^#]*/, '')
         : url);
     cursor = end;
     schemes.lastIndex = end;
