@@ -1,36 +1,24 @@
 import 'dotenv/config';
-import { parseFixupXChannelIds, parseRewritePlatforms, type RewritePlatform } from './services/XLinkService';
+import { parseChannelIds, parseRewritePlatforms, type RewritePlatform } from './services/SocialLinkService';
 
-/**
- * Typed configuration object loaded from environment variables.
- * Throws at startup if required variables are missing.
- */
+export interface Config {
+  discordToken: string;
+  channelIds: readonly string[];
+  rewritePlatforms: readonly RewritePlatform[];
+  translateTweets: boolean;
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
   return value;
-}
-
-export interface Config {
-  /** Discord bot token */
-  discordToken: string;
-  /** Node environment */
-  nodeEnv: string;
-  /** Exact channels for social link replacement; an empty list disables the feature. */
-  fixupXChannelIds: readonly string[];
-  /** Platforms whose links are rewritten; defaults to all of them. */
-  rewritePlatforms: readonly RewritePlatform[];
-  /** Show non-English tweets in English with a small source-language label. */
-  translateTweets: boolean;
 }
 
 export const config: Config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
-  nodeEnv: process.env['NODE_ENV'] ?? 'development',
-  fixupXChannelIds: parseFixupXChannelIds(process.env['FIXUPX_CHANNEL_IDS'], process.env['FIXUPX_CHANNEL_ID']),
+  channelIds: process.env['LINK_CHANNEL_IDS'] !== undefined
+    ? parseChannelIds(process.env['LINK_CHANNEL_IDS'])
+    : parseChannelIds(process.env['FIXUPX_CHANNEL_IDS'], process.env['FIXUPX_CHANNEL_ID']),
   rewritePlatforms: parseRewritePlatforms(process.env['REWRITE_PLATFORMS']),
   translateTweets: process.env['TRANSLATE_TWEETS']?.toLowerCase() === 'true',
 };

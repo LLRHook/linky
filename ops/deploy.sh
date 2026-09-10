@@ -41,7 +41,7 @@ main() {
     printf 'Usage: deploy.sh <40-character commit SHA>\n' >&2
     return 2
   fi
-  local revision=$1 current_revision working_tree previous_image stamp previous_compose db_backup
+  local revision=$1 current_revision deployed_revision working_tree previous_image stamp previous_compose db_backup
   repo_dir=${WANNA_BET_DEPLOY_DIR:-/root/wanna-bet}
   cd "$repo_dir"
   exec 9> .git/wanna-bet-deploy.lock
@@ -64,12 +64,22 @@ main() {
   previous_image=$(docker inspect --format '{{.Image}}' wannabet) || {
     printf 'An existing wannabet container is required.\n' >&2; return 1;
   }
+  deployed_revision=$(cat .git/wanna-bet-deployed-revision 2>/dev/null) || {
+    printf 'The last successful deployment revision is required for rollback.\n' >&2; return 1;
+  }
+  [[ "$deployed_revision" =~ ^[0-9a-f]{40}$ ]] || {
+    printf 'The recorded deployment revision is invalid.\n' >&2; return 1;
+  }
   umask 077
   mkdir -p "$repo_dir/backups"
   stamp=$(date -u +%Y%m%dT%H%M%SZ)-$$
   previous_compose="$repo_dir/backups/compose-before-$revision-$stamp.yml"
   db_backup="$repo_dir/backups/pre-$revision-$stamp.db"
-  cp "$repo_dir/docker-compose.yml" "$previous_compose"
+  # A failed attempt leaves this checkout ahead of the running container. Always
+  # restore the configuration from its successful deployment, including on retries.
+  git show "$deployed_revision:docker-compose.yml" > "$previous_compose" || {
+    printf 'Could not recover the deployed Compose configuration.\n' >&2; return 1;
+  }
   docker tag "$previous_image" wanna-bet:rollback
   git merge --ff-only "$revision"
 
@@ -77,11 +87,18 @@ main() {
     printf 'Build failed; the existing bot is still running.\n' >&2
     return 1
   fi
-  if ! docker exec -u 0 wannabet sqlite3 /app/data/wanna-bet.db \
-    ".backup '/app/backups/$(basename "$db_backup")'"; then
-    printf 'Database backup failed; the existing bot is still running.\n' >&2
-    return 1
-  fi
+  # The retired economy runtime writes SQLite; back it up before its final replacement.
+  # The link-only runtime keeps that volume read-only and needs no database tooling.
+  case "$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.RW}}{{end}}{{end}}' wannabet)" in
+    true)
+      if ! docker exec -u 0 wannabet sqlite3 /app/data/wanna-bet.db \
+        ".backup '/app/backups/$(basename "$db_backup")'"; then
+        printf 'Database backup failed; the existing bot is still running.\n' >&2
+        return 1
+      fi ;;
+    false) db_backup='not needed; legacy data remains mounted read-only' ;;
+    *) printf 'Could not verify the legacy data mount; deployment stopped.\n' >&2; return 1 ;;
+  esac
   if ! compose up -d --no-build wannabet || ! wait_for_bot; then
     rollback "$previous_image" "$previous_compose" "$db_backup"
     return 1

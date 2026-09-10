@@ -9,6 +9,7 @@ import {
 import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
 import type { TweetTranslation } from './TweetTranslation';
+import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
 
 const MAX_CONTENT_LENGTH = 2_000;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -152,7 +153,7 @@ function mapLinks(content: string, transform: (url: string, position: number) =>
 }
 
 /** Quote plain leading context without pulling apart existing Markdown or URLs. */
-export function formatXLinkRepost(content: string, authorId: string, replyUrl?: string): string {
+export function formatLinkRepost(content: string, authorId: string, replyUrl?: string): string {
   const credit = `> **Shared by <@${authorId}>**${replyUrl ? ` (reply to ${replyUrl})` : ''}`;
   const fallback = `${credit}\n${content}`;
   // Start at the first URL, even if it is unrelated to X. Never extract a nested URL.
@@ -191,7 +192,8 @@ async function translateRepost(
   original: string,
   platforms: readonly RewritePlatform[],
   fetchTranslation: (statusId: string) => Promise<TweetTranslation | null>,
-): Promise<{ content: string; embeds?: APIEmbed[] }> {
+  contentLimit: number,
+): Promise<{ content: string; embeds?: APIEmbed[]; translationFiles?: AttachmentBuilder[] } | null> {
   const content = rewriteSocialLinks(original, platforms);
   const statusLink = /^https:\/\/x\.com\/[^\s/?#]+\/status\/(\d+)(?=[?#]|$)/i;
   const links = new Map<string, string>();
@@ -209,27 +211,38 @@ async function translateRepost(
   const translations = new Map(results.filter((entry): entry is readonly [string, TweetTranslation] => entry[1] !== null));
   if (!translations.size) return { content };
   const [id, translation] = translations.entries().next().value!;
-  if (linkCount === 1 && !translation.hasVideo) {
-    const url = links.get(id)!;
-    const embeds: APIEmbed[] = [{
-      url, author: translation.author, description: translation.text,
-      color: 0x637dff, footer: { text: `Translated from ${translation.language}` },
-      ...(translation.photos[0] ? { image: { url: translation.photos[0] } } : {}),
-    }];
-    for (const photo of translation.photos.slice(1)) embeds.push({ url, image: { url: photo } });
-    return { content, embeds };
+  if (linkCount === 1 && !tweetParts(translation).some((part) => part.hasVideo)) {
+    const embeds = translationEmbeds(translation, links.get(id)!);
+    if (embeds) return { content, embeds };
   }
+  const galleries = new Set<string>();
   const rewritten = mapLinks(original, (url, position) => {
     const rewritten = rewriteSocialLinks(url, platforms);
     const id = statusLink.exec(url)?.[1];
     const translation = id && translations.get(id);
     if (!translation || !visibleLink(original, position)) return rewritten;
+    for (const quote of tweetParts(translation).slice(1)) {
+      if (quote.hasMedia && quote.url) galleries.add(quote.url.replace(/^https:\/\/(?:x|twitter)\.com\//, 'https://g.fixupx.com/'));
+    }
     return translation.hasMedia ? rewritten.replace('https://fixupx.com/', 'https://g.fixupx.com/') : `<${rewritten}>`;
   });
-  const captions = [...translations.values()].map(({ text, language }) =>
-    `${text}\n-# Translated from ${language}`);
-  const translated = `${rewritten}\n\n${captions.join('\n\n')}`;
-  return { content: translated.length <= MAX_CONTENT_LENGTH ? translated : content };
+  const tweets = [...translations.values()];
+  const captions = tweets.map((tweet) => translationCaption(tweet)).join('\n\n');
+  const withMedia = `${rewritten}${galleries.size ? '\n' + [...galleries].join('\n') : ''}`;
+  const translated = `${withMedia}\n\n${captions}`;
+  if (translated.length <= contentLimit) return { content: translated };
+  if (withMedia.length > contentLimit) return null;
+
+  // Keep complete long translations downloadable instead of silently abandoning them.
+  const base = withMedia;
+  const note = '\n-# Full English translation attached.';
+  const budget = contentLimit - base.length - note.length - 3;
+  const preview = budget >= 100 ? splitDescription(captions, Math.min(budget, 800))?.[0] : undefined;
+  const summary = `${base}${preview ? '\n\n' + preview + '\u2026' : ''}${note}`;
+  return {
+    content: summary.length <= contentLimit ? summary : base,
+    translationFiles: [translationAttachment(tweets)],
+  };
 }
 
 function isSpoiler(attachment: Attachment): boolean {
@@ -237,28 +250,28 @@ function isSpoiler(attachment: Attachment): boolean {
 }
 
 /** Reject malformed scope instead of accidentally processing unrelated channels. */
-export function parseFixupXChannelId(value: string | undefined): string | undefined {
+export function parseChannelId(value: string | undefined): string | undefined {
   const channelId = value?.trim();
   if (!channelId) return undefined;
   if (!DISCORD_CHANNEL_ID.test(channelId)) {
-    throw new Error('FIXUPX_CHANNEL_ID must be a Discord channel ID (17-20 digits).');
+    throw new Error('Channel ID must be a Discord channel ID (17-20 digits).');
   }
   return channelId;
 }
 
 /** Combine explicit channels with the legacy setting; malformed lists fail closed. */
-export function parseFixupXChannelIds(
+export function parseChannelIds(
   value: string | undefined,
   legacyValue?: string
 ): string[] {
   const channelIds = new Set<string>();
-  const legacyChannelId = parseFixupXChannelId(legacyValue);
+  const legacyChannelId = parseChannelId(legacyValue);
   if (legacyChannelId) channelIds.add(legacyChannelId);
   if (value?.trim()) {
     for (const entry of value.split(',')) {
       const channelId = entry.trim();
       if (!DISCORD_CHANNEL_ID.test(channelId)) {
-        throw new Error('FIXUPX_CHANNEL_IDS must be comma-separated Discord channel IDs (17-20 digits), with no empty entries.');
+        throw new Error('Channel IDs must be comma-separated Discord channel IDs (17-20 digits), with no empty entries.');
       }
       channelIds.add(channelId);
     }
@@ -331,7 +344,7 @@ function sourceVersion(message: Message): string {
   });
 }
 
-export function createXLinkHandler(
+export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
@@ -367,7 +380,7 @@ export function createXLinkHandler(
       ];
       if (message.attachments.size) required.push(PermissionFlagsBits.AttachFiles);
       if (!message.deletable || !permissions?.has(required)) {
-        log.warn(context, 'Skipping X link replacement: missing channel permissions');
+        log.warn(context, 'Skipping link replacement: missing channel permissions');
         return;
       }
 
@@ -377,22 +390,35 @@ export function createXLinkHandler(
         : undefined;
       // Discord can mutate this cached message while a language lookup is pending.
       const version = sourceVersion(message);
-      const body = formatXLinkRepost(rewritten, message.author.id, replyUrl);
+      const body = formatLinkRepost(rewritten, message.author.id, replyUrl);
       const translated = translateTweet && platforms.includes('x') &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
-        ? await translateRepost(message.content, platforms, translateTweet) : { content: rewritten };
-      const formatted = formatXLinkRepost(translated.content, message.author.id, replyUrl);
+        ? await translateRepost(message.content, platforms, translateTweet,
+          MAX_CONTENT_LENGTH - (body.length - rewritten.length)) : { content: rewritten };
+      if (!translated) {
+        log.warn(context, 'Keeping original: source context and every media link exceed the message limit');
+        return;
+      }
+      const formatted = formatLinkRepost(translated.content, message.author.id, replyUrl);
       const content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
       const embeds = translated.embeds;
+      const translationFiles = translated.translationFiles ?? [];
+      if (translationFiles.length && !permissions.has(PermissionFlagsBits.AttachFiles)) {
+        log.warn(context, 'Keeping original: a full translation attachment needs Attach Files permission');
+        return;
+      }
       const attachments = [...message.attachments.values()];
-      if (content.length > MAX_CONTENT_LENGTH || attachments.length > 10 ||
-          attachments.reduce((total, attachment) => total + attachment.size, 0) > MAX_ATTACHMENT_BYTES) {
-        log.warn(context, 'Skipping X link replacement: content or attachments exceed copy limits');
+      const translationBytes = translationFiles.reduce((total, file) =>
+        total + (Buffer.isBuffer(file.attachment) ? file.attachment.byteLength : 0), 0);
+      if (content.length > MAX_CONTENT_LENGTH || attachments.length + translationFiles.length > 10 ||
+          attachments.reduce((total, attachment) => total + attachment.size, translationBytes) > MAX_ATTACHMENT_BYTES) {
+        log.warn(context, 'Skipping link replacement: content or attachments exceed copy limits');
         return;
       }
 
       const files: AttachmentBuilder[] = [];
       for (const attachment of attachments) files.push(await copyAttachment(attachment));
+      files.push(...translationFiles);
       const replacement = await channel.send({
         content,
         ...(embeds ? { embeds } : {}),
@@ -407,7 +433,7 @@ export function createXLinkHandler(
       reposted.add(message.id);
       if (reposted.size > RECENT_MESSAGE_LIMIT) reposted.delete(reposted.values().next().value!);
       const resultContext = { ...context, replacementId: replacement.id };
-      if (replacement.attachments.size !== attachments.length) {
+      if (replacement.attachments.size !== files.length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         return;
       }
@@ -429,9 +455,9 @@ export function createXLinkHandler(
       }
       // Sending, checking and deleting are separate Discord requests, not a transaction.
       await latest.delete();
-      log.info(resultContext, 'Replaced X links and deleted original message');
+      log.info(resultContext, 'Replaced social links and deleted original message');
     } catch (err) {
-      log.error({ ...context, err }, 'X link replacement failed; no further deletion will be attempted');
+      log.error({ ...context, err }, 'link replacement failed; no further deletion will be attempted');
     } finally {
       inFlight.delete(message.id);
     }

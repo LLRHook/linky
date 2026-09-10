@@ -14,14 +14,14 @@ import {
   PermissionsBitField,
 } from 'discord.js';
 import {
-  createXLinkHandler,
+  createLinkRepostHandler,
   downloadAttachment,
-  formatXLinkRepost,
-  parseFixupXChannelId,
-  parseFixupXChannelIds,
+  formatLinkRepost,
+  parseChannelId,
+  parseChannelIds,
   parseRewritePlatforms,
   rewriteSocialLinks,
-} from '../src/services/XLinkService';
+} from '../src/services/SocialLinkService';
 
 import type { TweetTranslation } from '../src/services/TweetTranslation';
 
@@ -32,25 +32,25 @@ const QUOTED_CREDIT = `> **Shared by <@${AUTHOR_ID}>**`;
 
 test('quoted layout places plain leading context above a native URL', () => {
   const body = "Discord's May patch notes. https://x.com/discord/status/1";
-  assert.equal(formatXLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
+  assert.equal(formatLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
     `${QUOTED_CREDIT}\n> Discord's May patch notes.\nhttps://fixupx.com/discord/status/1`);
-  assert.equal(formatXLinkRepost('https://fixupx.com/discord/status/1', AUTHOR_ID),
+  assert.equal(formatLinkRepost('https://fixupx.com/discord/status/1', AUTHOR_ID),
     `${QUOTED_CREDIT}\nhttps://fixupx.com/discord/status/1`);
-  assert.equal(formatXLinkRepost('Only context, with no URL.', AUTHOR_ID),
+  assert.equal(formatLinkRepost('Only context, with no URL.', AUTHOR_ID),
     `${QUOTED_CREDIT}\nOnly context, with no URL.`);
 });
 
 test('quoted layout preserves multiline context and all text after the first URL', () => {
   const body = 'First line\nSecond line\nhttps://x.com/a\nAfter the first link. https://x.com/b  \n';
-  assert.equal(formatXLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
+  assert.equal(formatLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
     `${QUOTED_CREDIT}\n> First line\n> Second line\nhttps://fixupx.com/a\nAfter the first link. https://fixupx.com/b  \n`);
-  assert.equal(formatXLinkRepost(rewriteSocialLinks('Compare https://x.com/a with https://x.com/b then decide.'), AUTHOR_ID),
+  assert.equal(formatLinkRepost(rewriteSocialLinks('Compare https://x.com/a with https://x.com/b then decide.'), AUTHOR_ID),
     `${QUOTED_CREDIT}\n> Compare\nhttps://fixupx.com/a with https://fixupx.com/b then decide.`);
 });
 
 test('quoted layout preserves an unrelated first URL and nested URLs in its query', () => {
   const body = 'Read http://example.test/?next=(https://x.com/a) then https://x.com/b';
-  assert.equal(formatXLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
+  assert.equal(formatLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
     `${QUOTED_CREDIT}\n> Read\nhttp://example.test/?next=(https://x.com/a) then https://fixupx.com/b`);
 });
 
@@ -66,7 +66,7 @@ test('quoted layout leaves existing Markdown and link wrappers intact beneath th
     '# Heading\nhttps://x.com/a', 'Escaped \\*asterisk https://x.com/a',
   ]) {
     const rewritten = rewriteSocialLinks(body);
-    assert.equal(formatXLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
+    assert.equal(formatLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
   }
 });
 
@@ -78,7 +78,7 @@ test('quoted layout preserves complex whitespace without trimming or reordering'
     'Context\u00a0https://x.com/a', '\nhttps://x.com/a',
   ]) {
     const rewritten = rewriteSocialLinks(body);
-    assert.equal(formatXLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
+    assert.equal(formatLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
   }
 });
 
@@ -221,20 +221,20 @@ test('platform configuration defaults to every platform and rejects unknown name
 });
 
 test('channel configuration defaults off and rejects invalid scope', () => {
-  assert.equal(parseFixupXChannelId(undefined), undefined);
-  assert.equal(parseFixupXChannelId('  '), undefined);
-  assert.equal(parseFixupXChannelId(` ${CHANNEL_ID} `), CHANNEL_ID);
+  assert.equal(parseChannelId(undefined), undefined);
+  assert.equal(parseChannelId('  '), undefined);
+  assert.equal(parseChannelId(` ${CHANNEL_ID} `), CHANNEL_ID);
   for (const invalid of ['all', '*', '#general', '123', `${CHANNEL_ID},987654321098765432`]) {
-    assert.throws(() => parseFixupXChannelId(invalid), /FIXUPX_CHANNEL_ID/);
+    assert.throws(() => parseChannelId(invalid), /Channel ID must/);
   }
 });
 
 test('channel list combines and deduplicates explicit IDs with the legacy setting', () => {
-  assert.deepEqual(parseFixupXChannelIds(undefined), []);
-  assert.deepEqual(parseFixupXChannelIds('  ', '  '), []);
-  assert.deepEqual(parseFixupXChannelIds(undefined, ` ${CHANNEL_ID} `), [CHANNEL_ID]);
-  assert.deepEqual(parseFixupXChannelIds(` ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `), [CHANNEL_ID, SECOND_CHANNEL_ID]);
-  assert.deepEqual(parseFixupXChannelIds(` ${SECOND_CHANNEL_ID}, ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `, CHANNEL_ID),
+  assert.deepEqual(parseChannelIds(undefined), []);
+  assert.deepEqual(parseChannelIds('  ', '  '), []);
+  assert.deepEqual(parseChannelIds(undefined, ` ${CHANNEL_ID} `), [CHANNEL_ID]);
+  assert.deepEqual(parseChannelIds(` ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `), [CHANNEL_ID, SECOND_CHANNEL_ID]);
+  assert.deepEqual(parseChannelIds(` ${SECOND_CHANNEL_ID}, ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `, CHANNEL_ID),
     [CHANNEL_ID, SECOND_CHANNEL_ID]);
 });
 
@@ -244,9 +244,9 @@ test('malformed channel list entries fail closed even with a valid legacy channe
     `${CHANNEL_ID}, ,${SECOND_CHANNEL_ID}`, `${CHANNEL_ID},all`, `${CHANNEL_ID},*`,
     `${CHANNEL_ID},#general`, `${CHANNEL_ID},123`, `${CHANNEL_ID};${SECOND_CHANNEL_ID}`,
   ]) {
-    assert.throws(() => parseFixupXChannelIds(invalid, CHANNEL_ID), /FIXUPX_CHANNEL_IDS/);
+    assert.throws(() => parseChannelIds(invalid, CHANNEL_ID), /Channel IDs must/);
   }
-  assert.throws(() => parseFixupXChannelIds(CHANNEL_ID, 'all'), /FIXUPX_CHANNEL_ID/);
+  assert.throws(() => parseChannelIds(CHANNEL_ID, 'all'), /Channel ID must/);
 });
 
 function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
@@ -289,13 +289,17 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
       send: async (options: MessageCreateOptions) => {
         events.push('send'); sent.push(options);
         replacement.attachments = source.attachments.clone();
+        const extraFiles = (options.files ?? []).length - source.attachments.size;
+        for (let index = 0; index < extraFiles; index++) {
+          replacement.attachments.set(`generated-${index}`, makeAttachment({ name: 'translation.txt' }));
+        }
         return replacement;
       },
     },
     fetch: async (_force: boolean) => { events.push('fetch'); return source; },
     delete: async () => { events.push('delete original'); },
   };
-  const handler = createXLinkHandler(CHANNEL_ID, log, undefined, { translateTweet });
+  const handler = createLinkRepostHandler(CHANNEL_ID, log, undefined, { translateTweet });
   return { source, replacement, handler, log, logs, permissions, events, sent,
     run: () => handler(source as unknown as Message) };
 }
@@ -336,7 +340,7 @@ test('one handler processes two exact channels in different guilds and ignores u
   const unrelated = fixture();
   unrelated.source.id = '323456789012345679';
   unrelated.source.channelId = '323456789012345678';
-  const handler = createXLinkHandler([CHANNEL_ID, SECOND_CHANNEL_ID], first.log);
+  const handler = createLinkRepostHandler([CHANNEL_ID, SECOND_CHANNEL_ID], first.log);
 
   await handler(first.source as unknown as Message);
   await handler(second.source as unknown as Message);
@@ -354,7 +358,7 @@ test('both configured channels use the same quoted layout', async () => {
   second.source.id = '223456789012345679';
   second.source.channelId = SECOND_CHANNEL_ID;
   second.source.guildId = '887654321098765432';
-  const handler = createXLinkHandler([CHANNEL_ID, SECOND_CHANNEL_ID], first.log);
+  const handler = createLinkRepostHandler([CHANNEL_ID, SECOND_CHANNEL_ID], first.log);
   await handler(first.source as unknown as Message);
   await handler(second.source as unknown as Message);
   assert.equal(first.sent[0].content, second.sent[0].content);
@@ -408,21 +412,21 @@ for (const [name, change] of Object.entries({
 
 test('unset configuration disables all processing', async () => {
   const f = fixture();
-  await createXLinkHandler(undefined, f.log)(f.source as unknown as Message);
-  await createXLinkHandler([], f.log)(f.source as unknown as Message);
+  await createLinkRepostHandler(undefined, f.log)(f.source as unknown as Message);
+  await createLinkRepostHandler([], f.log)(f.source as unknown as Message);
   assert.deepEqual(f.events, []);
 });
 
 test('a message is left alone when only a disabled platform matches', async () => {
   const disabled = fixture();
   disabled.source.content = 'Look https://instagram.com/p/DAbc123';
-  await createXLinkHandler(CHANNEL_ID, disabled.log, undefined, { platforms: ['x', 'tiktok'] })(
+  await createLinkRepostHandler(CHANNEL_ID, disabled.log, undefined, { platforms: ['x', 'tiktok'] })(
     disabled.source as unknown as Message);
   assert.deepEqual(disabled.events, []);
 
   const enabled = fixture();
   enabled.source.content = 'Look https://instagram.com/p/DAbc123';
-  await createXLinkHandler(CHANNEL_ID, enabled.log, undefined, { platforms: ['instagram'] })(
+  await createLinkRepostHandler(CHANNEL_ID, enabled.log, undefined, { platforms: ['instagram'] })(
     enabled.source as unknown as Message);
   assert.deepEqual(enabled.events, ['send', 'fetch', 'delete original']);
   assert.equal(enabled.sent[0].content, `${QUOTED_CREDIT}\n> Look\nhttps://kkclip.com/p/DAbc123`);
@@ -535,7 +539,7 @@ test('downloads and reuploads attachment bytes and metadata before deleting', as
   const f = fixture();
   const attachment = makeAttachment({ name: 'SPOILER_photo.png', spoiler: true });
   f.source.attachments.set(attachment.id, attachment);
-  const handler = createXLinkHandler(CHANNEL_ID, f.log, async (file) => {
+  const handler = createLinkRepostHandler(CHANNEL_ID, f.log, async (file) => {
     f.events.push('download');
     return downloadAttachment(file, async () => new Response(new Uint8Array([1, 2, 3])));
   });
@@ -566,7 +570,7 @@ for (const [name, response] of [
 ] as const) {
   test(`failed attachment download preserves original: ${name}`, async () => {
     const f = fixture(); f.source.attachments.set('file-1', makeAttachment());
-    const handler = createXLinkHandler(CHANNEL_ID, f.log,
+    const handler = createLinkRepostHandler(CHANNEL_ID, f.log,
       (file) => downloadAttachment(file, async () => response()));
     await handler(f.source as unknown as Message);
     assert.deepEqual(f.events, []); assert.equal(f.logs.length, 1);
@@ -576,7 +580,7 @@ for (const [name, response] of [
 test('an attachment omitted from Discord response prevents deletion', async () => {
   const f = fixture(); f.source.attachments.set('file-1', makeAttachment());
   f.source.channel.send = async (options) => { f.events.push('send'); f.sent.push(options); return f.replacement; };
-  const handler = createXLinkHandler(CHANNEL_ID, f.log, async () => new AttachmentBuilder(Buffer.from('abc')));
+  const handler = createLinkRepostHandler(CHANNEL_ID, f.log, async () => new AttachmentBuilder(Buffer.from('abc')));
   await handler(f.source as unknown as Message);
   assert.deepEqual(f.events, ['send']);
 });
@@ -644,7 +648,7 @@ test('disabled X or translation never requests a translation', async () => {
   for (const platforms of [undefined, ['instagram'] as const]) {
     const f = fixture();
     f.source.content = 'https://x.com/u/status/123?s=20 https://instagram.com/p/abc/?igsh=1';
-    const handler = createXLinkHandler(CHANNEL_ID, f.log, undefined, {
+    const handler = createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
       platforms,
       ...(platforms ? { translateTweet: async () => { assert.fail('disabled X lookup'); } } : {}),
     });
@@ -703,6 +707,42 @@ test('repeated status IDs share one translation lookup and caption', async () =>
   assert.equal(f.sent[0].content!.split('Translated from').length - 1, 1);
 });
 
+test('a quoted video keeps both translations and embeds the quoted media only', async () => {
+  const f = fixture(async () => ({ ...JAPANESE,
+    url: 'https://x.com/u/status/1',
+    quote: { ...JAPANESE, text: 'The quoted English translation.', language: 'Korean',
+      url: 'https://x.com/quoted/status/2', hasMedia: true, hasVideo: true },
+  }));
+  await f.run();
+  assert.equal(f.sent[0].embeds, undefined);
+  assert.match(f.sent[0].content!, /<https:\/\/fixupx.com\/user\/status\/1#part>/);
+  assert.match(f.sent[0].content!, /https:\/\/g.fixupx.com\/quoted\/status\/2/);
+  assert.match(f.sent[0].content!, /The quoted English translation/);
+  assert.match(f.sent[0].content!, /Translated from Korean/);
+});
+
+test('long translations span cards without exceeding Discord limits or losing text', async () => {
+  const text = 'A long translated paragraph. '.repeat(170);
+  const f = fixture(async () => ({ ...JAPANESE, text }));
+  await f.run();
+  const embeds = f.sent[0].embeds as { description?: string }[];
+  assert.ok(embeds.length > 1);
+  assert.ok(embeds.every((embed) => (embed.description?.length ?? 0) <= 4096));
+  assert.equal(embeds.map((embed) => embed.description ?? '').join(''), text);
+});
+
+test('translations beyond the combined embed limit retain the full text in an attachment', async () => {
+  const text = 'A long translated paragraph. '.repeat(400);
+  const f = fixture(async () => ({ ...JAPANESE, text }));
+  await f.run();
+  assert.ok(f.sent[0].content!.length <= 2000);
+  const file = (f.sent[0].files as AttachmentBuilder[])[0];
+  assert.equal(file.name, 'translation.txt');
+  assert.ok(Buffer.isBuffer(file.attachment));
+  assert.ok((file.attachment as Buffer).toString('utf8').includes(text));
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
+});
+
 test('an existing fixer for the same status remains unchanged', async () => {
   const f = fixture(async () => JAPANESE);
   f.source.content = 'https://x.com/u/status/123 https://fixupx.com/u/status/123';
@@ -722,11 +762,45 @@ test('captions follow tweet order when lookups finish in reverse order', async (
   assert.ok(f.sent[0].content!.indexOf('First tweet.') < f.sent[0].content!.indexOf('Second tweet.'));
 });
 
-test('long video translations fall back without truncating the original or translated text', async () => {
+test('long video translations keep the playable gallery and attach the full text', async () => {
   const f = fixture(async () => ({ ...JAPANESE, text: 'a'.repeat(2000), hasMedia: true, hasVideo: true }));
   await f.run();
-  assert.equal(f.sent[0].content, formatXLinkRepost(rewriteSocialLinks(f.source.content), f.source.author.id));
+  assert.match(f.sent[0].content!, /https:\/\/g.fixupx.com\/user\/status\/1#part/);
+  assert.match(f.sent[0].content!, /Full English translation attached/);
   assert.equal(f.sent[0].embeds, undefined);
+  assert.equal((f.sent[0].files as AttachmentBuilder[])[0].name, 'translation.txt');
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
+});
+
+test('keeps the original when source context and every quoted video cannot fit together', async () => {
+  const f = fixture(async () => ({ ...JAPANESE, hasMedia: true, hasVideo: true,
+    quote: { ...JAPANESE, url: 'https://x.com/quoted/status/2', hasMedia: true, hasVideo: true },
+  }));
+  const original = 'a'.repeat(1900) + ' https://x.com/user/status/1';
+  f.source.content = original;
+  await f.run();
+  assert.deepEqual(f.events, []);
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.source.content, original);
+});
+
+test('source attachments and a generated translation share the copy byte limit', async () => {
+  const f = fixture();
+  f.source.attachments.set('file-1', makeAttachment({ size: 25 * 1024 * 1024 - 32 }));
+  const handler = createLinkRepostHandler(CHANNEL_ID, f.log, async () => {
+    f.events.push('download');
+    throw new Error('The combined byte budget must be checked before downloading.');
+  }, { translateTweet: async () => ({ ...JAPANESE, text: 'a'.repeat(7000) }) });
+  await handler(f.source as unknown as Message);
+  assert.deepEqual(f.events, []);
+  assert.equal(f.sent.length, 0);
+});
+
+test('a missing attachment permission preserves the original long tweet', async () => {
+  const f = fixture(async () => ({ ...JAPANESE, text: 'a'.repeat(7000) }));
+  f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.AttachFiles);
+  await f.run();
+  assert.deepEqual(f.events, []);
 });
 
 test('edits made during translation keep the original and discard the stale repost', async () => {

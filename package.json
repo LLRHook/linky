@@ -1,7 +1,7 @@
 {
-  "name": "wanna-bet",
+  "name": "linky",
   "version": "1.0.0",
-  "description": "A Discord gambling economy bot — per-guild virtual currency, two-sided bet pools with escrow, an elected admin system, and a full slash command suite.",
+  "description": "Linky fixes Discord social link previews and translates non-English tweets.",
   "main": "dist/index.js",
   "author": "Victor Ivanov <victor.n.ivanov@gmail.com>",
   "license": "MIT",
@@ -18,29 +18,23 @@
     "discord-bot",
     "discord-js",
     "typescript",
-    "bot",
-    "gambling",
-    "betting",
-    "economy",
-    "sqlite",
-    "better-sqlite3"
+    "link-fixer",
+    "embeds",
+    "translation"
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "test": "tsc --project tsconfig.test.json && tsx --test tests/*.test.ts",
     "start": "node dist/index.js",
-    "register-commands": "tsx src/commands/register.ts",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "register-commands": "tsx src/commands/register.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^12.8.0",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.7",
     "pino": "^9.5.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.7",
     "pino-pretty": "^13.0.0",
     "tsx": "^4.19.2",

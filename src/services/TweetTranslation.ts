@@ -1,6 +1,8 @@
 export interface TweetTranslation {
   text: string;
   language: string;
+  url?: string;
+  quote?: TweetTranslation;
   author: { name: string; url: string; icon_url?: string };
   photos: string[];
   hasMedia: boolean;
@@ -59,6 +61,67 @@ function formatTranslation(text: string): string {
   return result + escapeText(text.slice(cursor));
 }
 
+/** Keep media links tied to a source status, never an arbitrary fixer authority. */
+function statusUrl(status: Record<string, unknown>, fallbackId?: string): string | undefined {
+  const href = httpsUrl(status.url);
+  if (href) {
+    const url = new URL(href);
+    if (['x.com', 'twitter.com'].includes(url.hostname) && !url.port &&
+        /^\/(?:\w+\/status|i\/web\/status)\/\d{1,20}\/?$/.test(url.pathname)) {
+      return `https://x.com${url.pathname.replace(/\/$/, '')}`;
+    }
+  }
+  const id = typeof status.id === 'string' ? status.id : fallbackId;
+  return id && /^\d{1,20}$/.test(id) ? `https://x.com/i/status/${id}` : undefined;
+}
+
+/** Parse at most three posts, preserving each quoted post's own text and media. */
+function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTranslation | null {
+  if (depth >= 3) return null;
+  const status = record(value);
+  const mediaPayload = record(status.media);
+  const language = languageCode(status.lang)?.split('-')[0];
+  if (status.type !== 'status' || !language || status.poll ||
+      mediaPayload.broadcast || mediaPayload.external) return null;
+
+  const translation = record(status.translation);
+  const prose = language === 'en' ? status.text : translation.text;
+  if (language !== 'en' && (
+    languageCode(translation.source_lang)?.split('-')[0] !== language ||
+    languageCode(translation.target_lang)?.split('-')[0] !== 'en'
+  )) return null;
+  if (typeof prose !== 'string' || !prose.trim() || prose.length > 100_000) return null;
+  const text = formatTranslation(prose.trim());
+  if (text.length > 100_000) return null;
+
+  const url = statusUrl(status, fallbackId);
+  const author = record(status.author);
+  const authorUrl = httpsUrl(author.url);
+  if (!url || typeof author.name !== 'string' || !author.name.trim() || !authorUrl) return null;
+  const quote = status.quote == null ? undefined : parseStatus(status.quote, undefined, depth + 1);
+  if (quote === null) return null;
+
+  const all = mediaPayload.all;
+  const media = (Array.isArray(all) ? all : []).map(record)
+    .filter((item) => httpsUrl(item.url) && ['photo', 'video', 'gif'].includes(String(item.type)));
+  const photos = [...new Set(media.filter((item) => item.type === 'photo')
+    .map((item) => httpsUrl(item.url)!))].slice(0, 4);
+  const icon = httpsUrl(author.avatar_url);
+  return {
+    text, url,
+    language: languageNames.of(language) ?? language,
+    author: {
+      name: author.name.trim().slice(0, 256),
+      url: authorUrl,
+      ...(icon ? { icon_url: icon } : {}),
+    },
+    photos,
+    hasMedia: media.length > 0,
+    hasVideo: media.some((item) => item.type === 'video' || item.type === 'gif'),
+    ...(quote ? { quote } : {}),
+  };
+}
+
 /** Fetch only usable English translations; any upstream failure leaves reposting available. */
 export async function fetchTweetTranslation(
   statusId: string,
@@ -71,41 +134,11 @@ export async function fetchTweetTranslation(
     });
     if (!response.ok) return null;
     const json = record(await response.json());
-    const status = record(json.status);
-    const mediaPayload = record(status.media);
-    const translation = record(status.translation);
-    const language = languageCode(status.lang)?.split('-')[0];
-    if (json.code !== 200 || status.type !== 'status' || !language || language === 'en' ||
-        languageCode(translation.source_lang)?.split('-')[0] !== language ||
-        languageCode(translation.target_lang)?.split('-')[0] !== 'en' ||
-        typeof translation.text !== 'string' || !translation.text.trim()) return null;
-    // Keep the native preview when a simple translated card would discard its context.
-    if (status.quote || status.poll || mediaPayload.broadcast || mediaPayload.external) return null;
-
-    const author = record(status.author);
-    const authorUrl = httpsUrl(author.url);
-    if (typeof author.name !== 'string' || !author.name.trim() || !authorUrl) return null;
-    const text = formatTranslation(translation.text.trim());
-    if (text.length > 4_096) return null;
-
-    const all = mediaPayload.all;
-    const media = (Array.isArray(all) ? all : []).map(record)
-      .filter((item) => httpsUrl(item.url) && ['photo', 'video', 'gif'].includes(String(item.type)));
-    const photos = [...new Set(media.filter((item) => item.type === 'photo')
-      .map((item) => httpsUrl(item.url)!))].slice(0, 4);
-    const icon = httpsUrl(author.avatar_url);
-    return {
-      text,
-      language: languageNames.of(language) ?? language,
-      author: {
-        name: author.name.trim().slice(0, 256),
-        url: authorUrl,
-        ...(icon ? { icon_url: icon } : {}),
-      },
-      photos,
-      hasMedia: media.length > 0,
-      hasVideo: media.some((item) => item.type === 'video' || item.type === 'gif'),
-    };
+    const result = json.code === 200 ? parseStatus(json.status, statusId) : null;
+    for (let post = result; post; post = post.quote ?? null) {
+      if (post.language !== 'English') return result;
+    }
+    return null;
   } catch {
     return null;
   }

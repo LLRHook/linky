@@ -1,37 +1,19 @@
-# Contributing
+# Contributing to Linky
 
-Patches and bug reports welcome.
+Use Node.js 20+ and `npm ci`. Tests need no Discord token. For a local bot, copy `.env.example` to `.env`, configure a test channel as described in the [README](README.md), then run `npm run register-commands` and `npm run dev`.
 
-## Local setup
+Before opening a PR, run:
 
 ```bash
-git clone https://github.com/llrhook/wanna-bet.git
-cd wanna-bet
-npm ci
-cp .env.example .env   # add your DISCORD_TOKEN
-npm run db:migrate
-npm run register-commands
-npm run dev            # tsx watch — auto-reloads on save
+npm test
+npm run build
+bash tests/deploy.test.sh
 ```
 
-Use native Node.js for local development. Docker Desktop on macOS has caused gateway latency and interaction timeouts in this project; production uses Docker on Linux.
+Keep the message handler focused on copying safely. Test observable behavior: channel scope, exact URL matching, attribution, attachment integrity, source edits, permissions and provider failures. Use synthetic or non-sensitive fixtures for translation regressions, including quoted media and long text. Avoid network calls or bot login in unit tests. Never commit tokens, `.env`, private chat exports or legacy database files.
 
-## The one rule
+For rendering changes, test in a configured Discord test channel. Check X, Instagram and TikTok (including a real `vm.tiktok.com` share link), profile and lookalike URLs, an attachment, replies and missing Manage Messages permission. With translation enabled, inspect text/photo cards, playable videos, quoted posts and long text; confirm English replaces the original and the language label stays small. Offline tests cannot prove live preview rendering or channel permissions.
 
-**`BalanceService.transfer()` is the only function that may UPDATE `players.balance` or `bank.balance`.** Every grant, payout, fee, escrow, and refund goes through it. If you're writing `UPDATE players SET balance` anywhere else, stop.
+The bot must remain silent when joining a server. `/help` is private. Preserve original messages whenever copying cannot be verified, disable all mention notifications, and do not access the legacy database from runtime code.
 
-## Before opening a PR
-
-- `npm run build` passes cleanly under strict TypeScript
-- `npm test` passes (strict typecheck, message replacement, bet lifecycle and command tests; no token needed)
-- `npm run db:migrate` succeeds against a fresh database
-- If you touched a command, you tested it in a real Discord server
-- No `.env` or token in the diff
-
-Add characterization tests before refactoring untested behavior. Bet tests use in-memory SQLite; command tests isolate the existing bot/database entry points to avoid login and persistent writes. Keep payout rounding, transaction boundaries, command responses and audit ordering intact.
-
-For repost changes, follow the [README setup](README.md). In a Discord test channel, check a plain link from each rewritten platform (X, Instagram, TikTok, including a `vm.tiktok.com` share link and a profile URL that must stay untouched), an attached file and a lookalike domain; verify attribution, native previews, preserved attachments and source deletion. Temporarily remove Manage Messages and confirm new matching messages stay untouched. Offline tests cover formatting, scope, copy failures, mentions and source edits, including Discord's automatic link-warning metadata. They cannot prove live permissions or preview rendering. With `TRANSLATE_TWEETS=true`, also check a non-English tweet, confirm the `/en` suffix, and inspect its translation.
-
-## Reporting bugs
-
-Open an issue with: what you ran, what happened, what you expected, the bot logs, and the Discord error code if any. For security issues, email me privately at `victor.n.ivanov@gmail.com` instead of opening a public issue.
+For bugs, include expected and actual behavior, a reproducible public link where possible, sanitized logs and any Discord error code. Report security issues privately to `victor.n.ivanov@gmail.com`.

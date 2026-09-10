@@ -31,14 +31,8 @@ jobs:
       - name: TypeScript build (strict)
         run: npm run build
 
-      - name: Test message replacement
+      - name: Test link fixing and bot startup
         run: npm test
 
       - name: Test deployment safeguards
         run: bash tests/deploy.test.sh
-
-      - name: Verify migration applies cleanly
-        run: |
-          mkdir -p data
-          npm run db:migrate
-          test -f data/wanna-bet.db

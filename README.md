@@ -1,115 +1,81 @@
-# Wanna Bet Bot
+# Linky
 
-[![CI](https://github.com/llrhook/wanna-bet/actions/workflows/ci.yml/badge.svg)](https://github.com/llrhook/wanna-bet/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<img src="assets/linky-avatar.png" alt="Linky's smiling chain-link avatar" width="128">
 
-A Discord bot with per-server virtual balances, two-sided bet pools, elected admins, and optional embed-fixing reposts for X, Instagram and TikTok links. Built with TypeScript, discord.js v14, and SQLite.
+[![CI](https://github.com/LLRHook/wanna-bet/actions/workflows/ci.yml/badge.svg)](https://github.com/LLRHook/wanna-bet/actions/workflows/ci.yml)
 
-**[Add Wanna Bet to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147609600&integration_type=0&scope=bot+applications.commands)**. The bot joins silently; run `/help` when you need it. The public bot's operator must configure channels for social link replacement.
+Linky fixes X, Instagram and TikTok previews in selected Discord channels. It reposts links with credit to the person who shared them, preserves their attachments, and can translate tweets into English. It joins servers silently. `/help` replies privately.
 
-## Self-hosting
+**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147609600&integration_type=0&scope=bot+applications.commands)**. The operator must add your channel IDs to enable reposting.
 
-Requires Node.js 20+ and npm, or Docker Compose on a Linux host.
+## What it does
 
-1. Create an application in the [Discord developer portal](https://discord.com/developers/applications). Enable **Server Members Intent** on its Bot page and copy the token.
-2. Generate an invite with scopes `bot` and `applications.commands`. Grant **View Channel**, **Send Messages**, **Embed Links**, and **Read Message History**.
-3. Add the bot to your server, then configure and run your copy:
+| Platform | Preview service | Supported links |
+| --- | --- | --- |
+| X | `fixupx.com` | HTTPS `x.com` links; status links can be translated |
+| Instagram | `kkclip.com` | `/p/`, `/reel/`, `/reels/`, `/tv/`; apex, `www.`, `m.`, `mobile.` |
+| TikTok | `tnktok.com` | `/@user/video/`, `/@user/photo/`, `/t/`; apex, `www.`, `m.`; share codes on `vm.` and `vt.` |
+
+Share/tracking query strings are removed. Paths, fragments and surrounding text are retained, and accepted subdomains are dropped. Instagram/TikTok profiles and unsupported paths stay untouched. HTTP, other subdomains, lookalike hosts, explicit ports and nested URLs inside other URLs are excluded. Existing messages, edits, bots and webhooks do not trigger reposting.
+
+With `TRANSLATE_TWEETS=true`, text/photo tweets use English cards with a small source-language footer. Videos keep a playable media preview and English caption. Quoted posts retain their own text, attribution and media. Long text spans cards where possible; content beyond Discord's limits includes the full translation as a text attachment. Original-language tweet text is replaced when a translation is available.
+
+Translations come from FxEmbed, with one request per distinct tweet and a five-second timeout. English text stays as written. Missing translations, malformed quotes, polls, broadcasts, external media and quote chains deeper than three posts fall back to the native preview. Suppressed previews, code and spoiler links skip translation. Translation quality and preview-service availability depend on those providers.
+
+## Configure and run
+
+Requires Node.js 20+ and npm, or Docker Compose on Linux. Create an application in the [Discord developer portal](https://discord.com/developers/applications), enable **Message Content Intent**, and put its bot token in `.env`.
 
 ```bash
 git clone https://github.com/LLRHook/wanna-bet.git
 cd wanna-bet
 npm ci
-cp .env.example .env       # set DISCORD_TOKEN
-npm run db:migrate
-npm run register-commands  # register slash commands before first use
+cp .env.example .env
+# Set DISCORD_TOKEN and LINK_CHANNEL_IDS in .env.
+npm run register-commands
 npm run dev
 ```
 
-Use native Node.js for local development, especially on macOS where Docker Desktop gateway latency has caused interaction timeouts in this project.
+| Setting | Meaning |
+| --- | --- |
+| `DISCORD_TOKEN` | Required bot token; keep it private |
+| `LINK_CHANNEL_IDS` | Comma-separated exact channel IDs; empty disables reposting |
+| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok`; empty enables all three |
+| `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
+| `LOG_LEVEL` | Optional logging level; default `info` |
 
-For a Linux VPS, clone the repository and set `.env`, then run:
+Use Developer Mode > Copy Channel ID in Discord. Channels can span servers; threads need their own IDs, and DMs are excluded. Invalid IDs, empty list entries and unknown platform names stop startup. For existing installations, when `LINK_CHANNEL_IDS` is absent, `FIXUPX_CHANNEL_IDS` and `FIXUPX_CHANNEL_ID` are combined and deduplicated. Setting `LINK_CHANNEL_IDS` explicitly overrides both legacy settings. Restart after configuration changes.
+
+In each configured channel, grant **View Channel**, **Read Message History**, **Manage Messages**, **Embed Links**, and **Send Messages** (or **Send Messages in Threads**). **Attach Files** is needed to copy files or attach long translations. The invite above requests these permissions; channel overrides still apply. Server Members Intent is unnecessary.
+
+For production:
 
 ```bash
 docker compose up -d --build
-docker compose run --rm wannabet node dist/commands/register.js
+docker compose exec wannabet node dist/commands/register.js
+docker compose logs -f
 ```
 
-`docker compose logs -f` shows logs. `docker compose down` stops the bot while retaining its database volume. Keep that volume and the `backups/` directory when updating; never commit `.env` or database files.
+Registration replaces the global command list with `/help`, removing the retired gambling commands. Linky has no gambling features or runtime database. The repository URL, Compose service `wannabet`, deployment identifiers and existing data-volume name are retained for upgrade compatibility. Legacy data remains mounted read-only for rollback; existing backups are retained.
 
-### Automatic deployment
+## Repost safeguards
 
-The public bot updates after CI passes for a push to `main`. The [Deploy workflow](https://github.com/LLRHook/wanna-bet/actions/workflows/deploy.yml) sends that tested commit to the VPS. Deployments run one at a time, and the server accepts only the current `main` commit. A failed build leaves the running bot online. Before replacing it, the server backs up SQLite; if the new bot fails to connect to Discord, it restores the previous image. Database migrations require separate review because restoring an image does not reverse schema changes.
+Linky sends and checks the replacement, reads the source again, then deletes it only if unchanged. It retains reply links, suppressed embeds, and attachment names, descriptions and spoilers. Mention notifications are disabled. Plain leading context is quoted beneath **Shared by @author**; complex Markdown keeps its original structure.
 
-Operators need three repository secrets: `WANNA_BET_DEPLOY_HOST`, `WANNA_BET_SSH_KEY`, and `WANNA_BET_SSH_KNOWN_HOSTS`. Install `ops/ssh-deploy.sh` as `/usr/local/sbin/wanna-bet-deploy`, restrict a dedicated SSH key to that command, and pin the VPS host key. The wrapper accepts only a commit SHA and calls `ops/deploy.sh` with a clean environment. The deployment preserves the server's `.env`, including `TRANSLATE_TWEETS=true` when translations are enabled.
+Missing permissions, failed copies and size limits leave the source intact. Limits are 2,000 message characters including credit, 10 files and 25 MiB total files. English cards obey Discord's per-card and combined limits. Polls, stickers, components, forwards, voice messages, ephemeral attachments, pinned messages, thread starters and crossposts are skipped. Discord sends and deletes are separate requests: a failed final deletion may leave both messages, and an edit after the final check can still race deletion.
 
-Check the workflow run for deployment results. To retry, rerun CI for the current `main` commit. Disable the Deploy workflow in GitHub Actions to pause automatic updates.
+## Updates and development
 
-## Social link replacement
+The public bot deploys automatically after CI passes for a push to `main`. The [Deploy workflow](https://github.com/LLRHook/wanna-bet/actions/workflows/deploy.yml) sends the tested commit to the VPS. Deployments are serialized and accept only current `main`. Builds run before replacing the bot; failed startup restores the previous image and deployed Compose configuration. The transition from a writable legacy database requires a final backup; later deployments leave read-only legacy data untouched. The server's `.env` is preserved.
 
-Enable **Message Content Intent**, then set `FIXUPX_CHANNEL_IDS` to comma-separated channel IDs in `.env` and rebuild/restart. Use Discord's Developer Mode → **Copy Channel ID**. Channels can span servers; only exact IDs are included. Threads need their own IDs, and DMs are excluded.
-
-| Permission | Required in each configured channel |
-| --- | --- |
-| View Channel, Read Message History, Embed Links, Manage Messages | Always |
-| Send Messages | Text channels |
-| Send Messages in Threads | Threads |
-| Attach Files | Messages with attachments; otherwise they stay untouched |
-
-Check role and channel overrides. The public invite above omits reposting permissions; an admin can [reauthorize the public bot](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147609600&integration_type=0&scope=bot+applications.commands). Permission updates preserve balances and bets when the existing SQLite database is retained. Apps requiring privileged-intent approval must obtain it before enabling this feature.
-
-The legacy `FIXUPX_CHANNEL_ID` is combined with the list and deduplicated. Invalid IDs or empty list entries, including trailing commas, stop startup. Clear both settings and restart to disable replacement and its extra gateway intents. Slash commands need no re-registration.
-
-For new human messages, links on these hosts are swapped for an embed fixer, with paths, fragments and surrounding text preserved; the query string (share/tracking params like `?s=..&t=..` or `?igsh=..`) is dropped.
-
-| Platform | Rewritten to | Accepted subdomains | Paths rewritten |
-| --- | --- | --- | --- |
-| `x.com` | `fixupx.com` | none | all |
-| `instagram.com` | `kkclip.com` | `www.`, `m.`, `mobile.` | `/p/`, `/reel/`, `/reels/`, `/tv/` |
-| `tiktok.com` | `tnktok.com` | `www.`, `m.`, `vm.`, `vt.` | `/@user/video/`, `/@user/photo/`, `/t/`, and share codes on `vm.`/`vt.` |
-
-Accepted subdomains are dropped when rewriting to the fixer. Profile and index pages, malformed post paths, Instagram `/share/` links, and TikTok `/v/` links stay untouched because the fixers do not reliably resolve them. Host matching ignores case; HTTP, unlisted subdomains, credentials, explicit ports, nested URLs inside other URLs, and lookalike hosts stay unchanged. Existing messages, edits, bots and webhooks do not trigger reposting.
-
-Set `REWRITE_PLATFORMS` to a comma-separated subset of `x,instagram,tiktok` to skip a platform whose fixer is down; leave it empty for all three. An unrecognized name stops startup.
-
-Reposts use quoted **Shared by @author** credit and plain leading context, followed by the URL and its full native preview. One separator space may become a newline. Complex Markdown or whitespace keeps the full rewritten body beneath the credit. Reply links, suppressed embeds, and attachment names, descriptions and spoilers are retained. All mention notifications are disabled.
-
-The bot sends and checks the copy, reads the source again, then deletes it if unchanged. Failed permissions, copies or size checks keep the original; edits during copying discard the stale repost. Limits are 2,000 characters including credit, 10 attachments, and 25 MiB total. Polls, stickers, components, forwards, voice messages, ephemeral attachments, pinned messages, thread starters and crossposts are skipped.
-
-Set `TRANSLATE_TWEETS=true` for English-only tweet previews. Text and photo tweets use a compact card with a small “Translated from Japanese” footer (or the detected language). Videos retain their playable gallery with one English caption and a small language label; mixed-link messages keep their native previews. Original-language text is not repeated. The bot requests each distinct tweet once per message from `api.fxtwitter.com`, with a five-second timeout. Quotes, polls, broadcasts and external media keep their native preview. English, unavailable translations, and captions that cannot fit Discord's limits repost normally without truncation. Existing fixer URLs, path modifiers, suppressed previews, code and spoiler links skip translation.
-
-Discord sends and deletes are separate requests: failed final reads/deletions can leave both messages, and edits after the final check can still race deletion. Check logs by source message ID. See Discord's [intent](https://docs.discord.com/developers/events/gateway) and [permission](https://docs.discord.com/developers/topics/permissions) references.
-
-## Commands
-
-| Command | Purpose |
-| --- | --- |
-| `/register`, `/unregister` | Join with $100; leave with your balance preserved. |
-| `/balance`, `/daily`, `/bank` | Wallet, $5 daily claim at UTC midnight, bank balance/cap. |
-| `/leaderboard`, `/stats [@user]`, `/history [@user]` | Rankings, performance, paginated bet history. |
-| `/wanna-bet` | Create a pool with two labels, your side and wager. |
-| `/accept <bet-id>` | Join either side of an open bet. |
-| `/decline <bet-id>` | Decline a direct invite; refund stake and fee. |
-| `/resolve <bet-id> <A\|B\|neither>` | Propose an outcome; participants confirm or dispute through DM buttons. |
-| `/bets active` | List open bets. |
-| `/vote-admin start\|nominate\|cast\|status` | One-hour election, ≥50% quorum, plurality wins, random ties. |
-| `/admin grant\|seize\|resolve\|cancel\|ban\|unban` | Elected-admin controls; no money printing or rate changes. |
-| `/setup role` | Set the role for lobby bets; requires Manage Guild. |
-| `/help` | Show commands and getting-started steps. |
-
-## Economy and code
-
-Amounts are integer cents. The fee is `max(100, floor(wager * 0.01))`, deducted from the wager: a $5 wager sends $1 to the bank and $4 to the pool. Winners recover their stake plus `floor(stake / winner_pool * loser_pool)`; the largest stake receives the rounding remainder. "Neither" returns stakes and retains fees. Registration and daily claims mint $100 and $5 respectively; the bank grows only from fees, with no automatic seeding.
-
-**Only `BalanceService.transfer()` may update wallet or bank balances**, inside `BEGIN IMMEDIATE`. `BetService` owns the lifecycle and payouts, `PlayerService` registration/activity, `ElectionService` elections, and `AuditService` the audit log. `XLinkService` handles reposts. Commands use these services and the shared embeds. SQLite uses one WAL connection.
-
-## Development
+Operators configure `WANNA_BET_DEPLOY_HOST`, `WANNA_BET_SSH_KEY` and `WANNA_BET_SSH_KNOWN_HOSTS`, install `ops/ssh-deploy.sh` as `/usr/local/sbin/wanna-bet-deploy`, restrict the SSH key to that command, and pin the host key. After the first manual deployment connects successfully, record its checked-out commit with `git rev-parse HEAD > .git/wanna-bet-deployed-revision`; subsequent deployments maintain this rollback marker. To retry, rerun CI for current `main`; to pause updates, disable Deploy in GitHub Actions.
 
 ```bash
-npm test           # strict typecheck + isolated regression tests; no Discord token needed
-npm run build      # compile production TypeScript
-npm run db:migrate # apply the schema to data/wanna-bet.db
+npm test             # strict typecheck and isolated tests; no token needed
+npm run build        # production TypeScript
+bash tests/deploy.test.sh
 ```
 
-CI runs the build, tests and fresh migration on Node 20 and 22. See [CONTRIBUTING.md](CONTRIBUTING.md) for the balance invariant, local setup and Discord smoke checks.
+`bot.ts` wires Discord events and private help. `SocialLinkService` owns URL rewriting and safe reposts. `TweetTranslation` validates provider responses; `TweetPresentation` fits English text and media into Discord messages. CI tests Node 20 and 22 plus deployment failure/rollback scenarios. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-MIT license. See [LICENSE](LICENSE).
+[MIT license](LICENSE).

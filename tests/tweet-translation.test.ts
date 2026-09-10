@@ -25,6 +25,7 @@ test('fetches English-only text and derives the source language without source_l
   });
   assert.deepEqual(result, {
     text: 'An English announcement.', language: 'Japanese',
+    url: 'https://x.com/i/status/1802857036474167769',
     author: { name: 'Nintendo', url: 'https://x.com/Nintendo', icon_url: 'https://pbs.twimg.com/avatar.jpg' },
     photos: [], hasMedia: false, hasVideo: false,
   });
@@ -133,7 +134,7 @@ test('caps photos at four and treats GIF media as playable media', async () => {
   assert.equal(result?.hasVideo, true);
 });
 
-test('keeps native previews for quotes, polls, broadcasts, and externally hosted media', async () => {
+test('keeps native previews for unsupported quotes, polls, broadcasts, and external media', async () => {
   for (const status of [
     { quote: { type: 'status', text: 'Quoted context' } },
     { quote: { type: 'tombstone', reason: 'deleted' } },
@@ -158,14 +159,136 @@ test('requires a valid author and excludes unsafe optional author icons', async 
   assert.equal(result?.author.icon_url, undefined);
 });
 
-test('returns null instead of truncating translations that exceed the embed limit after formatting', async () => {
-  for (const text of ['a'.repeat(4_097), '*'.repeat(2_049)]) {
+test('returns complete long translations so the renderer can split them safely', async () => {
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    translation: { text: 'a'.repeat(4_583), source_lang: 'ja', target_lang: 'en' },
+  })));
+  assert.equal(result?.text, 'a'.repeat(4_583));
+  const escaped = await fetchTweetTranslation('20', jsonFetch(payload({
+    translation: { text: '*'.repeat(2_049), source_lang: 'ja', target_lang: 'en' },
+  })));
+  assert.equal(escaped?.text, '\\*'.repeat(2_049));
+});
+
+test('translates a Japanese root and Korean quote while retaining the quoted video', async () => {
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    url: 'https://x.com/root/status/20',
+    quote: payload({
+      id: '21', url: 'https://x.com/quoted/status/21', lang: 'ko',
+      author: { name: 'Quoted author', url: 'https://x.com/quoted' },
+      translation: { text: 'The quoted video.', source_lang: 'ko', target_lang: 'en' },
+      media: { all: [{ type: 'video', url: 'https://video.twimg.com/quoted.mp4' }] },
+    }).status,
+  })));
+  assert.equal(result?.text, 'An English announcement.');
+  assert.equal(result?.language, 'Japanese');
+  assert.equal(result?.url, 'https://x.com/root/status/20');
+  assert.equal(result?.hasMedia, false);
+  assert.equal(result?.hasVideo, false);
+  assert.deepEqual(result?.quote, {
+    text: 'The quoted video.', language: 'Korean', url: 'https://x.com/quoted/status/21',
+    author: { name: 'Quoted author', url: 'https://x.com/quoted' },
+    photos: [], hasMedia: true, hasVideo: true,
+  });
+});
+
+test('retains root video and separately translated quoted text', async () => {
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    lang: 'ko', translation: { text: 'Root video.', source_lang: 'ko', target_lang: 'en' },
+    media: { all: [{ type: 'video', url: 'https://video.twimg.com/root.mp4' }] },
+    quote: payload({
+      id: '21', lang: 'ko',
+      translation: { text: 'Quoted context.', source_lang: 'ko', target_lang: 'en' },
+    }).status,
+  })));
+  assert.equal(result?.text, 'Root video.');
+  assert.equal(result?.hasVideo, true);
+  assert.equal(result?.quote?.text, 'Quoted context.');
+  assert.equal(result?.quote?.hasMedia, false);
+  assert.equal(result?.quote?.hasVideo, false);
+  assert.equal(result?.quote?.url, 'https://x.com/i/status/21');
+});
+
+test('preserves an English quote without labelling its original text as translated', async () => {
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    quote: payload({
+      id: '21', lang: 'en-GB', text: 'Original English context.', translation: null,
+      author: { name: 'English author', url: 'https://x.com/english' },
+      media: { all: [{ type: 'photo', url: 'https://pbs.twimg.com/quoted.jpg' }] },
+    }).status,
+  })));
+  assert.equal(result?.quote?.text, 'Original English context.');
+  assert.equal(result?.quote?.language, 'English');
+  assert.equal(result?.quote?.author.name, 'English author');
+  assert.deepEqual(result?.quote?.photos, ['https://pbs.twimg.com/quoted.jpg']);
+  assert.equal(result?.hasMedia, false);
+  assert.equal(result?.quote?.hasMedia, true);
+});
+
+test('translates a foreign quote under an English root and skips an entirely English chain', async () => {
+  const english = { lang: 'en', text: 'An English comment.', translation: null };
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    ...english, quote: payload({ id: '21' }).status,
+  })));
+  assert.equal(result?.text, 'An English comment.');
+  assert.equal(result?.language, 'English');
+  assert.equal(result?.quote?.language, 'Japanese');
+  assert.equal(result?.quote?.text, 'An English announcement.');
+  assert.equal(await fetchTweetTranslation('20', jsonFetch(payload({
+    ...english, quote: payload({ id: '21', ...english }).status,
+  }))), null);
+});
+
+test('preserves two nested quotes and rejects deeper chains without dropping their context', async () => {
+  const leaf = payload({ id: '22' }).status;
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    quote: payload({ id: '21', quote: leaf }).status,
+  })));
+  assert.equal(result?.quote?.quote?.url, 'https://x.com/i/status/22');
+  assert.equal(await fetchTweetTranslation('20', jsonFetch(payload({
+    quote: payload({ id: '21', quote: payload({ id: '22', quote: payload({ id: '23' }).status }).status }).status,
+  }))), null);
+});
+
+test('a malformed nested quote keeps the complete native preview', async () => {
+  for (const quote of [
+    false, [], {}, { type: 'tombstone' }, payload({ id: '21', translation: null }).status,
+    payload({ id: '21', translation: { text: 'Wrong target.', source_lang: 'ja', target_lang: 'ko' } }).status,
+    payload({ id: '21', poll: { choices: [] } }).status,
+    payload({ id: '21', media: { broadcast: { url: 'https://x.com/i/broadcasts/1' } } }).status,
+    payload({ id: '21', media: { external: { url: 'https://youtube.com/watch?v=1' } } }).status,
+  ]) assert.equal(await fetchTweetTranslation('20', jsonFetch(payload({ quote }))), null);
+});
+
+test('uses canonical X status URLs or numeric IDs and never an arbitrary quote authority', async () => {
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    url: 'https://twitter.com/root/status/20/?s=46#part',
+    quote: payload({ url: 'https://x.com/quoted/status/21?s=46' }).status,
+  })));
+  assert.equal(result?.url, 'https://x.com/root/status/20');
+  assert.equal(result?.quote?.url, 'https://x.com/quoted/status/21');
+  for (const url of [
+    'https://fixupx.com/u/status/21', 'https://x.com.evil/u/status/21',
+    'http://x.com/u/status/21', 'https://x.com:444/u/status/21',
+    'https://x.com/u/status/21/photo/1', 'https://user:pass@x.com/u/status/21',
+  ]) {
+    assert.equal(await fetchTweetTranslation('20', jsonFetch(payload({ quote: payload({ url }).status }))), null);
+    const fallback = await fetchTweetTranslation('20', jsonFetch(payload({ quote: payload({ id: '21', url }).status })));
+    assert.equal(fallback?.quote?.url, 'https://x.com/i/status/21');
+  }
+  for (const id of ['../21', '21?lang=ko', '2'.repeat(21), 21]) {
+    assert.equal(await fetchTweetTranslation('20', jsonFetch(payload({ quote: payload({ id }).status }))), null);
+  }
+});
+
+test('rejects excessively large translations without truncating accepted text', async () => {
+  const maximum = await fetchTweetTranslation('20', jsonFetch(payload({
+    translation: { text: 'a'.repeat(100_000), source_lang: 'ja', target_lang: 'en' },
+  })));
+  assert.equal(maximum?.text.length, 100_000);
+  for (const text of ['a'.repeat(100_001), '*'.repeat(50_001)]) {
     assert.equal(await fetchTweetTranslation('20', jsonFetch(payload({
       translation: { text, source_lang: 'ja', target_lang: 'en' },
     }))), null);
   }
-  const result = await fetchTweetTranslation('20', jsonFetch(payload({
-    translation: { text: 'a'.repeat(4_096), source_lang: 'ja', target_lang: 'en' },
-  })));
-  assert.equal(result?.text.length, 4_096);
 });
