@@ -17,6 +17,24 @@ const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
 // https://docs.discord.com/developers/resources/message#attachment-object
 const ATTACHMENT_IS_SPOILER = 1 << 3;
 
+/** Keep sentence punctuation and paired Markdown outside a URL's query string. */
+function urlWithoutSuffix(url: string, prefix: string): string {
+  const active = new Set<string>();
+  const unescaped = (text: string) => (text.match(/\\*$/)?.[0].length ?? 0) % 2 === 0;
+  for (const match of prefix.matchAll(/\*{1,3}|_{1,2}|~~|\|\|/g)) {
+    if (unescaped(prefix.slice(0, match.index))) {
+      if (!active.delete(match[0])) active.add(match[0]);
+    }
+  }
+  let link = url.replace(/[.,!?:;]+$/, '');
+  let marker: string | undefined;
+  while ((marker = link.match(/(\*{1,3}|_{1,2}|~~|\|\|)$/)?.[0]) &&
+    unescaped(link.slice(0, -marker.length)) && active.delete(marker)) {
+    link = link.slice(0, -marker.length).replace(/[.,!?:;]+$/, '');
+  }
+  return link;
+}
+
 export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok'] as const;
 export type RewritePlatform = typeof REWRITE_PLATFORMS[number];
 
@@ -95,7 +113,9 @@ export function rewriteSocialLinks(
     }
     // Consume other URLs too, including URLs nested inside their paths/queries.
     const url = content.slice(match.index, end);
-    rewritten += content.slice(cursor, match.index) + (rewriteUrl(url, enabled) ?? url);
+    const link = urlWithoutSuffix(url,
+      content.slice(content.lastIndexOf('\n', match.index - 1) + 1, match.index));
+    rewritten += content.slice(cursor, match.index) + (rewriteUrl(link, enabled) ?? link) + url.slice(link.length);
     cursor = end;
     schemes.lastIndex = end;
   }
@@ -103,15 +123,13 @@ export function rewriteSocialLinks(
 }
 
 function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string | undefined {
-  const sentenceEnd = /[.,!?:;}]+$/;
   for (const platform of PLATFORMS) {
     if (!enabled.has(platform.name)) continue;
-    // Trailing sentence punctuation is not part of the authority, but is kept in the output.
-    const host = platform.host.exec(url.replace(sentenceEnd, ''));
+    const host = platform.host.exec(url);
     if (!host) continue;
     // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
-    const rest = url.slice(host[0].length).replace(/\?[^#]*/, '');
-    if (platform.path && !platform.path.test(rest.split('#', 1)[0].replace(sentenceEnd, ''))) continue;
+    const rest = url.slice(host[0].length).replace(/^([^?#]*)\?[^#]*/, '$1');
+    if (platform.path && !platform.path.test(rest.split('#', 1)[0])) continue;
     return platform.fixer + rest;
   }
   return undefined;

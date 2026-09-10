@@ -102,6 +102,46 @@ test('strips the tracking query string, including any share params or nested URL
     '[a](https://fixupx.com/a)[b](https://fixupx.com/c)');
 });
 
+test('preserves question marks in fragments when stripping queries', () => {
+  for (const suffix of ['#part?detail', '?s=20#part?detail', '#part?one?two']) {
+    assert.equal(rewriteSocialLinks(`https://x.com/u/status/1${suffix}`),
+      `https://fixupx.com/u/status/1${suffix.slice(suffix.indexOf('#'))}`);
+  }
+});
+
+test('preserves surrounding punctuation after stripped share queries', () => {
+  for (const punctuation of ['.', ',', '!', '?', ':', ';', '...']) {
+    assert.equal(rewriteSocialLinks(`Read https://x.com/u/status/1?s=20${punctuation} Next.`),
+      `Read https://fixupx.com/u/status/1${punctuation} Next.`);
+  }
+  assert.equal(rewriteSocialLinks('(https://x.com/u/status/1?s=20).'),
+    '(https://fixupx.com/u/status/1).');
+  assert.equal(rewriteSocialLinks('https://x.com/u/status/1?data={value}'),
+    'https://fixupx.com/u/status/1');
+});
+
+test('preserves closing Markdown around links when stripping queries', () => {
+  for (const marker of ['*', '**', '***', '_', '__', '~~', '||']) {
+    for (const context of ['', 'Read ']) {
+      assert.equal(rewriteSocialLinks(`${marker}${context}https://x.com/u/status/1?s=20${marker}.`),
+        `${marker}${context}https://fixupx.com/u/status/1${marker}.`);
+    }
+  }
+  assert.equal(rewriteSocialLinks('__**Read https://x.com/u/status/1?s=20.**__'),
+    '__**Read https://fixupx.com/u/status/1.**__');
+});
+
+test('does not preserve query punctuation as Markdown without an unmatched opener', () => {
+  for (const prefix of ['', '**Earlier** ', '\\**Literal ', '**Earlier\n']) {
+    assert.equal(rewriteSocialLinks(`${prefix}https://x.com/u/status/1?t=abc**`),
+      `${prefix}https://fixupx.com/u/status/1`);
+  }
+  assert.equal(rewriteSocialLinks('https://x.com/u/status/1?t=abc_'),
+    'https://fixupx.com/u/status/1');
+  assert.equal(rewriteSocialLinks('**Read https://x.com/u/status/1?t=abc\\**'),
+    '**Read https://fixupx.com/u/status/1');
+});
+
 for (const url of [
   'https://x.com.evil/status/1', 'https://www.x.com/status/1',
   'https://x.com@evil.test/a', 'https://evil@x.com/a',
