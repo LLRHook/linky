@@ -131,7 +131,7 @@ test('preserves closing Markdown around links when stripping queries', () => {
 });
 
 test('does not preserve query punctuation as Markdown without an unmatched opener', () => {
-  for (const prefix of ['', '**Earlier** ', '\\**Literal ', '**Earlier\n']) {
+  for (const prefix of ['', '**Earlier** ', '\\**Literal ', '**Earlier\n\n']) {
     assert.equal(rewriteXLinks(`${prefix}https://x.com/u/status/1?t=abc**`),
       `${prefix}https://fixupx.com/u/status/1`);
   }
@@ -509,4 +509,20 @@ test('removes a stale repost if the original was deleted during upload', async (
   };
   await f.run();
   assert.deepEqual(f.events, ['send', 'original gone', 'delete replacement']);
+});
+
+test('literal markers in earlier words or URLs do not leak tracking values into paths', () => {
+  for (const prefix of ['my_name shared ', 'https://instagram.com/p/abc_def/ ', 'https://other.test/?key=* ']) {
+    for (const marker of ['_', '*']) {
+      assert.equal(rewriteXLinks(prefix + 'https://x.com/u/status/123?t=abc' + marker),
+        prefix + 'https://fixupx.com/u/status/123');
+    }
+  }
+});
+
+test('preserves multiline and combined closing Markdown around stripped queries', () => {
+  for (const [prefix, suffix] of [['**First line\n', '**'], ['*Read **', '***'], ['**Read *', '***']]) {
+    assert.equal(rewriteXLinks(prefix + 'https://x.com/u/status/123?t=abc' + suffix),
+      prefix + 'https://fixupx.com/u/status/123' + suffix);
+  }
 });
