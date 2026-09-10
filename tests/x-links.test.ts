@@ -121,6 +121,12 @@ for (const url of [
   'https://instagram.com/username', 'https://www.instagram.com/', 'https://instagram.com',
   'https://tiktok.com/@username', 'https://www.tiktok.com/', 'https://tiktok.com',
   'https://tiktok.com/@user/video/notanumber',
+  'https://tiktok.com/@user/video/123oops',
+  'https://tiktok.com/@user/video/123/extra',
+  'https://tiktok.com/v/7412345678901234567',
+  'https://tiktok.com/v/7412345678901234567.html',
+  'https://instagram.com/p/code/extra',
+  'https://instagram.com/p/code%2Fextra',
 ]) {
   test(`leaves nonmatching URL untouched: ${url}`, () => {
     assert.equal(rewriteSocialLinks(url), url);
@@ -140,9 +146,10 @@ for (const [original, expected] of [
   ['https://www.tiktok.com/@user/photo/7412345678901234567',
     'https://tnktok.com/@user/photo/7412345678901234567'],
   ['https://m.tiktok.com/t/ZGdFhBqWK', 'https://tnktok.com/t/ZGdFhBqWK'],
-  ['https://tiktok.com/v/7412345678901234567', 'https://tnktok.com/v/7412345678901234567'],
   ['https://vm.tiktok.com/ZGdFhBqWK/', 'https://tnktok.com/ZGdFhBqWK/'],
   ['https://vt.tiktok.com/ZGdFhBqWK', 'https://tnktok.com/ZGdFhBqWK'],
+  ['https://vm.tiktok.com/ZGdFhBqWK/?share=1#part?detail', 'https://tnktok.com/ZGdFhBqWK/#part?detail'],
+  ['https://vt.tiktok.com/ZGdFhBqWK#part', 'https://tnktok.com/ZGdFhBqWK#part'],
   ['https://www.tiktok.com/@user/video/7412345678901234567?is_from_webapp=1&sender_device=pc',
     'https://tnktok.com/@user/video/7412345678901234567'],
 ] as const) {

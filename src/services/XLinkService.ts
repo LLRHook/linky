@@ -38,13 +38,13 @@ const PLATFORMS: readonly Platform[] = [
     name: 'instagram',
     host: /^https:\/\/(?:www\.|m\.|mobile\.)?instagram\.com(?=[/?#]|$)/i,
     fixer: 'https://kkclip.com',
-    path: /^\/(?:p|reels?|tv|share)\/[\w-]+/,
+    path: /^\/(?:(?:p|reels?|tv)\/[\w-]+|share\/(?:reel\/)?[\w-]+)\/?$/,
   },
   {
     name: 'tiktok',
     host: /^https:\/\/(?:www\.|m\.)?tiktok\.com(?=[/?#]|$)/i,
     fixer: 'https://tnktok.com',
-    path: /^\/(?:@[\w.-]+\/(?:video|photo)\/\d+|[tv]\/[\w-]+)/,
+    path: /^\/(?:@[\w.-]+\/(?:video|photo)\/\d+|t\/[\w-]+)\/?$/,
   },
   // Share links carry the code at the root, which must not be accepted on the apex host.
   {
@@ -111,7 +111,7 @@ function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string 
     if (!host) continue;
     // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
     const rest = url.slice(host[0].length).replace(/\?[^#]*/, '');
-    if (platform.path && !platform.path.test(rest.replace(sentenceEnd, ''))) continue;
+    if (platform.path && !platform.path.test(rest.split('#', 1)[0].replace(sentenceEnd, ''))) continue;
     return platform.fixer + rest;
   }
   return undefined;

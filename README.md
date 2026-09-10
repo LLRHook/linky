@@ -57,9 +57,9 @@ For new human messages, links on these hosts are swapped for an embed fixer, wit
 | --- | --- | --- | --- |
 | `x.com` | `fixupx.com` | none | all |
 | `instagram.com` | `kkclip.com` | `www.`, `m.`, `mobile.` | `/p/`, `/reel/`, `/reels/`, `/tv/`, `/share/` |
-| `tiktok.com` | `tnktok.com` | `www.`, `m.`, `vm.`, `vt.` | `/@user/video/`, `/@user/photo/`, `/t/`, `/v/`, and share codes on `vm.`/`vt.` |
+| `tiktok.com` | `tnktok.com` | `www.`, `m.`, `vm.`, `vt.` | `/@user/video/`, `/@user/photo/`, `/t/`, and share codes on `vm.`/`vt.` |
 
-The fixers are apex-only, so an accepted subdomain is dropped rather than carried over. Profile and index pages are left alone, since a fixer renders nothing useful for them. Host matching ignores case; HTTP, unlisted subdomains, credentials, explicit ports, nested URLs inside other URLs, and lookalike hosts stay unchanged. Existing messages, edits, bots and webhooks do not trigger reposting.
+Accepted subdomains are dropped when rewriting to the fixer. Profile and index pages, malformed post paths, and TikTok's unsupported `/v/` links stay untouched. Host matching ignores case; HTTP, unlisted subdomains, credentials, explicit ports, nested URLs inside other URLs, and lookalike hosts stay unchanged. Existing messages, edits, bots and webhooks do not trigger reposting.
 
 Set `REWRITE_PLATFORMS` to a comma-separated subset of `x,instagram,tiktok` to skip a platform whose fixer is down; leave it empty for all three. An unrecognized name stops startup.
 
