@@ -14,16 +14,16 @@ import {
   PermissionsBitField,
 } from 'discord.js';
 import {
-  addTranslationSuffixes,
   createXLinkHandler,
   downloadAttachment,
-  fetchTweetLang,
   formatXLinkRepost,
   parseFixupXChannelId,
   parseFixupXChannelIds,
   parseRewritePlatforms,
   rewriteSocialLinks,
 } from '../src/services/XLinkService';
+
+import type { TweetTranslation } from '../src/services/TweetTranslation';
 
 const CHANNEL_ID = '123456789012345678';
 const SECOND_CHANNEL_ID = '223456789012345678';
@@ -258,7 +258,7 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
   } as Attachment;
 }
 
-function fixture(translateLang?: (statusId: string) => Promise<string | null>) {
+function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation | null>) {
   const events: string[] = [];
   const sent: MessageCreateOptions[] = [];
   const logs: unknown[] = [];
@@ -295,7 +295,7 @@ function fixture(translateLang?: (statusId: string) => Promise<string | null>) {
     fetch: async (_force: boolean) => { events.push('fetch'); return source; },
     delete: async () => { events.push('delete original'); },
   };
-  const handler = createXLinkHandler(CHANNEL_ID, log, undefined, { translateLang });
+  const handler = createXLinkHandler(CHANNEL_ID, log, undefined, { translateTweet });
   return { source, replacement, handler, log, logs, permissions, events, sent,
     run: () => handler(source as unknown as Message) };
 }
@@ -593,170 +593,149 @@ test('removes a stale repost if the original was deleted during upload', async (
 
 // ─── Translation ────────────────────────────────────────────────────────────
 
-test('translation and platform rewriting compose while preserving formatting and fragments', async () => {
+const JAPANESE: TweetTranslation = {
+  text: 'The English translation.', language: 'Japanese',
+  author: { name: 'Nintendo (@Nintendo)', url: 'https://x.com/Nintendo' },
+  photos: [], hasMedia: false, hasVideo: false,
+};
+
+test('text-only translation replaces the native card with English and a small footer', async () => {
+  const f = fixture(async () => JAPANESE);
+  await f.run();
+  assert.match(f.sent[0].content!, /https:\/\/fixupx.com\/user\/status\/1#part/);
+  assert.doesNotMatch(f.sent[0].content!, /\/en|The English translation/);
+  assert.deepEqual(f.sent[0].embeds, [{
+    url: 'https://fixupx.com/user/status/1#part', author: JAPANESE.author,
+    description: JAPANESE.text, color: 0x637dff, footer: { text: 'Translated from Japanese' },
+  }]);
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+});
+
+test('translated photo cards preserve every photo without repeating the caption', async () => {
+  const photos = ['https://pbs.twimg.com/media/one.jpg', 'https://pbs.twimg.com/media/two.jpg'];
+  const f = fixture(async () => ({ ...JAPANESE, photos, hasMedia: true }));
+  await f.run();
+  const embeds = f.sent[0].embeds as { description?: string; image?: { url: string } }[];
+  assert.deepEqual(embeds.map((embed) => embed.image?.url), photos);
+  assert.deepEqual(embeds.map((embed) => embed.description), [JAPANESE.text, undefined]);
+});
+
+test('video translation uses a native gallery and one English caption without an original-text card', async () => {
+  const f = fixture(async () => ({ ...JAPANESE, hasMedia: true, hasVideo: true }));
+  await f.run();
+  assert.match(f.sent[0].content!, /https:\/\/g.fixupx.com\/user\/status\/1#part/);
+  assert.ok(f.sent[0].content!.endsWith('The English translation.\n-# Translated from Japanese'));
+  assert.equal(f.sent[0].embeds, undefined);
+  assert.doesNotMatch(f.sent[0].content!, /\/en/);
+});
+
+test('mixed platforms keep native previews and suppress the untranslated text-only tweet card', async () => {
   const calls: string[] = [];
-  const f = fixture(async (id) => { calls.push(id); return 'ja'; });
+  const f = fixture(async (id) => { calls.push(id); return JAPANESE; });
   f.source.content = '**Read https://x.com/u/status/123?s=20#part?detail** https://www.instagram.com/p/abc/?igsh=1. https://vm.tiktok.com/ZN8eQCMCd/?share=1';
   await f.run();
   assert.deepEqual(calls, ['123']);
-  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n**Read https://fixupx.com/u/status/123/en#part?detail** https://kkclip.com/p/abc/. https://tnktok.com/ZN8eQCMCd/`);
-  assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n**Read <https://fixupx.com/u/status/123#part?detail>** https://kkclip.com/p/abc/. https://tnktok.com/ZN8eQCMCd/\n\n${JAPANESE.text}\n-# Translated from Japanese`);
+  assert.equal(f.sent[0].embeds, undefined);
 });
 
-test('disabling X also disables translation in messages containing another enabled platform', async () => {
-  const f = fixture();
-  f.source.content = 'https://x.com/u/status/123?s=20 https://instagram.com/p/abc/?igsh=1';
-  const handler = createXLinkHandler(CHANNEL_ID, f.log, undefined, {
-    platforms: ['instagram'],
-    translateLang: async () => { assert.fail('disabled X must never request translation'); },
-  });
-  await handler(f.source as unknown as Message);
-  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://x.com/u/status/123?s=20 https://kkclip.com/p/abc/`);
+test('disabled X or translation never requests a translation', async () => {
+  for (const platforms of [undefined, ['instagram'] as const]) {
+    const f = fixture();
+    f.source.content = 'https://x.com/u/status/123?s=20 https://instagram.com/p/abc/?igsh=1';
+    const handler = createXLinkHandler(CHANNEL_ID, f.log, undefined, {
+      platforms,
+      ...(platforms ? { translateTweet: async () => { assert.fail('disabled X lookup'); } } : {}),
+    });
+    await handler(f.source as unknown as Message);
+    assert.equal(f.sent[0].embeds, undefined);
+    assert.match(f.sent[0].content!, /https:\/\/kkclip.com\/p\/abc\//);
+  }
 });
 
-test('appends the translate suffix for a non-English tweet', async () => {
-  const content = await addTranslationSuffixes(
-    'https://x.com/user/status/123', async () => 'ja'
-  );
-  assert.equal(content, 'https://x.com/user/status/123/en');
-});
-
-test('leaves an English tweet unchanged', async () => {
-  const content = await addTranslationSuffixes(
-    'https://x.com/user/status/123', async () => 'en'
-  );
-  assert.equal(content, 'https://x.com/user/status/123');
-});
-
-test('leaves a tweet with unknown language unchanged', async () => {
-  const content = await addTranslationSuffixes(
-    'https://x.com/user/status/123', async () => null
-  );
-  assert.equal(content, 'https://x.com/user/status/123');
-});
-
-test('a failing language lookup fails open instead of throwing', async () => {
-  const content = await addTranslationSuffixes(
-    'https://x.com/user/status/123', async () => { throw new Error('network error'); }
-  );
-  assert.equal(content, 'https://x.com/user/status/123');
-});
-
-test('a link with an existing path modifier is left untouched', async () => {
-  let called = false;
-  const content = await addTranslationSuffixes(
-    'https://x.com/user/status/123/photo/1', async () => { called = true; return 'ja'; }
-  );
-  assert.equal(content, 'https://x.com/user/status/123/photo/1');
-  assert.equal(called, false);
-});
-
-test('a link with no status path is left untouched', async () => {
-  let called = false;
-  const content = await addTranslationSuffixes(
-    'https://x.com/user', async () => { called = true; return 'ja'; }
-  );
-  assert.equal(content, 'https://x.com/user');
-  assert.equal(called, false);
-});
-
-test('the suffix is inserted before a trailing query or fragment', async () => {
-  assert.equal(
-    await addTranslationSuffixes('https://x.com/user/status/123?s=20', async () => 'ja'),
-    'https://x.com/user/status/123/en?s=20'
-  );
-  assert.equal(
-    await addTranslationSuffixes('https://x.com/user/status/123#part', async () => 'ja'),
-    'https://x.com/user/status/123/en#part'
-  );
-});
-
-test('the same status ID is looked up once even if it appears twice', async () => {
-  let calls = 0;
-  const content = await addTranslationSuffixes(
-    'https://x.com/user/status/123 https://x.com/user/status/123',
-    async () => { calls++; return 'ja'; }
-  );
-  assert.equal(calls, 1);
-  assert.equal(content, 'https://x.com/user/status/123/en https://x.com/user/status/123/en');
-});
-
-test('translation is applied end-to-end when a lookup function is provided', async () => {
-  const f = fixture(async () => 'ja');
-  await f.run();
-  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1\/en#/);
-});
-
-test('translation is skipped entirely, with no lookup call, when disabled', async () => {
-  let called = false;
-  const f = fixture(async () => { called = true; return 'ja'; });
-  const handler = createXLinkHandler(CHANNEL_ID, f.log);
-  await handler(f.source as unknown as Message);
-  assert.equal(called, false);
-  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1#/);
-});
-
-test('translation preserves URL wrappers and punctuation', async () => {
-  const f = fixture(async () => 'ja');
-  f.source.content = '[one](https://x.com/user/status/123), <https://x.com/user/status/456> https://x.com/user/status/789.';
-  await f.run();
-  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n[one](https://fixupx.com/user/status/123/en), <https://fixupx.com/user/status/456/en> https://fixupx.com/user/status/789/en.`);
-});
-
-test('translation preserves paired Markdown around links and their context', async () => {
-  for (const marker of ['*', '**', '***', '_', '__', '~~', '||']) {
-    const f = fixture(async () => 'ja');
-    f.source.content = `${marker}Read https://x.com/user/status/123${marker}.`;
+test('unknown languages and failed translation lookups keep ordinary native previews', async () => {
+  for (const lookup of [async () => null, async () => { throw new Error('timeout'); }]) {
+    const f = fixture(lookup);
     await f.run();
-    assert.equal(f.sent[0].content,
-      `${QUOTED_CREDIT}\n${marker}Read https://fixupx.com/user/status/123/en${marker}.`);
+    assert.equal(f.sent[0].embeds, undefined);
+    assert.match(f.sent[0].content!, /https:\/\/fixupx.com\/user\/status\/1#part/);
+    assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
   }
 });
 
-test('translation skips undetermined languages and English regional tags', async () => {
-  for (const lang of ['und', 'zxx', 'mul', 'EN', 'en-US', '']) {
-    const content = 'https://x.com/user/status/123';
-    assert.equal(await addTranslationSuffixes(content, async () => lang), content);
+test('suppressed, code and spoiler links never expose translated text', async () => {
+  for (const content of [
+    '<https://x.com/u/status/123>', '`https://x.com/u/status/123`',
+    '``https://x.com/u/status/123``', '```\nhttps://x.com/u/status/123\n```',
+    '||https://x.com/u/status/123||',
+    '\\\\||https://x.com/u/status/123||',
+  ]) {
+    const f = fixture(async () => { assert.fail('hidden link lookup'); });
+    f.source.content = content;
+    await f.run();
+    assert.equal(f.sent[0].embeds, undefined);
+    assert.doesNotMatch(f.sent[0].content!, /Translated from/);
   }
+  const f = fixture(async () => { assert.fail('suppressed message lookup'); });
+  f.source.flags.add(MessageFlags.SuppressEmbeds);
+  await f.run();
+  assert.equal(f.sent[0].embeds, undefined);
+  assert.equal(f.sent[0].flags, MessageFlags.SuppressEmbeds);
 });
 
-test('translation leaves existing fixer links and nested URLs untouched', async () => {
+test('existing fixer URLs, nested URLs and path modifiers do not request translations', async () => {
   const calls: string[] = [];
-  const f = fixture(async (id) => { calls.push(id); return 'ja'; });
-  f.source.content = 'https://x.com/user/status/123 https://fixupx.com/user/status/456 https://other.test/?next=https://fixupx.com/user/status/789';
+  const f = fixture(async (id) => { calls.push(id); return JAPANESE; });
+  f.source.content = 'https://x.com/user/status/123 https://fixupx.com/user/status/456 https://other.test/?next=https://x.com/user/status/789 https://x.com/user/status/999/photo/1';
   await f.run();
   assert.deepEqual(calls, ['123']);
-  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://fixupx.com/user/status/123/en https://fixupx.com/user/status/456 https://other.test/?next=https://fixupx.com/user/status/789`);
+  assert.match(f.sent[0].content!, /https:\/\/fixupx.com\/user\/status\/456/);
+  assert.match(f.sent[0].content!, /next=https:\/\/x.com\/user\/status\/789/);
+});
+
+test('repeated status IDs share one translation lookup and caption', async () => {
+  let calls = 0;
+  const f = fixture(async () => { calls++; return JAPANESE; });
+  f.source.content = 'https://x.com/u/status/123 https://x.com/u/status/123';
+  await f.run();
+  assert.equal(calls, 1);
+  assert.equal(f.sent[0].content!.split('Translated from').length - 1, 1);
+});
+
+test('an existing fixer for the same status remains unchanged', async () => {
+  const f = fixture(async () => JAPANESE);
+  f.source.content = 'https://x.com/u/status/123 https://fixupx.com/u/status/123';
+  await f.run();
+  assert.ok(f.sent[0].content!.includes('<https://fixupx.com/u/status/123> https://fixupx.com/u/status/123'));
+});
+
+test('captions follow tweet order when lookups finish in reverse order', async () => {
+  let finishFirst!: (value: TweetTranslation) => void;
+  const f = fixture(async (id) => {
+    if (id === '123') return new Promise<TweetTranslation>((resolve) => { finishFirst = resolve; });
+    finishFirst({ ...JAPANESE, text: 'First tweet.' });
+    return { ...JAPANESE, text: 'Second tweet.' };
+  });
+  f.source.content = 'https://x.com/u/status/123 https://x.com/u/status/456';
+  await f.run();
+  assert.ok(f.sent[0].content!.indexOf('First tweet.') < f.sent[0].content!.indexOf('Second tweet.'));
+});
+
+test('long video translations fall back without truncating the original or translated text', async () => {
+  const f = fixture(async () => ({ ...JAPANESE, text: 'a'.repeat(2000), hasMedia: true, hasVideo: true }));
+  await f.run();
+  assert.equal(f.sent[0].content, formatXLinkRepost(rewriteSocialLinks(f.source.content), f.source.author.id));
+  assert.equal(f.sent[0].embeds, undefined);
 });
 
 test('edits made during translation keep the original and discard the stale repost', async () => {
   const f = fixture(async () => {
     f.source.content = 'Updated context https://x.com/user/status/1';
-    return 'ja';
+    return JAPANESE;
   });
   await f.run();
   assert.deepEqual(f.events, ['send', 'fetch', 'delete replacement']);
-});
-
-test('language lookup reads the v2 status and rejects malformed or unknown language', async () => {
-  for (const [lang, expected] of [['ja', 'ja'], ['en', 'en'], ['und', null], ['zxx', null], ['', null], [null, null], [42, null], [{}, null]] as const) {
-    const result = await fetchTweetLang('123', async (url, options) => {
-      assert.equal(url, 'https://api.fxtwitter.com/2/status/123');
-      assert.ok(options?.signal instanceof AbortSignal);
-      return Response.json({ code: 200, status: { type: 'status', lang } });
-    });
-    assert.equal(result, expected);
-  }
-});
-
-test('language lookup fails open for API failures, unavailable posts and invalid JSON', async () => {
-  for (const response of [
-    new Response('', { status: 503 }), new Response('{'), Response.json(null),
-    Response.json({ code: 404, status: { lang: 'ja' } }),
-    Response.json({ code: 200, status: null }),
-    Response.json({ code: 200, status: { type: 'tombstone', lang: 'ja' } }),
-  ]) assert.equal(await fetchTweetLang('123', async () => response), null);
-  assert.equal(await fetchTweetLang('123', async () => { throw new Error('request timed out'); }), null);
 });
 
 test('literal markers in earlier words or URLs do not leak tracking values into paths', () => {

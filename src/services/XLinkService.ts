@@ -7,12 +7,12 @@ import {
   PermissionFlagsBits,
 } from 'discord.js';
 import type { Logger } from 'pino';
+import type { APIEmbed } from 'discord.js';
+import type { TweetTranslation } from './TweetTranslation';
 
 const MAX_CONTENT_LENGTH = 2_000;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
-const TRANSLATE_TIMEOUT_MS = 5_000;
-const TRANSLATE_TARGET_LANG = 'en';
 const RECENT_MESSAGE_LIMIT = 1_000;
 const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
 // Discord's IS_SPOILER attachment flag is not named in the installed v14 enum.
@@ -120,7 +120,7 @@ function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string 
 }
 
 /** Visit complete URL tokens, preserving surrounding text and nested URLs. */
-function mapLinks(content: string, transform: (url: string) => string): string {
+function mapLinks(content: string, transform: (url: string, position: number) => string): string {
   const schemes = /[a-z][a-z\d+.-]*:\/\//gi;
   let rewritten = '';
   let cursor = 0;
@@ -143,7 +143,7 @@ function mapLinks(content: string, transform: (url: string) => string): string {
     const url = content.slice(match.index, end);
     const withoutPunctuation = urlWithoutSuffix(url,
       content.slice(0, match.index).split(/\n[ \t]*\n/).pop()!);
-    rewritten += content.slice(cursor, match.index) + transform(withoutPunctuation) +
+    rewritten += content.slice(cursor, match.index) + transform(withoutPunctuation, match.index) +
       url.slice(withoutPunctuation.length);
     cursor = end;
     schemes.lastIndex = end;
@@ -170,57 +170,66 @@ export function formatXLinkRepost(content: string, authorId: string, replyUrl?: 
   return `${credit}\n${lines.map((line) => `> ${line}`).join('\n')}\n${content.slice(firstUrl.index)}`;
 }
 
-function tweetLanguage(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const language = value.toLowerCase();
-  return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(language) &&
-    !['und', 'zxx', 'mul'].includes(language) ? language : null;
-}
-
-/** Read the language from FxEmbed's v2 status response, failing open on errors. */
-export async function fetchTweetLang(
-  statusId: string,
-  fetchJson: typeof fetch = fetch
-): Promise<string | null> {
-  try {
-    const response = await fetchJson(`https://api.fxtwitter.com/2/status/${statusId}`, {
-      signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
-    });
-    if (!response.ok) return null;
-    const json = await response.json() as { code?: unknown; status?: { type?: unknown; lang?: unknown } };
-    return json?.code === 200 && json.status?.type === 'status'
-      ? tweetLanguage(json.status.lang) : null;
-  } catch {
-    return null;
+/** Do not reveal text behind a suppressed link, code span, or spoiler. */
+function visibleLink(content: string, position: number): boolean {
+  const prefix = content.slice(0, position);
+  if (prefix.endsWith('<')) return false;
+  let code = '';
+  let spoiler = false;
+  for (const match of prefix.matchAll(/`+|\|\|/g)) {
+    if ((prefix.slice(0, match.index).match(/\\*$/)?.[0].length ?? 0) % 2) continue;
+    if (match[0][0] === '`') {
+      if (!code) code = match[0];
+      else if (code === match[0]) code = '';
+    } else if (!code) spoiler = !spoiler;
   }
+  return !code && !spoiler;
 }
 
-/**
- * Add FxEmbed's translation modifier to original x.com status links before rewriting
- * their host. Existing fixer links and URLs nested inside other URLs stay untouched.
- */
-export async function addTranslationSuffixes(
-  content: string,
-  fetchLang: (statusId: string) => Promise<string | null> = fetchTweetLang
-): Promise<string> {
+/** Build one compact card, or captions alongside native video/mixed-link previews. */
+async function translateRepost(
+  original: string,
+  platforms: readonly RewritePlatform[],
+  fetchTranslation: (statusId: string) => Promise<TweetTranslation | null>,
+): Promise<{ content: string; embeds?: APIEmbed[] }> {
+  const content = rewriteSocialLinks(original, platforms);
   const statusLink = /^https:\/\/x\.com\/[^\s/?#]+\/status\/(\d+)(?=[?#]|$)/i;
-  const statusIds = new Set<string>();
-  mapLinks(content, (url) => {
+  const links = new Map<string, string>();
+  let linkCount = 0;
+  mapLinks(original, (url, position) => {
+    linkCount++;
     const id = statusLink.exec(url)?.[1];
-    if (id) statusIds.add(id);
+    if (id && visibleLink(original, position)) links.set(id, rewriteSocialLinks(url, platforms));
     return url;
   });
-  const langs = new Map<string, string | null>();
-  await Promise.all([...statusIds].map(async (statusId) => {
-    try { langs.set(statusId, tweetLanguage(await fetchLang(statusId))); }
-    catch { langs.set(statusId, null); }
+  const results = await Promise.all([...links.keys()].map(async (id) => {
+    try { return [id, await fetchTranslation(id)] as const; }
+    catch { return [id, null] as const; }
   }));
-  return mapLinks(content, (url) => {
-    const match = statusLink.exec(url);
-    const lang = match && langs.get(match[1]);
-    return lang && lang.split('-')[0] !== TRANSLATE_TARGET_LANG
-      ? url.replace(match![0], `${match![0]}/${TRANSLATE_TARGET_LANG}`) : url;
+  const translations = new Map(results.filter((entry): entry is readonly [string, TweetTranslation] => entry[1] !== null));
+  if (!translations.size) return { content };
+  const [id, translation] = translations.entries().next().value!;
+  if (linkCount === 1 && !translation.hasVideo) {
+    const url = links.get(id)!;
+    const embeds: APIEmbed[] = [{
+      url, author: translation.author, description: translation.text,
+      color: 0x637dff, footer: { text: `Translated from ${translation.language}` },
+      ...(translation.photos[0] ? { image: { url: translation.photos[0] } } : {}),
+    }];
+    for (const photo of translation.photos.slice(1)) embeds.push({ url, image: { url: photo } });
+    return { content, embeds };
+  }
+  const rewritten = mapLinks(original, (url, position) => {
+    const rewritten = rewriteSocialLinks(url, platforms);
+    const id = statusLink.exec(url)?.[1];
+    const translation = id && translations.get(id);
+    if (!translation || !visibleLink(original, position)) return rewritten;
+    return translation.hasMedia ? rewritten.replace('https://fixupx.com/', 'https://g.fixupx.com/') : `<${rewritten}>`;
   });
+  const captions = [...translations.values()].map(({ text, language }) =>
+    `${text}\n-# Translated from ${language}`);
+  const translated = `${rewritten}\n\n${captions.join('\n\n')}`;
+  return { content: translated.length <= MAX_CONTENT_LENGTH ? translated : content };
 }
 
 function isSpoiler(attachment: Attachment): boolean {
@@ -326,9 +335,9 @@ export function createXLinkHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateLang }: {
+  { platforms = REWRITE_PLATFORMS, translateTweet }: {
     platforms?: readonly RewritePlatform[];
-    translateLang?: (statusId: string) => Promise<string | null>;
+    translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
   } = {}
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
@@ -368,9 +377,13 @@ export function createXLinkHandler(
         : undefined;
       // Discord can mutate this cached message while a language lookup is pending.
       const version = sourceVersion(message);
-      const translated = translateLang && platforms.includes('x')
-        ? rewriteSocialLinks(await addTranslationSuffixes(message.content, translateLang), platforms) : rewritten;
-      const content = formatXLinkRepost(translated, message.author.id, replyUrl);
+      const body = formatXLinkRepost(rewritten, message.author.id, replyUrl);
+      const translated = translateTweet && platforms.includes('x') &&
+        !message.flags.has(MessageFlags.SuppressEmbeds)
+        ? await translateRepost(message.content, platforms, translateTweet) : { content: rewritten };
+      const formatted = formatXLinkRepost(translated.content, message.author.id, replyUrl);
+      const content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
+      const embeds = translated.embeds;
       const attachments = [...message.attachments.values()];
       if (content.length > MAX_CONTENT_LENGTH || attachments.length > 10 ||
           attachments.reduce((total, attachment) => total + attachment.size, 0) > MAX_ATTACHMENT_BYTES) {
@@ -382,6 +395,7 @@ export function createXLinkHandler(
       for (const attachment of attachments) files.push(await copyAttachment(attachment));
       const replacement = await channel.send({
         content,
+        ...(embeds ? { embeds } : {}),
         files,
         allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
         nonce: message.id,

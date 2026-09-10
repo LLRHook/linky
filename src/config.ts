@@ -23,7 +23,7 @@ export interface Config {
   fixupXChannelIds: readonly string[];
   /** Platforms whose links are rewritten; defaults to all of them. */
   rewritePlatforms: readonly RewritePlatform[];
-  /** Append fxtwitter.com's translate modifier to non-English reposted tweets. */
+  /** Show non-English tweets in English with a small source-language label. */
   translateTweets: boolean;
 }
 

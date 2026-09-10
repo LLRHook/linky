@@ -15,7 +15,8 @@ import { ensureGuild, getGuild } from './services/PlayerService';
 import { revokeAdmin, getOpenElection, scheduleElectionFinalization } from './services/ElectionService';
 import { audit } from './services/AuditService';
 import { errorEmbed, welcomeEmbed } from './ui/embeds';
-import { createXLinkHandler, fetchTweetLang } from './services/XLinkService';
+import { createXLinkHandler } from './services/XLinkService';
+import { fetchTweetTranslation } from './services/TweetTranslation';
 
 // ─── Discord Client ────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ if (config.fixupXChannelIds.length) {
   client.on('messageCreate', createXLinkHandler(
     config.fixupXChannelIds, logger, undefined, {
       platforms: config.rewritePlatforms,
-      translateLang: config.translateTweets ? fetchTweetLang : undefined,
+      translateTweet: config.translateTweets ? fetchTweetTranslation : undefined,
     }
   ));
   logger.info(
