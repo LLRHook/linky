@@ -17,8 +17,64 @@ const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
 // https://docs.discord.com/developers/resources/message#attachment-object
 const ATTACHMENT_IS_SPOILER = 1 << 3;
 
-/** Change only a literal HTTPS x.com authority, leaving all other bytes intact. */
-export function rewriteXLinks(content: string): string {
+export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok'] as const;
+export type RewritePlatform = typeof REWRITE_PLATFORMS[number];
+
+interface Platform {
+  name: RewritePlatform;
+  /** An allowed subdomain plus the literal apex host, anchored at the scheme. */
+  host: RegExp;
+  /** Replacement authority. Fixers are apex-only, so a matched subdomain is dropped. */
+  fixer: string;
+  /** Paths worth rewriting. Without one, every path on the host qualifies. */
+  path?: RegExp;
+}
+
+// Subdomains are a fixed allowlist per platform, never a wildcard: `www.x.com` and
+// other lookalike authorities must keep falling through untouched.
+const PLATFORMS: readonly Platform[] = [
+  { name: 'x', host: /^https:\/\/x\.com(?=[/?#]|$)/i, fixer: 'https://fixupx.com' },
+  {
+    name: 'instagram',
+    host: /^https:\/\/(?:www\.|m\.|mobile\.)?instagram\.com(?=[/?#]|$)/i,
+    fixer: 'https://kkclip.com',
+    path: /^\/(?:p|reels?|tv|share)\/[\w-]+/,
+  },
+  {
+    name: 'tiktok',
+    host: /^https:\/\/(?:www\.|m\.)?tiktok\.com(?=[/?#]|$)/i,
+    fixer: 'https://tnktok.com',
+    path: /^\/(?:@[\w.-]+\/(?:video|photo)\/\d+|[tv]\/[\w-]+)/,
+  },
+  // Share links carry the code at the root, which must not be accepted on the apex host.
+  {
+    name: 'tiktok',
+    host: /^https:\/\/(?:vm|vt)\.tiktok\.com(?=[/?#]|$)/i,
+    fixer: 'https://tnktok.com',
+    path: /^\/[\w-]+\/?$/,
+  },
+];
+
+/** Reject an unknown name instead of silently leaving that platform unrewritten. */
+export function parseRewritePlatforms(value: string | undefined): readonly RewritePlatform[] {
+  if (!value?.trim()) return REWRITE_PLATFORMS;
+  const platforms = new Set<RewritePlatform>();
+  for (const entry of value.split(',')) {
+    const name = entry.trim();
+    if (!(REWRITE_PLATFORMS as readonly string[]).includes(name)) {
+      throw new Error(`REWRITE_PLATFORMS must be a comma-separated subset of ${REWRITE_PLATFORMS.join(', ')}, with no empty entries.`);
+    }
+    platforms.add(name as RewritePlatform);
+  }
+  return [...platforms];
+}
+
+/** Change only a literal HTTPS authority of an enabled platform, leaving all other bytes intact. */
+export function rewriteSocialLinks(
+  content: string,
+  platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS
+): string {
+  const enabled = new Set(platforms);
   const schemes = /[a-z][a-z\d+.-]*:\/\//gi;
   let rewritten = '';
   let cursor = 0;
@@ -39,16 +95,26 @@ export function rewriteXLinks(content: string): string {
     }
     // Consume other URLs too, including URLs nested inside their paths/queries.
     const url = content.slice(match.index, end);
-    const withoutPunctuation = url.replace(/[.,!?:;}]+$/, '');
-    rewritten += content.slice(cursor, match.index) +
-      (/^https:\/\/x\.com(?=[/?#]|$)/i.test(withoutPunctuation)
-        // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
-        ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com').replace(/\?[^#]*/, '')
-        : url);
+    rewritten += content.slice(cursor, match.index) + (rewriteUrl(url, enabled) ?? url);
     cursor = end;
     schemes.lastIndex = end;
   }
   return rewritten + content.slice(cursor);
+}
+
+function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string | undefined {
+  const sentenceEnd = /[.,!?:;}]+$/;
+  for (const platform of PLATFORMS) {
+    if (!enabled.has(platform.name)) continue;
+    // Trailing sentence punctuation is not part of the authority, but is kept in the output.
+    const host = platform.host.exec(url.replace(sentenceEnd, ''));
+    if (!host) continue;
+    // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
+    const rest = url.slice(host[0].length).replace(/\?[^#]*/, '');
+    if (platform.path && !platform.path.test(rest.replace(sentenceEnd, ''))) continue;
+    return platform.fixer + rest;
+  }
+  return undefined;
 }
 
 /** Quote plain leading context without pulling apart existing Markdown or URLs. */
@@ -172,7 +238,8 @@ function sourceVersion(message: Message): string {
 export function createXLinkHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
-  copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment
+  copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
+  platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
   const inFlight = new Set<string>();
@@ -181,7 +248,7 @@ export function createXLinkHandler(
   return async (message) => {
     if (!allowedChannelIds.has(message.channelId) || !message.inGuild() ||
         !canCopy(message) || inFlight.has(message.id) || reposted.has(message.id)) return;
-    const rewritten = rewriteXLinks(message.content);
+    const rewritten = rewriteSocialLinks(message.content, platforms);
     if (rewritten === message.content) return;
 
     const channelId = message.channelId;

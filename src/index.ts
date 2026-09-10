@@ -29,8 +29,13 @@ export const client = new Client({
 });
 
 if (config.fixupXChannelIds.length) {
-  client.on('messageCreate', createXLinkHandler(config.fixupXChannelIds, logger));
-  logger.info({ channelIds: config.fixupXChannelIds }, 'X link replacement enabled for configured channels');
+  client.on('messageCreate', createXLinkHandler(
+    config.fixupXChannelIds, logger, undefined, config.rewritePlatforms
+  ));
+  logger.info(
+    { channelIds: config.fixupXChannelIds, platforms: config.rewritePlatforms },
+    'Social link replacement enabled for configured channels'
+  );
 }
 
 // ─── Interaction Dispatcher ────────────────────────────────────────────────────
