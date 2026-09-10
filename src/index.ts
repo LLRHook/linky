@@ -31,7 +31,7 @@ export const client = new Client({
 if (config.fixupXChannelIds.length) {
   client.on('messageCreate', createXLinkHandler(
     config.fixupXChannelIds, logger, undefined,
-    config.translateTweets ? fetchTweetLang : undefined
+    { translateLang: config.translateTweets ? fetchTweetLang : undefined }
   ));
   logger.info(
     { channelIds: config.fixupXChannelIds, translateTweets: config.translateTweets },

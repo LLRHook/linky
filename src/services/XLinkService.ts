@@ -19,8 +19,32 @@ const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
 // https://docs.discord.com/developers/resources/message#attachment-object
 const ATTACHMENT_IS_SPOILER = 1 << 3;
 
+/** Keep sentence punctuation and paired Markdown outside a URL's query string. */
+function urlWithoutSuffix(url: string, prefix: string): string {
+  const active = new Set<string>();
+  const unescaped = (text: string) => (text.match(/\\*$/)?.[0].length ?? 0) % 2 === 0;
+  for (const match of prefix.matchAll(/\*{1,3}|_{1,2}|~~|\|\|/g)) {
+    if (unescaped(prefix.slice(0, match.index))) {
+      if (!active.delete(match[0])) active.add(match[0]);
+    }
+  }
+  let link = url.replace(/[.,!?:;]+$/, '');
+  let marker: string | undefined;
+  while ((marker = link.match(/(\*{1,3}|_{1,2}|~~|\|\|)$/)?.[0]) &&
+    unescaped(link.slice(0, -marker.length)) && active.delete(marker)) {
+    link = link.slice(0, -marker.length).replace(/[.,!?:;]+$/, '');
+  }
+  return link;
+}
+
 /** Change only a literal HTTPS x.com authority, leaving all other bytes intact. */
 export function rewriteXLinks(content: string): string {
+  return mapLinks(content, (url) => /^https:\/\/x\.com(?=[/?#]|$)/i.test(url)
+    ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com') : url);
+}
+
+/** Visit complete URL tokens, preserving surrounding text and nested URLs. */
+function mapLinks(content: string, transform: (url: string) => string): string {
   const schemes = /[a-z][a-z\d+.-]*:\/\//gi;
   let rewritten = '';
   let cursor = 0;
@@ -41,11 +65,10 @@ export function rewriteXLinks(content: string): string {
     }
     // Consume other URLs too, including URLs nested inside their paths/queries.
     const url = content.slice(match.index, end);
-    const withoutPunctuation = url.replace(/[.,!?:;}]+$/, '');
-    rewritten += content.slice(cursor, match.index) +
-      (/^https:\/\/x\.com(?=[/?#]|$)/i.test(withoutPunctuation)
-        ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com')
-        : url);
+    const withoutPunctuation = urlWithoutSuffix(url,
+      content.slice(content.lastIndexOf('\n', match.index - 1) + 1, match.index));
+    rewritten += content.slice(cursor, match.index) + transform(withoutPunctuation) +
+      url.slice(withoutPunctuation.length);
     cursor = end;
     schemes.lastIndex = end;
   }
@@ -71,7 +94,14 @@ export function formatXLinkRepost(content: string, authorId: string, replyUrl?: 
   return `${credit}\n${lines.map((line) => `> ${line}`).join('\n')}\n${content.slice(firstUrl.index)}`;
 }
 
-/** api.fxtwitter.com's public instance allows 1000 req/min/IP; one call per unique tweet is well under that. */
+function tweetLanguage(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const language = value.toLowerCase();
+  return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(language) &&
+    !['und', 'zxx', 'mul'].includes(language) ? language : null;
+}
+
+/** Read the language from FxEmbed's v2 status response, failing open on errors. */
 export async function fetchTweetLang(
   statusId: string,
   fetchJson: typeof fetch = fetch
@@ -81,36 +111,39 @@ export async function fetchTweetLang(
       signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
     });
     if (!response.ok) return null;
-    const json = await response.json() as { status?: { lang?: string | null } };
-    return json.status?.lang ?? null;
+    const json = await response.json() as { code?: unknown; status?: { type?: unknown; lang?: unknown } };
+    return json?.code === 200 && json.status?.type === 'status'
+      ? tweetLanguage(json.status.lang) : null;
   } catch {
     return null;
   }
 }
 
 /**
- * Append FxEmbed's translate URL modifier (a language-code path segment) to fixupx.com
- * status links whose tweet is not in the target language. Fails open: any lookup failure
- * or unknown language leaves the link untouched rather than blocking the repost.
+ * Add FxEmbed's translation modifier to original x.com status links before rewriting
+ * their host. Existing fixer links and URLs nested inside other URLs stay untouched.
  */
 export async function addTranslationSuffixes(
   content: string,
   fetchLang: (statusId: string) => Promise<string | null> = fetchTweetLang
 ): Promise<string> {
-  const statusLink = /https:\/\/fixupx\.com\/[^\s/?#]+\/status\/(\d+)(?=[?#\s]|$)/g;
-  const statusIds = [...content.matchAll(statusLink)].map((match) => match[1]!);
-  if (statusIds.length === 0) return content;
-
+  const statusLink = /^https:\/\/x\.com\/[^\s/?#]+\/status\/(\d+)(?=[?#]|$)/i;
+  const statusIds = new Set<string>();
+  mapLinks(content, (url) => {
+    const id = statusLink.exec(url)?.[1];
+    if (id) statusIds.add(id);
+    return url;
+  });
   const langs = new Map<string, string | null>();
-  await Promise.all([...new Set(statusIds)].map(async (statusId) => {
-    langs.set(statusId, await fetchLang(statusId).catch(() => null));
+  await Promise.all([...statusIds].map(async (statusId) => {
+    try { langs.set(statusId, tweetLanguage(await fetchLang(statusId))); }
+    catch { langs.set(statusId, null); }
   }));
-
-  return content.replace(statusLink, (match, statusId: string) => {
-    const lang = langs.get(statusId);
-    return lang && lang !== TRANSLATE_TARGET_LANG
-      ? match.replace(`/status/${statusId}`, `/status/${statusId}/${TRANSLATE_TARGET_LANG}`)
-      : match;
+  return mapLinks(content, (url) => {
+    const match = statusLink.exec(url);
+    const lang = match && langs.get(match[1]);
+    return lang && lang.split('-')[0] !== TRANSLATE_TARGET_LANG
+      ? url.replace(match![0], `${match![0]}/${TRANSLATE_TARGET_LANG}`) : url;
   });
 }
 
@@ -217,7 +250,7 @@ export function createXLinkHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  translateLang?: (statusId: string) => Promise<string | null>
+  { translateLang }: { translateLang?: (statusId: string) => Promise<string | null> } = {}
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
   const inFlight = new Set<string>();
@@ -254,7 +287,10 @@ export function createXLinkHandler(
       const replyUrl = message.reference?.messageId
         ? `https://discord.com/channels/${message.guildId}/${message.reference.channelId ?? channelId}/${message.reference.messageId}`
         : undefined;
-      const translated = translateLang ? await addTranslationSuffixes(rewritten, translateLang) : rewritten;
+      // Discord can mutate this cached message while a language lookup is pending.
+      const version = sourceVersion(message);
+      const translated = translateLang
+        ? rewriteXLinks(await addTranslationSuffixes(message.content, translateLang)) : rewritten;
       const content = formatXLinkRepost(translated, message.author.id, replyUrl);
       const attachments = [...message.attachments.values()];
       if (content.length > MAX_CONTENT_LENGTH || attachments.length > 10 ||
@@ -263,7 +299,6 @@ export function createXLinkHandler(
         return;
       }
 
-      const version = sourceVersion(message);
       const files: AttachmentBuilder[] = [];
       for (const attachment of attachments) files.push(await copyAttachment(attachment));
       const replacement = await channel.send({

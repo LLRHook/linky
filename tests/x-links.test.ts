@@ -17,6 +17,7 @@ import {
   addTranslationSuffixes,
   createXLinkHandler,
   downloadAttachment,
+  fetchTweetLang,
   formatXLinkRepost,
   parseFixupXChannelId,
   parseFixupXChannelIds,
@@ -188,7 +189,7 @@ function fixture(translateLang?: (statusId: string) => Promise<string | null>) {
     fetch: async (_force: boolean) => { events.push('fetch'); return source; },
     delete: async () => { events.push('delete original'); },
   };
-  const handler = createXLinkHandler(CHANNEL_ID, log, undefined, translateLang);
+  const handler = createXLinkHandler(CHANNEL_ID, log, undefined, { translateLang });
   return { source, replacement, handler, log, logs, permissions, events, sent,
     run: () => handler(source as unknown as Message) };
 }
@@ -473,69 +474,69 @@ test('removes a stale repost if the original was deleted during upload', async (
 
 test('appends the translate suffix for a non-English tweet', async () => {
   const content = await addTranslationSuffixes(
-    'https://fixupx.com/user/status/123', async () => 'ja'
+    'https://x.com/user/status/123', async () => 'ja'
   );
-  assert.equal(content, 'https://fixupx.com/user/status/123/en');
+  assert.equal(content, 'https://x.com/user/status/123/en');
 });
 
 test('leaves an English tweet unchanged', async () => {
   const content = await addTranslationSuffixes(
-    'https://fixupx.com/user/status/123', async () => 'en'
+    'https://x.com/user/status/123', async () => 'en'
   );
-  assert.equal(content, 'https://fixupx.com/user/status/123');
+  assert.equal(content, 'https://x.com/user/status/123');
 });
 
 test('leaves a tweet with unknown language unchanged', async () => {
   const content = await addTranslationSuffixes(
-    'https://fixupx.com/user/status/123', async () => null
+    'https://x.com/user/status/123', async () => null
   );
-  assert.equal(content, 'https://fixupx.com/user/status/123');
+  assert.equal(content, 'https://x.com/user/status/123');
 });
 
 test('a failing language lookup fails open instead of throwing', async () => {
   const content = await addTranslationSuffixes(
-    'https://fixupx.com/user/status/123', async () => { throw new Error('network error'); }
+    'https://x.com/user/status/123', async () => { throw new Error('network error'); }
   );
-  assert.equal(content, 'https://fixupx.com/user/status/123');
+  assert.equal(content, 'https://x.com/user/status/123');
 });
 
 test('a link with an existing path modifier is left untouched', async () => {
   let called = false;
   const content = await addTranslationSuffixes(
-    'https://fixupx.com/user/status/123/photo/1', async () => { called = true; return 'ja'; }
+    'https://x.com/user/status/123/photo/1', async () => { called = true; return 'ja'; }
   );
-  assert.equal(content, 'https://fixupx.com/user/status/123/photo/1');
+  assert.equal(content, 'https://x.com/user/status/123/photo/1');
   assert.equal(called, false);
 });
 
 test('a link with no status path is left untouched', async () => {
   let called = false;
   const content = await addTranslationSuffixes(
-    'https://fixupx.com/user', async () => { called = true; return 'ja'; }
+    'https://x.com/user', async () => { called = true; return 'ja'; }
   );
-  assert.equal(content, 'https://fixupx.com/user');
+  assert.equal(content, 'https://x.com/user');
   assert.equal(called, false);
 });
 
 test('the suffix is inserted before a trailing query or fragment', async () => {
   assert.equal(
-    await addTranslationSuffixes('https://fixupx.com/user/status/123?s=20', async () => 'ja'),
-    'https://fixupx.com/user/status/123/en?s=20'
+    await addTranslationSuffixes('https://x.com/user/status/123?s=20', async () => 'ja'),
+    'https://x.com/user/status/123/en?s=20'
   );
   assert.equal(
-    await addTranslationSuffixes('https://fixupx.com/user/status/123#part', async () => 'ja'),
-    'https://fixupx.com/user/status/123/en#part'
+    await addTranslationSuffixes('https://x.com/user/status/123#part', async () => 'ja'),
+    'https://x.com/user/status/123/en#part'
   );
 });
 
 test('the same status ID is looked up once even if it appears twice', async () => {
   let calls = 0;
   const content = await addTranslationSuffixes(
-    'https://fixupx.com/user/status/123 https://fixupx.com/user/status/123',
+    'https://x.com/user/status/123 https://x.com/user/status/123',
     async () => { calls++; return 'ja'; }
   );
   assert.equal(calls, 1);
-  assert.equal(content, 'https://fixupx.com/user/status/123/en https://fixupx.com/user/status/123/en');
+  assert.equal(content, 'https://x.com/user/status/123/en https://x.com/user/status/123/en');
 });
 
 test('translation is applied end-to-end when a lookup function is provided', async () => {
@@ -551,4 +552,67 @@ test('translation is skipped entirely, with no lookup call, when disabled', asyn
   await handler(f.source as unknown as Message);
   assert.equal(called, false);
   assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1\?/);
+});
+
+test('translation preserves URL wrappers and punctuation', async () => {
+  const f = fixture(async () => 'ja');
+  f.source.content = '[one](https://x.com/user/status/123), <https://x.com/user/status/456> https://x.com/user/status/789.';
+  await f.run();
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n[one](https://fixupx.com/user/status/123/en), <https://fixupx.com/user/status/456/en> https://fixupx.com/user/status/789/en.`);
+});
+
+test('translation preserves paired Markdown around links and their context', async () => {
+  for (const marker of ['*', '**', '***', '_', '__', '~~', '||']) {
+    const f = fixture(async () => 'ja');
+    f.source.content = `${marker}Read https://x.com/user/status/123${marker}.`;
+    await f.run();
+    assert.equal(f.sent[0].content,
+      `${QUOTED_CREDIT}\n${marker}Read https://fixupx.com/user/status/123/en${marker}.`);
+  }
+});
+
+test('translation skips undetermined languages and English regional tags', async () => {
+  for (const lang of ['und', 'zxx', 'mul', 'EN', 'en-US', '']) {
+    const content = 'https://x.com/user/status/123';
+    assert.equal(await addTranslationSuffixes(content, async () => lang), content);
+  }
+});
+
+test('translation leaves existing fixer links and nested URLs untouched', async () => {
+  const calls: string[] = [];
+  const f = fixture(async (id) => { calls.push(id); return 'ja'; });
+  f.source.content = 'https://x.com/user/status/123 https://fixupx.com/user/status/456 https://other.test/?next=https://fixupx.com/user/status/789';
+  await f.run();
+  assert.deepEqual(calls, ['123']);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://fixupx.com/user/status/123/en https://fixupx.com/user/status/456 https://other.test/?next=https://fixupx.com/user/status/789`);
+});
+
+test('edits made during translation keep the original and discard the stale repost', async () => {
+  const f = fixture(async () => {
+    f.source.content = 'Updated context https://x.com/user/status/1';
+    return 'ja';
+  });
+  await f.run();
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete replacement']);
+});
+
+test('language lookup reads the v2 status and rejects malformed or unknown language', async () => {
+  for (const [lang, expected] of [['ja', 'ja'], ['en', 'en'], ['und', null], ['zxx', null], ['', null], [null, null], [42, null], [{}, null]] as const) {
+    const result = await fetchTweetLang('123', async (url, options) => {
+      assert.equal(url, 'https://api.fxtwitter.com/2/status/123');
+      assert.ok(options?.signal instanceof AbortSignal);
+      return Response.json({ code: 200, status: { type: 'status', lang } });
+    });
+    assert.equal(result, expected);
+  }
+});
+
+test('language lookup fails open for API failures, unavailable posts and invalid JSON', async () => {
+  for (const response of [
+    new Response('', { status: 503 }), new Response('{'), Response.json(null),
+    Response.json({ code: 404, status: { lang: 'ja' } }),
+    Response.json({ code: 200, status: null }),
+    Response.json({ code: 200, status: { type: 'tombstone', lang: 'ja' } }),
+  ]) assert.equal(await fetchTweetLang('123', async () => response), null);
+  assert.equal(await fetchTweetLang('123', async () => { throw new Error('request timed out'); }), null);
 });
