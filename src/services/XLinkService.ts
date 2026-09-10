@@ -17,7 +17,25 @@ const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
 // https://docs.discord.com/developers/resources/message#attachment-object
 const ATTACHMENT_IS_SPOILER = 1 << 3;
 
-/** Change only a literal HTTPS x.com authority, leaving all other bytes intact. */
+/** Keep sentence punctuation and paired Markdown outside a URL's query string. */
+function urlWithoutSuffix(url: string, prefix: string): string {
+  const active = new Set<string>();
+  const unescaped = (text: string) => (text.match(/\\*$/)?.[0].length ?? 0) % 2 === 0;
+  for (const match of prefix.matchAll(/\*{1,3}|_{1,2}|~~|\|\|/g)) {
+    if (unescaped(prefix.slice(0, match.index))) {
+      if (!active.delete(match[0])) active.add(match[0]);
+    }
+  }
+  let link = url.replace(/[.,!?:;]+$/, '');
+  let marker: string | undefined;
+  while ((marker = link.match(/(\*{1,3}|_{1,2}|~~|\|\|)$/)?.[0]) &&
+    unescaped(link.slice(0, -marker.length)) && active.delete(marker)) {
+    link = link.slice(0, -marker.length).replace(/[.,!?:;]+$/, '');
+  }
+  return link;
+}
+
+/** Rewrite literal HTTPS x.com links, dropping queries but retaining text and fragments. */
 export function rewriteXLinks(content: string): string {
   const schemes = /[a-z][a-z\d+.-]*:\/\//gi;
   let rewritten = '';
@@ -39,11 +57,13 @@ export function rewriteXLinks(content: string): string {
     }
     // Consume other URLs too, including URLs nested inside their paths/queries.
     const url = content.slice(match.index, end);
-    const withoutPunctuation = url.replace(/[.,!?:;}]+$/, '');
+    const withoutPunctuation = urlWithoutSuffix(url,
+      content.slice(content.lastIndexOf('\n', match.index - 1) + 1, match.index));
     rewritten += content.slice(cursor, match.index) +
       (/^https:\/\/x\.com(?=[/?#]|$)/i.test(withoutPunctuation)
-        // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
-        ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com').replace(/\?[^#]*/, '')
+        // A question mark after # belongs to the fragment, not the query.
+        ? withoutPunctuation.replace(/^https:\/\/x\.com/i, 'https://fixupx.com')
+          .replace(/^([^?#]*)\?[^#]*/, '$1') + url.slice(withoutPunctuation.length)
         : url);
     cursor = end;
     schemes.lastIndex = end;
