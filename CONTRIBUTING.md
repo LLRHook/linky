@@ -30,7 +30,7 @@ Use native Node.js for local development. Docker Desktop on macOS has caused gat
 
 Add characterization tests before refactoring untested behavior. Bet tests use in-memory SQLite; command tests isolate the existing bot/database entry points to avoid login and persistent writes. Keep payout rounding, transaction boundaries, command responses and audit ordering intact.
 
-For repost changes, follow the [README setup](README.md). In a Discord test channel, check a plain X link, an attached file and a lookalike domain; verify attribution, native previews, preserved attachments and source deletion. Temporarily remove Manage Messages and confirm new matching messages stay untouched. Offline tests cover formatting, scope, copy failures, mentions and source edits, including Discord's automatic link-warning metadata. They cannot prove live permissions or preview rendering.
+For repost changes, follow the [README setup](README.md). In a Discord test channel, check a plain X link, an attached file and a lookalike domain; verify attribution, native previews, preserved attachments and source deletion. Temporarily remove Manage Messages and confirm new matching messages stay untouched. Offline tests cover formatting, scope, copy failures, mentions and source edits, including Discord's automatic link-warning metadata. They cannot prove live permissions or preview rendering. With `TRANSLATE_TWEETS=true`, also post a known non-English tweet link and confirm the repost carries the translate suffix and the embed shows a translation.
 
 ## Reporting bugs
 
