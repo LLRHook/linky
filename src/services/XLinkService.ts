@@ -17,7 +17,36 @@ const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
 // https://docs.discord.com/developers/resources/message#attachment-object
 const ATTACHMENT_IS_SPOILER = 1 << 3;
 
-/** Change only a literal HTTPS x.com authority, leaving all other bytes intact. */
+/** Keep sentence punctuation and paired Markdown outside a URL's query string. */
+function urlWithoutSuffix(url: string, prefix: string): string {
+  const active = new Set<string>();
+  const unescaped = (text: string) => (text.match(/\\*$/)?.[0].length ?? 0) % 2 === 0;
+  const longestFirst = () => [...active].sort((a, b) => b.length - a.length);
+  for (const match of prefix.matchAll(/\*{1,3}|_{1,2}|~~|\|\|/g)) {
+    const before = prefix.slice(0, match.index);
+    const after = prefix.slice(match.index + match[0].length);
+    if (!unescaped(before) || (match[0][0] === '_' && /\w$/.test(before) && /^\w/.test(after))) continue;
+    let remainder = match[0];
+    for (const marker of /\S$/.test(before) ? longestFirst() : []) {
+      if (remainder.endsWith(marker)) {
+        active.delete(marker);
+        remainder = remainder.slice(0, -marker.length);
+      }
+    }
+    // A literal marker inside an earlier URL cannot open formatting around this one.
+    if (remainder && !/[a-z][a-z\d+.-]*:\/\/\S*$/i.test(before)) active.add(remainder);
+  }
+  let link = url.replace(/[.,!?:;]+$/, '');
+  let marker: string | undefined;
+  while ((marker = longestFirst().find((value) => link.endsWith(value) &&
+    unescaped(link.slice(0, -value.length))))) {
+    active.delete(marker);
+    link = link.slice(0, -marker.length).replace(/[.,!?:;]+$/, '');
+  }
+  return link;
+}
+
+/** Rewrite literal HTTPS x.com links, dropping queries but retaining text and fragments. */
 export function rewriteXLinks(content: string): string {
   const schemes = /[a-z][a-z\d+.-]*:\/\//gi;
   let rewritten = '';
@@ -39,10 +68,13 @@ export function rewriteXLinks(content: string): string {
     }
     // Consume other URLs too, including URLs nested inside their paths/queries.
     const url = content.slice(match.index, end);
-    const withoutPunctuation = url.replace(/[.,!?:;}]+$/, '');
+    const withoutPunctuation = urlWithoutSuffix(url,
+      content.slice(0, match.index).split(/\n[ \t]*\n/).pop()!);
     rewritten += content.slice(cursor, match.index) +
       (/^https:\/\/x\.com(?=[/?#]|$)/i.test(withoutPunctuation)
-        ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com')
+        // A question mark after # belongs to the fragment, not the query.
+        ? withoutPunctuation.replace(/^https:\/\/x\.com/i, 'https://fixupx.com')
+          .replace(/^([^?#]*)\?[^#]*/, '$1') + url.slice(withoutPunctuation.length)
         : url);
     cursor = end;
     schemes.lastIndex = end;
