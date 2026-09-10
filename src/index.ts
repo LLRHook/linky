@@ -30,12 +30,14 @@ export const client = new Client({
 
 if (config.fixupXChannelIds.length) {
   client.on('messageCreate', createXLinkHandler(
-    config.fixupXChannelIds, logger, undefined,
-    { translateLang: config.translateTweets ? fetchTweetLang : undefined }
+    config.fixupXChannelIds, logger, undefined, {
+      platforms: config.rewritePlatforms,
+      translateLang: config.translateTweets ? fetchTweetLang : undefined,
+    }
   ));
   logger.info(
-    { channelIds: config.fixupXChannelIds, translateTweets: config.translateTweets },
-    'X link replacement enabled for configured channels'
+    { channelIds: config.fixupXChannelIds, platforms: config.rewritePlatforms, translateTweets: config.translateTweets },
+    'Social link replacement enabled for configured channels'
   );
 }
 

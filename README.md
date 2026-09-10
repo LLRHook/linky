@@ -3,9 +3,9 @@
 [![CI](https://github.com/llrhook/wanna-bet/actions/workflows/ci.yml/badge.svg)](https://github.com/llrhook/wanna-bet/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A Discord bot with per-server virtual balances, two-sided bet pools, elected admins, and optional X-to-FixupX reposting. Built with TypeScript, discord.js v14, and SQLite.
+A Discord bot with per-server virtual balances, two-sided bet pools, elected admins, and optional embed-fixing reposts for X, Instagram and TikTok links. Built with TypeScript, discord.js v14, and SQLite.
 
-**[Add Wanna Bet to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147568640&integration_type=0&scope=bot+applications.commands)**, then run `/help`. The public bot's operator must configure channels for X link replacement.
+**[Add Wanna Bet to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147568640&integration_type=0&scope=bot+applications.commands)**, then run `/help`. The public bot's operator must configure channels for social link replacement.
 
 ## Self-hosting
 
@@ -36,7 +36,7 @@ docker compose run --rm wannabet node dist/commands/register.js
 
 `docker compose logs -f` shows logs. `docker compose down` stops the bot while retaining its database volume. Keep that volume and the `backups/` directory when updating; never commit `.env` or database files.
 
-## X link replacement
+## Social link replacement
 
 Enable **Message Content Intent**, then set `FIXUPX_CHANNEL_IDS` to comma-separated channel IDs in `.env` and rebuild/restart. Use Discord's Developer Mode → **Copy Channel ID**. Channels can span servers; only exact IDs are included. Threads need their own IDs, and DMs are excluded.
 
@@ -51,7 +51,17 @@ Check role and channel overrides. The public invite above omits reposting permis
 
 The legacy `FIXUPX_CHANNEL_ID` is combined with the list and deduplicated. Invalid IDs or empty list entries, including trailing commas, stop startup. Clear both settings and restart to disable replacement and its extra gateway intents. Slash commands need no re-registration.
 
-For new human messages, literal `https://x.com` links become `https://fixupx.com` with paths, fragments and surrounding text preserved; the query string (share/tracking params like `?s=..&t=..`) is dropped. Host matching ignores case; HTTP, subdomains, credentials, explicit ports, nested URLs inside other URLs, and lookalike hosts stay unchanged. Existing messages, edits, bots and webhooks do not trigger reposting.
+For new human messages, links on these hosts are swapped for an embed fixer, with paths, fragments and surrounding text preserved; the query string (share/tracking params like `?s=..&t=..` or `?igsh=..`) is dropped.
+
+| Platform | Rewritten to | Accepted subdomains | Paths rewritten |
+| --- | --- | --- | --- |
+| `x.com` | `fixupx.com` | none | all |
+| `instagram.com` | `kkclip.com` | `www.`, `m.`, `mobile.` | `/p/`, `/reel/`, `/reels/`, `/tv/` |
+| `tiktok.com` | `tnktok.com` | `www.`, `m.`, `vm.`, `vt.` | `/@user/video/`, `/@user/photo/`, `/t/`, and share codes on `vm.`/`vt.` |
+
+Accepted subdomains are dropped when rewriting to the fixer. Profile and index pages, malformed post paths, Instagram `/share/` links, and TikTok `/v/` links stay untouched because the fixers do not reliably resolve them. Host matching ignores case; HTTP, unlisted subdomains, credentials, explicit ports, nested URLs inside other URLs, and lookalike hosts stay unchanged. Existing messages, edits, bots and webhooks do not trigger reposting.
+
+Set `REWRITE_PLATFORMS` to a comma-separated subset of `x,instagram,tiktok` to skip a platform whose fixer is down; leave it empty for all three. An unrecognized name stops startup.
 
 Reposts use quoted **Shared by @author** credit and plain leading context, followed by the URL and its full native preview. One separator space may become a newline. Complex Markdown or whitespace keeps the full rewritten body beneath the credit. Reply links, suppressed embeds, and attachment names, descriptions and spoilers are retained. All mention notifications are disabled.
 

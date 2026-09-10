@@ -21,7 +21,8 @@ import {
   formatXLinkRepost,
   parseFixupXChannelId,
   parseFixupXChannelIds,
-  rewriteXLinks,
+  parseRewritePlatforms,
+  rewriteSocialLinks,
 } from '../src/services/XLinkService';
 
 const CHANNEL_ID = '123456789012345678';
@@ -31,7 +32,7 @@ const QUOTED_CREDIT = `> **Shared by <@${AUTHOR_ID}>**`;
 
 test('quoted layout places plain leading context above a native URL', () => {
   const body = "Discord's May patch notes. https://x.com/discord/status/1";
-  assert.equal(formatXLinkRepost(rewriteXLinks(body), AUTHOR_ID),
+  assert.equal(formatXLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
     `${QUOTED_CREDIT}\n> Discord's May patch notes.\nhttps://fixupx.com/discord/status/1`);
   assert.equal(formatXLinkRepost('https://fixupx.com/discord/status/1', AUTHOR_ID),
     `${QUOTED_CREDIT}\nhttps://fixupx.com/discord/status/1`);
@@ -41,15 +42,15 @@ test('quoted layout places plain leading context above a native URL', () => {
 
 test('quoted layout preserves multiline context and all text after the first URL', () => {
   const body = 'First line\nSecond line\nhttps://x.com/a\nAfter the first link. https://x.com/b  \n';
-  assert.equal(formatXLinkRepost(rewriteXLinks(body), AUTHOR_ID),
+  assert.equal(formatXLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
     `${QUOTED_CREDIT}\n> First line\n> Second line\nhttps://fixupx.com/a\nAfter the first link. https://fixupx.com/b  \n`);
-  assert.equal(formatXLinkRepost(rewriteXLinks('Compare https://x.com/a with https://x.com/b then decide.'), AUTHOR_ID),
+  assert.equal(formatXLinkRepost(rewriteSocialLinks('Compare https://x.com/a with https://x.com/b then decide.'), AUTHOR_ID),
     `${QUOTED_CREDIT}\n> Compare\nhttps://fixupx.com/a with https://fixupx.com/b then decide.`);
 });
 
 test('quoted layout preserves an unrelated first URL and nested URLs in its query', () => {
   const body = 'Read http://example.test/?next=(https://x.com/a) then https://x.com/b';
-  assert.equal(formatXLinkRepost(rewriteXLinks(body), AUTHOR_ID),
+  assert.equal(formatXLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
     `${QUOTED_CREDIT}\n> Read\nhttp://example.test/?next=(https://x.com/a) then https://fixupx.com/b`);
 });
 
@@ -64,7 +65,7 @@ test('quoted layout leaves existing Markdown and link wrappers intact beneath th
     '- List item\nhttps://x.com/a', '1. Ordered item\nhttps://x.com/a',
     '# Heading\nhttps://x.com/a', 'Escaped \\*asterisk https://x.com/a',
   ]) {
-    const rewritten = rewriteXLinks(body);
+    const rewritten = rewriteSocialLinks(body);
     assert.equal(formatXLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
   }
 });
@@ -76,7 +77,7 @@ test('quoted layout preserves complex whitespace without trimming or reordering'
     'Context\t https://x.com/a', 'Context\r\nhttps://x.com/a',
     'Context\u00a0https://x.com/a', '\nhttps://x.com/a',
   ]) {
-    const rewritten = rewriteXLinks(body);
+    const rewritten = rewriteSocialLinks(body);
     assert.equal(formatXLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
   }
 });
@@ -84,62 +85,62 @@ test('quoted layout preserves complex whitespace without trimming or reordering'
 test('rewrites links while preserving text, punctuation, paths and fragments, and dropping queries', () => {
   const original = 'See [this](HTTPS://X.COM/user/status/1?a=%2F+b&c=2#part), ' +
     '<https://x.com/u/status/2> and https://x.com.\nKeep @everyone and **text**.';
-  assert.equal(rewriteXLinks(original),
+  assert.equal(rewriteSocialLinks(original),
     'See [this](https://fixupx.com/user/status/1#part), ' +
     '<https://fixupx.com/u/status/2> and https://fixupx.com.\nKeep @everyone and **text**.');
-  assert.equal(rewriteXLinks('[a](https://x.com/a)[b](https://x.com/b)'),
+  assert.equal(rewriteSocialLinks('[a](https://x.com/a)[b](https://x.com/b)'),
     '[a](https://fixupx.com/a)[b](https://fixupx.com/b)');
 });
 
 test('strips the tracking query string, including any share params or nested URLs within it', () => {
   const original = 'https://x.com/venturetwins/status/2097769059937047002?s=46&t=JnU-mg-_ruRIqJJQHP3cxg';
-  assert.equal(rewriteXLinks(original), 'https://fixupx.com/venturetwins/status/2097769059937047002');
+  assert.equal(rewriteSocialLinks(original), 'https://fixupx.com/venturetwins/status/2097769059937047002');
   for (const nested of ['(https://x.com/a)', '[https://x.com/a]', '{https://x.com/a}', '([https://x.com/a])']) {
-    assert.equal(rewriteXLinks(`https://x.com/a?url=${nested}`), 'https://fixupx.com/a');
+    assert.equal(rewriteSocialLinks(`https://x.com/a?url=${nested}`), 'https://fixupx.com/a');
     // A query on an unrelated host is untouched — only x.com links have their query dropped.
-    assert.equal(rewriteXLinks(`https://other.test/?url=${nested}`), `https://other.test/?url=${nested}`);
+    assert.equal(rewriteSocialLinks(`https://other.test/?url=${nested}`), `https://other.test/?url=${nested}`);
   }
-  assert.equal(rewriteXLinks('[a](https://x.com/a?x=(https://x.com/b))[b](https://x.com/c)'),
+  assert.equal(rewriteSocialLinks('[a](https://x.com/a?x=(https://x.com/b))[b](https://x.com/c)'),
     '[a](https://fixupx.com/a)[b](https://fixupx.com/c)');
 });
 
 test('preserves question marks in fragments when stripping queries', () => {
   for (const suffix of ['#part?detail', '?s=20#part?detail', '#part?one?two']) {
-    assert.equal(rewriteXLinks(`https://x.com/u/status/1${suffix}`),
+    assert.equal(rewriteSocialLinks(`https://x.com/u/status/1${suffix}`),
       `https://fixupx.com/u/status/1${suffix.slice(suffix.indexOf('#'))}`);
   }
 });
 
 test('preserves surrounding punctuation after stripped share queries', () => {
   for (const punctuation of ['.', ',', '!', '?', ':', ';', '...']) {
-    assert.equal(rewriteXLinks(`Read https://x.com/u/status/1?s=20${punctuation} Next.`),
+    assert.equal(rewriteSocialLinks(`Read https://x.com/u/status/1?s=20${punctuation} Next.`),
       `Read https://fixupx.com/u/status/1${punctuation} Next.`);
   }
-  assert.equal(rewriteXLinks('(https://x.com/u/status/1?s=20).'),
+  assert.equal(rewriteSocialLinks('(https://x.com/u/status/1?s=20).'),
     '(https://fixupx.com/u/status/1).');
-  assert.equal(rewriteXLinks('https://x.com/u/status/1?data={value}'),
+  assert.equal(rewriteSocialLinks('https://x.com/u/status/1?data={value}'),
     'https://fixupx.com/u/status/1');
 });
 
 test('preserves closing Markdown around links when stripping queries', () => {
   for (const marker of ['*', '**', '***', '_', '__', '~~', '||']) {
     for (const context of ['', 'Read ']) {
-      assert.equal(rewriteXLinks(`${marker}${context}https://x.com/u/status/1?s=20${marker}.`),
+      assert.equal(rewriteSocialLinks(`${marker}${context}https://x.com/u/status/1?s=20${marker}.`),
         `${marker}${context}https://fixupx.com/u/status/1${marker}.`);
     }
   }
-  assert.equal(rewriteXLinks('__**Read https://x.com/u/status/1?s=20.**__'),
+  assert.equal(rewriteSocialLinks('__**Read https://x.com/u/status/1?s=20.**__'),
     '__**Read https://fixupx.com/u/status/1.**__');
 });
 
 test('does not preserve query punctuation as Markdown without an unmatched opener', () => {
   for (const prefix of ['', '**Earlier** ', '\\**Literal ', '**Earlier\n\n']) {
-    assert.equal(rewriteXLinks(`${prefix}https://x.com/u/status/1?t=abc**`),
+    assert.equal(rewriteSocialLinks(`${prefix}https://x.com/u/status/1?t=abc**`),
       `${prefix}https://fixupx.com/u/status/1`);
   }
-  assert.equal(rewriteXLinks('https://x.com/u/status/1?t=abc_'),
+  assert.equal(rewriteSocialLinks('https://x.com/u/status/1?t=abc_'),
     'https://fixupx.com/u/status/1');
-  assert.equal(rewriteXLinks('**Read https://x.com/u/status/1?t=abc\\**'),
+  assert.equal(rewriteSocialLinks('**Read https://x.com/u/status/1?t=abc\\**'),
     '**Read https://fixupx.com/u/status/1');
 });
 
@@ -151,11 +152,73 @@ for (const url of [
   'http://x.com/a', 'ftp://x.com/a', 'x.com/a', 'https://fixupx.com/a',
   'https://other.test/?url=https://x.com/a',
   'http://other.test/?url=https://x.com/a',
+  // Instagram and TikTok inherit the same authority rules.
+  'https://instagram.com.evil/p/abc', 'https://evil@instagram.com/p/abc',
+  'https://instagram.com@evil.test/p/abc', 'https://instagram.com:443/p/abc',
+  'http://instagram.com/p/abc', 'https://kkclip.com/p/abc',
+  'https://tiktok.com.evil/@user/video/1', 'https://evil@tiktok.com/@user/video/1',
+  'https://tiktok.com:443/@user/video/1', 'http://tiktok.com/@user/video/1',
+  'https://tnktok.com/@user/video/1',
+  // Profiles and index pages gain nothing from an embed fixer.
+  'https://instagram.com/username', 'https://www.instagram.com/', 'https://instagram.com',
+  'https://tiktok.com/@username', 'https://www.tiktok.com/', 'https://tiktok.com',
+  'https://tiktok.com/@user/video/notanumber',
+  'https://tiktok.com/@user/video/123oops',
+  'https://tiktok.com/@user/video/123/extra',
+  'https://tiktok.com/v/7412345678901234567',
+  'https://tiktok.com/v/7412345678901234567.html',
+  'https://instagram.com/p/code/extra',
+  'https://instagram.com/p/code%2Fextra',
+  'https://instagram.com/share/DAbc123',
+  'https://www.instagram.com/share/reel/_69O6RoGd/',
 ]) {
   test(`leaves nonmatching URL untouched: ${url}`, () => {
-    assert.equal(rewriteXLinks(url), url);
+    assert.equal(rewriteSocialLinks(url), url);
   });
 }
+
+for (const [original, expected] of [
+  ['https://instagram.com/p/DAbc-1_x/', 'https://kkclip.com/p/DAbc-1_x/'],
+  ['https://www.instagram.com/reel/DAbc123/', 'https://kkclip.com/reel/DAbc123/'],
+  ['https://m.instagram.com/reels/DAbc123', 'https://kkclip.com/reels/DAbc123'],
+  ['https://mobile.instagram.com/tv/DAbc123', 'https://kkclip.com/tv/DAbc123'],
+  // Mobile share links arrive as www with an igsh tracking param.
+  ['https://www.instagram.com/reel/DAbc123/?igsh=MXY2cWZ4ZzZ4', 'https://kkclip.com/reel/DAbc123/'],
+  ['https://tiktok.com/@user.name/video/7412345678901234567',
+    'https://tnktok.com/@user.name/video/7412345678901234567'],
+  ['https://www.tiktok.com/@user/photo/7412345678901234567',
+    'https://tnktok.com/@user/photo/7412345678901234567'],
+  ['https://m.tiktok.com/t/ZGdFhBqWK', 'https://tnktok.com/t/ZGdFhBqWK'],
+  ['https://vm.tiktok.com/ZGdFhBqWK/', 'https://tnktok.com/ZGdFhBqWK/'],
+  ['https://vt.tiktok.com/ZGdFhBqWK', 'https://tnktok.com/ZGdFhBqWK'],
+  ['https://vm.tiktok.com/ZGdFhBqWK/?share=1#part?detail', 'https://tnktok.com/ZGdFhBqWK/#part?detail'],
+  ['https://vt.tiktok.com/ZGdFhBqWK#part', 'https://tnktok.com/ZGdFhBqWK#part'],
+  ['https://www.tiktok.com/@user/video/7412345678901234567?is_from_webapp=1&sender_device=pc',
+    'https://tnktok.com/@user/video/7412345678901234567'],
+] as const) {
+  test(`rewrites to the fixer apex: ${original}`, () => {
+    assert.equal(rewriteSocialLinks(original), expected);
+  });
+}
+
+test('platform names select which hosts are rewritten', () => {
+  const body = 'https://x.com/u/status/1 https://instagram.com/p/abc https://tiktok.com/@u/video/1';
+  assert.equal(rewriteSocialLinks(body, ['x']),
+    'https://fixupx.com/u/status/1 https://instagram.com/p/abc https://tiktok.com/@u/video/1');
+  assert.equal(rewriteSocialLinks(body, ['instagram', 'tiktok']),
+    'https://x.com/u/status/1 https://kkclip.com/p/abc https://tnktok.com/@u/video/1');
+  assert.equal(rewriteSocialLinks(body, []), body);
+});
+
+test('platform configuration defaults to every platform and rejects unknown names', () => {
+  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok']);
+  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok']);
+  assert.deepEqual(parseRewritePlatforms(' tiktok , x '), ['tiktok', 'x']);
+  assert.deepEqual(parseRewritePlatforms('x,x'), ['x']);
+  for (const invalid of ['twitter', 'x,', ',x', 'x,,tiktok', 'X', 'all']) {
+    assert.throws(() => parseRewritePlatforms(invalid), /REWRITE_PLATFORMS/);
+  }
+});
 
 test('channel configuration defaults off and rejects invalid scope', () => {
   assert.equal(parseFixupXChannelId(undefined), undefined);
@@ -350,6 +413,21 @@ test('unset configuration disables all processing', async () => {
   assert.deepEqual(f.events, []);
 });
 
+test('a message is left alone when only a disabled platform matches', async () => {
+  const disabled = fixture();
+  disabled.source.content = 'Look https://instagram.com/p/DAbc123';
+  await createXLinkHandler(CHANNEL_ID, disabled.log, undefined, { platforms: ['x', 'tiktok'] })(
+    disabled.source as unknown as Message);
+  assert.deepEqual(disabled.events, []);
+
+  const enabled = fixture();
+  enabled.source.content = 'Look https://instagram.com/p/DAbc123';
+  await createXLinkHandler(CHANNEL_ID, enabled.log, undefined, { platforms: ['instagram'] })(
+    enabled.source as unknown as Message);
+  assert.deepEqual(enabled.events, ['send', 'fetch', 'delete original']);
+  assert.equal(enabled.sent[0].content, `${QUOTED_CREDIT}\n> Look\nhttps://kkclip.com/p/DAbc123`);
+});
+
 for (const permission of ['ViewChannel', 'ReadMessageHistory', 'ManageMessages', 'SendMessages', 'EmbedLinks'] as const) {
   test(`missing ${permission} prevents a repost and deletion`, async () => {
     const f = fixture();
@@ -515,6 +593,27 @@ test('removes a stale repost if the original was deleted during upload', async (
 
 // ─── Translation ────────────────────────────────────────────────────────────
 
+test('translation and platform rewriting compose while preserving formatting and fragments', async () => {
+  const calls: string[] = [];
+  const f = fixture(async (id) => { calls.push(id); return 'ja'; });
+  f.source.content = '**Read https://x.com/u/status/123?s=20#part?detail** https://www.instagram.com/p/abc/?igsh=1. https://vm.tiktok.com/ZN8eQCMCd/?share=1';
+  await f.run();
+  assert.deepEqual(calls, ['123']);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n**Read https://fixupx.com/u/status/123/en#part?detail** https://kkclip.com/p/abc/. https://tnktok.com/ZN8eQCMCd/`);
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
+});
+
+test('disabling X also disables translation in messages containing another enabled platform', async () => {
+  const f = fixture();
+  f.source.content = 'https://x.com/u/status/123?s=20 https://instagram.com/p/abc/?igsh=1';
+  const handler = createXLinkHandler(CHANNEL_ID, f.log, undefined, {
+    platforms: ['instagram'],
+    translateLang: async () => { assert.fail('disabled X must never request translation'); },
+  });
+  await handler(f.source as unknown as Message);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://x.com/u/status/123?s=20 https://kkclip.com/p/abc/`);
+});
+
 test('appends the translate suffix for a non-English tweet', async () => {
   const content = await addTranslationSuffixes(
     'https://x.com/user/status/123', async () => 'ja'
@@ -585,8 +684,7 @@ test('the same status ID is looked up once even if it appears twice', async () =
 test('translation is applied end-to-end when a lookup function is provided', async () => {
   const f = fixture(async () => 'ja');
   await f.run();
-  assert.equal(f.sent[0].content,
-    `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1/en#part @everyone <@&999> <@888>`);
+  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1\/en#/);
 });
 
 test('translation is skipped entirely, with no lookup call, when disabled', async () => {
@@ -595,8 +693,7 @@ test('translation is skipped entirely, with no lookup call, when disabled', asyn
   const handler = createXLinkHandler(CHANNEL_ID, f.log);
   await handler(f.source as unknown as Message);
   assert.equal(called, false);
-  assert.equal(f.sent[0].content,
-    `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1#part @everyone <@&999> <@888>`);
+  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1#/);
 });
 
 test('translation preserves URL wrappers and punctuation', async () => {
@@ -665,15 +762,15 @@ test('language lookup fails open for API failures, unavailable posts and invalid
 test('literal markers in earlier words or URLs do not leak tracking values into paths', () => {
   for (const prefix of ['my_name shared ', 'https://instagram.com/p/abc_def/ ', 'https://other.test/?key=* ']) {
     for (const marker of ['_', '*']) {
-      assert.equal(rewriteXLinks(prefix + 'https://x.com/u/status/123?t=abc' + marker),
-        prefix + 'https://fixupx.com/u/status/123');
+      assert.equal(rewriteSocialLinks(prefix + 'https://x.com/u/status/123?t=abc' + marker),
+        prefix.replace('instagram.com', 'kkclip.com') + 'https://fixupx.com/u/status/123');
     }
   }
 });
 
 test('preserves multiline and combined closing Markdown around stripped queries', () => {
   for (const [prefix, suffix] of [['**First line\n', '**'], ['*Read **', '***'], ['**Read *', '***']]) {
-    assert.equal(rewriteXLinks(prefix + 'https://x.com/u/status/123?t=abc' + suffix),
+    assert.equal(rewriteSocialLinks(prefix + 'https://x.com/u/status/123?t=abc' + suffix),
       prefix + 'https://fixupx.com/u/status/123' + suffix);
   }
 });

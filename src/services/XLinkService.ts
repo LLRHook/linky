@@ -48,11 +48,75 @@ function urlWithoutSuffix(url: string, prefix: string): string {
   return link;
 }
 
-/** Rewrite literal HTTPS x.com links, dropping queries but retaining text and fragments. */
-export function rewriteXLinks(content: string): string {
-  return mapLinks(content, (url) => /^https:\/\/x\.com(?=[/?#]|$)/i.test(url)
-    // A question mark after # belongs to the fragment, not the query.
-    ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com').replace(/^([^?#]*)\?[^#]*/, '$1') : url);
+export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok'] as const;
+export type RewritePlatform = typeof REWRITE_PLATFORMS[number];
+
+interface Platform {
+  name: RewritePlatform;
+  /** An allowed subdomain plus the literal apex host, anchored at the scheme. */
+  host: RegExp;
+  /** Replacement authority; a matched subdomain is dropped. */
+  fixer: string;
+  /** Paths worth rewriting. Without one, every path on the host qualifies. */
+  path?: RegExp;
+}
+
+// Subdomains are a fixed allowlist per platform, never a wildcard: `www.x.com` and
+// other lookalike authorities must keep falling through untouched.
+const PLATFORMS: readonly Platform[] = [
+  { name: 'x', host: /^https:\/\/x\.com(?=[/?#]|$)/i, fixer: 'https://fixupx.com' },
+  {
+    name: 'instagram',
+    host: /^https:\/\/(?:www\.|m\.|mobile\.)?instagram\.com(?=[/?#]|$)/i,
+    fixer: 'https://kkclip.com',
+    path: /^\/(?:p|reels?|tv)\/[\w-]+\/?$/,
+  },
+  {
+    name: 'tiktok',
+    host: /^https:\/\/(?:www\.|m\.)?tiktok\.com(?=[/?#]|$)/i,
+    fixer: 'https://tnktok.com',
+    path: /^\/(?:@[\w.-]+\/(?:video|photo)\/\d+|t\/[\w-]+)\/?$/,
+  },
+  // Share links carry the code at the root, which must not be accepted on the apex host.
+  {
+    name: 'tiktok',
+    host: /^https:\/\/(?:vm|vt)\.tiktok\.com(?=[/?#]|$)/i,
+    fixer: 'https://tnktok.com',
+    path: /^\/[\w-]+\/?$/,
+  },
+];
+
+/** Reject an unknown name instead of silently leaving that platform unrewritten. */
+export function parseRewritePlatforms(value: string | undefined): readonly RewritePlatform[] {
+  if (!value?.trim()) return REWRITE_PLATFORMS;
+  const platforms = new Set<RewritePlatform>();
+  for (const entry of value.split(',')) {
+    const name = entry.trim();
+    if (!(REWRITE_PLATFORMS as readonly string[]).includes(name)) {
+      throw new Error(`REWRITE_PLATFORMS must be a comma-separated subset of ${REWRITE_PLATFORMS.join(', ')}, with no empty entries.`);
+    }
+    platforms.add(name as RewritePlatform);
+  }
+  return [...platforms];
+}
+
+/** Rewrite supported post URLs, retaining surrounding text and fragments. */
+export function rewriteSocialLinks(content: string, platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS): string {
+  const enabled = new Set(platforms);
+  return mapLinks(content, (url) => rewriteUrl(url, enabled) ?? url);
+}
+
+function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string | undefined {
+  for (const platform of PLATFORMS) {
+    if (!enabled.has(platform.name)) continue;
+    const host = platform.host.exec(url);
+    if (!host) continue;
+    // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
+    const rest = url.slice(host[0].length).replace(/^([^?#]*)\?[^#]*/, '$1');
+    if (platform.path && !platform.path.test(rest.split('#', 1)[0])) continue;
+    return platform.fixer + rest;
+  }
+  return undefined;
 }
 
 /** Visit complete URL tokens, preserving surrounding text and nested URLs. */
@@ -262,7 +326,10 @@ export function createXLinkHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { translateLang }: { translateLang?: (statusId: string) => Promise<string | null> } = {}
+  { platforms = REWRITE_PLATFORMS, translateLang }: {
+    platforms?: readonly RewritePlatform[];
+    translateLang?: (statusId: string) => Promise<string | null>;
+  } = {}
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
   const inFlight = new Set<string>();
@@ -271,7 +338,7 @@ export function createXLinkHandler(
   return async (message) => {
     if (!allowedChannelIds.has(message.channelId) || !message.inGuild() ||
         !canCopy(message) || inFlight.has(message.id) || reposted.has(message.id)) return;
-    const rewritten = rewriteXLinks(message.content);
+    const rewritten = rewriteSocialLinks(message.content, platforms);
     if (rewritten === message.content) return;
 
     const channelId = message.channelId;
@@ -301,8 +368,8 @@ export function createXLinkHandler(
         : undefined;
       // Discord can mutate this cached message while a language lookup is pending.
       const version = sourceVersion(message);
-      const translated = translateLang
-        ? rewriteXLinks(await addTranslationSuffixes(message.content, translateLang)) : rewritten;
+      const translated = translateLang && platforms.includes('x')
+        ? rewriteSocialLinks(await addTranslationSuffixes(message.content, translateLang), platforms) : rewritten;
       const content = formatXLinkRepost(translated, message.author.id, replyUrl);
       const attachments = [...message.attachments.values()];
       if (content.length > MAX_CONTENT_LENGTH || attachments.length > 10 ||
