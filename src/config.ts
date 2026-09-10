@@ -23,6 +23,8 @@ export interface Config {
   fixupXChannelIds: readonly string[];
   /** Platforms whose links are rewritten; defaults to all of them. */
   rewritePlatforms: readonly RewritePlatform[];
+  /** Append fxtwitter.com's translate modifier to non-English reposted tweets. */
+  translateTweets: boolean;
 }
 
 export const config: Config = {
@@ -30,4 +32,5 @@ export const config: Config = {
   nodeEnv: process.env['NODE_ENV'] ?? 'development',
   fixupXChannelIds: parseFixupXChannelIds(process.env['FIXUPX_CHANNEL_IDS'], process.env['FIXUPX_CHANNEL_ID']),
   rewritePlatforms: parseRewritePlatforms(process.env['REWRITE_PLATFORMS']),
+  translateTweets: process.env['TRANSLATE_TWEETS']?.toLowerCase() === 'true',
 };

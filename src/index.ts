@@ -15,7 +15,7 @@ import { ensureGuild, getGuild } from './services/PlayerService';
 import { revokeAdmin, getOpenElection, scheduleElectionFinalization } from './services/ElectionService';
 import { audit } from './services/AuditService';
 import { errorEmbed, welcomeEmbed } from './ui/embeds';
-import { createXLinkHandler } from './services/XLinkService';
+import { createXLinkHandler, fetchTweetLang } from './services/XLinkService';
 
 // ─── Discord Client ────────────────────────────────────────────────────────────
 
@@ -30,10 +30,13 @@ export const client = new Client({
 
 if (config.fixupXChannelIds.length) {
   client.on('messageCreate', createXLinkHandler(
-    config.fixupXChannelIds, logger, undefined, config.rewritePlatforms
+    config.fixupXChannelIds, logger, undefined, {
+      platforms: config.rewritePlatforms,
+      translateLang: config.translateTweets ? fetchTweetLang : undefined,
+    }
   ));
   logger.info(
-    { channelIds: config.fixupXChannelIds, platforms: config.rewritePlatforms },
+    { channelIds: config.fixupXChannelIds, platforms: config.rewritePlatforms, translateTweets: config.translateTweets },
     'Social link replacement enabled for configured channels'
   );
 }

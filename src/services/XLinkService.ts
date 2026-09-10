@@ -11,6 +11,8 @@ import type { Logger } from 'pino';
 const MAX_CONTENT_LENGTH = 2_000;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
+const TRANSLATE_TIMEOUT_MS = 5_000;
+const TRANSLATE_TARGET_LANG = 'en';
 const RECENT_MESSAGE_LIMIT = 1_000;
 const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
 // Discord's IS_SPOILER attachment flag is not named in the installed v14 enum.
@@ -42,7 +44,7 @@ interface Platform {
   name: RewritePlatform;
   /** An allowed subdomain plus the literal apex host, anchored at the scheme. */
   host: RegExp;
-  /** Replacement authority. Fixers are apex-only, so a matched subdomain is dropped. */
+  /** Replacement authority; a matched subdomain is dropped. */
   fixer: string;
   /** Paths worth rewriting. Without one, every path on the host qualifies. */
   path?: RegExp;
@@ -56,7 +58,7 @@ const PLATFORMS: readonly Platform[] = [
     name: 'instagram',
     host: /^https:\/\/(?:www\.|m\.|mobile\.)?instagram\.com(?=[/?#]|$)/i,
     fixer: 'https://kkclip.com',
-    path: /^\/(?:(?:p|reels?|tv)\/[\w-]+|share\/(?:reel\/)?[\w-]+)\/?$/,
+    path: /^\/(?:p|reels?|tv)\/[\w-]+\/?$/,
   },
   {
     name: 'tiktok',
@@ -87,12 +89,27 @@ export function parseRewritePlatforms(value: string | undefined): readonly Rewri
   return [...platforms];
 }
 
-/** Change only a literal HTTPS authority of an enabled platform, leaving all other bytes intact. */
-export function rewriteSocialLinks(
-  content: string,
-  platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS
-): string {
+/** Rewrite supported post URLs, retaining surrounding text and fragments. */
+export function rewriteSocialLinks(content: string, platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS): string {
   const enabled = new Set(platforms);
+  return mapLinks(content, (url) => rewriteUrl(url, enabled) ?? url);
+}
+
+function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string | undefined {
+  for (const platform of PLATFORMS) {
+    if (!enabled.has(platform.name)) continue;
+    const host = platform.host.exec(url);
+    if (!host) continue;
+    // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
+    const rest = url.slice(host[0].length).replace(/^([^?#]*)\?[^#]*/, '$1');
+    if (platform.path && !platform.path.test(rest.split('#', 1)[0])) continue;
+    return platform.fixer + rest;
+  }
+  return undefined;
+}
+
+/** Visit complete URL tokens, preserving surrounding text and nested URLs. */
+function mapLinks(content: string, transform: (url: string) => string): string {
   const schemes = /[a-z][a-z\d+.-]*:\/\//gi;
   let rewritten = '';
   let cursor = 0;
@@ -113,26 +130,14 @@ export function rewriteSocialLinks(
     }
     // Consume other URLs too, including URLs nested inside their paths/queries.
     const url = content.slice(match.index, end);
-    const link = urlWithoutSuffix(url,
+    const withoutPunctuation = urlWithoutSuffix(url,
       content.slice(content.lastIndexOf('\n', match.index - 1) + 1, match.index));
-    rewritten += content.slice(cursor, match.index) + (rewriteUrl(link, enabled) ?? link) + url.slice(link.length);
+    rewritten += content.slice(cursor, match.index) + transform(withoutPunctuation) +
+      url.slice(withoutPunctuation.length);
     cursor = end;
     schemes.lastIndex = end;
   }
   return rewritten + content.slice(cursor);
-}
-
-function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string | undefined {
-  for (const platform of PLATFORMS) {
-    if (!enabled.has(platform.name)) continue;
-    const host = platform.host.exec(url);
-    if (!host) continue;
-    // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
-    const rest = url.slice(host[0].length).replace(/^([^?#]*)\?[^#]*/, '$1');
-    if (platform.path && !platform.path.test(rest.split('#', 1)[0])) continue;
-    return platform.fixer + rest;
-  }
-  return undefined;
 }
 
 /** Quote plain leading context without pulling apart existing Markdown or URLs. */
@@ -152,6 +157,59 @@ export function formatXLinkRepost(content: string, authorId: string, replyUrl?: 
     !line || /^\s|\s$/.test(line) || /^(?:[-+]|\d+[.)])\s/.test(line)
   )) return fallback;
   return `${credit}\n${lines.map((line) => `> ${line}`).join('\n')}\n${content.slice(firstUrl.index)}`;
+}
+
+function tweetLanguage(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const language = value.toLowerCase();
+  return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(language) &&
+    !['und', 'zxx', 'mul'].includes(language) ? language : null;
+}
+
+/** Read the language from FxEmbed's v2 status response, failing open on errors. */
+export async function fetchTweetLang(
+  statusId: string,
+  fetchJson: typeof fetch = fetch
+): Promise<string | null> {
+  try {
+    const response = await fetchJson(`https://api.fxtwitter.com/2/status/${statusId}`, {
+      signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const json = await response.json() as { code?: unknown; status?: { type?: unknown; lang?: unknown } };
+    return json?.code === 200 && json.status?.type === 'status'
+      ? tweetLanguage(json.status.lang) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add FxEmbed's translation modifier to original x.com status links before rewriting
+ * their host. Existing fixer links and URLs nested inside other URLs stay untouched.
+ */
+export async function addTranslationSuffixes(
+  content: string,
+  fetchLang: (statusId: string) => Promise<string | null> = fetchTweetLang
+): Promise<string> {
+  const statusLink = /^https:\/\/x\.com\/[^\s/?#]+\/status\/(\d+)(?=[?#]|$)/i;
+  const statusIds = new Set<string>();
+  mapLinks(content, (url) => {
+    const id = statusLink.exec(url)?.[1];
+    if (id) statusIds.add(id);
+    return url;
+  });
+  const langs = new Map<string, string | null>();
+  await Promise.all([...statusIds].map(async (statusId) => {
+    try { langs.set(statusId, tweetLanguage(await fetchLang(statusId))); }
+    catch { langs.set(statusId, null); }
+  }));
+  return mapLinks(content, (url) => {
+    const match = statusLink.exec(url);
+    const lang = match && langs.get(match[1]);
+    return lang && lang.split('-')[0] !== TRANSLATE_TARGET_LANG
+      ? url.replace(match![0], `${match![0]}/${TRANSLATE_TARGET_LANG}`) : url;
+  });
 }
 
 function isSpoiler(attachment: Attachment): boolean {
@@ -257,7 +315,10 @@ export function createXLinkHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS
+  { platforms = REWRITE_PLATFORMS, translateLang }: {
+    platforms?: readonly RewritePlatform[];
+    translateLang?: (statusId: string) => Promise<string | null>;
+  } = {}
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
   const inFlight = new Set<string>();
@@ -294,7 +355,11 @@ export function createXLinkHandler(
       const replyUrl = message.reference?.messageId
         ? `https://discord.com/channels/${message.guildId}/${message.reference.channelId ?? channelId}/${message.reference.messageId}`
         : undefined;
-      const content = formatXLinkRepost(rewritten, message.author.id, replyUrl);
+      // Discord can mutate this cached message while a language lookup is pending.
+      const version = sourceVersion(message);
+      const translated = translateLang && platforms.includes('x')
+        ? rewriteSocialLinks(await addTranslationSuffixes(message.content, translateLang), platforms) : rewritten;
+      const content = formatXLinkRepost(translated, message.author.id, replyUrl);
       const attachments = [...message.attachments.values()];
       if (content.length > MAX_CONTENT_LENGTH || attachments.length > 10 ||
           attachments.reduce((total, attachment) => total + attachment.size, 0) > MAX_ATTACHMENT_BYTES) {
@@ -302,7 +367,6 @@ export function createXLinkHandler(
         return;
       }
 
-      const version = sourceVersion(message);
       const files: AttachmentBuilder[] = [];
       for (const attachment of attachments) files.push(await copyAttachment(attachment));
       const replacement = await channel.send({
