@@ -81,23 +81,66 @@ test('quoted layout preserves complex whitespace without trimming or reordering'
   }
 });
 
-test('rewrites links while preserving text, punctuation, paths, queries and fragments', () => {
+test('rewrites links while preserving text, punctuation, paths and fragments, and dropping queries', () => {
   const original = 'See [this](HTTPS://X.COM/user/status/1?a=%2F+b&c=2#part), ' +
     '<https://x.com/u/status/2> and https://x.com.\nKeep @everyone and **text**.';
   assert.equal(rewriteXLinks(original),
-    'See [this](https://fixupx.com/user/status/1?a=%2F+b&c=2#part), ' +
+    'See [this](https://fixupx.com/user/status/1#part), ' +
     '<https://fixupx.com/u/status/2> and https://fixupx.com.\nKeep @everyone and **text**.');
   assert.equal(rewriteXLinks('[a](https://x.com/a)[b](https://x.com/b)'),
     '[a](https://fixupx.com/a)[b](https://fixupx.com/b)');
 });
 
-test('preserves nested URLs inside balanced path and query punctuation', () => {
+test('strips the tracking query string, including any share params or nested URLs within it', () => {
+  const original = 'https://x.com/venturetwins/status/2097769059937047002?s=46&t=JnU-mg-_ruRIqJJQHP3cxg';
+  assert.equal(rewriteXLinks(original), 'https://fixupx.com/venturetwins/status/2097769059937047002');
   for (const nested of ['(https://x.com/a)', '[https://x.com/a]', '{https://x.com/a}', '([https://x.com/a])']) {
-    assert.equal(rewriteXLinks(`https://x.com/a?url=${nested}`), `https://fixupx.com/a?url=${nested}`);
+    assert.equal(rewriteXLinks(`https://x.com/a?url=${nested}`), 'https://fixupx.com/a');
+    // A query on an unrelated host is untouched — only x.com links have their query dropped.
     assert.equal(rewriteXLinks(`https://other.test/?url=${nested}`), `https://other.test/?url=${nested}`);
   }
   assert.equal(rewriteXLinks('[a](https://x.com/a?x=(https://x.com/b))[b](https://x.com/c)'),
-    '[a](https://fixupx.com/a?x=(https://x.com/b))[b](https://fixupx.com/c)');
+    '[a](https://fixupx.com/a)[b](https://fixupx.com/c)');
+});
+
+test('preserves question marks in fragments when stripping queries', () => {
+  for (const suffix of ['#part?detail', '?s=20#part?detail', '#part?one?two']) {
+    assert.equal(rewriteXLinks(`https://x.com/u/status/1${suffix}`),
+      `https://fixupx.com/u/status/1${suffix.slice(suffix.indexOf('#'))}`);
+  }
+});
+
+test('preserves surrounding punctuation after stripped share queries', () => {
+  for (const punctuation of ['.', ',', '!', '?', ':', ';', '...']) {
+    assert.equal(rewriteXLinks(`Read https://x.com/u/status/1?s=20${punctuation} Next.`),
+      `Read https://fixupx.com/u/status/1${punctuation} Next.`);
+  }
+  assert.equal(rewriteXLinks('(https://x.com/u/status/1?s=20).'),
+    '(https://fixupx.com/u/status/1).');
+  assert.equal(rewriteXLinks('https://x.com/u/status/1?data={value}'),
+    'https://fixupx.com/u/status/1');
+});
+
+test('preserves closing Markdown around links when stripping queries', () => {
+  for (const marker of ['*', '**', '***', '_', '__', '~~', '||']) {
+    for (const context of ['', 'Read ']) {
+      assert.equal(rewriteXLinks(`${marker}${context}https://x.com/u/status/1?s=20${marker}.`),
+        `${marker}${context}https://fixupx.com/u/status/1${marker}.`);
+    }
+  }
+  assert.equal(rewriteXLinks('__**Read https://x.com/u/status/1?s=20.**__'),
+    '__**Read https://fixupx.com/u/status/1.**__');
+});
+
+test('does not preserve query punctuation as Markdown without an unmatched opener', () => {
+  for (const prefix of ['', '**Earlier** ', '\\**Literal ', '**Earlier\n']) {
+    assert.equal(rewriteXLinks(`${prefix}https://x.com/u/status/1?t=abc**`),
+      `${prefix}https://fixupx.com/u/status/1`);
+  }
+  assert.equal(rewriteXLinks('https://x.com/u/status/1?t=abc_'),
+    'https://fixupx.com/u/status/1');
+  assert.equal(rewriteXLinks('**Read https://x.com/u/status/1?t=abc\\**'),
+    '**Read https://fixupx.com/u/status/1');
 });
 
 for (const url of [
@@ -199,7 +242,7 @@ test('reposts with credit and all mentions disabled, then fetches and deletes or
   await f.run();
   assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
   assert.equal(f.sent[0].content,
-    `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1?q=%2F+ok#part @everyone <@&999> <@888>`);
+    `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1#part @everyone <@&999> <@888>`);
   assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
   assert.equal(f.sent[0].nonce, f.source.id);
   assert.equal(f.sent[0].enforceNonce, true);
@@ -542,7 +585,8 @@ test('the same status ID is looked up once even if it appears twice', async () =
 test('translation is applied end-to-end when a lookup function is provided', async () => {
   const f = fixture(async () => 'ja');
   await f.run();
-  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1\/en\?/);
+  assert.equal(f.sent[0].content,
+    `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1/en#part @everyone <@&999> <@888>`);
 });
 
 test('translation is skipped entirely, with no lookup call, when disabled', async () => {
@@ -551,7 +595,8 @@ test('translation is skipped entirely, with no lookup call, when disabled', asyn
   const handler = createXLinkHandler(CHANNEL_ID, f.log);
   await handler(f.source as unknown as Message);
   assert.equal(called, false);
-  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1\?/);
+  assert.equal(f.sent[0].content,
+    `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1#part @everyone <@&999> <@888>`);
 });
 
 test('translation preserves URL wrappers and punctuation', async () => {

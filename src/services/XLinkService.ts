@@ -37,10 +37,11 @@ function urlWithoutSuffix(url: string, prefix: string): string {
   return link;
 }
 
-/** Change only a literal HTTPS x.com authority, leaving all other bytes intact. */
+/** Rewrite literal HTTPS x.com links, dropping queries but retaining text and fragments. */
 export function rewriteXLinks(content: string): string {
   return mapLinks(content, (url) => /^https:\/\/x\.com(?=[/?#]|$)/i.test(url)
-    ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com') : url);
+    // A question mark after # belongs to the fragment, not the query.
+    ? url.replace(/^https:\/\/x\.com/i, 'https://fixupx.com').replace(/^([^?#]*)\?[^#]*/, '$1') : url);
 }
 
 /** Visit complete URL tokens, preserving surrounding text and nested URLs. */
