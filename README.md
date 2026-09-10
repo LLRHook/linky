@@ -36,6 +36,14 @@ docker compose run --rm wannabet node dist/commands/register.js
 
 `docker compose logs -f` shows logs. `docker compose down` stops the bot while retaining its database volume. Keep that volume and the `backups/` directory when updating; never commit `.env` or database files.
 
+### Automatic deployment
+
+The public bot updates after CI passes for a push to `main`. The [Deploy workflow](https://github.com/LLRHook/wanna-bet/actions/workflows/deploy.yml) sends that tested commit to the VPS. Deployments run one at a time, and the server accepts only the current `main` commit. A failed build leaves the running bot online. Before replacing it, the server backs up SQLite; if the new bot fails to connect to Discord, it restores the previous image. Database migrations require separate review because restoring an image does not reverse schema changes.
+
+Operators need three repository secrets: `WANNA_BET_DEPLOY_HOST`, `WANNA_BET_SSH_KEY`, and `WANNA_BET_SSH_KNOWN_HOSTS`. Install `ops/ssh-deploy.sh` as `/usr/local/sbin/wanna-bet-deploy`, restrict a dedicated SSH key to that command, and pin the VPS host key. The wrapper accepts only a commit SHA and calls `ops/deploy.sh` with a clean environment. The deployment preserves the server's `.env`, including `TRANSLATE_TWEETS=true` when translations are enabled.
+
+Check the workflow run for deployment results. To retry, rerun CI for the current `main` commit. Disable the Deploy workflow in GitHub Actions to pause automatic updates.
+
 ## Social link replacement
 
 Enable **Message Content Intent**, then set `FIXUPX_CHANNEL_IDS` to comma-separated channel IDs in `.env` and rebuild/restart. Use Discord's Developer Mode → **Copy Channel ID**. Channels can span servers; only exact IDs are included. Threads need their own IDs, and DMs are excluded.
