@@ -5,7 +5,7 @@
 
 A Discord bot with per-server virtual balances, two-sided bet pools, elected admins, and optional embed-fixing reposts for X, Instagram and TikTok links. Built with TypeScript, discord.js v14, and SQLite.
 
-**[Add Wanna Bet to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147568640&integration_type=0&scope=bot+applications.commands)**, then run `/help`. The public bot's operator must configure channels for social link replacement.
+**[Add Wanna Bet to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147609600&integration_type=0&scope=bot+applications.commands)**. The bot joins silently; run `/help` when you need it. The public bot's operator must configure channels for social link replacement.
 
 ## Self-hosting
 

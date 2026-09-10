@@ -112,7 +112,7 @@ export function unregisterEmbed(user: User, finalBalanceCents: number): EmbedBui
     .setTimestamp();
 }
 
-// ─── Help & welcome ─────────────────────────────────────────────────────────────
+// ─── Help ─────────────────────────────────────────────────────────────
 
 export function helpEmbed(): EmbedBuilder {
   return new EmbedBuilder()
@@ -151,22 +151,6 @@ export function helpEmbed(): EmbedBuilder {
       }
     )
     .setFooter({ text: 'github.com/LLRHook/wanna-bet  •  MIT' })
-    .setTimestamp();
-}
-
-export function welcomeEmbed(guildName: string): EmbedBuilder {
-  return new EmbedBuilder()
-    .setColor(COLORS.BLUE)
-    .setTitle('Wanna Bet Bot is here!')
-    .setDescription(
-      `Thanks for adding me to **${guildName}**.\n\n` +
-        '**Get started:**\n' +
-        '`/register` — claim your $100 starting balance\n' +
-        '`/wanna-bet` — start a two-sided bet\n' +
-        '`/help` — see all commands\n\n' +
-        'For lobby bets (everyone in the channel can join), a server admin should run `/setup role @SomeRole` first.'
-    )
-    .setFooter({ text: 'github.com/LLRHook/wanna-bet' })
     .setTimestamp();
 }
 

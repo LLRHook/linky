@@ -14,7 +14,7 @@ import { commandMap } from './commands/index';
 import { ensureGuild, getGuild } from './services/PlayerService';
 import { revokeAdmin, getOpenElection, scheduleElectionFinalization } from './services/ElectionService';
 import { audit } from './services/AuditService';
-import { errorEmbed, welcomeEmbed } from './ui/embeds';
+import { errorEmbed } from './ui/embeds';
 import { createXLinkHandler } from './services/XLinkService';
 import { fetchTweetTranslation } from './services/TweetTranslation';
 
@@ -118,9 +118,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
   }
 });
 
-// ─── guildCreate — initialize new guild and post welcome message ───────────────
+// ─── guildCreate — initialize new guild silently ───────────────
 
-client.on('guildCreate', async (guild) => {
+client.on('guildCreate', (guild) => {
   try {
     const db = getDb();
     ensureGuild(db, guild.id);
@@ -128,17 +128,6 @@ client.on('guildCreate', async (guild) => {
       { guildId: guild.id, guildName: guild.name, memberCount: guild.memberCount },
       'Joined new guild'
     );
-
-    // Best-effort welcome in the server's system channel.
-    // If the bot lacks permission or there's no system channel, skip silently.
-    const sysChannel = guild.systemChannel;
-    if (sysChannel) {
-      try {
-        await sysChannel.send({ embeds: [welcomeEmbed(guild.name)] });
-      } catch (err) {
-        logger.warn({ err, guildId: guild.id }, 'Failed to post welcome message in system channel');
-      }
-    }
   } catch (err) {
     logger.error({ err, guildId: guild.id }, 'Error in guildCreate handler');
   }
