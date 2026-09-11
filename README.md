@@ -6,7 +6,7 @@
 
 Linky fixes X, Instagram and TikTok previews in selected channels or entire Discord servers. It reposts links with credit to the person who shared them, preserves their attachments, and can translate tweets into English. It joins servers silently. `/help` replies privately.
 
-**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147609600&integration_type=0&scope=bot+applications.commands)**. The operator must configure your channel IDs or server ID to enable reposting.
+**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=277025516544&integration_type=0&scope=bot+applications.commands)**. The operator must configure your channel IDs or server ID to enable reposting.
 
 ## What it does
 
@@ -47,7 +47,7 @@ npm run dev
 
 Enable Developer Mode in Discord, then use Copy Channel ID or Copy Server ID. Either setting enables reposting; leave both empty to disable it. Server scope covers current and future channels and threads wherever Linky has access. Exact channel scope can cover other servers; threads need their own channel IDs unless their server is enabled. DMs are excluded. Invalid IDs, empty list entries and unknown platform names stop startup. Restart after configuration changes.
 
-In each channel you want Linky to process, grant **View Channel**, **Read Message History**, **Manage Messages**, **Embed Links**, and **Send Messages** (or **Send Messages in Threads**). **Attach Files** is needed to copy files or attach long translations. The invite above requests these permissions; channel overrides still apply. Server Members Intent is unnecessary.
+In each channel you want Linky to process, grant **View Channel**, **Read Message History**, **Manage Messages**, **Embed Links**, and **Send Messages** (or **Send Messages in Threads**). **Attach Files** is needed to copy files or attach long translations. The invite above requests these permissions; channel overrides still apply. If links stay unchanged, check that category and channel overrides allow Linky to send messages, embed links and manage messages; server-level role grants do not override channel denials for `@everyone`. Server Members Intent is unnecessary.
 
 For production:
 
