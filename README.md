@@ -4,9 +4,9 @@
 
 [![CI](https://github.com/LLRHook/linky/actions/workflows/ci.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/ci.yml)
 
-Linky fixes X, Instagram and TikTok previews in selected Discord channels. It reposts links with credit to the person who shared them, preserves their attachments, and can translate tweets into English. It joins servers silently. `/help` replies privately.
+Linky fixes X, Instagram and TikTok previews in selected channels or entire Discord servers. It reposts links with credit to the person who shared them, preserves their attachments, and can translate tweets into English. It joins servers silently. `/help` replies privately.
 
-**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147609600&integration_type=0&scope=bot+applications.commands)**. The operator must add your channel IDs to enable reposting.
+**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=2147609600&integration_type=0&scope=bot+applications.commands)**. The operator must configure your channel IDs or server ID to enable reposting.
 
 ## What it does
 
@@ -31,7 +31,7 @@ git clone https://github.com/LLRHook/linky.git
 cd linky
 npm ci
 cp .env.example .env
-# Set DISCORD_TOKEN and LINK_CHANNEL_IDS in .env.
+# Set DISCORD_TOKEN, then LINK_CHANNEL_IDS or LINK_SERVER_IDS in .env.
 npm run register-commands
 npm run dev
 ```
@@ -39,14 +39,15 @@ npm run dev
 | Setting | Meaning |
 | --- | --- |
 | `DISCORD_TOKEN` | Required bot token; keep it private |
-| `LINK_CHANNEL_IDS` | Comma-separated exact channel IDs; empty disables reposting |
+| `LINK_CHANNEL_IDS` | Comma-separated exact channel IDs |
+| `LINK_SERVER_IDS` | Comma-separated server IDs; includes every accessible channel and thread |
 | `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok`; empty enables all three |
 | `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
 | `LOG_LEVEL` | Optional logging level; default `info` |
 
-Use Developer Mode > Copy Channel ID in Discord. Channels can span servers; threads need their own IDs, and DMs are excluded. Invalid IDs, empty list entries and unknown platform names stop startup. Restart after configuration changes.
+Enable Developer Mode in Discord, then use Copy Channel ID or Copy Server ID. Either setting enables reposting; leave both empty to disable it. Server scope covers current and future channels and threads wherever Linky has access. Exact channel scope can cover other servers; threads need their own channel IDs unless their server is enabled. DMs are excluded. Invalid IDs, empty list entries and unknown platform names stop startup. Restart after configuration changes.
 
-In each configured channel, grant **View Channel**, **Read Message History**, **Manage Messages**, **Embed Links**, and **Send Messages** (or **Send Messages in Threads**). **Attach Files** is needed to copy files or attach long translations. The invite above requests these permissions; channel overrides still apply. Server Members Intent is unnecessary.
+In each channel you want Linky to process, grant **View Channel**, **Read Message History**, **Manage Messages**, **Embed Links**, and **Send Messages** (or **Send Messages in Threads**). **Attach Files** is needed to copy files or attach long translations. The invite above requests these permissions; channel overrides still apply. Server Members Intent is unnecessary.
 
 For production:
 

@@ -17,7 +17,7 @@ import {
   createLinkRepostHandler,
   downloadAttachment,
   formatLinkRepost,
-  parseChannelIds,
+  parseDiscordIds,
   parseRewritePlatforms,
   rewriteSocialLinks,
 } from '../src/services/SocialLinkService';
@@ -220,17 +220,17 @@ test('platform configuration defaults to every platform and rejects unknown name
 });
 
 test('channel configuration defaults off and rejects invalid scope', () => {
-  assert.deepEqual(parseChannelIds(undefined), []);
-  assert.deepEqual(parseChannelIds('  '), []);
-  assert.deepEqual(parseChannelIds(` ${CHANNEL_ID} `), [CHANNEL_ID]);
+  assert.deepEqual(parseDiscordIds(undefined), []);
+  assert.deepEqual(parseDiscordIds('  '), []);
+  assert.deepEqual(parseDiscordIds(` ${CHANNEL_ID} `), [CHANNEL_ID]);
   for (const invalid of ['all', '*', '#general', '123']) {
-    assert.throws(() => parseChannelIds(invalid), /Channel IDs must/);
+    assert.throws(() => parseDiscordIds(invalid), /Channel IDs must/);
   }
 });
 
 test('channel list deduplicates IDs while preserving their order', () => {
-  assert.deepEqual(parseChannelIds(` ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `), [CHANNEL_ID, SECOND_CHANNEL_ID]);
-  assert.deepEqual(parseChannelIds(` ${SECOND_CHANNEL_ID}, ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `),
+  assert.deepEqual(parseDiscordIds(` ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `), [CHANNEL_ID, SECOND_CHANNEL_ID]);
+  assert.deepEqual(parseDiscordIds(` ${SECOND_CHANNEL_ID}, ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `),
     [SECOND_CHANNEL_ID, CHANNEL_ID]);
 });
 
@@ -240,7 +240,7 @@ test('malformed channel list entries fail closed', () => {
     `${CHANNEL_ID}, ,${SECOND_CHANNEL_ID}`, `${CHANNEL_ID},all`, `${CHANNEL_ID},*`,
     `${CHANNEL_ID},#general`, `${CHANNEL_ID},123`, `${CHANNEL_ID};${SECOND_CHANNEL_ID}`,
   ]) {
-    assert.throws(() => parseChannelIds(invalid), /Channel IDs must/);
+    assert.throws(() => parseDiscordIds(invalid), /Channel IDs must/);
   }
 });
 
@@ -359,6 +359,91 @@ test('both configured channels use the same quoted layout', async () => {
   assert.equal(first.sent[0].content, second.sent[0].content);
   assert.ok(first.sent[0].content?.startsWith(`${QUOTED_CREDIT}\n> Look\n`));
   assert.deepEqual(first.sent[0].allowedMentions, second.sent[0].allowedMentions);
+});
+
+test('server scope includes new channels and isolates other servers', async () => {
+  const first = fixture();
+  const handler = createLinkRepostHandler([], first.log, undefined, { serverIds: [first.source.guildId] });
+  await handler(first.source as unknown as Message);
+
+  // This channel was never supplied to the handler, including at construction.
+  const added = fixture();
+  added.source.id = '223456789012345679';
+  added.source.channelId = SECOND_CHANNEL_ID;
+  await handler(added.source as unknown as Message);
+
+  const unrelated = fixture();
+  unrelated.source.id = '323456789012345679';
+  unrelated.source.guildId = '887654321098765432';
+  await handler(unrelated.source as unknown as Message);
+  assert.deepEqual(first.events, ['send', 'fetch', 'delete original']);
+  assert.deepEqual(added.events, ['send', 'fetch', 'delete original']);
+  assert.deepEqual(unrelated.events, []);
+});
+
+test('server scope preserves exact channel opt-ins in other servers', async () => {
+  const server = fixture();
+  const exact = fixture();
+  exact.source.id = '223456789012345679';
+  exact.source.channelId = SECOND_CHANNEL_ID;
+  exact.source.guildId = '887654321098765432';
+  const handler = createLinkRepostHandler([SECOND_CHANNEL_ID], server.log, undefined,
+    { serverIds: [server.source.guildId] });
+  await handler(server.source as unknown as Message);
+  await handler(exact.source as unknown as Message);
+  assert.deepEqual(server.events, ['send', 'fetch', 'delete original']);
+  assert.deepEqual(exact.events, ['send', 'fetch', 'delete original']);
+});
+
+test('server scope includes threads while enforcing thread permissions', async () => {
+  for (const canSend of [true, false]) {
+    const f = fixture();
+    f.source.channelId = SECOND_CHANNEL_ID;
+    f.source.channel.isThread = () => true;
+    f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.SendMessages);
+    if (!canSend) f.permissions.remove(PermissionFlagsBits.SendMessagesInThreads);
+    await createLinkRepostHandler([], f.log, undefined, { serverIds: [f.source.guildId] })(
+      f.source as unknown as Message);
+    assert.deepEqual(f.events, canSend ? ['send', 'fetch', 'delete original'] : []);
+  }
+});
+
+test('server IDs use the same strict parser with a distinct error label', () => {
+  assert.deepEqual(parseDiscordIds(undefined, 'Server IDs'), []);
+  assert.deepEqual(parseDiscordIds(` ${CHANNEL_ID}, ${CHANNEL_ID} `, 'Server IDs'), [CHANNEL_ID]);
+  for (const invalid of ['*', 'all', '012345678901234567', '1234567890123456',
+    '123456789012345678901', `${CHANNEL_ID},`, `${CHANNEL_ID},,${SECOND_CHANNEL_ID}`]) {
+    assert.throws(() => parseDiscordIds(invalid, 'Server IDs'), /Server IDs must/);
+  }
+});
+
+test('server scope still requires access, deletion and attachment permissions', async () => {
+  for (const permission of ['ViewChannel', 'ManageMessages', 'AttachFiles'] as const) {
+    const f = fixture();
+    f.source.attachments.set('file-1', makeAttachment());
+    f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits[permission]);
+    await createLinkRepostHandler([], f.log, async () => {
+      assert.fail('An inaccessible message must not download attachments.');
+    }, { serverIds: [f.source.guildId] })(f.source as unknown as Message);
+    assert.deepEqual(f.events, []);
+  }
+});
+
+test('direct messages are excluded even when scope IDs match', async () => {
+  const f = fixture();
+  f.source.inGuild = () => false;
+  await createLinkRepostHandler([CHANNEL_ID], f.log, undefined, { serverIds: [f.source.guildId] })(
+    f.source as unknown as Message);
+  assert.deepEqual(f.events, []);
+});
+
+test('overlapping channel and server scopes produce only one repost', async () => {
+  const f = fixture();
+  const handler = createLinkRepostHandler([CHANNEL_ID], f.log, undefined,
+    { serverIds: [f.source.guildId, f.source.guildId] });
+  await Promise.all([handler(f.source as unknown as Message), handler(f.source as unknown as Message)]);
+  await handler(f.source as unknown as Message);
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
 });
 
 test('the 2000-character limit includes credit and every quote prefix', async () => {

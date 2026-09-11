@@ -6,23 +6,26 @@ import { createLinkRepostHandler } from './services/SocialLinkService';
 import { fetchTweetTranslation } from './services/TweetTranslation';
 
 export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'warn' | 'error'>): Client {
+  const enabled = settings.channelIds.length > 0 || settings.serverIds.length > 0;
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
-      ...(settings.channelIds.length ? [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : []),
+      ...(enabled ? [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : []),
     ],
   });
 
-  if (settings.channelIds.length) {
+  if (enabled) {
     client.on(Events.MessageCreate, createLinkRepostHandler(settings.channelIds, log, undefined, {
+      serverIds: settings.serverIds,
       platforms: settings.rewritePlatforms,
       translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
     }));
     log.info({
       channelIds: settings.channelIds,
+      serverIds: settings.serverIds,
       platforms: settings.rewritePlatforms,
       translateTweets: settings.translateTweets,
-    }, 'Social link replacement enabled for configured channels');
+    }, 'Social link replacement enabled for configured scope');
   }
 
   client.on(Events.InteractionCreate, async (interaction) => {

@@ -15,7 +15,7 @@ const MAX_CONTENT_LENGTH = 2_000;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 const RECENT_MESSAGE_LIMIT = 1_000;
-const DISCORD_CHANNEL_ID = /^[1-9]\d{16,19}$/;
+const DISCORD_ID = /^[1-9]\d{16,19}$/;
 // Discord's IS_SPOILER attachment flag is not named in the installed v14 enum.
 // https://docs.discord.com/developers/resources/message#attachment-object
 const ATTACHMENT_IS_SPOILER = 1 << 3;
@@ -249,14 +249,14 @@ function isSpoiler(attachment: Attachment): boolean {
   return attachment.spoiler || (attachment.flags.bitfield & ATTACHMENT_IS_SPOILER) !== 0;
 }
 
-/** Reject malformed scope instead of accidentally processing unrelated channels. */
-export function parseChannelIds(value: string | undefined): string[] {
+/** Reject malformed scope instead of accidentally processing unrelated channels or servers. */
+export function parseDiscordIds(value: string | undefined, label = 'Channel IDs'): string[] {
   if (!value?.trim()) return [];
-  const channelIds = value.split(',').map(entry => entry.trim());
-  if (channelIds.some(id => !DISCORD_CHANNEL_ID.test(id))) {
-    throw new Error('Channel IDs must be comma-separated Discord channel IDs (17-20 digits), with no empty entries.');
+  const ids = value.split(',').map(entry => entry.trim());
+  if (ids.some(id => !DISCORD_ID.test(id))) {
+    throw new Error(`${label} must be comma-separated Discord IDs (17-20 digits), with no empty entries.`);
   }
-  return [...new Set(channelIds)];
+  return [...new Set(ids)];
 }
 
 /** Discord.js URL uploads do not check HTTP status, so download and verify first. */
@@ -328,17 +328,19 @@ export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateTweet }: {
+  { platforms = REWRITE_PLATFORMS, translateTweet, serverIds = [] }: {
     platforms?: readonly RewritePlatform[];
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
+    serverIds?: readonly string[];
   } = {}
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
+  const allowedServerIds = new Set(serverIds);
   const inFlight = new Set<string>();
   const reposted = new Set<string>();
 
   return async (message) => {
-    if (!allowedChannelIds.has(message.channelId) || !message.inGuild() ||
+    if (!message.inGuild() || (!allowedChannelIds.has(message.channelId) && !allowedServerIds.has(message.guildId)) ||
         !canCopy(message) || inFlight.has(message.id) || reposted.has(message.id)) return;
     const rewritten = rewriteSocialLinks(message.content, platforms);
     if (rewritten === message.content) return;

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { Client, Events, GatewayIntentBits, MessageFlags, Routes, type Interaction, type Guild, type InteractionReplyOptions } from 'discord.js';
+import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Routes, type Interaction, type Guild, type Message, type InteractionReplyOptions } from 'discord.js';
 import { createBot } from '../src/bot';
 import type { Config } from '../src/config';
 import { data } from '../src/commands/help';
 import { registerCommands } from '../src/commands/register';
 
 const settings: Config = {
-  discordToken: 'unused', channelIds: ['configured-channel'],
+  discordToken: 'unused', channelIds: ['configured-channel'], serverIds: [],
   rewritePlatforms: ['x', 'instagram', 'tiktok'], translateTweets: true,
 };
 const clients: Client[] = [];
@@ -23,10 +23,10 @@ function fixture(overrides: Partial<Config> = {}) {
   return { client, logs, errors };
 }
 
-async function command(client: Client, name: string, channelId = 'configured-channel') {
+async function command(client: Client, name: string, channelId = 'configured-channel', guildId: string | null = 'configured-server') {
   const replies: InteractionReplyOptions[] = [];
   client.emit(Events.InteractionCreate, {
-    isChatInputCommand: () => true, commandName: name, channelId,
+    isChatInputCommand: () => true, commandName: name, channelId, guildId,
     reply: async (payload: InteractionReplyOptions) => { replies.push(payload); },
   } as unknown as Interaction);
   await new Promise<void>(resolve => setImmediate(resolve));
@@ -125,4 +125,33 @@ test('failed application authentication leaves registered commands untouched', a
     get: async () => { throw new Error('Unauthorized'); },
     put: async () => { assert.fail('Cannot replace commands without an authenticated application'); },
   }), /Unauthorized/);
+});
+
+
+test('server-only configuration registers message handling and preserves permission checks', async () => {
+  const { client } = fixture({ channelIds: [], serverIds: ['whole-server'] });
+  assert.equal(client.listenerCount(Events.MessageCreate), 1);
+  assert.deepEqual(client.options.intents.toArray().sort(), ['Guilds', 'GuildMessages', 'MessageContent'].sort());
+  let checked = 0;
+  client.emit(Events.MessageCreate, {
+    id: 'new-message', channelId: 'new-channel', guildId: 'whole-server', content: 'https://x.com/user/status/1',
+    author: { bot: false }, inGuild: () => true, type: 0,
+    stickers: new Collection(), components: [], messageSnapshots: new Collection(), attachments: new Collection(),
+    flags: { has: () => false }, guild: { members: { me: {} } }, deletable: true,
+    channel: { isSendable: () => true, isThread: () => false, permissionsFor: () => {
+      checked++; return { has: () => false };
+    }, send: () => assert.fail('Missing permissions must preserve the original') },
+  } as unknown as Message<true>);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(checked, 1);
+});
+
+test('/help distinguishes whole-server scope from unconfigured servers and DMs', async () => {
+  const { client } = fixture({ channelIds: [], serverIds: ['whole-server'] });
+  const active = (await command(client, 'help', 'new-channel', 'whole-server'))[0];
+  assert.match(active.content!, /enabled throughout this server/);
+  assert.equal(active.flags, MessageFlags.Ephemeral);
+  for (const guildId of ['other-server', null]) {
+    assert.match((await command(client, 'help', 'new-channel', guildId))[0].content!, /disabled in this channel/);
+  }
 });
