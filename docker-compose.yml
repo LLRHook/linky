@@ -1,18 +1,11 @@
 services:
-  # Keep deployed resource names stable so existing servers upgrade in place.
-  wannabet:
+  linky:
     build: .
-    image: wanna-bet:latest
-    container_name: wannabet
+    image: linky:latest
+    container_name: linky
     restart: unless-stopped
     init: true
     env_file: .env
     environment:
       NODE_ENV: production
-    volumes:
-      # Retain the former economy database for rollback. The link bot never uses it.
-      - wannabet-data:/app/data:ro
     stop_grace_period: 15s
-
-volumes:
-  wannabet-data:

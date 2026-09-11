@@ -250,33 +250,13 @@ function isSpoiler(attachment: Attachment): boolean {
 }
 
 /** Reject malformed scope instead of accidentally processing unrelated channels. */
-export function parseChannelId(value: string | undefined): string | undefined {
-  const channelId = value?.trim();
-  if (!channelId) return undefined;
-  if (!DISCORD_CHANNEL_ID.test(channelId)) {
-    throw new Error('Channel ID must be a Discord channel ID (17-20 digits).');
+export function parseChannelIds(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  const channelIds = value.split(',').map(entry => entry.trim());
+  if (channelIds.some(id => !DISCORD_CHANNEL_ID.test(id))) {
+    throw new Error('Channel IDs must be comma-separated Discord channel IDs (17-20 digits), with no empty entries.');
   }
-  return channelId;
-}
-
-/** Combine explicit channels with the legacy setting; malformed lists fail closed. */
-export function parseChannelIds(
-  value: string | undefined,
-  legacyValue?: string
-): string[] {
-  const channelIds = new Set<string>();
-  const legacyChannelId = parseChannelId(legacyValue);
-  if (legacyChannelId) channelIds.add(legacyChannelId);
-  if (value?.trim()) {
-    for (const entry of value.split(',')) {
-      const channelId = entry.trim();
-      if (!DISCORD_CHANNEL_ID.test(channelId)) {
-        throw new Error('Channel IDs must be comma-separated Discord channel IDs (17-20 digits), with no empty entries.');
-      }
-      channelIds.add(channelId);
-    }
-  }
-  return [...channelIds];
+  return [...new Set(channelIds)];
 }
 
 /** Discord.js URL uploads do not check HTTP status, so download and verify first. */

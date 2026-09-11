@@ -7,11 +7,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/llrhook/wanna-bet.git"
+    "url": "git+https://github.com/LLRHook/linky.git"
   },
-  "homepage": "https://github.com/llrhook/wanna-bet#readme",
+  "homepage": "https://github.com/LLRHook/linky#readme",
   "bugs": {
-    "url": "https://github.com/llrhook/wanna-bet/issues"
+    "url": "https://github.com/LLRHook/linky/issues"
   },
   "keywords": [
     "discord",

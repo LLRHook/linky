@@ -1,43 +1,16 @@
-# Secrets
 .env
 .env.*
 !.env.example
-
-# Build output
-dist/
-
-# Database files
-data/*.db
-data/*.db-shm
-data/*.db-wal
-backups/
-
-# Logs
-logs/*.log
-*.log
-
-# Node modules
 node_modules/
-
-# PM2 logs
-.pm2/
-
-# OS / editor
+dist/
+coverage/
+*.log
+*.tsbuildinfo
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *.swp
-
-# TypeScript build info
-*.tsbuildinfo
-
-# Orchestration scratch (planner output, not part of the source tree)
 .orchestrate/
-
-# Test coverage
-coverage/
-
-# Local agent context
 CLAUDE.md
 .claude/

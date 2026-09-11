@@ -9,7 +9,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: wannabet-production
+  group: linky-production
   cancel-in-progress: false
 
 jobs:
@@ -26,16 +26,16 @@ jobs:
         shell: bash
         env:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
-          DEPLOY_HOST: ${{ secrets.WANNA_BET_DEPLOY_HOST }}
-          DEPLOY_KEY: ${{ secrets.WANNA_BET_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.WANNA_BET_SSH_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.LINKY_DEPLOY_HOST }}
+          DEPLOY_KEY: ${{ secrets.LINKY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.LINKY_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ -n "$DEPLOY_HOST" && -n "$DEPLOY_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
 
           umask 077
-          ssh_dir=$(mktemp -d "$RUNNER_TEMP/wannabet-ssh.XXXXXX")
+          ssh_dir=$(mktemp -d "$RUNNER_TEMP/linky-ssh.XXXXXX")
           trap 'rm -f "$ssh_dir/key" "$ssh_dir/known_hosts"; rmdir "$ssh_dir"' EXIT
           printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"

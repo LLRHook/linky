@@ -16,9 +16,7 @@ function requireEnv(name: string): string {
 
 export const config: Config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
-  channelIds: process.env['LINK_CHANNEL_IDS'] !== undefined
-    ? parseChannelIds(process.env['LINK_CHANNEL_IDS'])
-    : parseChannelIds(process.env['FIXUPX_CHANNEL_IDS'], process.env['FIXUPX_CHANNEL_ID']),
+  channelIds: parseChannelIds(process.env['LINK_CHANNEL_IDS']),
   rewritePlatforms: parseRewritePlatforms(process.env['REWRITE_PLATFORMS']),
   translateTweets: process.env['TRANSLATE_TWEETS']?.toLowerCase() === 'true',
 };

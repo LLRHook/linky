@@ -6,7 +6,7 @@ import { data } from './help';
 export async function registerCommands(rest: Pick<REST, 'get' | 'put'>): Promise<void> {
   const application = await rest.get(Routes.oauth2CurrentApplication()) as RESTGetAPIOAuth2CurrentApplicationResult;
   await rest.put(Routes.applicationCommands(application.id), { body: [data.toJSON()] });
-  console.log('Registered /help and removed retired global commands.');
+  console.log('Registered /help.');
 }
 
 if (require.main === module) {

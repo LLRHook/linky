@@ -1,37 +1,7 @@
-# Secrets — must NEVER end up in the image
-.env
-.env.*
-!.env.example
-
-# Build artifacts (rebuilt inside the container)
-node_modules
-dist
-*.tsbuildinfo
-
-# Runtime data (mounted as volumes, never baked in)
-data
-logs
-backups
-
-# Git
-.git
-.gitignore
-.gitattributes
-.github
-
-# Editor / OS
-.DS_Store
-.vscode
-.idea
-*.swp
-
-# Project meta — not needed at runtime
-.orchestrate
-README.md
-ecosystem.config.js
-docker-compose.yml
-Dockerfile
-.dockerignore
-
-# Logs
-*.log
+# The image only needs the build inputs.
+**
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/
+!src/**

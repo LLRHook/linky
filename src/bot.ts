@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { Client, Events, GatewayIntentBits } from 'discord.js';
 import type { Config } from './config';
 import type { logger } from './logger';
 import { execute as help } from './commands/help';
@@ -26,13 +26,9 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   }
 
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'help') return;
     try {
-      if (interaction.commandName === 'help') {
-        await help(interaction, settings);
-      } else {
-        await interaction.reply({ content: 'This command has been retired. Use /help for link fixing.', flags: MessageFlags.Ephemeral });
-      }
+      await help(interaction, settings);
     } catch (err) {
       log.error({ err, commandName: interaction.commandName }, 'Could not reply to command');
     }

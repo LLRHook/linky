@@ -85,12 +85,9 @@ test('/help reports when all platforms are disabled', async () => {
   assert.match((await command(client, 'help'))[0].content!, /All platforms are currently disabled/);
 });
 
-test('cached gambling commands receive only a private retirement notice', async () => {
+test('unknown commands do not trigger replies', async () => {
   const { client } = fixture();
-  for (const name of ['wanna-bet', 'balance', 'daily', 'admin', 'vote-admin']) {
-    const replies = await command(client, name);
-    assert.deepEqual(replies, [{ content: 'This command has been retired. Use /help for link fixing.', flags: MessageFlags.Ephemeral }]);
-  }
+  assert.deepEqual(await command(client, 'unknown'), []);
 });
 
 test('non-command interactions do not trigger replies', () => {

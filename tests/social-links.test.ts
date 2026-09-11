@@ -17,7 +17,6 @@ import {
   createLinkRepostHandler,
   downloadAttachment,
   formatLinkRepost,
-  parseChannelId,
   parseChannelIds,
   parseRewritePlatforms,
   rewriteSocialLinks,
@@ -221,32 +220,28 @@ test('platform configuration defaults to every platform and rejects unknown name
 });
 
 test('channel configuration defaults off and rejects invalid scope', () => {
-  assert.equal(parseChannelId(undefined), undefined);
-  assert.equal(parseChannelId('  '), undefined);
-  assert.equal(parseChannelId(` ${CHANNEL_ID} `), CHANNEL_ID);
-  for (const invalid of ['all', '*', '#general', '123', `${CHANNEL_ID},987654321098765432`]) {
-    assert.throws(() => parseChannelId(invalid), /Channel ID must/);
+  assert.deepEqual(parseChannelIds(undefined), []);
+  assert.deepEqual(parseChannelIds('  '), []);
+  assert.deepEqual(parseChannelIds(` ${CHANNEL_ID} `), [CHANNEL_ID]);
+  for (const invalid of ['all', '*', '#general', '123']) {
+    assert.throws(() => parseChannelIds(invalid), /Channel IDs must/);
   }
 });
 
-test('channel list combines and deduplicates explicit IDs with the legacy setting', () => {
-  assert.deepEqual(parseChannelIds(undefined), []);
-  assert.deepEqual(parseChannelIds('  ', '  '), []);
-  assert.deepEqual(parseChannelIds(undefined, ` ${CHANNEL_ID} `), [CHANNEL_ID]);
+test('channel list deduplicates IDs while preserving their order', () => {
   assert.deepEqual(parseChannelIds(` ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `), [CHANNEL_ID, SECOND_CHANNEL_ID]);
-  assert.deepEqual(parseChannelIds(` ${SECOND_CHANNEL_ID}, ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `, CHANNEL_ID),
-    [CHANNEL_ID, SECOND_CHANNEL_ID]);
+  assert.deepEqual(parseChannelIds(` ${SECOND_CHANNEL_ID}, ${CHANNEL_ID}, ${SECOND_CHANNEL_ID} `),
+    [SECOND_CHANNEL_ID, CHANNEL_ID]);
 });
 
-test('malformed channel list entries fail closed even with a valid legacy channel', () => {
+test('malformed channel list entries fail closed', () => {
   for (const invalid of [
     ',', `,${CHANNEL_ID}`, `${CHANNEL_ID},`, `${CHANNEL_ID},,${SECOND_CHANNEL_ID}`,
     `${CHANNEL_ID}, ,${SECOND_CHANNEL_ID}`, `${CHANNEL_ID},all`, `${CHANNEL_ID},*`,
     `${CHANNEL_ID},#general`, `${CHANNEL_ID},123`, `${CHANNEL_ID};${SECOND_CHANNEL_ID}`,
   ]) {
-    assert.throws(() => parseChannelIds(invalid, CHANNEL_ID), /Channel IDs must/);
+    assert.throws(() => parseChannelIds(invalid), /Channel IDs must/);
   }
-  assert.throws(() => parseChannelIds(CHANNEL_ID, 'all'), /Channel ID must/);
 });
 
 function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {

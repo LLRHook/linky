@@ -3,11 +3,11 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")/../ops" && pwd)
 test_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
-test_dir=$(mktemp -d "$test_parent/wannabet-deploy-tests.XXXXXX")
+test_dir=$(mktemp -d "$test_parent/linky-deploy-tests.XXXXXX")
 cleanup() {
   local resolved
   resolved=$(cd "$test_dir" && pwd -P) || return
-  [[ "$resolved" == "$test_dir" && "$resolved" == "$test_parent"/wannabet-deploy-tests.* ]] || return 1
+  [[ "$resolved" == "$test_dir" && "$resolved" == "$test_parent"/linky-deploy-tests.* ]] || return 1
   rm -rf -- "$resolved"
 }
 trap cleanup EXIT
@@ -18,15 +18,16 @@ cat > "$test_dir/bin/git" <<'MOCK'
 printf 'git %s\n' "$*" >> "$MOCK_DIR/events"
 case "$1" in
   symbolic-ref) printf '%s\n' "${MOCK_BRANCH:-main}" ;;
-  status) [[ ${MOCK_CASE:-} != dirty ]] || printf ' M src/index.ts\n' ;;
-  fetch) exit 0 ;;
+  status) [[ "$MOCK_CASE" != dirty ]] || printf ' M src/index.ts\n' ;;
+  fetch) [[ "$MOCK_CASE" != fetch ]] ;;
   rev-parse) printf '%s\n' "$MOCK_SHA" ;;
   show)
     [[ "$2" == 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docker-compose.yml' && "$MOCK_CASE" != compose-missing ]] || exit 1
     cat "$MOCK_DIR/active-compose.yml" ;;
   merge)
+    [[ "$MOCK_CASE" != merge ]] || exit 1
     printf '%s\n' "$3" > "$MOCK_DIR/merged"
-    cp "$MOCK_DIR/next-compose.yml" "$WANNA_BET_DEPLOY_DIR/docker-compose.yml" ;;
+    cp "$MOCK_DIR/next-compose.yml" "$LINKY_DEPLOY_DIR/docker-compose.yml" ;;
   *) exit 90 ;;
 esac
 MOCK
@@ -36,42 +37,36 @@ cat > "$test_dir/bin/docker" <<'MOCK'
 printf 'docker %s\n' "$*" >> "$MOCK_DIR/events"
 case "$1" in
   inspect)
-    [[ ${MOCK_CASE:-} != missing ]] || exit 1
+    [[ "$MOCK_CASE" != missing ]] || exit 1
     if [[ "$3" == '{{.Image}}' ]]; then
       printf 'sha256:previous\n'
-    elif [[ "$3" == *'.Mounts'* ]]; then
-      case "$MOCK_CASE" in
-        readonly*) printf 'false\n' ;;
-        mount-missing) exit 1 ;;
-        *) printf 'true\n' ;;
-      esac
-    elif [[ ${MOCK_CASE:-} == restart && -f "$MOCK_DIR/started" && ! -f "$MOCK_DIR/rolled-back" ]]; then
-      printf 'true 1 2026-09-10T00:00:00Z\n'
+    elif [[ "$MOCK_CASE" == restart && ! -f "$MOCK_DIR/rolled-back" ]]; then
+      printf 'true 1 2026-09-11T00:00:00Z\n'
+    elif [[ "$MOCK_CASE" == stopped && ! -f "$MOCK_DIR/rolled-back" ]]; then
+      printf 'false 0 2026-09-11T00:00:00Z\n'
     else
-      printf 'true 0 2026-09-10T00:00:00Z\n'
+      printf 'true 0 2026-09-11T00:00:00Z\n'
     fi ;;
   logs)
-    if [[ ${MOCK_CASE:-} != *startup || -f "$MOCK_DIR/rolled-back" ]]; then
-      printf 'Logged in as WannaBet#0805\nServing 2 guild(s).\n'
+    if [[ "$MOCK_CASE" != *startup || -f "$MOCK_DIR/rolled-back" ]]; then
+      printf 'Logged in as Linky#0805\nServing 2 guild(s).\n'
     fi ;;
-  tag) [[ "$3" != wanna-bet:latest ]] || touch "$MOCK_DIR/rolled-back" ;;
-  exec)
-    [[ -f "$MOCK_DIR/built" ]] || exit 94
-    [[ ${MOCK_CASE:-} != backup ]] || exit 1
-    touch "$MOCK_DIR/backed-up" ;;
+  tag) [[ "$3" != linky:latest ]] || touch "$MOCK_DIR/rolled-back" ;;
   compose)
+    [[ " $* " == *' -p linky '* ]] || exit 91
     if [[ " $* " == *' build '* ]]; then
-      [[ ${MOCK_CASE:-} != build ]] || exit 1
+      [[ "$MOCK_CASE" != build ]] || exit 1
       touch "$MOCK_DIR/built"
     elif [[ " $* " == *' up '* ]]; then
-      [[ -f "$MOCK_DIR/backed-up" || "$MOCK_CASE" == readonly* ]] || exit 91
+      [[ -f "$MOCK_DIR/built" ]] || exit 92
       if [[ -f "$MOCK_DIR/rolled-back" ]]; then
-        cmp -s "$3" "$MOCK_DIR/active-compose.yml" || exit 95
+        cmp -s "$3" "$MOCK_DIR/active-compose.yml" || exit 93
       fi
       touch "$MOCK_DIR/started"
-      [[ ${MOCK_CASE:-} != up || -f "$MOCK_DIR/rolled-back" ]] || exit 1
-    else exit 92; fi ;;
-  *) exit 93 ;;
+      [[ "$MOCK_CASE" != rollback-failure ]] || exit 1
+      [[ "$MOCK_CASE" != up || -f "$MOCK_DIR/rolled-back" ]] || exit 1
+    else exit 94; fi ;;
+  *) exit 95 ;;
 esac
 MOCK
 
@@ -89,45 +84,43 @@ export MOCK_SHA=1111111111111111111111111111111111111111
 
 run_case() {
   local name=$1 expected=$2 revision=${3:-$MOCK_SHA} result=0
-  export MOCK_CASE=$name MOCK_DIR="$test_dir/$name" WANNA_BET_DEPLOY_DIR="$test_dir/$name/repo"
-  mkdir -p "$WANNA_BET_DEPLOY_DIR/.git"
-  local data_mode=rw
-  [[ "$name" != readonly* ]] || data_mode=ro
-  printf 'services: {wannabet: {image: "wanna-bet:latest", volumes: ["wannabet-data:/app/data:%s"]}}\n' "$data_mode" > "$MOCK_DIR/active-compose.yml"
-  printf 'services: {wannabet: {image: "wanna-bet:latest", volumes: ["wannabet-data:/app/data:ro"]}}\n' > "$MOCK_DIR/next-compose.yml"
-  cp "$MOCK_DIR/active-compose.yml" "$WANNA_BET_DEPLOY_DIR/docker-compose.yml"
-  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$WANNA_BET_DEPLOY_DIR/.git/wanna-bet-deployed-revision"
-  [[ "$name" != marker-missing ]] || rm "$WANNA_BET_DEPLOY_DIR/.git/wanna-bet-deployed-revision"
+  export MOCK_CASE=$name MOCK_DIR="$test_dir/$name" LINKY_DEPLOY_DIR="$test_dir/$name/repo"
+  mkdir -p "$LINKY_DEPLOY_DIR/.git"
+  printf 'services: {linky: {image: "linky:latest", environment: {LOG_LEVEL: info}}}\n' > "$MOCK_DIR/active-compose.yml"
+  printf 'services: {linky: {image: "linky:latest", environment: {LOG_LEVEL: debug}}}\n' > "$MOCK_DIR/next-compose.yml"
+  cp "$MOCK_DIR/active-compose.yml" "$LINKY_DEPLOY_DIR/docker-compose.yml"
+  local marker="$LINKY_DEPLOY_DIR/.git/linky-deployed-revision" previous_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  [[ "$name" != marker-invalid ]] || previous_revision=invalid
+  printf '%s\n' "$previous_revision" > "$marker"
+  [[ "$name" != marker-missing ]] || rm "$marker"
   bash "$script_dir/deploy.sh" "$revision" > "$MOCK_DIR/output" 2>&1 || result=$?
   if [[ "$result" != "$expected" ]]; then
     cat "$MOCK_DIR/output" >&2
     printf 'FAIL: %s exited %s, expected %s\n' "$name" "$result" "$expected" >&2
     exit 1
   fi
-  if [[ "$name" == success || "$name" == readonly ]]; then
-    [[ $(cat "$WANNA_BET_DEPLOY_DIR/.git/wanna-bet-deployed-revision") == "$MOCK_SHA" ]]
-    [[ $(cat "$MOCK_DIR/merged") == "$MOCK_SHA" ]]
-    [[ -f "$MOCK_DIR/built" && -f "$MOCK_DIR/started" ]]
-    if [[ "$name" == readonly ]]; then
-      [[ ! -e "$MOCK_DIR/backed-up" ]]
-    else
-      [[ -f "$MOCK_DIR/backed-up" ]]
-    fi
-    [[ ! -e "$MOCK_DIR/rolled-back" ]]
+  if [[ "$name" == success ]]; then
+    [[ $(cat "$marker") == "$MOCK_SHA" && $(cat "$MOCK_DIR/merged") == "$MOCK_SHA" ]]
+    [[ -f "$MOCK_DIR/built" && -f "$MOCK_DIR/started" && ! -e "$MOCK_DIR/rolled-back" ]]
     [[ $(head -n 1 "$MOCK_DIR/events") == 'flock -x 9' ]]
   elif [[ "$name" != marker-missing ]]; then
-    [[ $(cat "$WANNA_BET_DEPLOY_DIR/.git/wanna-bet-deployed-revision") == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]]
+    [[ $(cat "$marker") == "$previous_revision" ]]
   fi
   case "$name" in
     invalid) [[ ! -e "$MOCK_DIR/events" ]] ;;
-    stale|dirty|branch|missing|marker-missing|compose-missing) [[ ! -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/started" ]] ;;
-    build) [[ -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/backed-up" && ! -e "$MOCK_DIR/started" ]] ;;
-    backup|mount-missing) [[ -e "$MOCK_DIR/built" && ! -e "$MOCK_DIR/started" ]] ;;
-    startup|restart|up|readonly-startup|retry-startup)
+    stale|dirty|branch|fetch|missing|marker-missing|marker-invalid|compose-missing|merge)
+      [[ ! -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/started" ]] ;;
+    build) [[ -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/started" ]] ;;
+    startup|restart|stopped|up|retry-startup|rollback-failure)
       [[ -e "$MOCK_DIR/rolled-back" ]]
-      grep -q -- '--force-recreate wannabet' "$MOCK_DIR/events"
-      grep -q -- 'docker compose -f .*backups/compose-before-' "$MOCK_DIR/events"
-      grep -q 'Previous bot restored' "$MOCK_DIR/output" ;;
+      grep -q -- '--force-recreate linky' "$MOCK_DIR/events"
+      grep -q -- 'docker compose -f .*/.git/linky-deploy/previous-compose.yml' "$MOCK_DIR/events"
+      if [[ "$name" == rollback-failure ]]; then
+        grep -q 'Rollback failed' "$MOCK_DIR/output"
+        ! grep -q 'Previous bot restored' "$MOCK_DIR/output"
+      else
+        grep -q 'Previous bot restored' "$MOCK_DIR/output"
+      fi ;;
   esac
   printf 'PASS: %s\n' "$name"
 }
@@ -136,27 +129,35 @@ run_case invalid 2 'main;echo unsafe'
 run_case stale 0 2222222222222222222222222222222222222222
 run_case dirty 1
 MOCK_BRANCH=feature/test run_case branch 1
+run_case fetch 1
 run_case missing 1
+run_case marker-missing 1
+run_case marker-invalid 1
+run_case compose-missing 1
+run_case merge 1
 run_case build 1
-run_case backup 1
 run_case startup 1
 run_case restart 1
+run_case stopped 1
 run_case up 1
+run_case rollback-failure 1
 run_case success 0
-run_case readonly 0
-run_case readonly-startup 1
-run_case mount-missing 1
-run_case marker-missing 1
-run_case compose-missing 1
 
-# The failed attempt has advanced the checkout to a read-only data mount. Retry
-# without resetting its files: rollback must still use the old writable config.
+# A failed attempt advances the checkout. A retry must still restore the running
+# deployment's configuration, rather than the newer configuration in the checkout.
 run_case retry-startup 1
-[[ $(cat "$WANNA_BET_DEPLOY_DIR/docker-compose.yml") == *'/app/data:ro'* ]]
+cmp -s "$LINKY_DEPLOY_DIR/docker-compose.yml" "$MOCK_DIR/next-compose.yml"
 rm "$MOCK_DIR/rolled-back"
 retry_result=0
 bash "$script_dir/deploy.sh" "$MOCK_SHA" > "$MOCK_DIR/retry-output" 2>&1 || retry_result=$?
 [[ "$retry_result" == 1 && -f "$MOCK_DIR/rolled-back" ]]
 grep -q 'Previous bot restored' "$MOCK_DIR/retry-output"
-[[ $(cat "$WANNA_BET_DEPLOY_DIR/.git/wanna-bet-deployed-revision") == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]]
-printf 'PASS: retry restores the deployed writable data mount\n'
+[[ $(cat "$LINKY_DEPLOY_DIR/.git/linky-deployed-revision") == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]]
+printf 'PASS: retry restores the deployed configuration\n'
+
+for command in '' 'deploy main' "deploy $MOCK_SHA; echo unsafe" "echo deploy $MOCK_SHA"; do
+  result=0
+  SSH_ORIGINAL_COMMAND="$command" bash "$script_dir/ssh-deploy.sh" > "$test_dir/ssh-output" 2>&1 || result=$?
+  [[ "$result" == 2 ]]
+done
+printf 'PASS: SSH wrapper rejects invalid commands\n'
