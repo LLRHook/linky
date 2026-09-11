@@ -5,7 +5,7 @@
 [![CI](https://github.com/LLRHook/linky/actions/workflows/ci.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/ci.yml)
 [![Deploy](https://github.com/LLRHook/linky/actions/workflows/deploy.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/deploy.yml)
 
-Linky is a free, hosted Discord bot that fixes X, Instagram and TikTok previews. It reposts links with credit to the person who shared them, preserves attachments, and can translate tweets into English. Self-hosting is optional.
+Linky is a free, hosted Discord bot that fixes X, Instagram and TikTok previews, can translate tweets into English, and optionally adds YouTube counts and a top comment. Server admins choose whether it replaces messages or replies while keeping the originals. Self-hosting is optional.
 
 Visit the [Linky website](https://linkybot.dev) for setup guides and troubleshooting.
 
@@ -23,9 +23,15 @@ You must be the server owner or have **Administrator** or **Manage Server** perm
 
 If Linky's `/setup` command is missing from the picker, follow the [setup troubleshooting guide](https://linkybot.dev/setup).
 
-Run setup once per server. It enables link fixing in all channels and threads where Linky has the required permissions, including new ones. New servers stay inactive until an authorized person enables them. Choosing **False** for **enabled** disables the server again. Setup and `/help` replies are private, and setup choices survive restarts and deployments. Linky sends nothing when it joins; Discord may display its own system join notice.
+Run setup once per server. It enables link fixing in all channels and threads where Linky has the required permissions, including new ones. New servers stay inactive until an authorized person enables them. Choosing **False** for **enabled** disables the server again. `/setup`, `/settings` and `/help` replies are private, and saved choices survive restarts and deployments. Linky sends nothing when it joins; Discord may display its own system join notice.
 
-Linky needs **View Channel**, **Read Message History**, **Send Messages**, **Send Messages in Threads**, **Embed Links**, **Attach Files** and **Manage Messages**. The invite requests these permissions. If a link stays unchanged, check the channel or category overrides for the **Linky** role; an `@everyone` denial can override a server-level grant. Private threads must also be accessible to the bot.
+The default Replace mode uses **View Channel**, **Read Message History**, **Send Messages**, **Send Messages in Threads**, **Embed Links**, **Attach Files** and **Manage Messages**. The invite requests these permissions. Reply mode does not require **Manage Messages** or copy the original attachments. If a link stays unchanged, check channel/category overrides for the **Linky** role. Private threads must also be accessible to the bot.
+
+## Server preferences
+
+With **Manage Server** permission, run `/settings` without options to see the effective configuration. Use `/settings mode:reply` to keep original messages and add replies, or `/settings mode:replace` to restore the default. Replace mode credits the author and preserves attachments before removing the original.
+
+The optional `instagram`, `tiktok`, `x` and `youtube` switches control each platform; for example, `/settings youtube:false` disables YouTube for this server. `translate_tweets` controls English tweet translation. A server cannot enable a feature disabled by the bot operator. Preferences apply immediately but never enable a server or change its channel scope; `/setup` remains the enable/disable command. Existing servers keep their defaults until an admin changes them.
 
 ## Supported links
 
@@ -34,12 +40,15 @@ Linky needs **View Channel**, **Read Message History**, **Send Messages**, **Sen
 | X | `fixupx.com` | HTTPS `x.com` links; tweets can be translated |
 | Instagram | `www.instagram7.com` | Posts, reels and TV links |
 | TikTok | `tnktok.com` | Videos, photos and mobile share links |
+| YouTube | Native YouTube preview and optional YouTube Data API | HTTPS watch, `youtu.be`, Shorts, live and embed links; valid start timestamps retained |
 
-Tracking query strings are removed. Surrounding text and fragments are preserved. Instagram and TikTok profiles stay untouched. Only new messages from people trigger reposting; edits, old messages, other bots and webhooks do not.
+Tracking query strings are removed; valid YouTube start timestamps are retained. Surrounding text is preserved. Instagram and TikTok profiles stay untouched. Only new messages from people trigger processing; edits, old messages, other bots and webhooks do not.
 
 When English translation is enabled, translated tweet text replaces the original with a small source-language label. Photos, playable videos and quoted posts retain their media. Long translations continue across cards or include a text attachment. Unsupported posts and failed translations keep the native preview. Preview availability and translation quality depend on the listed services and FxEmbed.
 
-Linky verifies the replacement before deleting the original. It preserves reply links and attachment names, descriptions and spoilers, and disables mention notifications. Missing permissions, failed copies and size limits leave the original intact. Some message types, including polls, stickers, forwards, pinned messages and thread starters, are skipped. Sending and deleting are separate Discord requests, so a failed deletion can leave both messages.
+When the operator enables YouTube, Linky adds available view, like and comment counts plus a shortened top comment selected by YouTube's relevance order. It retains the native YouTube preview; playback depends on Discord and YouTube. Unavailable counts or comments are omitted, and a failed comment request can still leave the counts visible. A missing API key or failed video lookup leaves YouTube untouched. Counts and comments are scheduled for removal after 24 hours, leaving the video link and message body. Failed cleanup is retried, including after restarts.
+
+In Replace mode, Linky verifies the replacement before deleting the original. It preserves reply links and attachment names, descriptions and spoilers. Missing permissions, failed copies and size limits leave the original intact. Some message types, including polls, stickers, forwards, pinned messages and thread starters, are skipped. A failed deletion can leave both messages. Reply mode keeps the original and its attachments. Both modes disable mention notifications.
 
 ## Self-host
 
@@ -54,19 +63,22 @@ cp .env.example .env
 npm run dev
 ```
 
-Linky registers `/help` and `/setup` automatically at startup. Use `/setup enabled:True` in your server. Server Members Intent is unnecessary.
+Linky registers `/help`, `/setup` and `/settings` automatically at startup. Use `/setup enabled:True` in your server. Server Members Intent is unnecessary.
 
 | Setting | Meaning |
 | --- | --- |
 | `DISCORD_TOKEN` | Required bot token; keep it private |
 | `LINK_CHANNEL_IDS` | Optional comma-separated exact channel IDs to enable initially |
 | `LINK_SERVER_IDS` | Optional comma-separated server IDs to enable initially, including accessible threads |
-| `LINK_SETTINGS_PATH` | Saved admin choices; default `data/servers.json` |
-| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok`; empty enables all three |
+| `LINK_SETTINGS_PATH` | Saved enablement and preferences; default `data/servers.json` |
+| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube`; empty enables available platforms, with YouTube requiring its API key |
 | `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
+| `YOUTUBE_API_KEY` | Optional operator key for YouTube Data API v3; absent means YouTube is left untouched |
 | `LOG_LEVEL` | Logging level; default `info` |
 
 The optional ID lists preserve an operator's existing channel restrictions. A saved `/setup` choice takes priority for that server: enabling covers every accessible channel and thread, disabling stops all reposting there. With no saved choice or configured IDs, a server stays inactive. Exact channel scope requires each thread's own ID. DMs are excluded. Malformed settings stop startup rather than silently changing scope.
+
+For YouTube, the bot operator enables [YouTube Data API v3](https://developers.google.com/youtube/v3/getting-started) in a Google Cloud project and sets `YOUTUBE_API_KEY` in the bot's `.env`. [Restrict the key](https://docs.cloud.google.com/api-keys/docs/add-restrictions-api-keys) to that API and the host's outbound IP address. Server owners using the hosted bot do not need a key. API results are cached in memory for five minutes. The durable cleanup queue, `data/youtube-stats.json`, stores only channel/message IDs, expiry times and character lengths, not chat text, counts or comments; keep its volume available so expired additions can be removed.
 
 For production:
 
@@ -75,7 +87,9 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The container runs Node.js 24 as a non-root user. The `linky-data` volume keeps server choices across updates; back it up with the server's `.env`. Keep one running instance per bot token. Restart after changing environment settings; `/setup` takes effect immediately.
+The container runs Node.js 24 as a non-root user. Back up the `linky-data` volume and server's `.env`. Keep one running instance per bot token. Restart after changing environment settings; `/setup` and `/settings` take effect immediately.
+
+This version reads both legacy `{ "serverId": true }` settings and records with optional enablement and preferences. Once preferences are saved, older images cannot read those records. Keep a compatible settings backup before upgrading; a rollback to an older image also needs its compatible settings file. Restoring an image alone does not migrate the data volume.
 
 ## Development and deployment
 

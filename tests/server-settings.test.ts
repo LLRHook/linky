@@ -5,7 +5,7 @@ import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ApplicationIntegrationType, InteractionContextType, MessageFlags, PermissionFlagsBits, PermissionsBitField, type ChatInputCommandInteraction } from 'discord.js';
-import { ServerSettings } from '../src/services/ServerSettings';
+import { ServerSettings, type ServerPreferences } from '../src/services/ServerSettings';
 import { data, execute } from '../src/commands/setup';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-server-settings-'));
@@ -130,4 +130,107 @@ test('setup reports a save failure privately while preserving the previous state
   assert.match(events[1].payload.content, /previous configuration is unchanged/);
   assert.equal(servers.get(FIRST), true);
   assert.equal(new ServerSettings(path).get(FIRST), true);
+});
+
+test('legacy enablement and preference-only records survive migration without opting in a server', async () => {
+  const path = file();
+  writeFileSync(path, JSON.stringify({ [FIRST]: true, [SECOND]: false }));
+  const servers = new ServerSettings(path);
+  assert.deepEqual(servers.getPreferences(FIRST), {});
+  await servers.update(FIRST, { mode: 'reply', platforms: { instagram: false }, translateTweets: false });
+  await servers.update('333333333333333333', { mode: 'reply' });
+  await servers.set(FIRST, false);
+  const restarted = new ServerSettings(path);
+  assert.equal(restarted.get(FIRST), false);
+  assert.equal(restarted.get(SECOND), false);
+  assert.equal(restarted.get('333333333333333333'), undefined);
+  assert.deepEqual(restarted.getPreferences(FIRST), { mode: 'reply', platforms: { instagram: false }, translateTweets: false });
+  assert.deepEqual(restarted.getPreferences('333333333333333333'), { mode: 'reply' });
+});
+
+test('queued setup and preferences merge fields and platform toggles without losing choices', async () => {
+  const path = file();
+  const servers = new ServerSettings(path);
+  await Promise.all([
+    servers.update(FIRST, { mode: 'reply', platforms: { instagram: false } }),
+    servers.set(FIRST, true),
+    servers.update(FIRST, { platforms: { tiktok: false }, translateTweets: false }),
+    servers.update(SECOND, { mode: 'reply' }),
+    servers.update(FIRST, { platforms: { instagram: true } }),
+    servers.set(FIRST, false),
+  ]);
+  const restarted = new ServerSettings(path);
+  assert.equal(restarted.get(FIRST), false);
+  assert.equal(restarted.get(SECOND), undefined);
+  assert.deepEqual(restarted.getPreferences(FIRST), {
+    mode: 'reply', platforms: { instagram: true, tiktok: false }, translateTweets: false,
+  });
+  assert.deepEqual(restarted.getPreferences(SECOND), { mode: 'reply' });
+});
+
+test('queued preference input and returned preferences cannot mutate stored choices', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const path = file();
+  const servers = new ServerSettings(path, async (target, content) => { await gate; await writeFile(target, content); });
+  const patch: ServerPreferences = { mode: 'reply', platforms: { instagram: false } };
+  const pending = servers.update(FIRST, patch);
+  patch.mode = 'replace';
+  patch.platforms!.instagram = true;
+  assert.deepEqual(servers.getPreferences(FIRST), {});
+  release();
+  await pending;
+  const preferences = servers.getPreferences(FIRST);
+  preferences.mode = 'replace';
+  preferences.platforms!.instagram = true;
+  assert.deepEqual(servers.getPreferences(FIRST), { mode: 'reply', platforms: { instagram: false } });
+  assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), servers.getPreferences(FIRST));
+});
+
+test('invalid persisted preference fields stop startup', () => {
+  for (const record of [null, [], 1, { enabled: 1 }, { mode: 'other' }, { mode: null },
+    { translateTweets: 'true' }, { platforms: [] }, { platforms: null }, { platforms: { instagram: 'false' } },
+    { platforms: { unknown: false } }, { unknown: true }, { preferences: { mode: 'reply' } }]) {
+    const path = file();
+    writeFileSync(path, JSON.stringify({ [FIRST]: record }));
+    assert.throws(() => new ServerSettings(path), /Invalid server settings/);
+  }
+});
+
+test('invalid updates cannot write, change enablement, or block a later valid update', async () => {
+  let writes = 0;
+  const servers = new ServerSettings(file(), async () => { writes++; });
+  for (const patch of [null, [], true, { enabled: true }, { mode: 'other' }, { mode: undefined },
+    { translateTweets: 'true' }, { platforms: [] }, { platforms: { x: undefined } },
+    { platforms: { unknown: true } }, { unknown: true }]) {
+    await assert.rejects(servers.update(FIRST, patch as ServerPreferences));
+  }
+  await assert.rejects(servers.update('bad-id', { mode: 'reply' }));
+  await assert.rejects(servers.update(111111111111111111 as unknown as string, { mode: 'reply' }));
+  await assert.rejects(servers.set(FIRST, 'true' as unknown as boolean));
+  assert.equal(writes, 0);
+  assert.equal(servers.get(FIRST), undefined);
+  await servers.update(FIRST, { mode: 'reply' });
+  assert.equal(writes, 1);
+});
+
+test('a failed preference save leaves memory and disk intact and later queued writes still work', async () => {
+  const path = file();
+  let fail = false;
+  const servers = new ServerSettings(path, async (target, content) => {
+    if (fail) { fail = false; throw new Error('Disk full'); }
+    await writeFile(target, content);
+  });
+  await servers.set(FIRST, true);
+  await servers.update(FIRST, { mode: 'replace', platforms: { instagram: true } });
+  const before = readFileSync(path, 'utf8');
+  fail = true;
+  await assert.rejects(servers.update(FIRST, { mode: 'reply', platforms: { instagram: false } }), /Disk full/);
+  assert.equal(readFileSync(path, 'utf8'), before);
+  assert.equal(servers.get(FIRST), true);
+  assert.deepEqual(servers.getPreferences(FIRST), { mode: 'replace', platforms: { instagram: true } });
+  await servers.update(FIRST, { platforms: { tiktok: false } });
+  assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), {
+    mode: 'replace', platforms: { instagram: true, tiktok: false },
+  });
 });

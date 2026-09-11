@@ -15,6 +15,7 @@ function readChannels(overrides: NodeJS.ProcessEnv, field = 'channelIds') {
   delete env['LINK_CHANNEL_IDS'];
   delete env['LINK_SERVER_IDS'];
   delete env['LINK_SETTINGS_PATH'];
+  delete env['YOUTUBE_API_KEY'];
   const result = spawnSync(process.execPath, [
     '--require', require.resolve('tsx/cjs'), '-e',
     'process.stdout.write(JSON.stringify(require(process.argv[1]).config[process.argv[2]]))',
@@ -49,6 +50,15 @@ test('missing channel settings leave the channel allowlist empty', () => {
   const result = readChannels({});
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), []);
+});
+
+test('YouTube statistics require an operator key and respect the platform allowlist', () => {
+  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: '' }, 'rewritePlatforms').stdout), ['x', 'instagram', 'tiktok']);
+  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: '', YOUTUBE_API_KEY: ' test-key ' }, 'rewritePlatforms').stdout),
+    ['x', 'instagram', 'tiktok', 'youtube']);
+  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'instagram', YOUTUBE_API_KEY: 'test-key' }, 'rewritePlatforms').stdout),
+    ['instagram']);
+  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'youtube', YOUTUBE_API_KEY: ' ' }, 'rewritePlatforms').stdout), []);
 });
 
 test('server settings use a local data file unless explicitly configured', () => {

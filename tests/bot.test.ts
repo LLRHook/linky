@@ -8,6 +8,7 @@ import { createBot } from '../src/bot';
 import type { Config } from '../src/config';
 import { data } from '../src/commands/help';
 import { data as setupData } from '../src/commands/setup';
+import { data as settingsData } from '../src/commands/settings';
 import { registerCommands } from '../src/commands/register';
 import { ServerSettings } from '../src/services/ServerSettings';
 
@@ -62,7 +63,7 @@ for (const hasSystemChannel of [true, false]) {
     const channel = { send: async () => { sends++; } };
     const guild = { id: 'new-guild', systemChannel: hasSystemChannel ? channel : null, channels: { cache: new Map([['general', channel]]) } };
     client.emit(Events.GuildCreate, guild as unknown as Guild);
-    client.emit(Events.ClientReady, { user: { tag: 'Linky#0805' }, guilds: { cache: new Map([['new-guild', guild]]) },
+    client.emit(Events.ClientReady, { user: { id: '1491240385031311470', tag: 'Linky#0805' }, guilds: { cache: new Map([['new-guild', guild]]) },
       application: { commands: { set: async () => [] } },
     } as unknown as Client<true>);
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -121,13 +122,13 @@ test('expired command replies are logged without sending another reply', async (
   assert.equal(errors.length, 1);
 });
 
-test('registration replaces the entire global command list with /help and /setup', async () => {
+test('registration replaces the entire global command list with /help, /setup and /settings', async () => {
   const calls: unknown[] = [];
   await registerCommands({
     get: async route => { calls.push(route); return { id: 'application-id' }; },
     put: async (route, options) => { calls.push([route, options]); return []; },
   });
-  assert.deepEqual(calls, [Routes.oauth2CurrentApplication(), [Routes.applicationCommands('application-id'), { body: [data.toJSON(), setupData.toJSON()] }]]);
+  assert.deepEqual(calls, [Routes.oauth2CurrentApplication(), [Routes.applicationCommands('application-id'), { body: [data.toJSON(), setupData.toJSON(), settingsData.toJSON()] }]]);
   assert.equal(data.toJSON().name, 'help');
 });
 
@@ -138,16 +139,16 @@ test('failed application authentication leaves registered commands untouched', a
   }), /Unauthorized/);
 });
 
-test('startup installs both commands before reporting readiness', async () => {
+test('startup installs all commands before reporting readiness', async () => {
   const { client, logs } = fixture();
   const calls: unknown[] = [];
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const application = { commands: { set: async (definitions: unknown) => { calls.push(definitions); await gate; } } };
   assert.deepEqual(calls, []);
-  client.emit(Events.ClientReady, { application, user: { tag: 'Linky' }, guilds: { cache: new Map() } } as unknown as Client<true>);
+  client.emit(Events.ClientReady, { application, user: { id: '1491240385031311470', tag: 'Linky' }, guilds: { cache: new Map() } } as unknown as Client<true>);
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.deepEqual(calls, [[data.toJSON(), setupData.toJSON()]]);
+  assert.deepEqual(calls, [[data.toJSON(), setupData.toJSON(), settingsData.toJSON()]]);
   assert.equal(logs.some(entry => JSON.stringify(entry).includes('Logged in as')), false);
   release();
   await new Promise<void>(resolve => setImmediate(resolve));

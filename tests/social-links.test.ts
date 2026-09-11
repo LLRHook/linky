@@ -24,11 +24,16 @@ import {
 } from '../src/services/SocialLinkService';
 
 import type { TweetTranslation } from '../src/services/TweetTranslation';
+import type { ServerPreferences } from '../src/services/ServerSettings';
+import type { YouTubeStatistics } from '../src/services/YouTube';
 
 const CHANNEL_ID = '123456789012345678';
 const SECOND_CHANNEL_ID = '223456789012345678';
 const AUTHOR_ID = '777777777777777777';
 const QUOTED_CREDIT = `> **Shared by <@${AUTHOR_ID}>**`;
+const YOUTUBE_ID = 'dQw4w9WgXcQ';
+const YOUTUBE_STATS: YouTubeStatistics = { viewCount: '12', likeCount: '0', commentCount: '3',
+  topComment: { author: 'Viewer', text: 'A useful video.' } };
 
 test('quoted layout places plain leading context above a native URL', () => {
   const body = "Discord's May patch notes. https://x.com/discord/status/1";
@@ -212,8 +217,8 @@ test('platform names select which hosts are rewritten', () => {
 });
 
 test('platform configuration defaults to every platform and rejects unknown names', () => {
-  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok']);
-  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok']);
+  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube']);
+  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube']);
   assert.deepEqual(parseRewritePlatforms(' tiktok , x '), ['tiktok', 'x']);
   assert.deepEqual(parseRewritePlatforms('x,x'), ['x']);
   for (const invalid of ['twitter', 'x,', ',x', 'x,,tiktok', 'X', 'all']) {
@@ -285,11 +290,9 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
       permissionsFor: () => permissions,
       send: async (options: MessageCreateOptions) => {
         events.push('send'); sent.push(options);
-        replacement.attachments = source.attachments.clone();
-        const extraFiles = (options.files ?? []).length - source.attachments.size;
-        for (let index = 0; index < extraFiles; index++) {
-          replacement.attachments.set(`generated-${index}`, makeAttachment({ name: 'translation.txt' }));
-        }
+        const originals = [...source.attachments.values()];
+        replacement.attachments = new Collection((options.files ?? []).map((_, index) =>
+          [`uploaded-${index}`, originals[index] ?? makeAttachment({ name: 'translation.txt' })]));
         return replacement;
       },
     },
@@ -324,6 +327,177 @@ test('retains reply context in attribution without replying to the original', as
   assert.ok(f.sent[0].content?.startsWith(`${QUOTED_CREDIT} (reply to `));
   assert.ok(f.sent[0].content?.includes('\n> Look\nhttps://fixupx.com/'));
   assert.equal(f.sent[0].reply, undefined);
+});
+
+test('reply mode preserves the original, references it, and never notifies mentions', async () => {
+  const f = fixture();
+  f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.ManageMessages);
+  f.source.deletable = false;
+  const handler = createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    serverPreferences: () => ({ mode: 'reply' }),
+  });
+  await handler(f.source as unknown as Message);
+  await handler(f.source as unknown as Message);
+  assert.deepEqual(f.events, ['send', 'fetch']);
+  assert.deepEqual(f.sent[0].reply, { messageReference: f.source.id, failIfNotExists: true });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1/);
+});
+
+test('reply mode leaves source attachments in place without copying or Attach Files permission', async () => {
+  const f = fixture();
+  f.source.attachments.set('large-file', makeAttachment({ size: 50 * 1024 * 1024 }));
+  f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.AttachFiles);
+  await createLinkRepostHandler(CHANNEL_ID, f.log, async () => {
+    assert.fail('Reply mode must not download original attachments');
+  }, { serverPreferences: () => ({ mode: 'reply' }) })(f.source as unknown as Message);
+  assert.deepEqual(f.events, ['send', 'fetch']);
+  assert.deepEqual(f.sent[0].files, []);
+  assert.equal(f.source.attachments.size, 1);
+});
+
+test('reply mode still requires access, history, embeds and the correct send permission', async () => {
+  for (const permission of ['ViewChannel', 'ReadMessageHistory', 'EmbedLinks', 'SendMessagesInThreads'] as const) {
+    const f = fixture();
+    f.source.channel.isThread = () => true;
+    f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits[permission]);
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+      serverPreferences: () => ({ mode: 'reply' }),
+    })(f.source as unknown as Message);
+    assert.deepEqual(f.events, []);
+  }
+});
+
+test('reply mode removes a stale reply when the source changes', async () => {
+  const f = fixture();
+  f.source.fetch = async () => { f.events.push('fetch'); f.source.content = 'Edited'; return f.source; };
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    serverPreferences: () => ({ mode: 'reply' }),
+  })(f.source as unknown as Message);
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete replacement']);
+});
+
+test('server platform choices take effect without overriding operator disables or channel scope', async () => {
+  for (const [platforms, preferences, scoped, expected] of [
+    [['instagram', 'x'], { platforms: { instagram: false } }, true, 'https://instagram.com/p/abc/ https://fixupx.com/a'],
+    [['x'], { platforms: { instagram: true } }, true, 'https://instagram.com/p/abc/ https://fixupx.com/a'],
+    [['instagram', 'x'], { mode: 'reply' }, false, undefined],
+    [['instagram'], { platforms: { instagram: false } }, true, undefined],
+  ] as const) {
+    const f = fixture();
+    f.source.content = 'https://instagram.com/p/abc/ https://x.com/a';
+    await createLinkRepostHandler(scoped ? CHANNEL_ID : [], f.log, undefined, {
+      platforms, serverPreferences: () => preferences,
+    })(f.source as unknown as Message);
+    assert.equal(f.sent[0]?.content, expected ? `${QUOTED_CREDIT}\n${expected}` : undefined);
+  }
+});
+
+test('changing server preferences during translation or sending cancels the stale replacement', async () => {
+  for (const stage of ['translation', 'send', 'fetch']) {
+    const f = fixture();
+    let preferences: ServerPreferences = {};
+    const changed = () => { preferences = { mode: 'reply' }; };
+    if (stage === 'send') {
+      const send = f.source.channel.send;
+      f.source.channel.send = async options => { const result = await send(options); changed(); return result; };
+    }
+    if (stage === 'fetch') {
+      f.source.fetch = async () => { f.events.push('fetch'); changed(); return f.source; };
+    }
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+      serverPreferences: () => preferences,
+      translateTweet: async () => { if (stage === 'translation') changed(); return null; },
+    })(f.source as unknown as Message);
+    assert.deepEqual(f.events, stage === 'translation' ? [] :
+      stage === 'send' ? ['send', 'delete replacement'] : ['send', 'fetch', 'delete replacement']);
+  }
+});
+
+test('a server can disable translation while retaining plain link fixing', async () => {
+  const f = fixture();
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    serverPreferences: () => ({ translateTweets: false }),
+    translateTweet: async () => { assert.fail('Translation was disabled for this server'); },
+  })(f.source as unknown as Message);
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
+  assert.equal(f.sent[0].embeds, undefined);
+});
+
+for (const mode of ['replace', 'reply'] as const) {
+  test(`YouTube adds counts and a comment beside a native video in ${mode} mode`, async () => {
+    const f = fixture();
+    f.source.content = `https://youtu.be/${YOUTUBE_ID}?si=tracking&t=1m30s`;
+    let suffix = '';
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+      serverPreferences: () => ({ mode }),
+      lookupYouTube: async ids => { assert.deepEqual(ids, [YOUTUBE_ID]); return new Map([[YOUTUBE_ID, YOUTUBE_STATS]]); },
+      publishYouTube: async (_message, value) => { f.events.push('stats'); suffix = value; return true; },
+    })(f.source as unknown as Message);
+    assert.deepEqual(f.events, ['send', 'stats', 'fetch', ...(mode === 'replace' ? ['delete original'] : [])]);
+    assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://www.youtube.com/watch?v=${YOUTUBE_ID}&t=90`);
+    assert.equal(f.sent[0].embeds, undefined);
+    assert.match(suffix, /12 views/);
+    assert.match(suffix, /0 likes/);
+    assert.match(suffix, /3 comments/);
+    assert.match(suffix, /A useful video/);
+  });
+}
+
+test('YouTube leaves its original alone when lookup or durable publication fails', async () => {
+  for (const failure of ['lookup', 'empty', 'publish']) {
+    const f = fixture(); f.source.content = `https://www.youtube.com/watch?v=${YOUTUBE_ID}`;
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+      lookupYouTube: async () => {
+        if (failure === 'lookup') throw new Error('Unavailable');
+        return failure === 'empty' ? new Map() : new Map([[YOUTUBE_ID, YOUTUBE_STATS]]);
+      },
+      publishYouTube: async () => false,
+    })(f.source as unknown as Message);
+    assert.deepEqual(f.events, failure === 'publish' ? ['send', 'delete replacement'] : []);
+  }
+});
+
+test('YouTube outage does not prevent Instagram replacement in a mixed message', async () => {
+  const f = fixture(); f.source.content = `https://instagram.com/reel/abc/ https://youtu.be/${YOUTUBE_ID}?si=test`;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    lookupYouTube: async () => new Map(), publishYouTube: async () => assert.fail('No statistics are available'),
+  })(f.source as unknown as Message);
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://www.instagram7.com/reel/abc/ https://youtu.be/${YOUTUBE_ID}?si=test`);
+});
+
+test('hidden, disabled, inaccessible or unconfigured YouTube links make no API request', async () => {
+  for (const kind of ['suppressed', 'angle', 'code', 'spoiler', 'platform', 'permission', 'scope']) {
+    const f = fixture(); const url = `https://youtu.be/${YOUTUBE_ID}`;
+    f.source.content = kind === 'angle' ? `<${url}>` : kind === 'code' ? `\`${url}\`` : kind === 'spoiler' ? `||${url}||` : url;
+    if (kind === 'suppressed') f.source.flags.add(MessageFlags.SuppressEmbeds);
+    if (kind === 'permission') f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.EmbedLinks);
+    await createLinkRepostHandler(kind === 'scope' ? [] : CHANNEL_ID, f.log, undefined, {
+      serverPreferences: () => kind === 'platform' ? { platforms: { youtube: false } } : {},
+      lookupYouTube: async () => assert.fail('YouTube lookup is not permitted'),
+      publishYouTube: async () => assert.fail('YouTube publication is not permitted'),
+    })(f.source as unknown as Message);
+    assert.deepEqual(f.events, []);
+  }
+});
+
+test('a source edit during YouTube publication removes only the stale repost', async () => {
+  const f = fixture(); f.source.content = `https://youtu.be/${YOUTUBE_ID}`;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
+    publishYouTube: async () => { f.source.content = 'Edited while posting'; return true; },
+  })(f.source as unknown as Message);
+  assert.deepEqual(f.events, ['send', 'fetch', 'delete replacement']);
+});
+
+test('a YouTube message too long for statistics stays intact', async () => {
+  const f = fixture(); f.source.content = 'a'.repeat(1850) + ` https://youtu.be/${YOUTUBE_ID}`;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
+    publishYouTube: async () => assert.fail('No space for statistics'),
+  })(f.source as unknown as Message);
+  assert.deepEqual(f.events, []);
 });
 
 test('one handler processes two exact channels in different guilds and ignores unrelated channels', async () => {
