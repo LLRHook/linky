@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build (Node ${{ matrix.node }})
@@ -13,20 +16,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: ['22', '24']
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=low
 
       - name: TypeScript build (strict)
         run: npm run build
@@ -36,3 +44,28 @@ jobs:
 
       - name: Test deployment safeguards
         run: bash tests/deploy.test.sh
+
+  container:
+    name: Production container
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build production image
+        run: docker build --tag linky:ci .
+
+      - name: Verify production modules and settings storage
+        run: |
+          docker run --rm --network none --volume /app/data linky:ci node -e '
+            const assert = require("node:assert/strict");
+            const fs = require("node:fs");
+            assert.notEqual(process.getuid(), 0);
+            require("./dist/services/SocialLinkService");
+            const file = "/app/data/ci-check";
+            fs.writeFileSync(file, "writable");
+            assert.equal(fs.readFileSync(file, "utf8"), "writable");
+            fs.unlinkSync(file);
+          '

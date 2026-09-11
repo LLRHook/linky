@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   Attachment,
   AttachmentBuilder,
+  AttachmentFlags,
   AttachmentFlagsBitField,
   Collection,
   Message,
@@ -396,6 +397,41 @@ test('server scope preserves exact channel opt-ins in other servers', async () =
   assert.deepEqual(exact.events, ['send', 'fetch', 'delete original']);
 });
 
+test('explicit server choices override legacy scopes without broadening other servers', async () => {
+  for (const [channels, server, choice, expected] of [
+    [[], false, undefined, false],
+    [[CHANNEL_ID], false, undefined, true],
+    [[], true, undefined, true],
+    [[SECOND_CHANNEL_ID], false, undefined, false],
+    [[CHANNEL_ID], true, false, false],
+    [[], false, true, true],
+  ] as const) {
+    const f = fixture();
+    await createLinkRepostHandler(channels, f.log, undefined, {
+      serverIds: server ? [f.source.guildId] : [],
+      serverEnabled: id => id === f.source.guildId ? choice : undefined,
+    })(f.source as unknown as Message);
+    assert.deepEqual(f.events, expected ? ['send', 'fetch', 'delete original'] : []);
+  }
+});
+
+test('a running handler immediately respects setup changes in new channels and threads', async () => {
+  let enabled: boolean | undefined;
+  const first = fixture();
+  const handler = createLinkRepostHandler([], first.log, undefined, { serverEnabled: () => enabled });
+  await handler(first.source as unknown as Message);
+  assert.deepEqual(first.events, []);
+  enabled = true;
+  first.source.channel.isThread = () => true;
+  await handler(first.source as unknown as Message);
+  assert.deepEqual(first.events, ['send', 'fetch', 'delete original']);
+  enabled = false;
+  const next = fixture();
+  next.source.id = '223456789012345679';
+  await handler(next.source as unknown as Message);
+  assert.deepEqual(next.events, []);
+});
+
 test('server scope includes threads while enforcing thread permissions', async () => {
   for (const canSend of [true, false]) {
     const f = fixture();
@@ -636,9 +672,9 @@ test('preserves a spoiler represented only by the Discord attachment flag', asyn
   // The SDK constructor exists at runtime but is marked private in its typings.
   const attachment = Reflect.construct(Attachment, [{
     id: 'file-1', filename: 'photo.png', size: 3,
-    url: 'https://cdn.discordapp.com/attachments/1/2/photo.png', flags: 1 << 3,
+    url: 'https://cdn.discordapp.com/attachments/1/2/photo.png', flags: AttachmentFlags.IsSpoiler,
   }]) as Attachment;
-  assert.equal(attachment.spoiler, false); // Installed SDK only checks the filename.
+  assert.equal(attachment.name, 'photo.png');
   const copy = await downloadAttachment(attachment, async () => new Response(new Uint8Array([1, 2, 3])));
   assert.equal(copy.spoiler, true);
   assert.equal(copy.name, 'SPOILER_photo.png');
@@ -883,6 +919,31 @@ test('a missing attachment permission preserves the original long tweet', async 
   await f.run();
   assert.deepEqual(f.events, []);
 });
+
+test('disabling a server during translation preserves the source without reposting', async () => {
+  const f = fixture();
+  let enabled = true;
+  await createLinkRepostHandler([], f.log, undefined, {
+    serverEnabled: () => enabled,
+    translateTweet: async () => { enabled = false; return JAPANESE; },
+  })(f.source as unknown as Message);
+  assert.deepEqual(f.events, []);
+});
+
+for (const stage of ['send', 'fetch'] as const) {
+  test(`disabling a server during ${stage} removes only the replacement`, async () => {
+    const f = fixture();
+    let enabled = true;
+    if (stage === 'send') {
+      const send = f.source.channel.send;
+      f.source.channel.send = async options => { const result = await send(options); enabled = false; return result; };
+    } else {
+      f.source.fetch = async () => { f.events.push('fetch'); enabled = false; return f.source; };
+    }
+    await createLinkRepostHandler([], f.log, undefined, { serverEnabled: () => enabled })(f.source as unknown as Message);
+    assert.deepEqual(f.events, stage === 'send' ? ['send', 'delete replacement'] : ['send', 'fetch', 'delete replacement']);
+  });
+}
 
 test('edits made during translation keep the original and discard the stale repost', async () => {
   const f = fixture(async () => {

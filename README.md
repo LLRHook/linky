@@ -1,75 +1,75 @@
 # Linky
 
-<img src="assets/linky-avatar.png" alt="Linky's smiling chain-link avatar" width="128">
+<img src="assets/linky-avatar.png" alt="Linky's smiling chain-link avatar" width="112">
 
 [![CI](https://github.com/LLRHook/linky/actions/workflows/ci.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/ci.yml)
+[![Deploy](https://github.com/LLRHook/linky/actions/workflows/deploy.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/deploy.yml)
 
-Linky fixes X, Instagram and TikTok previews in selected channels or entire Discord servers. It reposts links with credit to the person who shared them, preserves their attachments, and can translate tweets into English. It joins servers silently. `/help` replies privately.
+Linky fixes X, Instagram and TikTok previews in Discord. It reposts links with credit to the person who shared them, preserves attachments, and can translate tweets into English.
 
-**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=277025516544&integration_type=0&scope=bot+applications.commands)**. The operator must configure your channel IDs or server ID to enable reposting.
+## Add to Discord
 
-## What it does
+**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=277025516544&integration_type=0&scope=bot+applications.commands)**
 
-| Platform | Preview service | Supported links |
+1. Choose your server and authorize Linky.
+2. An administrator with **Manage Server** permission runs `/setup enabled:True` to enable link fixing throughout the server.
+3. Share an Instagram, TikTok or X link. Use `/help` to check whether Linky is enabled in the current channel.
+
+New servers stay inactive until an admin enables them. `/setup enabled:False` disables the server again. Both commands reply privately, and setup choices survive restarts and deployments. Linky sends nothing when it joins; Discord may display its own system join notice.
+
+Linky needs **View Channel**, **Read Message History**, **Send Messages**, **Send Messages in Threads**, **Embed Links**, **Attach Files** and **Manage Messages**. The invite requests these permissions. If a link stays unchanged, check the channel or category overrides for the **Linky** role; an `@everyone` denial can override a server-level grant. Private threads must also be accessible to the bot.
+
+## Supported links
+
+| Platform | Preview service | Posts |
 | --- | --- | --- |
-| X | `fixupx.com` | HTTPS `x.com` links; status links can be translated |
-| Instagram | `www.instagram7.com` | `/p/`, `/reel/`, `/reels/`, `/tv/`; apex, `www.`, `m.`, `mobile.` |
-| TikTok | `tnktok.com` | `/@user/video/`, `/@user/photo/`, `/t/`; apex, `www.`, `m.`; share codes on `vm.` and `vt.` |
+| X | `fixupx.com` | HTTPS `x.com` links; tweets can be translated |
+| Instagram | `www.instagram7.com` | Posts, reels and TV links |
+| TikTok | `tnktok.com` | Videos, photos and mobile share links |
 
-Share/tracking query strings are removed. Paths, fragments and surrounding text are retained, and accepted subdomains are dropped. Instagram/TikTok profiles and unsupported paths stay untouched. HTTP, other subdomains, lookalike hosts, explicit ports and nested URLs inside other URLs are excluded. Existing messages, edits, bots and webhooks do not trigger reposting.
+Tracking query strings are removed. Surrounding text and fragments are preserved. Instagram and TikTok profiles stay untouched. Only new messages from people trigger reposting; edits, old messages, other bots and webhooks do not.
 
-With `TRANSLATE_TWEETS=true`, text/photo tweets use English cards with a small source-language footer. Videos keep a playable media preview and English caption. Quoted posts retain their own text, attribution and media. Long text spans cards where possible; content beyond Discord's limits includes the full translation as a text attachment. Original-language tweet text is replaced when a translation is available.
+When English translation is enabled, translated tweet text replaces the original with a small source-language label. Photos, playable videos and quoted posts retain their media. Long translations continue across cards or include a text attachment. Unsupported posts and failed translations keep the native preview. Preview availability and translation quality depend on the listed services and FxEmbed.
 
-Translations come from FxEmbed, with one request per distinct tweet and a five-second timeout. English text stays as written. Missing translations, malformed quotes, polls, broadcasts, external media and quote chains deeper than three posts fall back to the native preview. Suppressed previews, code and spoiler links skip translation. Translation quality and preview-service availability depend on those providers.
+Linky verifies the replacement before deleting the original. It preserves reply links and attachment names, descriptions and spoilers, and disables mention notifications. Missing permissions, failed copies and size limits leave the original intact. Some message types, including polls, stickers, forwards, pinned messages and thread starters, are skipped. Sending and deleting are separate Discord requests, so a failed deletion can leave both messages.
 
-## Configure and run
+## Self-host
 
-Requires Node.js 20+ and npm, or Docker Compose on Linux. Create an application in the [Discord developer portal](https://discord.com/developers/applications), enable **Message Content Intent**, and put its bot token in `.env`.
+Requires Node.js 22+ and npm, or Docker Compose on Linux. Create an application in the [Discord developer portal](https://discord.com/developers/applications), enable **Message Content Intent**, and put its bot token in `.env`. The invite above adds the hosted Linky; for your own application, create a server-install link with the `bot` and `applications.commands` scopes and the permissions listed above.
 
 ```bash
 git clone https://github.com/LLRHook/linky.git
 cd linky
 npm ci
 cp .env.example .env
-# Set DISCORD_TOKEN, then LINK_CHANNEL_IDS or LINK_SERVER_IDS in .env.
-npm run register-commands
+# Set DISCORD_TOKEN in .env.
 npm run dev
 ```
+
+Linky registers `/help` and `/setup` automatically at startup. Use `/setup enabled:True` in your server. Server Members Intent is unnecessary.
 
 | Setting | Meaning |
 | --- | --- |
 | `DISCORD_TOKEN` | Required bot token; keep it private |
-| `LINK_CHANNEL_IDS` | Comma-separated exact channel IDs |
-| `LINK_SERVER_IDS` | Comma-separated server IDs; includes every accessible channel and thread |
+| `LINK_CHANNEL_IDS` | Optional comma-separated exact channel IDs to enable initially |
+| `LINK_SERVER_IDS` | Optional comma-separated server IDs to enable initially, including accessible threads |
+| `LINK_SETTINGS_PATH` | Saved admin choices; default `data/servers.json` |
 | `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok`; empty enables all three |
 | `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
-| `LOG_LEVEL` | Optional logging level; default `info` |
+| `LOG_LEVEL` | Logging level; default `info` |
 
-Enable Developer Mode in Discord, then use Copy Channel ID or Copy Server ID. Either setting enables reposting; leave both empty to disable it. Server scope covers current and future channels and threads wherever Linky has access. Exact channel scope can cover other servers; threads need their own channel IDs unless their server is enabled. DMs are excluded. Invalid IDs, empty list entries and unknown platform names stop startup. Restart after configuration changes.
-
-In each channel you want Linky to process, grant **View Channel**, **Read Message History**, **Manage Messages**, **Embed Links**, and **Send Messages** (or **Send Messages in Threads**). **Attach Files** is needed to copy files or attach long translations. The invite above requests these permissions; channel overrides still apply. If links stay unchanged, check that category and channel overrides allow Linky to send messages, embed links and manage messages; server-level role grants do not override channel denials for `@everyone`. Server Members Intent is unnecessary.
+The optional ID lists preserve an operator's existing channel restrictions. A saved `/setup` choice takes priority for that server: enabling covers every accessible channel and thread, disabling stops all reposting there. With no saved choice or configured IDs, a server stays inactive. Exact channel scope requires each thread's own ID. DMs are excluded. Malformed settings stop startup rather than silently changing scope.
 
 For production:
 
 ```bash
 docker compose up -d --build
-docker compose exec linky node dist/commands/register.js
 docker compose logs -f
 ```
 
-Register `/help` once during setup. Linky runs as a single container and needs no persistent storage.
+The container runs Node.js 24 as a non-root user. The `linky-data` volume keeps server choices across updates; back it up with the server's `.env`. Keep one running instance per bot token. Restart after changing environment settings; `/setup` takes effect immediately.
 
-## Repost safeguards
-
-Linky sends and checks the replacement, reads the source again, then deletes it only if unchanged. It retains reply links, suppressed embeds, and attachment names, descriptions and spoilers. Mention notifications are disabled. Plain leading context is quoted beneath **Shared by @author**; complex Markdown keeps its original structure.
-
-Missing permissions, failed copies and size limits leave the source intact. Limits are 2,000 message characters including credit, 10 files and 25 MiB total files. English cards obey Discord's per-card and combined limits. Polls, stickers, components, forwards, voice messages, ephemeral attachments, pinned messages, thread starters and crossposts are skipped. Discord sends and deletes are separate requests: a failed final deletion may leave both messages, and an edit after the final check can still race deletion.
-
-## Updates and development
-
-The public bot deploys automatically after CI passes for a push to `main`. The [Deploy workflow](https://github.com/LLRHook/linky/actions/workflows/deploy.yml) sends the tested commit to the VPS. Deployments are serialized and accept only current `main`. Builds run before replacing the bot; failed startup restores the previous image and deployed Compose configuration. The server's `.env` is preserved.
-
-Keep the production checkout at `/root/linky`. Operators configure `LINKY_DEPLOY_HOST`, `LINKY_SSH_KEY` and `LINKY_SSH_KNOWN_HOSTS`, install `ops/ssh-deploy.sh` as `/usr/local/sbin/linky-deploy`, restrict the SSH key to that command, and pin the host key. After the first manual deployment connects successfully, record its checked-out commit with `git rev-parse HEAD > .git/linky-deployed-revision`; subsequent deployments maintain this rollback marker. To retry, rerun CI for current `main`; to pause updates, disable Deploy in GitHub Actions.
+## Development and deployment
 
 ```bash
 npm test             # strict typecheck and isolated tests; no token needed
@@ -77,6 +77,10 @@ npm run build        # production TypeScript
 bash tests/deploy.test.sh
 ```
 
-`bot.ts` wires Discord events and private help. `SocialLinkService` owns URL rewriting and safe reposts. `TweetTranslation` validates provider responses; `TweetPresentation` fits English text and media into Discord messages. CI tests Node 20 and 22 plus deployment failure/rollback scenarios. See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI tests Node.js 22 and 24, deployment safeguards, and the production container. See [CONTRIBUTING.md](CONTRIBUTING.md) for live preview checks.
+
+The hosted bot deploys after CI passes for a push to `main`. Deployment accepts only the current tested commit, builds before replacing the bot, and checks its Discord connection. Failed startup restores the previous image and deployed Compose configuration. The server's `.env` and data volume are preserved.
+
+Operators use `/root/linky`, configure `LINKY_DEPLOY_HOST`, `LINKY_SSH_KEY` and `LINKY_SSH_KNOWN_HOSTS`, and install `ops/ssh-deploy.sh` as `/usr/local/sbin/linky-deploy` with a restricted SSH key and pinned host key. After the first successful manual deployment, run `git rev-parse HEAD > .git/linky-deployed-revision` to initialize the rollback marker. Connection establishment retries automatically; for a failed deployment, inspect its logs and rerun the failed Deploy job. Disable Deploy in GitHub Actions to pause updates.
 
 [MIT license](LICENSE).

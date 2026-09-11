@@ -20,9 +20,14 @@ case "$1" in
   symbolic-ref) printf '%s\n' "${MOCK_BRANCH:-main}" ;;
   status) [[ "$MOCK_CASE" != dirty ]] || printf ' M src/index.ts\n' ;;
   fetch) [[ "$MOCK_CASE" != fetch ]] ;;
-  rev-parse) printf '%s\n' "$MOCK_SHA" ;;
+  rev-parse)
+    if [[ "$2" == HEAD && "$MOCK_CASE" == head-ahead ]]; then
+      printf '2222222222222222222222222222222222222222\n'
+    else
+      printf '%s\n' "$MOCK_SHA"
+    fi ;;
   show)
-    [[ "$2" == 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docker-compose.yml' && "$MOCK_CASE" != compose-missing ]] || exit 1
+    [[ "$2" == "$MOCK_DEPLOYED_SHA:docker-compose.yml" && "$MOCK_CASE" != compose-missing ]] || exit 1
     cat "$MOCK_DIR/active-compose.yml" ;;
   merge)
     [[ "$MOCK_CASE" != merge ]] || exit 1
@@ -40,6 +45,10 @@ case "$1" in
     [[ "$MOCK_CASE" != missing ]] || exit 1
     if [[ "$3" == '{{.Image}}' ]]; then
       printf 'sha256:previous\n'
+    elif [[ "$MOCK_CASE" == same-unhealthy && ! -f "$MOCK_DIR/built" ]]; then
+      printf 'false 0 2026-09-11T00:00:00Z\n'
+    elif [[ "$MOCK_CASE" == stale-startup-logs && "$3" == *'{{.State.StartedAt}}'* ]]; then
+      printf 'true 0 2026-09-11T01:00:00Z\n'
     elif [[ "$MOCK_CASE" == restart && ! -f "$MOCK_DIR/rolled-back" ]]; then
       printf 'true 1 2026-09-11T00:00:00Z\n'
     elif [[ "$MOCK_CASE" == stopped && ! -f "$MOCK_DIR/rolled-back" ]]; then
@@ -48,6 +57,9 @@ case "$1" in
       printf 'true 0 2026-09-11T00:00:00Z\n'
     fi ;;
   logs)
+    if [[ "$MOCK_CASE" == stale-startup-logs && "$3" == 2026-09-11T01:00:00Z && ! -f "$MOCK_DIR/rolled-back" ]]; then
+      exit 0
+    fi
     if [[ "$MOCK_CASE" != *startup || -f "$MOCK_DIR/rolled-back" ]]; then
       printf 'Logged in as Linky#0805\nServing 2 guild(s).\n'
     fi ;;
@@ -91,6 +103,8 @@ run_case() {
   cp "$MOCK_DIR/active-compose.yml" "$LINKY_DEPLOY_DIR/docker-compose.yml"
   local marker="$LINKY_DEPLOY_DIR/.git/linky-deployed-revision" previous_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   [[ "$name" != marker-invalid ]] || previous_revision=invalid
+  [[ "$name" != same-healthy && "$name" != same-unhealthy ]] || previous_revision=$MOCK_SHA
+  export MOCK_DEPLOYED_SHA=$previous_revision
   printf '%s\n' "$previous_revision" > "$marker"
   [[ "$name" != marker-missing ]] || rm "$marker"
   bash "$script_dir/deploy.sh" "$revision" > "$MOCK_DIR/output" 2>&1 || result=$?
@@ -99,7 +113,7 @@ run_case() {
     printf 'FAIL: %s exited %s, expected %s\n' "$name" "$result" "$expected" >&2
     exit 1
   fi
-  if [[ "$name" == success ]]; then
+  if [[ "$name" == success || "$name" == same-unhealthy ]]; then
     [[ $(cat "$marker") == "$MOCK_SHA" && $(cat "$MOCK_DIR/merged") == "$MOCK_SHA" ]]
     [[ -f "$MOCK_DIR/built" && -f "$MOCK_DIR/started" && ! -e "$MOCK_DIR/rolled-back" ]]
     [[ $(head -n 1 "$MOCK_DIR/events") == 'flock -x 9' ]]
@@ -108,10 +122,15 @@ run_case() {
   fi
   case "$name" in
     invalid) [[ ! -e "$MOCK_DIR/events" ]] ;;
+    same-healthy)
+      [[ ! -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/built" && ! -e "$MOCK_DIR/started" ]]
+      ! grep -q 'docker tag' "$MOCK_DIR/events"
+      grep -q 'Already deployed' "$MOCK_DIR/output" ;;
+    head-ahead) [[ -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/built" && ! -e "$MOCK_DIR/started" ]] ;;
     stale|dirty|branch|fetch|missing|marker-missing|marker-invalid|compose-missing|merge)
       [[ ! -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/started" ]] ;;
     build) [[ -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/started" ]] ;;
-    startup|restart|stopped|up|retry-startup|rollback-failure)
+    startup|restart|stopped|up|retry-startup|rollback-failure|stale-startup-logs)
       [[ -e "$MOCK_DIR/rolled-back" ]]
       grep -q -- '--force-recreate linky' "$MOCK_DIR/events"
       grep -q -- 'docker compose -f .*/.git/linky-deploy/previous-compose.yml' "$MOCK_DIR/events"
@@ -142,6 +161,10 @@ run_case stopped 1
 run_case up 1
 run_case rollback-failure 1
 run_case success 0
+run_case head-ahead 1
+run_case same-healthy 0
+run_case same-unhealthy 0
+run_case stale-startup-logs 1
 
 # A failed attempt advances the checkout. A retry must still restore the running
 # deployment's configuration, rather than the newer configuration in the checkout.

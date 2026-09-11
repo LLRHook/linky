@@ -1,24 +1,33 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
-import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Routes, type Interaction, type Guild, type Message, type InteractionReplyOptions } from 'discord.js';
+import { after, afterEach, test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Client, Collection, Events, GatewayIntentBits, MessageFlags, PermissionFlagsBits, PermissionsBitField, Routes, type Interaction, type Guild, type Message, type InteractionReplyOptions } from 'discord.js';
 import { createBot } from '../src/bot';
 import type { Config } from '../src/config';
 import { data } from '../src/commands/help';
+import { data as setupData } from '../src/commands/setup';
 import { registerCommands } from '../src/commands/register';
+import { ServerSettings } from '../src/services/ServerSettings';
+
+const directory = mkdtempSync(join(tmpdir(), 'linky-bot-tests-'));
+after(() => rmSync(directory, { recursive: true, force: true }));
 
 const settings: Config = {
   discordToken: 'unused', channelIds: ['configured-channel'], serverIds: [],
   rewritePlatforms: ['x', 'instagram', 'tiktok'], translateTweets: true,
+  settingsPath: join(directory, 'unused.json'),
 };
 const clients: Client[] = [];
 afterEach(async () => { await Promise.all(clients.splice(0).map(client => client.destroy())); });
 
-function fixture(overrides: Partial<Config> = {}) {
+function fixture(overrides: Partial<Config> = {}, servers = new ServerSettings(settings.settingsPath)) {
   const logs: unknown[] = [];
   const errors: unknown[] = [];
   const client = createBot({ ...settings, ...overrides }, {
     info: (...args: unknown[]) => logs.push(args), warn() {}, error: (...args: unknown[]) => errors.push(args),
-  } as Parameters<typeof createBot>[1]);
+  } as Parameters<typeof createBot>[1], servers);
   clients.push(client);
   return { client, logs, errors };
 }
@@ -40,10 +49,10 @@ test('link bot requests message access without privileged member access', () => 
   assert.equal(client.listenerCount(Events.MessageCreate), 1);
 });
 
-test('an unconfigured bot does not request or process message content', () => {
+test('an unconfigured bot listens for messages so setup can activate it without restarting', () => {
   const { client } = fixture({ channelIds: [] });
-  assert.deepEqual(client.options.intents.toArray(), ['Guilds']);
-  assert.equal(client.listenerCount(Events.MessageCreate), 0);
+  assert.deepEqual(client.options.intents.toArray().sort(), ['Guilds', 'GuildMessages', 'MessageContent'].sort());
+  assert.equal(client.listenerCount(Events.MessageCreate), 1);
 });
 
 for (const hasSystemChannel of [true, false]) {
@@ -53,7 +62,9 @@ for (const hasSystemChannel of [true, false]) {
     const channel = { send: async () => { sends++; } };
     const guild = { id: 'new-guild', systemChannel: hasSystemChannel ? channel : null, channels: { cache: new Map([['general', channel]]) } };
     client.emit(Events.GuildCreate, guild as unknown as Guild);
-    client.emit(Events.ClientReady, { user: { tag: 'Linky#0805' }, guilds: { cache: new Map([['new-guild', guild]]) } } as unknown as Client<true>);
+    client.emit(Events.ClientReady, { user: { tag: 'Linky#0805' }, guilds: { cache: new Map([['new-guild', guild]]) },
+      application: { commands: { set: async () => [] } },
+    } as unknown as Client<true>);
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(sends, 0);
     assert.ok(logs.some(entry => JSON.stringify(entry).includes('Logged in as Linky#0805')));
@@ -110,13 +121,13 @@ test('expired command replies are logged without sending another reply', async (
   assert.equal(errors.length, 1);
 });
 
-test('registration replaces the entire global command list with /help', async () => {
+test('registration replaces the entire global command list with /help and /setup', async () => {
   const calls: unknown[] = [];
   await registerCommands({
     get: async route => { calls.push(route); return { id: 'application-id' }; },
     put: async (route, options) => { calls.push([route, options]); return []; },
   });
-  assert.deepEqual(calls, [Routes.oauth2CurrentApplication(), [Routes.applicationCommands('application-id'), { body: [data.toJSON()] }]]);
+  assert.deepEqual(calls, [Routes.oauth2CurrentApplication(), [Routes.applicationCommands('application-id'), { body: [data.toJSON(), setupData.toJSON()] }]]);
   assert.equal(data.toJSON().name, 'help');
 });
 
@@ -125,6 +136,69 @@ test('failed application authentication leaves registered commands untouched', a
     get: async () => { throw new Error('Unauthorized'); },
     put: async () => { assert.fail('Cannot replace commands without an authenticated application'); },
   }), /Unauthorized/);
+});
+
+test('startup installs both commands before reporting readiness', async () => {
+  const { client, logs } = fixture();
+  const calls: unknown[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const application = { commands: { set: async (definitions: unknown) => { calls.push(definitions); await gate; } } };
+  assert.deepEqual(calls, []);
+  client.emit(Events.ClientReady, { application, user: { tag: 'Linky' }, guilds: { cache: new Map() } } as unknown as Client<true>);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [[data.toJSON(), setupData.toJSON()]]);
+  assert.equal(logs.some(entry => JSON.stringify(entry).includes('Logged in as')), false);
+  release();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(logs.some(entry => JSON.stringify(entry).includes('Logged in as Linky')));
+});
+
+test('failed startup registration disconnects without reporting readiness', async () => {
+  const { client, logs, errors } = fixture();
+  let destroyed = false;
+  const destroy = client.destroy.bind(client);
+  client.destroy = async () => { destroyed = true; await destroy(); };
+  client.emit(Events.ClientReady, {
+    application: { commands: { set: async () => { throw new Error('Registration unavailable'); } } },
+  } as unknown as Client<true>);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(destroyed, true);
+  assert.equal(errors.length, 1);
+  assert.equal(logs.some(entry => /Logged in as|Serving /.test(JSON.stringify(entry))), false);
+});
+
+test('/help reflects persisted choices before and after restarting', async () => {
+  const path = join(directory, 'help.json');
+  const guildId = '111111111111111111';
+  const servers = new ServerSettings(path);
+  const { client } = fixture({ serverIds: [guildId] }, servers);
+  await servers.set(guildId, false);
+  assert.match((await command(client, 'help', 'configured-channel', guildId))[0].content!, /disabled in this channel/);
+  await servers.set(guildId, true);
+  const restarted = fixture({ channelIds: [] }, new ServerSettings(path));
+  const reply = (await command(restarted.client, 'help', 'new-channel', guildId))[0];
+  assert.match(reply.content!, /enabled throughout this server/);
+  assert.match(reply.content!, /\/setup enabled:true/);
+});
+
+test('the running bot routes setup to persistence and immediately updates help', { timeout: 3000 }, async () => {
+  const path = join(directory, 'setup.json');
+  const guildId = '222222222222222222';
+  const servers = new ServerSettings(path);
+  const { client } = fixture({ channelIds: [], serverIds: [] }, servers);
+  assert.match((await command(client, 'help', 'new-channel', guildId))[0].content!, /disabled in this channel/);
+  await new Promise<void>((resolve) => {
+    client.emit(Events.InteractionCreate, {
+      isChatInputCommand: () => true, commandName: 'setup', guildId,
+      memberPermissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild),
+      options: { getBoolean: () => true },
+      deferReply: async () => {},
+      editReply: async () => { resolve(); },
+    } as unknown as Interaction);
+  });
+  assert.equal(new ServerSettings(path).get(guildId), true);
+  assert.match((await command(client, 'help', 'new-channel', guildId))[0].content!, /enabled throughout this server/);
 });
 
 
