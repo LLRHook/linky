@@ -8,4 +8,9 @@ services:
     env_file: .env
     environment:
       NODE_ENV: production
+    volumes:
+      - linky-data:/app/data
     stop_grace_period: 15s
+
+volumes:
+  linky-data:

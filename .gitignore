@@ -4,6 +4,7 @@
 node_modules/
 dist/
 coverage/
+data/
 *.log
 *.tsbuildinfo
 .DS_Store

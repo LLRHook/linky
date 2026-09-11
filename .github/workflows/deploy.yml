@@ -40,6 +40,7 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
 
+          # Retry connection establishment only; never rerun an uncertain remote deployment.
           ssh -n -T -F /dev/null -i "$ssh_dir/key" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
@@ -48,6 +49,7 @@ jobs:
             -o ForwardAgent=no \
             -o ClearAllForwardings=yes \
             -o ConnectTimeout=20 \
+            -o ConnectionAttempts=3 \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=3 \
             "root@$DEPLOY_HOST" "deploy $DEPLOY_SHA"

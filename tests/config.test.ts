@@ -7,13 +7,14 @@ import { after, test } from 'node:test';
 
 const emptyDirectory = mkdtempSync(path.join(tmpdir(), 'linky-config-tests-'));
 after(() => rmdirSync(emptyDirectory));
-const FIRST = '1491242185331576884';
-const SECOND = '688096448679903281';
+const FIRST = '111111111111111111';
+const SECOND = '222222222222222222';
 
 function readChannels(overrides: NodeJS.ProcessEnv, field = 'channelIds') {
   const env = { ...process.env };
   delete env['LINK_CHANNEL_IDS'];
   delete env['LINK_SERVER_IDS'];
+  delete env['LINK_SETTINGS_PATH'];
   const result = spawnSync(process.execPath, [
     '--require', require.resolve('tsx/cjs'), '-e',
     'process.stdout.write(JSON.stringify(require(process.argv[1]).config[process.argv[2]]))',
@@ -32,7 +33,7 @@ test('LINK_CHANNEL_IDS configures one channel', () => {
   assert.deepEqual(JSON.parse(result.stdout), [SECOND]);
 });
 
-test('an explicitly empty LINK_CHANNEL_IDS disables rewriting', () => {
+test('an explicitly empty LINK_CHANNEL_IDS leaves the channel allowlist empty', () => {
   const result = readChannels({ LINK_CHANNEL_IDS: '' });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), []);
@@ -44,10 +45,16 @@ test('LINK_CHANNEL_IDS trims and deduplicates a channel list', () => {
   assert.deepEqual(JSON.parse(result.stdout), [FIRST, SECOND]);
 });
 
-test('missing channel settings disable rewriting', () => {
+test('missing channel settings leave the channel allowlist empty', () => {
   const result = readChannels({});
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), []);
+});
+
+test('server settings use a local data file unless explicitly configured', () => {
+  assert.equal(JSON.parse(readChannels({}, 'settingsPath').stdout), 'data/servers.json');
+  assert.equal(JSON.parse(readChannels({ LINK_SETTINGS_PATH: ' /app/data/custom.json ' }, 'settingsPath').stdout), '/app/data/custom.json');
+  assert.equal(JSON.parse(readChannels({ LINK_SETTINGS_PATH: '' }, 'settingsPath').stdout), 'data/servers.json');
 });
 
 test('malformed LINK_CHANNEL_IDS fails closed', () => {

@@ -6,11 +6,11 @@ compose() {
 }
 
 bot_ready() {
-  local state running restarts created logs
-  state=$(docker inspect --format '{{.State.Running}} {{.RestartCount}} {{.Created}}' linky 2>/dev/null) || return 1
-  read -r running restarts created <<< "$state"
+  local state running restarts started logs
+  state=$(docker inspect --format '{{.State.Running}} {{.RestartCount}} {{.State.StartedAt}}' linky 2>/dev/null) || return 1
+  read -r running restarts started <<< "$state"
   [[ "$running" == true && "$restarts" == 0 ]] || return 1
-  logs=$(docker logs --since "$created" linky 2>&1) || return 1
+  logs=$(docker logs --since "$started" linky 2>&1) || return 1
   [[ "$logs" == *'Logged in as '* && "$logs" == *'Serving '* ]]
 }
 
@@ -70,6 +70,10 @@ main() {
   [[ "$deployed_revision" =~ ^[0-9a-f]{40}$ ]] || {
     printf 'The recorded deployment revision is invalid.\n' >&2; return 1;
   }
+  if [[ "$deployed_revision" == "$revision" ]] && bot_ready; then
+    printf 'Already deployed %s; Discord connection verified.\n' "$revision"
+    return 0
+  fi
   umask 077
   mkdir -p "$repo_dir/.git/linky-deploy"
   previous_compose="$repo_dir/.git/linky-deploy/previous-compose.yml"
@@ -80,6 +84,10 @@ main() {
   }
   docker tag "$previous_image" linky:rollback
   git merge --ff-only "$revision"
+  [[ $(git rev-parse HEAD) == "$revision" ]] || {
+    printf 'Checkout does not match the tested commit; leaving the bot unchanged.\n' >&2
+    return 1
+  }
 
   if ! compose build linky; then
     printf 'Build failed; the existing bot is still running.\n' >&2

@@ -1,6 +1,7 @@
 import {
   Attachment,
   AttachmentBuilder,
+  AttachmentFlags,
   Message,
   MessageFlags,
   MessageType,
@@ -16,9 +17,6 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 const RECENT_MESSAGE_LIMIT = 1_000;
 const DISCORD_ID = /^[1-9]\d{16,19}$/;
-// Discord's IS_SPOILER attachment flag is not named in the installed v14 enum.
-// https://docs.discord.com/developers/resources/message#attachment-object
-const ATTACHMENT_IS_SPOILER = 1 << 3;
 
 /** Keep sentence punctuation and paired Markdown outside a URL's query string. */
 function urlWithoutSuffix(url: string, prefix: string): string {
@@ -246,7 +244,7 @@ async function translateRepost(
 }
 
 function isSpoiler(attachment: Attachment): boolean {
-  return attachment.spoiler || (attachment.flags.bitfield & ATTACHMENT_IS_SPOILER) !== 0;
+  return attachment.spoiler || attachment.flags.has(AttachmentFlags.IsSpoiler);
 }
 
 /** Reject malformed scope instead of accidentally processing unrelated channels or servers. */
@@ -328,10 +326,11 @@ export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateTweet, serverIds = [] }: {
+  { platforms = REWRITE_PLATFORMS, translateTweet, serverIds = [], serverEnabled }: {
     platforms?: readonly RewritePlatform[];
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
     serverIds?: readonly string[];
+    serverEnabled?: (serverId: string) => boolean | undefined;
   } = {}
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
@@ -340,7 +339,10 @@ export function createLinkRepostHandler(
   const reposted = new Set<string>();
 
   return async (message) => {
-    if (!message.inGuild() || (!allowedChannelIds.has(message.channelId) && !allowedServerIds.has(message.guildId)) ||
+    if (!message.inGuild()) return;
+    const enabled = () => serverEnabled?.(message.guildId) ??
+      (allowedChannelIds.has(message.channelId) || allowedServerIds.has(message.guildId));
+    if (!enabled() ||
         !canCopy(message) || inFlight.has(message.id) || reposted.has(message.id)) return;
     const rewritten = rewriteSocialLinks(message.content, platforms);
     if (rewritten === message.content) return;
@@ -401,6 +403,7 @@ export function createLinkRepostHandler(
       const files: AttachmentBuilder[] = [];
       for (const attachment of attachments) files.push(await copyAttachment(attachment));
       files.push(...translationFiles);
+      if (!enabled()) return;
       const replacement = await channel.send({
         content,
         ...(embeds ? { embeds } : {}),
@@ -415,6 +418,10 @@ export function createLinkRepostHandler(
       reposted.add(message.id);
       if (reposted.size > RECENT_MESSAGE_LIMIT) reposted.delete(reposted.values().next().value!);
       const resultContext = { ...context, replacementId: replacement.id };
+      if (!enabled()) {
+        await replacement.delete();
+        return;
+      }
       if (replacement.attachments.size !== files.length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         return;
@@ -430,8 +437,8 @@ export function createLinkRepostHandler(
         }
         throw err;
       }
-      if (!canCopy(latest) || sourceVersion(latest) !== version) {
-        log.warn(resultContext, 'Keeping original: message changed while reposting');
+      if (!enabled() || !canCopy(latest) || sourceVersion(latest) !== version) {
+        log.warn(resultContext, 'Keeping original: message changed or link fixing was disabled while reposting');
         await replacement.delete();
         return;
       }

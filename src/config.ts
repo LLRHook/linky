@@ -7,6 +7,7 @@ export interface Config {
   serverIds: readonly string[];
   rewritePlatforms: readonly RewritePlatform[];
   translateTweets: boolean;
+  settingsPath: string;
 }
 
 function requireEnv(name: string): string {
@@ -21,4 +22,5 @@ export const config: Config = {
   serverIds: parseDiscordIds(process.env['LINK_SERVER_IDS'], 'Server IDs'),
   rewritePlatforms: parseRewritePlatforms(process.env['REWRITE_PLATFORMS']),
   translateTweets: process.env['TRANSLATE_TWEETS']?.toLowerCase() === 'true',
+  settingsPath: process.env['LINK_SETTINGS_PATH']?.trim() || 'data/servers.json',
 };
