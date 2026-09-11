@@ -69,7 +69,7 @@ const PLATFORMS: readonly Platform[] = [
   {
     name: 'instagram',
     host: /^https:\/\/(?:www\.|m\.|mobile\.)?instagram\.com(?=[/?#]|$)/i,
-    fixer: 'https://kkclip.com',
+    fixer: 'https://www.instagram7.com',
     path: /^\/(?:p|reels?|tv)\/[\w-]+\/?$/,
   },
   {

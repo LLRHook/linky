@@ -13,7 +13,7 @@ Linky fixes X, Instagram and TikTok previews in selected channels or entire Disc
 | Platform | Preview service | Supported links |
 | --- | --- | --- |
 | X | `fixupx.com` | HTTPS `x.com` links; status links can be translated |
-| Instagram | `kkclip.com` | `/p/`, `/reel/`, `/reels/`, `/tv/`; apex, `www.`, `m.`, `mobile.` |
+| Instagram | `www.instagram7.com` | `/p/`, `/reel/`, `/reels/`, `/tv/`; apex, `www.`, `m.`, `mobile.` |
 | TikTok | `tnktok.com` | `/@user/video/`, `/@user/photo/`, `/t/`; apex, `www.`, `m.`; share codes on `vm.` and `vt.` |
 
 Share/tracking query strings are removed. Paths, fragments and surrounding text are retained, and accepted subdomains are dropped. Instagram/TikTok profiles and unsupported paths stay untouched. HTTP, other subdomains, lookalike hosts, explicit ports and nested URLs inside other URLs are excluded. Existing messages, edits, bots and webhooks do not trigger reposting.

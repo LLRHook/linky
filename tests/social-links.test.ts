@@ -154,7 +154,7 @@ for (const url of [
   // Instagram and TikTok inherit the same authority rules.
   'https://instagram.com.evil/p/abc', 'https://evil@instagram.com/p/abc',
   'https://instagram.com@evil.test/p/abc', 'https://instagram.com:443/p/abc',
-  'http://instagram.com/p/abc', 'https://kkclip.com/p/abc',
+  'http://instagram.com/p/abc', 'https://www.instagram7.com/p/abc',
   'https://tiktok.com.evil/@user/video/1', 'https://evil@tiktok.com/@user/video/1',
   'https://tiktok.com:443/@user/video/1', 'http://tiktok.com/@user/video/1',
   'https://tnktok.com/@user/video/1',
@@ -177,12 +177,13 @@ for (const url of [
 }
 
 for (const [original, expected] of [
-  ['https://instagram.com/p/DAbc-1_x/', 'https://kkclip.com/p/DAbc-1_x/'],
-  ['https://www.instagram.com/reel/DAbc123/', 'https://kkclip.com/reel/DAbc123/'],
-  ['https://m.instagram.com/reels/DAbc123', 'https://kkclip.com/reels/DAbc123'],
-  ['https://mobile.instagram.com/tv/DAbc123', 'https://kkclip.com/tv/DAbc123'],
+  ['https://www.instagram.com/reels/DdFKS1ABmK4/', 'https://www.instagram7.com/reels/DdFKS1ABmK4/'],
+  ['https://instagram.com/p/DAbc-1_x/', 'https://www.instagram7.com/p/DAbc-1_x/'],
+  ['https://www.instagram.com/reel/DAbc123/', 'https://www.instagram7.com/reel/DAbc123/'],
+  ['https://m.instagram.com/reels/DAbc123', 'https://www.instagram7.com/reels/DAbc123'],
+  ['https://mobile.instagram.com/tv/DAbc123', 'https://www.instagram7.com/tv/DAbc123'],
   // Mobile share links arrive as www with an igsh tracking param.
-  ['https://www.instagram.com/reel/DAbc123/?igsh=MXY2cWZ4ZzZ4', 'https://kkclip.com/reel/DAbc123/'],
+  ['https://www.instagram.com/reel/DAbc123/?igsh=MXY2cWZ4ZzZ4', 'https://www.instagram7.com/reel/DAbc123/'],
   ['https://tiktok.com/@user.name/video/7412345678901234567',
     'https://tnktok.com/@user.name/video/7412345678901234567'],
   ['https://www.tiktok.com/@user/photo/7412345678901234567',
@@ -195,7 +196,7 @@ for (const [original, expected] of [
   ['https://www.tiktok.com/@user/video/7412345678901234567?is_from_webapp=1&sender_device=pc',
     'https://tnktok.com/@user/video/7412345678901234567'],
 ] as const) {
-  test(`rewrites to the fixer apex: ${original}`, () => {
+  test(`rewrites to the fixer host: ${original}`, () => {
     assert.equal(rewriteSocialLinks(original), expected);
   });
 }
@@ -205,7 +206,7 @@ test('platform names select which hosts are rewritten', () => {
   assert.equal(rewriteSocialLinks(body, ['x']),
     'https://fixupx.com/u/status/1 https://instagram.com/p/abc https://tiktok.com/@u/video/1');
   assert.equal(rewriteSocialLinks(body, ['instagram', 'tiktok']),
-    'https://x.com/u/status/1 https://kkclip.com/p/abc https://tnktok.com/@u/video/1');
+    'https://x.com/u/status/1 https://www.instagram7.com/p/abc https://tnktok.com/@u/video/1');
   assert.equal(rewriteSocialLinks(body, []), body);
 });
 
@@ -509,7 +510,7 @@ test('a message is left alone when only a disabled platform matches', async () =
   await createLinkRepostHandler(CHANNEL_ID, enabled.log, undefined, { platforms: ['instagram'] })(
     enabled.source as unknown as Message);
   assert.deepEqual(enabled.events, ['send', 'fetch', 'delete original']);
-  assert.equal(enabled.sent[0].content, `${QUOTED_CREDIT}\n> Look\nhttps://kkclip.com/p/DAbc123`);
+  assert.equal(enabled.sent[0].content, `${QUOTED_CREDIT}\n> Look\nhttps://www.instagram7.com/p/DAbc123`);
 });
 
 for (const permission of ['ViewChannel', 'ReadMessageHistory', 'ManageMessages', 'SendMessages', 'EmbedLinks'] as const) {
@@ -720,7 +721,7 @@ test('mixed platforms keep native previews and suppress the untranslated text-on
   f.source.content = '**Read https://x.com/u/status/123?s=20#part?detail** https://www.instagram.com/p/abc/?igsh=1. https://vm.tiktok.com/ZN8eQCMCd/?share=1';
   await f.run();
   assert.deepEqual(calls, ['123']);
-  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n**Read <https://fixupx.com/u/status/123#part?detail>** https://kkclip.com/p/abc/. https://tnktok.com/ZN8eQCMCd/\n\n${JAPANESE.text}\n-# Translated from Japanese`);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n**Read <https://fixupx.com/u/status/123#part?detail>** https://www.instagram7.com/p/abc/. https://tnktok.com/ZN8eQCMCd/\n\n${JAPANESE.text}\n-# Translated from Japanese`);
   assert.equal(f.sent[0].embeds, undefined);
 });
 
@@ -734,7 +735,7 @@ test('disabled X or translation never requests a translation', async () => {
     });
     await handler(f.source as unknown as Message);
     assert.equal(f.sent[0].embeds, undefined);
-    assert.match(f.sent[0].content!, /https:\/\/kkclip.com\/p\/abc\//);
+    assert.match(f.sent[0].content!, /https:\/\/www\.instagram7\.com\/p\/abc\//);
   }
 });
 
@@ -896,7 +897,7 @@ test('literal markers in earlier words or URLs do not leak tracking values into 
   for (const prefix of ['my_name shared ', 'https://instagram.com/p/abc_def/ ', 'https://other.test/?key=* ']) {
     for (const marker of ['_', '*']) {
       assert.equal(rewriteSocialLinks(prefix + 'https://x.com/u/status/123?t=abc' + marker),
-        prefix.replace('instagram.com', 'kkclip.com') + 'https://fixupx.com/u/status/123');
+        prefix.replace('instagram.com', 'www.instagram7.com') + 'https://fixupx.com/u/status/123');
     }
   }
 });
