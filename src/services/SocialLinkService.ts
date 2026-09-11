@@ -1,3 +1,4 @@
+import { mapLinks, visibleLink } from './LinkTokens';
 import {
   Attachment,
   AttachmentBuilder,
@@ -10,6 +11,8 @@ import {
 import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
 import type { TweetTranslation } from './TweetTranslation';
+import type { ServerPreferences } from './ServerSettings';
+import { findYouTubeLinks, formatYouTubeStatistics, parseYouTubeUrl, type YouTubeStatistics } from './YouTube';
 import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
 
 const MAX_CONTENT_LENGTH = 2_000;
@@ -18,36 +21,7 @@ const DOWNLOAD_TIMEOUT_MS = 15_000;
 const RECENT_MESSAGE_LIMIT = 1_000;
 const DISCORD_ID = /^[1-9]\d{16,19}$/;
 
-/** Keep sentence punctuation and paired Markdown outside a URL's query string. */
-function urlWithoutSuffix(url: string, prefix: string): string {
-  const active = new Set<string>();
-  const unescaped = (text: string) => (text.match(/\\*$/)?.[0].length ?? 0) % 2 === 0;
-  const longestFirst = () => [...active].sort((a, b) => b.length - a.length);
-  for (const match of prefix.matchAll(/\*{1,3}|_{1,2}|~~|\|\|/g)) {
-    const before = prefix.slice(0, match.index);
-    const after = prefix.slice(match.index + match[0].length);
-    if (!unescaped(before) || (match[0][0] === '_' && /\w$/.test(before) && /^\w/.test(after))) continue;
-    let remainder = match[0];
-    for (const marker of /\S$/.test(before) ? longestFirst() : []) {
-      if (remainder.endsWith(marker)) {
-        active.delete(marker);
-        remainder = remainder.slice(0, -marker.length);
-      }
-    }
-    // A literal marker inside an earlier URL cannot open formatting around this one.
-    if (remainder && !/[a-z][a-z\d+.-]*:\/\/\S*$/i.test(before)) active.add(remainder);
-  }
-  let link = url.replace(/[.,!?:;]+$/, '');
-  let marker: string | undefined;
-  while ((marker = longestFirst().find((value) => link.endsWith(value) &&
-    unescaped(link.slice(0, -value.length))))) {
-    active.delete(marker);
-    link = link.slice(0, -marker.length).replace(/[.,!?:;]+$/, '');
-  }
-  return link;
-}
-
-export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok'] as const;
+export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok', 'youtube'] as const;
 export type RewritePlatform = typeof REWRITE_PLATFORMS[number];
 
 interface Platform {
@@ -118,38 +92,6 @@ function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string 
   return undefined;
 }
 
-/** Visit complete URL tokens, preserving surrounding text and nested URLs. */
-function mapLinks(content: string, transform: (url: string, position: number) => string): string {
-  const schemes = /[a-z][a-z\d+.-]*:\/\//gi;
-  let rewritten = '';
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  while ((match = schemes.exec(content)) !== null) {
-    let end = schemes.lastIndex;
-    const closing: string[] = [];
-    // Balanced punctuation can belong to a URL. An unmatched closing delimiter
-    // ends a Markdown link, allowing an adjacent link to be processed separately.
-    while (end < content.length && !/[\s<>"`]/.test(content[end])) {
-      const char = content[end];
-      const opening = '([{'.indexOf(char);
-      if (opening !== -1) closing.push(')]}'[opening]);
-      else if (')]}'.includes(char)) {
-        if (closing.pop() !== char) break;
-      }
-      end++;
-    }
-    // Consume other URLs too, including URLs nested inside their paths/queries.
-    const url = content.slice(match.index, end);
-    const withoutPunctuation = urlWithoutSuffix(url,
-      content.slice(0, match.index).split(/\n[ \t]*\n/).pop()!);
-    rewritten += content.slice(cursor, match.index) + transform(withoutPunctuation, match.index) +
-      url.slice(withoutPunctuation.length);
-    cursor = end;
-    schemes.lastIndex = end;
-  }
-  return rewritten + content.slice(cursor);
-}
-
 /** Quote plain leading context without pulling apart existing Markdown or URLs. */
 export function formatLinkRepost(content: string, authorId: string, replyUrl?: string): string {
   const credit = `> **Shared by <@${authorId}>**${replyUrl ? ` (reply to ${replyUrl})` : ''}`;
@@ -167,22 +109,6 @@ export function formatLinkRepost(content: string, authorId: string, replyUrl?: s
     !line || /^\s|\s$/.test(line) || /^(?:[-+]|\d+[.)])\s/.test(line)
   )) return fallback;
   return `${credit}\n${lines.map((line) => `> ${line}`).join('\n')}\n${content.slice(firstUrl.index)}`;
-}
-
-/** Do not reveal text behind a suppressed link, code span, or spoiler. */
-function visibleLink(content: string, position: number): boolean {
-  const prefix = content.slice(0, position);
-  if (prefix.endsWith('<')) return false;
-  let code = '';
-  let spoiler = false;
-  for (const match of prefix.matchAll(/`+|\|\|/g)) {
-    if ((prefix.slice(0, match.index).match(/\\*$/)?.[0].length ?? 0) % 2) continue;
-    if (match[0][0] === '`') {
-      if (!code) code = match[0];
-      else if (code === match[0]) code = '';
-    } else if (!code) spoiler = !spoiler;
-  }
-  return !code && !spoiler;
 }
 
 /** Build one compact card, or captions alongside native video/mixed-link previews. */
@@ -326,11 +252,15 @@ export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateTweet, serverIds = [], serverEnabled }: {
+  { platforms = REWRITE_PLATFORMS, translateTweet, serverIds = [], serverEnabled, serverPreferences,
+    lookupYouTube, publishYouTube }: {
     platforms?: readonly RewritePlatform[];
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
     serverIds?: readonly string[];
     serverEnabled?: (serverId: string) => boolean | undefined;
+    serverPreferences?: (serverId: string) => ServerPreferences;
+    lookupYouTube?: (ids: readonly string[]) => Promise<Map<string, YouTubeStatistics>>;
+    publishYouTube?: (message: Message, suffix: string) => Promise<boolean>;
   } = {}
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
@@ -340,12 +270,19 @@ export function createLinkRepostHandler(
 
   return async (message) => {
     if (!message.inGuild()) return;
-    const enabled = () => serverEnabled?.(message.guildId) ??
-      (allowedChannelIds.has(message.channelId) || allowedServerIds.has(message.guildId));
+    const preferences = serverPreferences?.(message.guildId) ?? {};
+    const preferenceVersion = JSON.stringify(preferences);
+    const enabled = () => (serverEnabled?.(message.guildId) ??
+      (allowedChannelIds.has(message.channelId) || allowedServerIds.has(message.guildId))) &&
+      JSON.stringify(serverPreferences?.(message.guildId) ?? {}) === preferenceVersion;
+    const activePlatforms = platforms.filter(platform => preferences.platforms?.[platform] !== false);
+    const reply = preferences.mode === 'reply';
     if (!enabled() ||
         !canCopy(message) || inFlight.has(message.id) || reposted.has(message.id)) return;
-    const rewritten = rewriteSocialLinks(message.content, platforms);
-    if (rewritten === message.content) return;
+    const rewritten = rewriteSocialLinks(message.content, activePlatforms);
+    const youtubeLinks = activePlatforms.includes('youtube') && lookupYouTube && publishYouTube &&
+      !message.flags.has(MessageFlags.SuppressEmbeds) ? findYouTubeLinks(message.content).slice(0, 3) : [];
+    if (rewritten === message.content && !youtubeLinks.length) return;
 
     const channelId = message.channelId;
     const context = { messageId: message.id, channelId, guildId: message.guildId };
@@ -358,12 +295,12 @@ export function createLinkRepostHandler(
       const required = [
         PermissionFlagsBits.ViewChannel,
         PermissionFlagsBits.ReadMessageHistory,
-        PermissionFlagsBits.ManageMessages,
         PermissionFlagsBits.EmbedLinks,
         channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages,
       ];
-      if (message.attachments.size) required.push(PermissionFlagsBits.AttachFiles);
-      if (!message.deletable || !permissions?.has(required)) {
+      if (!reply) required.push(PermissionFlagsBits.ManageMessages);
+      if (!reply && message.attachments.size) required.push(PermissionFlagsBits.AttachFiles);
+      if ((!reply && !message.deletable) || !permissions?.has(required)) {
         log.warn(context, 'Skipping link replacement: missing channel permissions');
         return;
       }
@@ -374,24 +311,42 @@ export function createLinkRepostHandler(
         : undefined;
       // Discord can mutate this cached message while a language lookup is pending.
       const version = sourceVersion(message);
+      let youtube = new Map<string, YouTubeStatistics>();
+      if (youtubeLinks.length) {
+        try { youtube = await lookupYouTube!(youtubeLinks.map(link => link.id)); }
+        catch { log.warn(context, 'YouTube lookup unavailable; keeping native links'); }
+      }
+      if (rewritten === message.content && !youtube.size) return;
       const body = formatLinkRepost(rewritten, message.author.id, replyUrl);
-      const translated = translateTweet && platforms.includes('x') &&
+      const translated = translateTweet && preferences.translateTweets !== false && activePlatforms.includes('x') &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
-        ? await translateRepost(message.content, platforms, translateTweet,
+        ? await translateRepost(message.content, activePlatforms, translateTweet,
           MAX_CONTENT_LENGTH - (body.length - rewritten.length)) : { content: rewritten };
       if (!translated) {
         log.warn(context, 'Keeping original: source context and every media link exceed the message limit');
         return;
       }
-      const formatted = formatLinkRepost(translated.content, message.author.id, replyUrl);
-      const content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
+      const canonical = mapLinks(translated.content, (url, position) => {
+        const video = parseYouTubeUrl(url);
+        return video && youtube.has(video.id) && visibleLink(translated.content, position) ? video.url : url;
+      });
+      const formatted = formatLinkRepost(canonical, message.author.id, replyUrl);
+      let content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
+      let youtubeSuffix = youtubeLinks.filter(link => youtube.has(link.id))
+        .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url)).filter(Boolean).join('\n');
+      if (content.length + youtubeSuffix.length + 2 > MAX_CONTENT_LENGTH) {
+        youtubeSuffix = '';
+        content = formatLinkRepost(translated.content, message.author.id, replyUrl);
+      }
+      if (rewritten === message.content && !youtubeSuffix) return;
       const embeds = translated.embeds;
       const translationFiles = translated.translationFiles ?? [];
       if (translationFiles.length && !permissions.has(PermissionFlagsBits.AttachFiles)) {
         log.warn(context, 'Keeping original: a full translation attachment needs Attach Files permission');
         return;
       }
-      const attachments = [...message.attachments.values()];
+      // Reply mode leaves source attachments on the original instead of duplicating them.
+      const attachments = reply ? [] : [...message.attachments.values()];
       const translationBytes = translationFiles.reduce((total, file) =>
         total + (Buffer.isBuffer(file.attachment) ? file.attachment.byteLength : 0), 0);
       if (content.length > MAX_CONTENT_LENGTH || attachments.length + translationFiles.length > 10 ||
@@ -411,6 +366,7 @@ export function createLinkRepostHandler(
         allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
         nonce: message.id,
         enforceNonce: true,
+        ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}),
         ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds } : {}),
       });
 
@@ -425,6 +381,15 @@ export function createLinkRepostHandler(
       if (replacement.attachments.size !== files.length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         return;
+      }
+      if (youtubeSuffix) {
+        let published = false;
+        try { published = await publishYouTube!(replacement, youtubeSuffix); }
+        catch { log.warn(resultContext, 'Could not append YouTube statistics'); }
+        if (!published && rewritten === message.content) {
+          await replacement.delete();
+          return;
+        }
       }
       let latest: Message;
       try {
@@ -442,9 +407,13 @@ export function createLinkRepostHandler(
         await replacement.delete();
         return;
       }
-      // Sending, checking and deleting are separate Discord requests, not a transaction.
-      await latest.delete();
-      log.info(resultContext, 'Replaced social links and deleted original message');
+      if (reply) {
+        log.info(resultContext, 'Replied with fixed social links; kept original message');
+      } else {
+        // Sending, checking and deleting are separate Discord requests, not a transaction.
+        await latest.delete();
+        log.info(resultContext, 'Replaced social links and deleted original message');
+      }
     } catch (err) {
       log.error({ ...context, err }, 'link replacement failed; no further deletion will be attempted');
     } finally {
