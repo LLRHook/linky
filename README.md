@@ -13,11 +13,17 @@ Visit the [Linky website](https://linkybot.dev) for setup guides and troubleshoo
 
 **[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=277025516544&integration_type=0&scope=bot+applications.commands)**
 
-1. Choose your server and authorize Linky.
-2. An administrator with **Manage Server** permission runs `/setup enabled:True` to enable link fixing throughout the server.
-3. Share an Instagram, TikTok or X link. Use `/help` to check whether Linky is enabled in the current channel.
+You must be the server owner or have **Administrator** or **Manage Server** permission in that server to enable Linky.
 
-New servers stay inactive until an admin enables them. `/setup enabled:False` disables the server again. Both commands reply privately, and setup choices survive restarts and deployments. Linky sends nothing when it joins; Discord may display its own system join notice.
+1. Choose your server and authorize Linky.
+2. In Discord, open a text channel in the server you just added Linky to.
+3. Type `/setup` in the message box, then select **Linky's `/setup` command** from the command picker.
+4. Choose **True** for the **enabled** option, then press **Enter** or tap **Send** to run the command.
+5. Wait for Linky's private confirmation that it is enabled, then send a fresh Instagram, TikTok or X link in that channel. Use `/help` to check whether Linky is enabled in the current channel.
+
+If Linky's `/setup` command is missing from the picker, follow the [setup troubleshooting guide](https://linkybot.dev/setup).
+
+Run setup once per server. It enables link fixing in all channels and threads where Linky has the required permissions, including new ones. New servers stay inactive until an authorized person enables them. Choosing **False** for **enabled** disables the server again. Setup and `/help` replies are private, and setup choices survive restarts and deployments. Linky sends nothing when it joins; Discord may display its own system join notice.
 
 Linky needs **View Channel**, **Read Message History**, **Send Messages**, **Send Messages in Threads**, **Embed Links**, **Attach Files** and **Manage Messages**. The invite requests these permissions. If a link stays unchanged, check the channel or category overrides for the **Linky** role; an `@everyone` denial can override a server-level grant. Private threads must also be accessible to the bot.
 
