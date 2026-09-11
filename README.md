@@ -5,7 +5,9 @@
 [![CI](https://github.com/LLRHook/linky/actions/workflows/ci.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/ci.yml)
 [![Deploy](https://github.com/LLRHook/linky/actions/workflows/deploy.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/deploy.yml)
 
-Linky fixes X, Instagram and TikTok previews in Discord. It reposts links with credit to the person who shared them, preserves attachments, and can translate tweets into English.
+Linky is a free, hosted Discord bot that fixes X, Instagram and TikTok previews. It reposts links with credit to the person who shared them, preserves attachments, and can translate tweets into English. Self-hosting is optional.
+
+Visit the [Linky website](https://linky-discord.victor-n-ivanov.chatgpt.site) for setup guides and troubleshooting.
 
 ## Add to Discord
 
