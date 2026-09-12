@@ -38,7 +38,7 @@ test('settings is restricted to server installs and Manage Server with optional 
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'translate_tweets']);
+  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'translate_tweets', 'youtube_display']);
   assert.equal(command.options?.some(option => option.required), false);
 });
 
@@ -168,7 +168,30 @@ test('help describes reply mode and effective preferences without promising a pr
   assert.match(content, /reply.*keeping your original message/);
   assert.match(content, /Supported platforms: TikTok, X/);
   assert.match(content, /English translation is currently disabled/);
-  assert.match(content, /Preview availability depends/);
+  assert.match(content, /checks for a useful preview/);
   assert.doesNotMatch(content, /working preview/);
   assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
+});
+
+for (const display of ['preview', 'counts', 'counts-and-comment']) {
+  test(`settings persists YouTube ${display} without enabling the server or overriding operator availability`, async () => {
+    const path = file();
+    const servers = new ServerSettings(path);
+    const { command, events } = interaction({ youtube_display: display });
+    await execute(command, config, servers);
+    assert.equal(new ServerSettings(path).getPreferences(SERVER).youtubeDisplay, display);
+    assert.equal(servers.get(SERVER), undefined);
+    assert.match(events[1].payload.content, /YouTube is currently off/);
+    assert.match(events[1].payload.content, /YouTube: Off \(disabled by the bot operator\)/);
+  });
+}
+
+test('settings reports selected channel exclusion instead of server-wide enablement', async () => {
+  const servers = new ServerSettings(file());
+  await servers.set(SERVER, true);
+  await servers.update(SERVER, { channelIds: [] });
+  const { command, events } = interaction();
+  await execute(command, config, servers);
+  assert.match(events[1].payload.content, /Disabled in this channel by the selected channel restriction/);
+  assert.equal(servers.get(SERVER), true);
 });

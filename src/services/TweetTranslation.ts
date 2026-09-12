@@ -1,3 +1,5 @@
+import { parseSocialUrl } from './SocialProviders';
+
 export interface TweetTranslation {
   text: string;
   language: string;
@@ -65,11 +67,8 @@ function formatTranslation(text: string): string {
 function statusUrl(status: Record<string, unknown>, fallbackId?: string): string | undefined {
   const href = httpsUrl(status.url);
   if (href) {
-    const url = new URL(href);
-    if (['x.com', 'twitter.com'].includes(url.hostname) && !url.port &&
-        /^\/(?:\w+\/status|i\/web\/status)\/\d{1,20}\/?$/.test(url.pathname)) {
-      return `https://x.com${url.pathname.replace(/\/$/, '')}`;
-    }
+    const source = parseSocialUrl(href);
+    if (source?.platform === 'x') return `https://x.com${source.path.replace(/\/$/, '')}`;
   }
   const id = typeof status.id === 'string' ? status.id : fallbackId;
   return id && /^\d{1,20}$/.test(id) ? `https://x.com/i/status/${id}` : undefined;

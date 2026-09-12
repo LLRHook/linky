@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { MessageFlags, type APIEmbed, type ButtonInteraction, type InteractionEditReplyOptions,
   type InteractionReplyOptions, type InteractionDeferReplyOptions } from 'discord.js';
 import { replyToYouTubeControl } from '../src/services/YouTubeInteractions';
-import type { YouTubeStatistics } from '../src/services/YouTube';
+import type { YouTubeStatistics, YouTubeDisplay } from '../src/services/YouTube';
 import { YouTubeStats } from '../src/services/YouTubeStats';
 
 const VIDEO = 'dQw4w9WgXcQ', BOT = '1491240385031311470';
@@ -17,6 +17,7 @@ const sample: YouTubeStatistics = { viewCount: '12345', likeCount: '0', commentC
 function fixture(action = 'stats') {
   const events: string[] = [], replies: InteractionReplyOptions[] = [], edits: InteractionEditReplyOptions[] = [];
   const deferred: InteractionDeferReplyOptions[] = [], lookups: string[][] = [];
+  const displays: (YouTubeDisplay | undefined)[] = [];
   const permissions: [string, string, string][] = [];
   let active = true, tracked = true, fetch = async (): Promise<Map<string, YouTubeStatistics>> => new Map([[VIDEO, sample]]);
   let onDefer = () => {};
@@ -30,12 +31,14 @@ function fixture(action = 'stats') {
   const options = {
     stats: { canView: (message: { id: string; channelId: string; author: { id: string } }, videoId: string) =>
       tracked && message.id === MESSAGE && message.channelId === CHANNEL && message.author.id === BOT && videoId === VIDEO },
-    lookup: async (ids: readonly string[]) => { events.push('lookup'); lookups.push([...ids]); return fetch(); },
+    lookup: async (ids: readonly string[], display?: YouTubeDisplay) => {
+      events.push('lookup'); lookups.push([...ids]); displays.push(display); return fetch();
+    },
     enabled: (guildId: string, channelId: string, kind: 'stats' | 'comment') => {
       permissions.push([guildId, channelId, kind]); return active;
     },
   };
-  return { interaction, options, events, replies, edits, deferred, lookups, permissions,
+  return { interaction, options, events, replies, edits, deferred, lookups, displays, permissions,
     run: () => replyToYouTubeControl(interaction as unknown as ButtonInteraction, options),
     active: (value: boolean) => { active = value; }, tracked: (value: boolean) => { tracked = value; },
     fetch: (value: typeof fetch) => { fetch = value; }, onDefer: (value: typeof onDefer) => { onDefer = value; },
@@ -54,6 +57,7 @@ test('statistics control privately returns labeled counts, keeps zero, and omits
   const f = fixture(); assert.equal(await f.run(), true);
   assert.deepEqual(f.events, ['defer', 'lookup', 'edit']); assertPrivate(f);
   assert.deepEqual(f.lookups, [[VIDEO]]);
+  assert.deepEqual(f.displays, ['counts'], 'opening statistics must not fetch comment data');
   assert(f.permissions.every(value => value.join(':') === `${GUILD}:${CHANNEL}:stats`));
   const embed = f.edits[0].embeds![0] as APIEmbed;
   assert.equal(embed.title, 'YouTube stats');
@@ -69,6 +73,7 @@ test('statistics control privately returns labeled counts, keeps zero, and omits
 
 test('comment control privately returns a bounded sanitized comment, author and video link', async () => {
   const f = fixture('comment'); assert.equal(await f.run(), true); assertPrivate(f);
+  assert.deepEqual(f.displays, ['counts-and-comment']);
   assert(f.permissions.every(value => value[2] === 'comment'));
   const embed = f.edits[0].embeds![0] as APIEmbed;
   assert.equal(embed.title, 'Top YouTube comment');

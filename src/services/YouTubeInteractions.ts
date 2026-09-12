@@ -1,11 +1,11 @@
 import { MessageFlags, type ButtonInteraction } from 'discord.js';
-import { formatYouTubeStatistics, type YouTubeStatistics } from './YouTube';
+import { formatYouTubeStatistics, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
 import { parseYouTubeControl, YOUTUBE_CONTROL_PREFIX } from './YouTubeControls';
 import type { YouTubeStats } from './YouTubeStats';
 
 interface Options {
   stats?: Pick<YouTubeStats, 'canView'>;
-  lookup?: (ids: readonly string[]) => Promise<Map<string, YouTubeStatistics>>;
+  lookup?: (ids: readonly string[], display?: YouTubeDisplay) => Promise<Map<string, YouTubeStatistics>>;
   enabled: (guildId: string, channelId: string, action: 'stats' | 'comment') => boolean;
 }
 
@@ -31,7 +31,7 @@ export async function replyToYouTubeControl(interaction: ButtonInteraction, opti
     return true;
   }
   let statistics: YouTubeStatistics | undefined;
-  try { statistics = (await options.lookup!([control.videoId])).get(control.videoId); }
+  try { statistics = (await options.lookup!([control.videoId], control.action === 'stats' ? 'counts' : 'counts-and-comment')).get(control.videoId); }
   catch { /* API failures do not disclose provider errors or credentials. */ }
   if (!canView()) {
     await interaction.editReply({ content: expired, embeds: [], allowedMentions });

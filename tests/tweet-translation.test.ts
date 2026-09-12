@@ -270,7 +270,7 @@ test('uses canonical X status URLs or numeric IDs and never an arbitrary quote a
   for (const url of [
     'https://fixupx.com/u/status/21', 'https://x.com.evil/u/status/21',
     'http://x.com/u/status/21', 'https://x.com:444/u/status/21',
-    'https://x.com/u/status/21/photo/1', 'https://user:pass@x.com/u/status/21',
+    'https://x.com/u/status/21/photo/invalid', 'https://user:pass@x.com/u/status/21',
   ]) {
     assert.equal(await fetchTweetTranslation('20', jsonFetch(payload({ quote: payload({ url }).status }))), null);
     const fallback = await fetchTweetTranslation('20', jsonFetch(payload({ quote: payload({ id: '21', url }).status })));

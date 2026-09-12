@@ -15,13 +15,13 @@ const SECOND = '222222222222222222';
 let nextFile = 0;
 const file = () => join(directory, `${nextFile++}.json`);
 
-function interaction(enabled: boolean, guildId: string | null = FIRST,
+function interaction(enabled: boolean | null, guildId: string | null = FIRST,
   permissions: bigint = PermissionFlagsBits.ManageGuild) {
   const events: { name: string; payload: any }[] = [];
   const command = {
     guildId, memberPermissions: new PermissionsBitField(permissions),
     options: { getBoolean: (name: string, required: boolean) => {
-      assert.equal(name, 'enabled'); assert.equal(required, true); return enabled;
+      assert.equal(name, 'enabled'); assert.equal(required, undefined); return enabled;
     } },
     reply: async (payload: unknown) => { events.push({ name: 'reply', payload }); },
     deferReply: async (payload: unknown) => { events.push({ name: 'defer', payload }); },
@@ -80,7 +80,7 @@ test('setup is registered only for guild installs and requires Manage Server', (
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.equal(command.options?.[0].required, true);
+  assert.equal(command.options?.[0].required ?? false, false);
 });
 
 for (const [name, guildId, permission] of [
@@ -233,4 +233,77 @@ test('a failed preference save leaves memory and disk intact and later queued wr
   assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), {
     mode: 'replace', platforms: { instagram: true, tiktok: false },
   });
+});
+
+test('setup without an option opens a private panel without changing legacy enablement', async () => {
+  const path = file();
+  writeFileSync(path, JSON.stringify({ [FIRST]: true, [SECOND]: false }));
+  const servers = new ServerSettings(path, async () => assert.fail('Panel must not write'));
+  const { command, events } = interaction(null);
+  await execute(command, servers);
+  assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
+  assert.equal(events[1].payload.components.length, 4);
+  assert.equal(servers.get(FIRST), true);
+  assert.equal(servers.get(SECOND), false);
+  assert.deepEqual(servers.getPreferences(FIRST), {});
+});
+
+test('channel and YouTube display choices merge with legacy settings and survive restart', async () => {
+  const path = file();
+  writeFileSync(path, JSON.stringify({ [FIRST]: true, [SECOND]: false }));
+  const servers = new ServerSettings(path);
+  const channels = [SECOND];
+  await Promise.all([
+    servers.update(FIRST, { channelIds: channels, youtubeDisplay: 'counts' }),
+    servers.update(FIRST, { mode: 'reply' }),
+    servers.set(FIRST, false),
+  ]);
+  channels.push(FIRST);
+  servers.getPreferences(FIRST).channelIds!.push(FIRST);
+  const restarted = new ServerSettings(path);
+  assert.equal(restarted.get(FIRST), false);
+  assert.equal(restarted.get(SECOND), false);
+  assert.deepEqual(restarted.getPreferences(FIRST), { channelIds: [SECOND], youtubeDisplay: 'counts', mode: 'reply' });
+  await restarted.update(FIRST, { channelIds: [] });
+  assert.deepEqual(new ServerSettings(path).getPreferences(FIRST).channelIds, []);
+});
+
+test('resetting channel scope preserves enablement and all other preferences within the write queue', async () => {
+  const path = file();
+  const servers = new ServerSettings(path);
+  await servers.update(FIRST, { channelIds: [SECOND], mode: 'reply' });
+  await Promise.all([servers.resetChannelScope(FIRST), servers.update(FIRST, { youtubeDisplay: 'preview' })]);
+  assert.equal(servers.get(FIRST), undefined);
+  assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), { mode: 'reply', youtubeDisplay: 'preview' });
+  await assert.rejects(servers.resetChannelScope('invalid'));
+});
+
+test('invalid channel/display fields cannot persist or mutate memory', async () => {
+  const servers = new ServerSettings(file(), async () => assert.fail('Invalid write'));
+  const invalid = [{ channelIds: null }, { channelIds: 'all' }, { channelIds: ['bad'] },
+    { channelIds: [FIRST, FIRST] }, { channelIds: new Array(1) },
+    { channelIds: Array.from({ length: 26 }, (_, index) => String(100000000000000000n + BigInt(index))) },
+    { youtubeDisplay: 'all' }, { youtubeDisplay: null }, { youtubeDisplay: undefined }];
+  for (const patch of invalid) await assert.rejects(servers.update(FIRST, patch as ServerPreferences));
+  for (const record of invalid.filter(value => !Object.hasOwn(value, 'youtubeDisplay') || value.youtubeDisplay !== undefined)) {
+    const path = file();
+    writeFileSync(path, JSON.stringify({ [FIRST]: record }));
+    assert.throws(() => new ServerSettings(path), /Invalid server settings/);
+  }
+  assert.deepEqual(servers.getPreferences(FIRST), {});
+});
+
+test('failed channel reset retains the old restriction and later queued writes work', async () => {
+  const path = file();
+  let fail = false;
+  const servers = new ServerSettings(path, async (target, content) => {
+    if (fail) { fail = false; throw new Error('Disk full'); }
+    await writeFile(target, content);
+  });
+  await servers.update(FIRST, { channelIds: [SECOND] });
+  fail = true;
+  await assert.rejects(servers.resetChannelScope(FIRST), /Disk full/);
+  await servers.update(FIRST, { youtubeDisplay: 'counts' });
+  assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), { channelIds: [SECOND], youtubeDisplay: 'counts' });
+  assert.equal(servers.get(FIRST), undefined);
 });

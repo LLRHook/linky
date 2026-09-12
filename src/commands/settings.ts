@@ -2,8 +2,10 @@ import { SlashCommandBuilder, MessageFlags, PermissionFlagsBits, InteractionCont
 import type { Config } from '../config';
 import type { ServerPreferences, ServerSettings } from '../services/ServerSettings';
 import { REWRITE_PLATFORMS } from '../services/SocialLinkService';
+import { describeScope, evaluateScope } from '../services/ServerScope';
 
-export const PLATFORM_NAMES = { x: 'X', instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube' };
+export const PLATFORM_NAMES = { x: 'X', instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube',
+  bluesky: 'Bluesky', reddit: 'Reddit', twitch: 'Twitch clips' };
 
 export function effectivePreferences(config: Config, preferences: ServerPreferences) {
   const platforms = config.rewritePlatforms.filter(platform => preferences.platforms?.[platform] !== false);
@@ -11,6 +13,7 @@ export function effectivePreferences(config: Config, preferences: ServerPreferen
     mode: preferences.mode ?? 'replace',
     platforms,
     translateTweets: config.translateTweets && preferences.translateTweets !== false && platforms.includes('x'),
+    youtubeDisplay: preferences.youtubeDisplay ?? 'counts-and-comment',
   };
 }
 
@@ -26,7 +29,13 @@ export const data = new SlashCommandBuilder()
   .addBooleanOption(option => option.setName('tiktok').setDescription('Fix TikTok links in this server.'))
   .addBooleanOption(option => option.setName('x').setDescription('Fix X links in this server.'))
   .addBooleanOption(option => option.setName('youtube').setDescription('Fix YouTube links when available from the bot operator.'))
-  .addBooleanOption(option => option.setName('translate_tweets').setDescription('Translate non-English tweets when enabled by the bot operator.'));
+  .addBooleanOption(option => option.setName('bluesky').setDescription('Fix Bluesky post previews in this server.'))
+  .addBooleanOption(option => option.setName('reddit').setDescription('Fix Reddit post previews in this server.'))
+  .addBooleanOption(option => option.setName('twitch').setDescription('Fix Twitch clip previews in this server.'))
+  .addBooleanOption(option => option.setName('translate_tweets').setDescription('Translate non-English tweets when enabled by the bot operator.'))
+  .addStringOption(option => option.setName('youtube_display').setDescription('Choose the extra details shown with YouTube previews.')
+    .addChoices({ name: 'Preview only', value: 'preview' }, { name: 'Counts only', value: 'counts' },
+      { name: 'Counts and top comment', value: 'counts-and-comment' }));
 
 export async function execute(interaction: ChatInputCommandInteraction, config: Config, servers: ServerSettings): Promise<void> {
   if (!interaction.guildId || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
@@ -45,6 +54,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
   }
   const translateTweets = interaction.options.getBoolean('translate_tweets');
   if (translateTweets !== null) patch.translateTweets = translateTweets;
+  const youtubeDisplay = interaction.options.getString('youtube_display');
+  if (youtubeDisplay !== null) patch.youtubeDisplay = youtubeDisplay as ServerPreferences['youtubeDisplay'];
   const changed = Object.keys(patch).length > 0;
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   if (changed) {
@@ -60,12 +71,10 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
   }
   const preferences = servers.getPreferences(interaction.guildId);
   const effective = effectivePreferences(config, preferences);
-  const override = servers.get(interaction.guildId);
-  const scope = override === true ? 'Enabled throughout this server where Linky has channel permissions.' :
-    override === false ? 'Disabled throughout this server.' :
-      config.serverIds.includes(interaction.guildId) ? 'Enabled throughout this server by the bot operator, subject to channel permissions.' :
-        config.channelIds.includes(interaction.channelId) ? 'Enabled in this channel by the bot operator; other channels follow the operator’s configuration.' :
-          'Disabled in this channel; any operator-configured channels keep their existing scope.';
+  const scope = describeScope(evaluateScope({ guildId: interaction.guildId, channelId: interaction.channelId,
+    threadParentId: interaction.channel?.isThread() ? interaction.channel.parentId : undefined,
+    serverEnabled: servers.get(interaction.guildId), preferences,
+    operatorChannelIds: config.channelIds, operatorServerIds: config.serverIds }));
   await interaction.editReply({
     content: [
       changed ? 'Server preferences saved. Enablement and channel scope are unchanged.' : 'Current server preferences:',
@@ -76,7 +85,9 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
       `English tweet translation: ${effective.translateTweets ? 'On when translation is available' :
         !config.translateTweets ? 'Off (disabled by the bot operator)' :
           !effective.platforms.includes('x') ? 'Off (X link fixing is disabled)' : 'Off'}.`,
-      'Use /setup enabled:true or /setup enabled:false to change server enablement. Preview availability depends on the source and preview provider.',
+      `YouTube display: ${effective.youtubeDisplay === 'preview' ? 'Preview only' :
+        effective.youtubeDisplay === 'counts' ? 'Counts only' : 'Counts and top comment'}${effective.platforms.includes('youtube') ? '.' : ' (YouTube is currently off).'}`,
+      'Use /setup to choose channels or change server enablement. Preview availability depends on the source and preview provider.',
     ].join('\n'),
     allowedMentions: { parse: [] },
   });
