@@ -15,6 +15,8 @@ import {
 import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
 import type { TweetTranslation } from './TweetTranslation';
+import { parseInstagramUrl, type InstagramTranslation } from './InstagramTranslation';
+import { addInstagramCaptions } from './InstagramPresentation';
 import type { ServerPreferences } from './ServerSettings';
 import type { StatsPublication } from './YouTubeStats';
 import { findYouTubeLinks, formatYouTubeStatistics, parseYouTubeUrl, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
@@ -25,6 +27,7 @@ import { expectedPreviews, nextProviderContent, waitForPreviews, type PreviewRes
 import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
 
 const MAX_CONTENT_LENGTH = 2_000;
+const INSTAGRAM_PREVIEW_NOTICE = '\n-# Instagram preview could not be verified; the original post is still here.';
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 const RECENT_MESSAGE_LIMIT = 1_000;
@@ -256,10 +259,11 @@ export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateTweet, serverIds = [], serverEnabled, serverPreferences,
+  { platforms = REWRITE_PLATFORMS, translateTweet, translateInstagram, serverIds = [], serverEnabled, serverPreferences,
     lookupYouTube, publishYouTube, verifyPreview = waitForPreviews, observePreview, rememberRepost }: {
     platforms?: readonly RewritePlatform[];
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
+    translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
     serverIds?: readonly string[];
     serverEnabled?: (serverId: string) => boolean | undefined;
     serverPreferences?: (serverId: string) => ServerPreferences;
@@ -286,7 +290,7 @@ export function createLinkRepostHandler(
     }).enabled &&
       JSON.stringify(serverPreferences?.(message.guildId) ?? {}) === preferenceVersion;
     const activePlatforms = platforms.filter(platform => preferences.platforms?.[platform] !== false);
-    const reply = forceReply || preferences.mode === 'reply';
+    let reply = forceReply || preferences.mode === 'reply';
     if (!enabled() ||
         !canCopy(message) || bypassLinky(message.content) || message.flags.has(MessageFlags.SuppressEmbeds) ||
         (!refresh && reposted.has(message.id))) return;
@@ -336,14 +340,19 @@ export function createLinkRepostHandler(
       // Preview-only keeps Discord's already-native YouTube message untouched.
       if (rewritten === message.content && !youtube.size) return;
       const body = formatLinkRepost(rewritten, message.author.id, replyUrl);
-      const translated = translateTweet && preferences.translateTweets !== false && activePlatforms.includes('x') &&
+      const tweetPresentation = translateTweet && preferences.translateTweets !== false && activePlatforms.includes('x') &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
         ? await translateRepost(message.content, activePlatforms, translateTweet,
           MAX_CONTENT_LENGTH - (body.length - rewritten.length)) : { content: rewritten };
-      if (!translated) {
+      if (!tweetPresentation) {
         log.warn(context, 'Keeping original: source context and every media link exceed the message limit');
         return;
       }
+      const translated: NonNullable<typeof tweetPresentation> & { instagramSources?: string[]; instagramVideos?: string[] } =
+        translateInstagram && preferences.translateInstagram !== false && activePlatforms.includes('instagram') &&
+          !message.flags.has(MessageFlags.SuppressEmbeds)
+          ? await addInstagramCaptions(message.content, tweetPresentation, translateInstagram,
+            MAX_CONTENT_LENGTH - INSTAGRAM_PREVIEW_NOTICE.length - (body.length - rewritten.length)) : tweetPresentation;
       const canonical = mapLinks(translated.content, (url, position) => {
         const video = parseYouTubeUrl(url);
         return video && youtube.has(video.id) && visibleLink(translated.content, position) ? video.url : url;
@@ -409,9 +418,19 @@ export function createLinkRepostHandler(
       // a verified attachment). Only media and untranslated posts need an embed.
       const textStatusIds = new Set(content === formatted ? translated.textStatusIds : []);
       const videoStatusIds = new Set(translated.videoStatusIds);
+      const instagramIds = new Set((content === formatted ? translated.instagramSources ?? [] : [])
+        .map(url => parseInstagramUrl(url)?.shortcode));
+      const instagramVideos = new Set((translated.instagramVideos ?? []).map(url => parseInstagramUrl(url)?.shortcode));
       const expectations = () => expectedPreviews(`${message.content}\n${translated.mediaSources ?? ''}`, content)
         .filter(item => !textStatusIds.has(parseSocialUrl(item.source)?.statusId ?? ''))
-        .map(item => videoStatusIds.has(parseSocialUrl(item.source)?.statusId ?? '') ? { ...item, requireVideo: true } : item);
+        .map(item => {
+          const instagramId = parseInstagramUrl(item.source)?.shortcode;
+          return { ...item,
+            ...(instagramId && instagramIds.has(instagramId) ? { captionFree: true } : {}),
+            ...(videoStatusIds.has(parseSocialUrl(item.source)?.statusId ?? '') ||
+              (instagramId && instagramVideos.has(instagramId)) ? { requireVideo: true } : {}),
+          };
+        });
       const verify = (expected: ExpectedPreview[]) => expected.length
         ? verifyPreview(replacement, expected)
         : Promise.resolve({ ok: textStatusIds.size > 0, missing: [], videoMetadata: false });
@@ -429,7 +448,19 @@ export function createLinkRepostHandler(
         preview = await verify(expected);
         observePreview?.(expected, preview);
       }
-      if (!preview.ok) {
+      const captionFallback = !preview.ok && expected.length === 1 && preview.missing.length === 1 && preview.missing.every(item => {
+        const id = parseInstagramUrl(item.source)?.shortcode;
+        return id && instagramIds.has(id);
+      });
+      if (captionFallback) {
+        // An English caption is still useful when Instagram's image is unavailable.
+        // Keep the source and register reply ownership so edits/removal remain safe.
+        reply = true;
+        content += INSTAGRAM_PREVIEW_NOTICE;
+        await replacement.edit({ content, embeds: [], flags: MessageFlags.SuppressEmbeds,
+          allowedMentions: { parse: [], repliedUser: false } });
+      }
+      if (!preview.ok && !captionFallback) {
         await removeReplacement();
         log.warn({ ...resultContext, providers: expected.map(item => item.providerId) }, 'Keeping original: no useful preview appeared');
         // A small retry reply is useful only when ownership can be saved and checked.
@@ -460,7 +491,8 @@ export function createLinkRepostHandler(
       }
       log.info({ ...resultContext, providers: expected.map(item => item.providerId), videoMetadata: preview.videoMetadata,
         playbackChecked: false, translatedTextPosts: textStatusIds.size },
-      expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
+      captionFallback ? 'Translated Instagram caption delivered; kept original because preview could not be verified' :
+        expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
       if (youtubeCards.length) {
         try { publication = await publishYouTube!(replacement, youtubeCards); }
         catch { log.warn(resultContext, 'Could not publish YouTube details'); }

@@ -102,7 +102,8 @@ test('/help accurately shows channel scope, disabled platforms and translation s
   const replies = await command(client, 'help', 'unconfigured-channel');
   assert.match(replies[0].content!, /disabled in this channel/);
   assert.match(replies[0].content!, /Supported platforms: Instagram\./);
-  assert.match(replies[0].content!, /English translation is currently disabled/);
+  assert.match(replies[0].content!, /X translation is currently disabled/);
+  assert.match(replies[0].content!, /Instagram caption translation is currently disabled/);
 });
 
 test('/help reports when all platforms are disabled', async () => {

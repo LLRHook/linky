@@ -12,6 +12,9 @@ import { commandDefinitions } from './commands/register';
 import { ServerSettings } from './services/ServerSettings';
 import { createLinkRepostHandler } from './services/SocialLinkService';
 import { fetchTweetTranslation } from './services/TweetTranslation';
+import { createCaptionTranslator } from './services/CaptionTranslation';
+import { createInstagramLookup } from './services/InstagramTranslation';
+import { TranslationBudget } from './services/TranslationBudget';
 import { createYouTubeLookup } from './services/YouTube';
 import { YouTubeStats } from './services/YouTubeStats';
 import { RepostRegistry } from './services/RepostRegistry';
@@ -31,6 +34,17 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   let youtubeStats: YouTubeStats | undefined;
   let registry: RepostRegistry | undefined;
   const lookupYouTube = settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined;
+  let translateInstagram: ReturnType<typeof createInstagramLookup> | undefined;
+  if (settings.translateInstagram && settings.captionApiKey) {
+    try {
+      const budget = new TranslationBudget(join(dirname(settings.settingsPath), 'translation-usage.json'));
+      translateInstagram = createInstagramLookup(createCaptionTranslator(settings.captionApiKey, {
+        reserve: characters => budget.reserve(characters),
+      }));
+    } catch {
+      log.warn('Instagram translation is unavailable because its usage budget could not be loaded');
+    }
+  }
   const health = new PreviewHealth();
   const retrying = new Set<string>();
   const retries = new Map<string, number>();
@@ -47,6 +61,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     serverIds: settings.serverIds,
     platforms: settings.rewritePlatforms,
     translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
+    translateInstagram,
     lookupYouTube,
     observePreview: (expected, result) => health.record(expected, result),
     rememberRepost: record => registry?.remember(record) ?? Promise.resolve(false),
@@ -72,6 +87,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     serverIds: settings.serverIds,
     platforms: settings.rewritePlatforms,
     translateTweets: settings.translateTweets,
+    translateInstagram: Boolean(translateInstagram),
   }, 'Social link replacement ready for configured and opted-in servers');
 
   client.on(Events.InteractionCreate, async (interaction) => {

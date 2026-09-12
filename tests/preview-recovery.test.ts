@@ -30,6 +30,16 @@ test('every visible rewritten post requires its own preview and hidden posts are
   assert.equal(inspectPreviews([media], items).missing[0].source, 'https://www.instagram.com/p/Another/');
 });
 
+test('suppressed caption links cannot replace or create a rendered Instagram preview expectation', () => {
+  const gallery = 'https://g.instagram7.com/p/DdFKS1ABmK4/';
+  for (const hidden of [`<${fixed}>`, `\`${fixed}\``, `\`\`\`\n${fixed}\n\`\`\``, `||${fixed}||`]) {
+    const rendered = `${gallery}\n\nThe English caption refers to ${hidden}`;
+    assert.deepEqual(expectedPreviews(source, rendered), [{ source, url: gallery,
+      platform: 'instagram', providerId: 'instagram7' }]);
+    assert.deepEqual(expectedPreviews(source, hidden), [], 'a deliberately hidden link requires no native embed');
+  }
+});
+
 test('video metadata and useful image previews are reported separately from playback', () => {
   const imageSource = 'https://instagram.com/p/Photo/';
   const imageFixed = 'https://www.instagram7.com/p/Photo/';

@@ -11,6 +11,8 @@ export interface ExpectedPreview {
   providerId: string;
   /** A trusted metadata lookup identified this post as a video. */
   requireVideo?: boolean;
+  /** A translated caption is already displayed; the media embed must not repeat the original. */
+  captionFree?: boolean;
 }
 
 export interface PreviewResult {
@@ -27,7 +29,8 @@ export function expectedPreviews(original: string, rendered: string): ExpectedPr
     const social = parseSocialUrl(url);
     const youtube = parseYouTubeUrl(url);
     if (social) {
-      mapLinks(rendered, observed => {
+      mapLinks(rendered, (observed, position) => {
+        if (!visibleLink(rendered, position)) return observed;
         const provider = parseProviderUrl(observed);
         if (provider && identity(observed) === identity(social.sourceUrl)) {
           expectations.set(social.sourceUrl, { source: social.sourceUrl, url: observed, platform: provider.platform, providerId: provider.providerId });
@@ -58,6 +61,7 @@ function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   if (!embed.url) return false;
   const same = identity(embed.url) !== null && identity(embed.url) === identity(expected.url);
   if (!same) return false;
+  if (expected.captionFree && embed.description?.trim()) return false;
   const errorTitle = /^(?:error(?:\s+\d+)?|not found|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;
   const errorText = /^(?:sorry,? (?:that |this )?(?:post|tweet) (?:doesn.t exist|could not be found)|this (?:tweet|post|video) (?:is (?:unavailable|private)|has been deleted)|could not (?:find|load) (?:this |the )?(?:tweet|post|video)|try again later)/i;
   if (errorTitle.test(embed.title?.trim() ?? '') || errorText.test(embed.description?.trim() ?? '')) return false;
@@ -99,6 +103,8 @@ export async function waitForPreviews(message: Pick<Message, 'embeds' | 'fetch'>
 export function nextProviderContent(content: string, missing: readonly ExpectedPreview[], attempted: Set<string>): string {
   let next = content;
   for (const item of missing) {
+    // Normal provider fallbacks would reintroduce the caption already translated above.
+    if (item.captionFree) continue;
     attempted.add(`${item.source}:${item.providerId}`);
     const candidate = getProviderCandidates(item.source).find(candidate => !attempted.has(`${item.source}:${candidate.providerId}`));
     if (!candidate) continue;

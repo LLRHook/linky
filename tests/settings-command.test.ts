@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ApplicationIntegrationType, InteractionContextType, MessageFlags, PermissionFlagsBits, PermissionsBitField, type ChatInputCommandInteraction } from 'discord.js';
 import type { Config } from '../src/config';
-import { data, execute } from '../src/commands/settings';
+import { data, effectivePreferences, execute } from '../src/commands/settings';
 import { execute as help } from '../src/commands/help';
 import { ServerSettings } from '../src/services/ServerSettings';
 import { REWRITE_PLATFORMS } from '../src/services/SocialLinkService';
@@ -38,7 +38,7 @@ test('settings is restricted to server installs and Manage Server with optional 
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'translate_tweets', 'youtube_display']);
+  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'translate_tweets', 'translate_instagram', 'youtube_display']);
   assert.equal(command.options?.some(option => option.required), false);
 });
 
@@ -48,8 +48,9 @@ for (const [name, guildId, permissions] of [
 ] as const) {
   test(`settings denies a ${name} privately without reading options or saving`, async () => {
     const servers = new ServerSettings(file(), async () => assert.fail('Unauthorized write'));
-    const { command, events } = interaction({ mode: 'reply' }, guildId, permissions);
+    const { command, events } = interaction({ mode: 'reply', translate_instagram: true }, guildId, permissions);
     command.options.getString = () => assert.fail('Unauthorized option access');
+    command.options.getBoolean = () => assert.fail('Unauthorized option access');
     await execute(command, config, servers);
     assert.equal(events.length, 1);
     assert.equal(events[0].name, 'reply');
@@ -167,7 +168,8 @@ test('help describes reply mode and effective preferences without promising a pr
   const content = events[0].payload.content;
   assert.match(content, /reply.*keeping your original message/);
   assert.match(content, /Supported platforms: TikTok, X/);
-  assert.match(content, /English translation is currently disabled/);
+  assert.match(content, /X translation is currently disabled/);
+  assert.match(content, /Instagram caption translation is currently disabled/);
   assert.match(content, /checks for a useful preview/);
   assert.doesNotMatch(content, /working preview/);
   assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
@@ -194,4 +196,65 @@ test('settings reports selected channel exclusion instead of server-wide enablem
   await execute(command, config, servers);
   assert.match(events[1].payload.content, /Disabled in this channel by the selected channel restriction/);
   assert.equal(servers.get(SERVER), true);
+});
+
+test('Instagram translation settings survive restart without changing scope, X or YouTube choices', async () => {
+  for (const enabled of [undefined, false]) {
+    const path = file(), servers = new ServerSettings(path);
+    if (enabled !== undefined) await servers.set(SERVER, enabled);
+    const previous = { channelIds: ['222222222222222222'], translateTweets: false, youtubeDisplay: 'counts' as const,
+      mode: 'reply' as const, platforms: { tiktok: false } };
+    await servers.update(SERVER, previous);
+    const { command, events } = interaction({ translate_instagram: true });
+    await execute(command, { ...config, translateInstagram: true, captionApiKey: 'test-caption-key' }, servers);
+    const restarted = new ServerSettings(path);
+    assert.equal(restarted.get(SERVER), enabled);
+    assert.deepEqual(restarted.getPreferences(SERVER), { ...previous, translateInstagram: true });
+    assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
+    assert.deepEqual(events[1].payload.allowedMentions, { parse: [] });
+    assert.match(events[1].payload.content, /English Instagram caption translation: On when translation and media are available/);
+    assert.match(events[1].payload.content, /English tweet translation: Off/);
+    assert.match(events[1].payload.content, /YouTube display: Counts only/);
+    assert(!JSON.stringify(events).includes('test-caption-key'));
+  }
+});
+
+test('effective Instagram translation respects the key, operator, platform and server switches independently', () => {
+  const active: Config = { ...config, translateTweets: false, translateInstagram: true, captionApiKey: 'test-caption-key' };
+  assert.equal(effectivePreferences(active, {}).translateInstagram, true);
+  assert.equal(effectivePreferences(active, {}).translateTweets, false);
+  for (const candidate of [{ ...active, translateInstagram: false }, { ...active, translateInstagram: undefined },
+    { ...active, captionApiKey: undefined }, { ...active, captionApiKey: '  ' },
+    { ...active, rewritePlatforms: ['x'] as const }]) {
+    assert.equal(effectivePreferences(candidate, { translateInstagram: true }).translateInstagram, false);
+  }
+  assert.equal(effectivePreferences(active, { translateInstagram: false }).translateInstagram, false);
+  assert.equal(effectivePreferences(active, { platforms: { instagram: false } }).translateInstagram, false);
+  assert.equal(effectivePreferences({ ...active, translateTweets: true }, { translateInstagram: false }).translateTweets, true);
+});
+
+test('settings explains unavailable Instagram translation and preserves the requested preference', async () => {
+  for (const candidate of [{ ...config, translateInstagram: false, captionApiKey: 'test-caption-key' },
+    { ...config, translateInstagram: true }, { ...config, translateInstagram: true, captionApiKey: '  ' }]) {
+    const servers = new ServerSettings(file()), { command, events } = interaction({ translate_instagram: true });
+    await execute(command, candidate, servers);
+    assert.equal(servers.getPreferences(SERVER).translateInstagram, true);
+    assert.match(events[1].payload.content, /English Instagram caption translation: Off \(unavailable from the bot operator\)/);
+    assert.match(events[1].payload.content, /Instagram: On/);
+  }
+  const servers = new ServerSettings(file()), { command, events } = interaction({ instagram: false, translate_instagram: true });
+  await execute(command, { ...config, translateInstagram: true, captionApiKey: 'test-caption-key' }, servers);
+  assert.match(events[1].payload.content, /English Instagram caption translation: Off \(Instagram link fixing is disabled\)/);
+});
+
+test('help reports Instagram translation independently when X translation is off', async () => {
+  const servers = new ServerSettings(file()), { command, events } = interaction();
+  await help(command, { ...config, translateTweets: false, translateInstagram: true, captionApiKey: 'test-caption-key' }, servers);
+  const content = events[0].payload.content;
+  assert.match(content, /X translation is currently disabled/);
+  assert.match(content, /Non-English Instagram captions are shown in English/);
+  assert.doesNotMatch(content, /English translation is currently disabled/);
+  assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
+  assert.deepEqual(events[0].payload.allowedMentions, { parse: [] });
+  assert(content.length <= 2000);
 });

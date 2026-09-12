@@ -14,7 +14,7 @@ export interface SocialUrl {
 export const SOCIAL_PROVIDERS = [
   { id: 'fixupx', platform: 'x', label: 'FxEmbed', origin: 'https://fixupx.com', hosts: ['fixupx.com', 'fxtwitter.com', 'g.fixupx.com', 'g.fxtwitter.com'] },
   { id: 'fixvx', platform: 'x', label: 'vxTwitter', origin: 'https://vxtwitter.com', hosts: ['vxtwitter.com', 'fixvx.com'] },
-  { id: 'instagram7', platform: 'instagram', label: 'Instagram7', origin: 'https://www.instagram7.com', hosts: ['www.instagram7.com', 'instagram7.com'] },
+  { id: 'instagram7', platform: 'instagram', label: 'Instagram7', origin: 'https://www.instagram7.com', hosts: ['www.instagram7.com', 'instagram7.com', 'g.instagram7.com'] },
   { id: 'tnktok', platform: 'tiktok', label: 'fxTikTok', origin: 'https://tnktok.com', hosts: ['tnktok.com', 'www.tnktok.com'] },
   // URL forms below are documented by their maintainers.
   // https://github.com/Lexedia/VixBluesky and https://docs.fxembed.com/guide/getting-started/

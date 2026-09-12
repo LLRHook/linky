@@ -8,6 +8,7 @@ export interface ServerPreferences {
   mode?: 'replace' | 'reply';
   platforms?: Partial<Record<RewritePlatform, boolean>>;
   translateTweets?: boolean;
+  translateInstagram?: boolean;
   /** Additional channel restriction; absent inherits scope, empty disables every channel. */
   channelIds?: string[];
   youtubeDisplay?: 'preview' | 'counts' | 'counts-and-comment';
@@ -22,7 +23,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
-  const fields = ['mode', 'platforms', 'translateTweets', 'channelIds', 'youtubeDisplay', ...(allowEnabled ? ['enabled'] : [])];
+  const fields = ['mode', 'platforms', 'translateTweets', 'translateInstagram', 'channelIds', 'youtubeDisplay', ...(allowEnabled ? ['enabled'] : [])];
   if (!isRecord(value) || Reflect.ownKeys(value).some(key => typeof key !== 'string' || !fields.includes(key))) {
     throw new Error('Unknown server preference fields.');
   }
@@ -38,6 +39,10 @@ function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
   if (Object.hasOwn(value, 'translateTweets')) {
     if (typeof value.translateTweets !== 'boolean') throw new Error('Tweet translation must be a boolean.');
     result.translateTweets = value.translateTweets;
+  }
+  if (Object.hasOwn(value, 'translateInstagram')) {
+    if (typeof value.translateInstagram !== 'boolean') throw new Error('Instagram translation must be a boolean.');
+    result.translateInstagram = value.translateInstagram;
   }
   if (Object.hasOwn(value, 'youtubeDisplay')) {
     if (value.youtubeDisplay !== 'preview' && value.youtubeDisplay !== 'counts' && value.youtubeDisplay !== 'counts-and-comment') {

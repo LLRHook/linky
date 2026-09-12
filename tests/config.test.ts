@@ -16,6 +16,9 @@ function readChannels(overrides: NodeJS.ProcessEnv, field = 'channelIds') {
   delete env['LINK_SERVER_IDS'];
   delete env['LINK_SETTINGS_PATH'];
   delete env['YOUTUBE_API_KEY'];
+  delete env['TRANSLATE_TWEETS'];
+  delete env['TRANSLATE_INSTAGRAM'];
+  delete env['GOOGLE_TRANSLATE_API_KEY'];
   const result = spawnSync(process.execPath, [
     '--require', require.resolve('tsx/cjs'), '-e',
     'process.stdout.write(JSON.stringify(require(process.argv[1]).config[process.argv[2]]))',
@@ -59,6 +62,31 @@ test('YouTube statistics require an operator key and respect the platform allowl
   assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'instagram', YOUTUBE_API_KEY: 'test-key' }, 'rewritePlatforms').stdout),
     ['instagram']);
   assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'youtube', YOUTUBE_API_KEY: ' ' }, 'rewritePlatforms').stdout), []);
+});
+
+test('Instagram translation requires both an explicit operator flag and a nonempty key', () => {
+  const cases: [NodeJS.ProcessEnv, boolean][] = [
+    [{}, false], [{ TRANSLATE_INSTAGRAM: 'true' }, false],
+    [{ GOOGLE_TRANSLATE_API_KEY: 'test-caption-key' }, false],
+    [{ TRANSLATE_INSTAGRAM: 'false', GOOGLE_TRANSLATE_API_KEY: 'test-caption-key' }, false],
+    [{ TRANSLATE_INSTAGRAM: '1', GOOGLE_TRANSLATE_API_KEY: 'test-caption-key' }, false],
+    [{ TRANSLATE_INSTAGRAM: 'true', GOOGLE_TRANSLATE_API_KEY: '  ' }, false],
+    [{ TRANSLATE_INSTAGRAM: 'TRUE', GOOGLE_TRANSLATE_API_KEY: ' test-caption-key ' }, true],
+  ];
+  for (const [overrides, expected] of cases) {
+    const result = readChannels(overrides, 'translateInstagram');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout), expected);
+  }
+  assert.equal(JSON.parse(readChannels({ GOOGLE_TRANSLATE_API_KEY: ' test-caption-key ' }, 'captionApiKey').stdout), 'test-caption-key');
+});
+
+test('Instagram translation is independent of X translation and never removes ordinary Instagram support', () => {
+  const instagram = { TRANSLATE_INSTAGRAM: 'true', GOOGLE_TRANSLATE_API_KEY: 'test-caption-key', TRANSLATE_TWEETS: 'false' };
+  assert.equal(JSON.parse(readChannels(instagram, 'translateInstagram').stdout), true);
+  assert.equal(JSON.parse(readChannels(instagram, 'translateTweets').stdout), false);
+  assert.equal(JSON.parse(readChannels({ TRANSLATE_TWEETS: 'true' }, 'translateInstagram').stdout), false);
+  assert.deepEqual(JSON.parse(readChannels({ TRANSLATE_INSTAGRAM: 'true' }, 'rewritePlatforms').stdout), ['x', 'instagram', 'tiktok']);
 });
 
 test('server settings use a local data file unless explicitly configured', () => {

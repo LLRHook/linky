@@ -189,7 +189,8 @@ test('queued preference input and returned preferences cannot mutate stored choi
 
 test('invalid persisted preference fields stop startup', () => {
   for (const record of [null, [], 1, { enabled: 1 }, { mode: 'other' }, { mode: null },
-    { translateTweets: 'true' }, { platforms: [] }, { platforms: null }, { platforms: { instagram: 'false' } },
+    { translateTweets: 'true' }, { translateInstagram: 'true' }, { translateInstagram: null }, { translateInstagram: 1 },
+    { platforms: [] }, { platforms: null }, { platforms: { instagram: 'false' } },
     { platforms: { unknown: false } }, { unknown: true }, { preferences: { mode: 'reply' } }]) {
     const path = file();
     writeFileSync(path, JSON.stringify({ [FIRST]: record }));
@@ -201,7 +202,8 @@ test('invalid updates cannot write, change enablement, or block a later valid up
   let writes = 0;
   const servers = new ServerSettings(file(), async () => { writes++; });
   for (const patch of [null, [], true, { enabled: true }, { mode: 'other' }, { mode: undefined },
-    { translateTweets: 'true' }, { platforms: [] }, { platforms: { x: undefined } },
+    { translateTweets: 'true' }, { translateInstagram: 'true' }, { translateInstagram: undefined }, { translateInstagram: null },
+    { platforms: [] }, { platforms: { x: undefined } },
     { platforms: { unknown: true } }, { unknown: true }]) {
     await assert.rejects(servers.update(FIRST, patch as ServerPreferences));
   }
@@ -306,4 +308,22 @@ test('failed channel reset retains the old restriction and later queued writes w
   await servers.update(FIRST, { youtubeDisplay: 'counts' });
   assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), { channelIds: [SECOND], youtubeDisplay: 'counts' });
   assert.equal(servers.get(FIRST), undefined);
+});
+
+test('Instagram translation merges independently with queued setup and existing preferences', async () => {
+  const path = file(), servers = new ServerSettings(path);
+  await servers.update(FIRST, { channelIds: [SECOND], youtubeDisplay: 'counts', translateTweets: false });
+  await Promise.all([
+    servers.update(FIRST, { translateInstagram: true }), servers.set(FIRST, true),
+    servers.update(FIRST, { platforms: { tiktok: false } }),
+    servers.update(SECOND, { translateInstagram: false }),
+  ]);
+  const restarted = new ServerSettings(path);
+  assert.equal(restarted.get(FIRST), true); assert.equal(restarted.get(SECOND), undefined);
+  assert.deepEqual(restarted.getPreferences(FIRST), { channelIds: [SECOND], youtubeDisplay: 'counts', translateTweets: false,
+    translateInstagram: true, platforms: { tiktok: false } });
+  assert.deepEqual(restarted.getPreferences(SECOND), { translateInstagram: false });
+  await restarted.update(FIRST, { translateInstagram: false }); await restarted.resetChannelScope(FIRST);
+  assert.equal(new ServerSettings(path).getPreferences(FIRST).translateInstagram, false);
+  assert.equal(restarted.get(FIRST), true);
 });
