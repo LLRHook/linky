@@ -2,26 +2,29 @@ import { readFileSync } from 'node:fs';
 import { mkdir, open, rename, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
-import { MessageFlags, type APIEmbed, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
+import type { APIActionRowComponent, APIComponentInMessageActionRow, APIEmbed, APIMessageTopLevelComponent, MessageEditOptions } from 'discord.js';
+import { controlsForYouTube, mergeYouTubeControls, removeYouTubeControls } from './YouTubeControls';
 
 export const YOUTUBE_STATS_TTL = 24 * 60 * 60_000;
 const MARKER = /^-# \[YouTube\]\(<https:\/\/www\.youtube\.com\/watch\?v=[\w-]{11}(?:&t=\d+)?>\) · /;
 const DISCORD_ID = /^[1-9]\d{16,19}$/;
 interface LegacyRecord { channelId: string; messageId: string; expiresAt: number; baseLength: number; suffixLength: number; kind?: never }
 interface CardRecord { kind: 'card'; channelId: string; messageId: string; expiresAt: number; baseMessageId?: string }
-type ExpiryRecord = LegacyRecord | CardRecord;
-export interface StatsPublication { remove(): Promise<void> }
+interface ControlsRecord { kind: 'controls'; channelId: string; messageId: string; expiresAt: number; videoIds: string[] }
+type ExpiryRecord = LegacyRecord | CardRecord | ControlsRecord;
+export interface StatsPublication {
+  remove(): Promise<void>;
+  controls?: APIActionRowComponent<APIComponentInMessageActionRow>[];
+}
 export interface StatsMessage {
   id: string;
   channelId: string;
   author: { id: string };
   content: string;
+  components?: readonly { toJSON(): APIMessageTopLevelComponent }[];
   edit(options: MessageEditOptions): Promise<unknown>;
   delete(): Promise<unknown>;
 }
-type VideoMessage = Pick<StatsMessage, 'id' | 'channelId' | 'author'> & {
-  channel: { send(options: MessageCreateOptions): Promise<StatsMessage> };
-};
 interface Options {
   path: string;
   botUserId: string;
@@ -44,21 +47,6 @@ async function atomicWrite(path: string, content: string): Promise<void> {
       try { await directory.sync(); } finally { await directory.close(); }
     }
   } finally { await unlink(temporary).catch(() => {}); }
-}
-
-function validCards(embeds: readonly APIEmbed[]): boolean {
-  let length = 0;
-  return embeds.length > 0 && embeds.length <= 3 && embeds.every(embed => {
-    const parts: [string | undefined, number][] = [[embed.title, 256], [embed.description, 4096],
-      [embed.footer?.text, 2048], [embed.author?.name, 256]];
-    if ((embed.fields?.length ?? 0) > 25) return false;
-    for (const field of embed.fields ?? []) parts.push([field.name, 256], [field.value, 1024]);
-    if (!parts.some(([text]) => text?.length)) return false;
-    return parts.every(([text, limit]) => {
-      length += text?.length ?? 0;
-      return (text?.length ?? 0) <= limit && length <= 6000;
-    });
-  });
 }
 
 function missing(error: unknown): boolean {
@@ -89,14 +77,18 @@ export class YouTubeStats {
     if (!Array.isArray(saved) || saved.length > 10_000) throw new Error('Invalid YouTube cleanup records.');
     for (const entry of saved) {
       if (!entry || typeof entry !== 'object' || Object.keys(entry).some(key =>
-        !(entry.kind === 'card' ? ['kind', 'channelId', 'messageId', 'expiresAt', 'baseMessageId'] :
+        !(entry.kind === 'controls' ? ['kind', 'channelId', 'messageId', 'expiresAt', 'videoIds'] :
+          entry.kind === 'card' ? ['kind', 'channelId', 'messageId', 'expiresAt', 'baseMessageId'] :
           ['channelId', 'messageId', 'expiresAt', 'baseLength', 'suffixLength']).includes(key)) ||
         typeof entry.channelId !== 'string' || typeof entry.messageId !== 'string' ||
         !DISCORD_ID.test(entry.channelId) || !DISCORD_ID.test(entry.messageId) ||
         !Number.isSafeInteger(entry.expiresAt) || entry.expiresAt < 0 ||
         (entry.kind === 'card' && entry.baseMessageId !== undefined &&
           (typeof entry.baseMessageId !== 'string' || !DISCORD_ID.test(entry.baseMessageId) || entry.baseMessageId === entry.messageId)) ||
-        (entry.kind !== 'card' && (!Number.isSafeInteger(entry.baseLength) || entry.baseLength < 0 ||
+        (entry.kind === 'controls' && (!Array.isArray(entry.videoIds) || entry.videoIds.length < 1 || entry.videoIds.length > 3 ||
+          entry.videoIds.some((id: unknown) => typeof id !== 'string' || !/^[\w-]{11}$/.test(id)) ||
+          new Set(entry.videoIds).size !== entry.videoIds.length)) ||
+        (entry.kind !== 'card' && entry.kind !== 'controls' && (!Number.isSafeInteger(entry.baseLength) || entry.baseLength < 0 ||
           !Number.isSafeInteger(entry.suffixLength) || entry.suffixLength < 4 ||
           entry.baseLength + entry.suffixLength > 2000)) || this.values.has(entry.messageId)) {
         throw new Error('Invalid YouTube cleanup records.');
@@ -121,23 +113,30 @@ export class YouTubeStats {
     catch { /* Logging must not break the cleanup queue. */ }
   }
 
-  private publication(entry: CardRecord): StatsPublication {
-    return { remove: () => this.serialize(() => this.removeCard(entry).catch(() => this.report())) };
+  private publication(entry: ControlsRecord, controls: NonNullable<StatsPublication['controls']>): StatsPublication {
+    return { controls, remove: () => this.serialize(() => this.removeEntry(entry).catch(() => this.report())) };
+  }
+
+  canView(message: Pick<StatsMessage, 'id' | 'channelId' | 'author'>, videoId: string): boolean {
+    const entry = this.values.get(message.id);
+    return message.author.id === this.options.botUserId && entry?.kind === 'controls' &&
+      entry.channelId === message.channelId && entry.expiresAt > this.now() && entry.videoIds.includes(videoId);
   }
 
   removeForMessage(baseMessageId: string): Promise<void> {
     return this.serialize(async () => {
       for (const entry of this.values.values()) {
-        if (entry.kind === 'card' && entry.baseMessageId === baseMessageId) {
-          await this.removeCard(entry).catch(() => this.report());
+        if (entry.kind === 'card' ? entry.baseMessageId === baseMessageId : entry.messageId === baseMessageId) {
+          await this.removeEntry(entry).catch(() => this.report());
         }
       }
     });
   }
 
-  private async removeCard(entry: CardRecord): Promise<void> {
-    if (!this.values.has(entry.messageId)) return;
-    const expired = { ...entry, expiresAt: Math.min(entry.expiresAt, this.now()) };
+  private async removeEntry(entry: ExpiryRecord): Promise<void> {
+    const current = this.values.get(entry.messageId);
+    if (!current) return;
+    const expired = { ...current, expiresAt: Math.min(current.expiresAt, this.now()) };
     try { await this.save(new Map(this.values).set(entry.messageId, expired)); }
     catch { this.values.set(entry.messageId, expired); this.report(); }
     if (await this.clean(expired)) {
@@ -155,6 +154,13 @@ export class YouTubeStats {
       }
       if (message?.author.id === this.options.botUserId) {
         if (entry.kind === 'card') await message.delete();
+        else if (entry.kind === 'controls') {
+          const before = message.components?.map(component => component.toJSON()) ?? [];
+          const components = removeYouTubeControls(before);
+          if (JSON.stringify(before) !== JSON.stringify(components)) {
+            await message.edit({ components, allowedMentions: { parse: [], users: [], roles: [], repliedUser: false } });
+          }
+        }
         else {
           const tail = message.content.slice(entry.baseLength);
           if (message.content.length === entry.baseLength + entry.suffixLength && tail.startsWith('\n\n') && MARKER.test(tail.slice(2))) {
@@ -170,39 +176,31 @@ export class YouTubeStats {
     return true;
   }
 
-  publish(message: VideoMessage, embeds: APIEmbed[]): Promise<StatsPublication | null> {
+  publish(message: StatsMessage, embeds: APIEmbed[]): Promise<StatsPublication | null> {
     return this.serialize(async () => {
       if (message.author.id !== this.options.botUserId || !DISCORD_ID.test(message.channelId) ||
-          !DISCORD_ID.test(message.id) || !validCards(embeds) || this.values.size >= 10_000) return null;
-      let card: StatsMessage;
-      try {
-        card = await message.channel.send({ content: 'YouTube details', flags: MessageFlags.SuppressNotifications,
-          allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
-          nonce: `yt:${message.id}`, enforceNonce: true });
-      } catch { this.report(); return null; }
-      if (card.author.id !== this.options.botUserId || card.channelId !== message.channelId ||
-          !DISCORD_ID.test(card.id) || card.id === message.id) { this.report(); return null; }
-      const existing = this.values.get(card.id);
-      if (existing?.kind === 'card' && existing.baseMessageId && existing.baseMessageId !== message.id) {
-        this.report(); return null;
-      }
-      if (existing && (existing.kind !== 'card' || existing.expiresAt <= this.now())) {
-        if (existing.kind === 'card') await this.removeCard(existing).catch(() => this.report());
+          !DISCORD_ID.test(message.id)) return null;
+      const existing = this.values.get(message.id);
+      if ((!existing && this.values.size >= 10_000) || (existing && existing.kind !== 'controls')) return null;
+      if (existing && existing.expiresAt <= this.now()) {
+        await this.removeEntry(existing).catch(() => this.report());
         return null;
       }
-      const entry: CardRecord = existing ?? { kind: 'card', channelId: card.channelId, messageId: card.id,
-        baseMessageId: message.id, expiresAt: this.now() + YOUTUBE_STATS_TTL };
-      try { if (!existing) await this.save(new Map(this.values).set(card.id, entry)); }
-      catch {
-        try { await card.delete(); } catch { /* The placeholder contains no API data. */ }
-        this.report(); return null;
-      }
+      const presentation = controlsForYouTube(embeds);
+      if (!presentation || !mergeYouTubeControls(message.components?.map(component => component.toJSON()) ?? [], presentation.controls)) return null;
+      const entry: ControlsRecord = { kind: 'controls', channelId: message.channelId, messageId: message.id,
+        expiresAt: existing?.expiresAt ?? this.now() + YOUTUBE_STATS_TTL, videoIds: presentation.videoIds };
+      try { await this.save(new Map(this.values).set(message.id, entry)); }
+      catch { this.report(); return null; }
       try {
-        await card.edit({ content: '', embeds, allowedMentions: { parse: [], users: [], roles: [], repliedUser: false } });
-        return this.publication(entry);
+        // Re-read SDK components after the disk write so concurrent unrelated controls survive.
+        const components = mergeYouTubeControls(message.components?.map(component => component.toJSON()) ?? [], presentation.controls);
+        if (!components) throw new Error('No space for YouTube controls.');
+        await message.edit({ components, allowedMentions: { parse: [], users: [], roles: [], repliedUser: false } });
+        return this.publication(entry, presentation.controls);
       } catch {
         this.report();
-        await this.removeCard(entry).catch(() => this.report());
+        await this.removeEntry(entry).catch(() => this.report());
         return null;
       }
     });
