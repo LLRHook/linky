@@ -119,7 +119,11 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         } finally { retrying.delete(record.sourceId); }
       }
     } catch (err) {
-      log.error({ errorCode: typeof err === 'object' && err !== null && 'code' in err ? err.code : undefined }, 'Could not complete Linky interaction');
+      const failure = err as { code?: unknown; status?: unknown } | null;
+      log.error({
+        ...(typeof failure?.code === 'number' ? { errorCode: failure.code } : {}),
+        ...(typeof failure?.status === 'number' ? { status: failure.status } : {}),
+      }, 'Could not complete Linky interaction');
     }
   });
 
