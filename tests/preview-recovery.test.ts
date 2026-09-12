@@ -94,14 +94,89 @@ test('an unavailable message aborts the preview wait instead of manufacturing su
 test('provider recovery only changes failed links to catalogued alternatives and never loops', () => {
   const attempted = new Set<string>();
   let content = fixed;
+  const visited = [new URL(content).hostname];
   for (let count = 0; count < 10; count++) {
     const next = nextProviderContent(content, expectedPreviews(source, content), attempted);
     if (next === content) break;
-    assert.equal(next.includes('instagram.com/'), false);
+    assert.equal(new URL(next).hostname, 'oginstagram.com');
+    assert.equal(visited.includes(new URL(next).hostname), false, 'Recovery must not revisit a provider');
+    visited.push(new URL(next).hostname);
     content = next;
   }
+  assert.deepEqual(visited, ['www.instagram7.com', 'oginstagram.com']);
+  assert.equal(content, 'https://oginstagram.com/reel/DdFKS1ABmK4/');
+  assert.equal(attempted.size, 2);
   assert.equal(nextProviderContent(content, expectedPreviews(source, content), attempted), content);
   assert.equal(nextProviderContent('https://evil.test/path', [{ source: 'https://evil.test/path', url: 'https://evil.test/path', platform: 'instagram', providerId: 'evil' }], new Set()), 'https://evil.test/path');
+});
+
+test('OGInstagram photo recovery requires media for the same case-sensitive shortcode', () => {
+  const source = 'https://www.instagram.com/p/DdKVPMEhTXe/';
+  const fixed = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+  const items = expectedPreviews(source, fixed);
+  assert.deepEqual(items, [{ source, url: fixed, platform: 'instagram', providerId: 'oginstagram' }]);
+  for (const url of [source, fixed, 'https://www.oginstagram.com/p/DdKVPMEhTXe/']) {
+    assert.equal(inspectPreviews([{ url, image: { url: 'https://cdn.example/post.jpg' } }], items).ok, true, url);
+    assert.equal(inspectPreviews([{ url, title: 'Author', description: 'Caption without media' }], items).ok, false, url);
+  }
+  for (const url of ['https://oginstagram.com/p/ddKVPMEhTXe/', 'https://oginstagram.com/p/DdKVPMEhTXeOther/',
+    'https://oginstagram.com/', 'https://oginstagram.com.evil.test/p/DdKVPMEhTXe/']) {
+    assert.equal(inspectPreviews([{ url, image: { url: 'https://cdn.example/post.jpg' } }], items).ok, false, url);
+  }
+  const image = inspectPreviews([{ url: fixed, thumbnail: { url: 'https://cdn.example/post.jpg' } }], items);
+  assert.equal(image.ok, true);
+  assert.equal(image.videoMetadata, false);
+});
+
+test('OGInstagram temporary error cards do not pass because they include a thumbnail', () => {
+  const fixed = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+  const items = expectedPreviews('https://instagram.com/p/DdKVPMEhTXe/', fixed);
+  assert.equal(items.length, 1);
+  for (const title of ['Temporarily unavailable', '  TEMPORARILY UNAVAILABLE  ']) {
+    const result = inspectPreviews([{ url: fixed, title, description: 'Please try again later.',
+      thumbnail: { url: 'https://cdn.example/provider-logo.png' } }], items);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.missing, items);
+  }
+});
+
+test('Instagram fallback still requires video metadata for Reel source paths', () => {
+  for (const kind of ['reel', 'reels']) {
+    const source = `https://www.instagram.com/${kind}/DdFKS1ABmK4/`;
+    const rendered = `https://oginstagram.com/${kind}/DdFKS1ABmK4/`;
+    const items = expectedPreviews(source, rendered);
+    assert.equal(items.length, 1);
+    const imageOnly: APIEmbed = { url: 'https://www.oginstagram.com/reel/DdFKS1ABmK4/',
+      image: { url: 'https://cdn.example/poster.jpg' }, thumbnail: { url: 'https://cdn.example/poster.jpg' } };
+    assert.equal(inspectPreviews([imageOnly], items).ok, false);
+    const result = inspectPreviews([{ ...imageOnly, video: { url: 'https://cdn.example/reel.mp4' } }], items);
+    assert.equal(result.ok, true);
+    assert.equal(result.videoMetadata, true);
+  }
+});
+
+test('Instagram recovery preserves working mixed links, hidden posts and surrounding text', () => {
+  const photo = 'https://www.instagram.com/p/DdKVPMEhTXe/';
+  const primary = 'https://www.instagram7.com/p/DdKVPMEhTXe/';
+  const hidden = '<https://instagram.com/p/Hidden/> ||https://instagram.com/p/Spoiler/|| `https://instagram.com/p/Code/`';
+  const untouched = 'https://example.com/?next=https://instagram.com/p/Nested/';
+  const original = `Photo: ${photo}\nAlready useful: https://x.com/jack/status/20\n${hidden}\n${untouched}`;
+  const rendered = `Photo: ${primary}\nAlready useful: https://fixupx.com/jack/status/20\n${hidden}\n${untouched}`;
+  const working: APIEmbed = { url: 'https://fixupx.com/jack/status/20', title: 'Author', description: 'A useful text post' };
+  const expectations = expectedPreviews(original, rendered);
+  assert.equal(expectations.length, 2);
+  const initial = inspectPreviews([working], expectations);
+  assert.deepEqual(initial.missing.map(item => item.source), [photo]);
+  const attempted = new Set<string>();
+  const recovered = nextProviderContent(rendered, initial.missing, attempted);
+  assert.equal(recovered, rendered.replace(primary, 'https://oginstagram.com/p/DdKVPMEhTXe/'));
+  const next = expectedPreviews(original, recovered);
+  const success = inspectPreviews([working,
+    { url: 'https://oginstagram.com/p/DdKVPMEhTXe/', image: { url: 'https://cdn.example/photo.jpg' } }], next);
+  assert.equal(success.ok, true);
+  assert.equal(nextProviderContent(recovered, success.missing, attempted), recovered);
+  assert.equal(nextProviderContent(recovered, inspectPreviews([working], next).missing, attempted), recovered,
+    'An exhausted Instagram backup must not change the working X link or restart recovery');
 });
 
 test('plural Instagram reel URLs match the canonical singular path', () => {

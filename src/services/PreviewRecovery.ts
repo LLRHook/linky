@@ -58,7 +58,7 @@ function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   if (!embed.url) return false;
   const same = identity(embed.url) !== null && identity(embed.url) === identity(expected.url);
   if (!same) return false;
-  const errorTitle = /^(?:error(?:\s+\d+)?|not found|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;
+  const errorTitle = /^(?:error(?:\s+\d+)?|not found|temporarily unavailable|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;
   const errorText = /^(?:sorry,? (?:that |this )?(?:post|tweet) (?:doesn.t exist|could not be found)|this (?:tweet|post|video) (?:is (?:unavailable|private)|has been deleted)|could not (?:find|load) (?:this |the )?(?:tweet|post|video)|try again later)/i;
   if (errorTitle.test(embed.title?.trim() ?? '') || errorText.test(embed.description?.trim() ?? '')) return false;
   const media = Boolean(embed.video?.url || embed.image?.url || embed.thumbnail?.url);
