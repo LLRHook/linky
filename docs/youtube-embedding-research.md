@@ -2,7 +2,7 @@
 
 Researched 11 September 2026 against current primary documentation and public provider endpoints. This is implementation research, not a claim that the feature is deployed.
 
-The selected implementation preserves Discord's native YouTube preview and appends compact counts plus a top comment to Linky's reply or replacement. The user explicitly chose both counts and a comment. Metadata comes from the official YouTube Data API, is cached for five minutes, and is scheduled for removal from the message after 24 hours. The hosted Linky operator supplies one API key; people adding Linky to a server need no Google credentials. Without a working key, leave YouTube links alone.
+The selected implementation preserves Discord's native YouTube preview in Linky's reply or replacement and sends a separate details card below it. The card shows labeled counts, then a shortened top comment and its author. The user explicitly chose both counts and a comment. Metadata comes from the official YouTube Data API, is cached for five minutes, and is scheduled for removal after 24 hours. The hosted Linky operator supplies one API key; people adding Linky to a server need no Google credentials. Without a working key, leave YouTube links alone.
 
 The operator verified successful HTTP 200 responses from both `videos.list` and `commentThreads.list` on the production host on 11 September 2026, using the restricted operator key. That verifies credentials and API access. It does not prove native playback or the rendered Discord layout.
 
@@ -43,7 +43,9 @@ On invalid credentials, timeout, missing/private/deleted video, malformed respon
 
 ## Playback and persistent messages
 
-Discord's Create Message API cannot set an embed's `video`, `provider`, or `type`; bot-created embeds are `rich`. A custom statistics card cannot supply a native playable YouTube video just by setting an embed field. Discord also deduplicates embeds with the same URL. Linky keeps a native YouTube URL in its message and adds the statistics/comment as a text suffix with a suppressed attribution link. Server preference controls whether that message replies to or safely replaces the original. Mention notifications are disabled. Actual playback still needs a real Discord check. [Discord message API](https://docs.discord.com/developers/resources/message)
+Discord's Create Message API cannot set an embed's `video`, `provider`, or `type`; bot-created embeds are `rich`. A custom statistics card cannot supply a native playable YouTube video just by setting an embed field. Discord also deduplicates embeds with the same URL. Live REST probes confirmed that sending an explicit rich embed suppresses the native YouTube player. Editing a message with its received video embed and a new rich card converts the video into a non-playable rich embed. [Discord message API](https://docs.discord.com/developers/resources/message)
+
+Linky therefore sends the native URL first, followed by a separate card with inline count fields and a full-width comment field. Message content always appears above native embeds, which made the previous small-text suffix difficult to read. The new card is sent with push notifications suppressed. An API-free placeholder is journaled before counts or comments are published; expiry deletes only the card. If the source changes during publication, both bot messages are removed. The cleanup reader retains support for older text-suffix records. Server preferences still control whether Linky replies to or safely replaces the original, and mentions remain disabled.
 
 A normal public [YouTube oEmbed request](https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json) returned title, author, thumbnail, provider, and player HTML during this research. It contained no likes, views, or comments. This observed response supplies no replacement for the statistics API.
 

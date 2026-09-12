@@ -1,4 +1,5 @@
 import { mapLinks, visibleLink } from './LinkTokens';
+import type { APIEmbed, APIEmbedField } from 'discord.js';
 
 export interface YouTubeLink { id: string; url: string }
 export interface YouTubeStatistics {
@@ -184,14 +185,16 @@ function commentText(value: string, limit: number): string {
   return shortened.replace(/[\\`*_{}\[\]()<>~|#+\-]/g, '\\$&').replace(/@/g, '@\u200b');
 }
 
-export function formatYouTubeStatistics(stats: YouTubeStatistics, videoUrl: string): string {
-  const counts = (['viewCount', 'likeCount', 'commentCount'] as const).flatMap((key, index) =>
+export function formatYouTubeStatistics(stats: YouTubeStatistics, videoUrl: string): APIEmbed | null {
+  const fields: APIEmbedField[] = (['viewCount', 'likeCount', 'commentCount'] as const).flatMap((key, index) =>
     stats[key] !== undefined && COUNT.test(stats[key])
-      ? [`${BigInt(stats[key]).toLocaleString('en-US')} ${['views', 'likes', 'comments'][index]}`] : []);
+      ? [{ name: ['Views', 'Likes', 'Comments'][index],
+        value: `**${BigInt(stats[key]).toLocaleString('en-US')}**`, inline: true }] : []);
   const comment = stats.topComment && commentText(stats.topComment.text, 240);
-  if (!counts.length && !comment) return '';
+  if (!fields.length && !comment) return null;
   const url = parseYouTubeUrl(videoUrl)?.url;
-  if (!url) return '';
-  const line = `-# [YouTube](<${url}>) · ${[...counts, 'snapshot when shared'].join(' · ')}`;
-  return line + (comment ? `\n> Top comment by ${commentText(stats.topComment!.author, 50) || 'YouTube user'}: ${comment}` : '');
+  if (!url) return null;
+  if (comment) fields.push({ name: 'Top comment',
+    value: `${comment}\n\nBy ${commentText(stats.topComment!.author, 50) || 'YouTube user'}`, inline: false });
+  return { title: 'YouTube stats', url, color: 0xff0000, fields, footer: { text: 'Snapshot when shared' } };
 }

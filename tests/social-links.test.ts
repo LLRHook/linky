@@ -26,6 +26,7 @@ import {
 import type { TweetTranslation } from '../src/services/TweetTranslation';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { YouTubeStatistics } from '../src/services/YouTube';
+import type { APIEmbed } from 'discord.js';
 
 const CHANNEL_ID = '123456789012345678';
 const SECOND_CHANNEL_ID = '223456789012345678';
@@ -425,22 +426,28 @@ test('a server can disable translation while retaining plain link fixing', async
 });
 
 for (const mode of ['replace', 'reply'] as const) {
-  test(`YouTube adds counts and a comment beside a native video in ${mode} mode`, async () => {
+  test(`YouTube sends the native video before a separate statistics card in ${mode} mode`, async () => {
     const f = fixture();
     f.source.content = `https://youtu.be/${YOUTUBE_ID}?si=tracking&t=1m30s`;
-    let suffix = '';
+    let cards: APIEmbed[] = [];
     await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
       serverPreferences: () => ({ mode }),
       lookupYouTube: async ids => { assert.deepEqual(ids, [YOUTUBE_ID]); return new Map([[YOUTUBE_ID, YOUTUBE_STATS]]); },
-      publishYouTube: async (_message, value) => { f.events.push('stats'); suffix = value; return true; },
+      publishYouTube: async (_message, value) => {
+        f.events.push('stats'); cards = value;
+        return { remove: async () => { f.events.push('delete stats'); } };
+      },
     })(f.source as unknown as Message);
     assert.deepEqual(f.events, ['send', 'stats', 'fetch', ...(mode === 'replace' ? ['delete original'] : [])]);
     assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://www.youtube.com/watch?v=${YOUTUBE_ID}&t=90`);
     assert.equal(f.sent[0].embeds, undefined);
-    assert.match(suffix, /12 views/);
-    assert.match(suffix, /0 likes/);
-    assert.match(suffix, /3 comments/);
-    assert.match(suffix, /A useful video/);
+    assert.deepEqual(cards[0].fields, [
+      { name: 'Views', value: '**12**', inline: true },
+      { name: 'Likes', value: '**0**', inline: true },
+      { name: 'Comments', value: '**3**', inline: true },
+      { name: 'Top comment', value: 'A useful video.\n\nBy Viewer', inline: false },
+    ]);
+    assert.equal(cards[0].url, `https://www.youtube.com/watch?v=${YOUTUBE_ID}&t=90`);
   });
 }
 
@@ -452,7 +459,7 @@ test('YouTube leaves its original alone when lookup or durable publication fails
         if (failure === 'lookup') throw new Error('Unavailable');
         return failure === 'empty' ? new Map() : new Map([[YOUTUBE_ID, YOUTUBE_STATS]]);
       },
-      publishYouTube: async () => false,
+      publishYouTube: async () => null,
     })(f.source as unknown as Message);
     assert.deepEqual(f.events, failure === 'publish' ? ['send', 'delete replacement'] : []);
   }
@@ -482,22 +489,49 @@ test('hidden, disabled, inaccessible or unconfigured YouTube links make no API r
   }
 });
 
-test('a source edit during YouTube publication removes only the stale repost', async () => {
-  const f = fixture(); f.source.content = `https://youtu.be/${YOUTUBE_ID}`;
-  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
-    lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
-    publishYouTube: async () => { f.source.content = 'Edited while posting'; return true; },
-  })(f.source as unknown as Message);
-  assert.deepEqual(f.events, ['send', 'fetch', 'delete replacement']);
+test('source edits, deletion and scope changes remove both the stale video and its details card', async () => {
+  for (const change of ['edit', 'delete', 'scope']) {
+    const f = fixture(); f.source.content = `https://youtu.be/${YOUTUBE_ID}`;
+    let enabled = true;
+    if (change === 'delete') f.source.fetch = async () => {
+      f.events.push('fetch'); throw Object.assign(new Error('Unknown message'), { code: 10008 });
+    };
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+      serverEnabled: () => enabled,
+      lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
+      publishYouTube: async () => {
+        if (change === 'edit') f.source.content = 'Edited while posting';
+        if (change === 'scope') enabled = false;
+        return { remove: async () => { f.events.push('delete stats'); } };
+      },
+    })(f.source as unknown as Message);
+    assert.deepEqual(f.events, ['send', 'fetch', 'delete stats', 'delete replacement'], change);
+  }
 });
 
-test('a YouTube message too long for statistics stays intact', async () => {
+test('a long YouTube message still gets details without consuming its content budget', async () => {
   const f = fixture(); f.source.content = 'a'.repeat(1850) + ` https://youtu.be/${YOUTUBE_ID}`;
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
     lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
-    publishYouTube: async () => assert.fail('No space for statistics'),
+    publishYouTube: async () => {
+      f.events.push('stats'); return { remove: async () => { f.events.push('delete stats'); } };
+    },
   })(f.source as unknown as Message);
-  assert.deepEqual(f.events, []);
+  assert.deepEqual(f.events, ['send', 'stats', 'fetch', 'delete original']);
+  assert(f.sent[0].content!.includes('a'.repeat(1850)));
+});
+
+test('multiple YouTube cards follow the native links in order and each links to its own video', async () => {
+  const f = fixture(); const ids = [YOUTUBE_ID, 'abcdefghijk', '0123456789_'];
+  f.source.content = ids.map(id => `https://youtu.be/${id}`).join('\n');
+  let cards: APIEmbed[] = [];
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    lookupYouTube: async () => new Map(ids.map(id => [id, YOUTUBE_STATS])),
+    publishYouTube: async (_message, values) => { cards = values; return { remove: async () => {} }; },
+  })(f.source as unknown as Message);
+  assert.deepEqual(cards.map(card => card.url), ids.map(id => `https://www.youtube.com/watch?v=${id}`));
+  assert.equal(f.sent[0].embeds, undefined);
+  assert(!f.sent[0].content?.includes('Top comment'));
 });
 
 test('one handler processes two exact channels in different guilds and ignores unrelated channels', async () => {

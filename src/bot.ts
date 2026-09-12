@@ -30,7 +30,9 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     platforms: settings.rewritePlatforms,
     translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
     lookupYouTube: settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined,
-    publishYouTube: (message, suffix) => youtubeStats?.publish(message, suffix) ?? Promise.resolve(false),
+    publishYouTube: (message, embeds) => message.channel.isSendable() && youtubeStats
+      ? youtubeStats.publish({ id: message.id, channelId: message.channelId, author: message.author,
+        channel: message.channel }, embeds) : Promise.resolve(null),
   }));
   log.info({
     channelIds: settings.channelIds,

@@ -12,6 +12,7 @@ import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
 import type { TweetTranslation } from './TweetTranslation';
 import type { ServerPreferences } from './ServerSettings';
+import type { StatsPublication } from './YouTubeStats';
 import { findYouTubeLinks, formatYouTubeStatistics, parseYouTubeUrl, type YouTubeStatistics } from './YouTube';
 import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
 
@@ -260,7 +261,7 @@ export function createLinkRepostHandler(
     serverEnabled?: (serverId: string) => boolean | undefined;
     serverPreferences?: (serverId: string) => ServerPreferences;
     lookupYouTube?: (ids: readonly string[]) => Promise<Map<string, YouTubeStatistics>>;
-    publishYouTube?: (message: Message, suffix: string) => Promise<boolean>;
+    publishYouTube?: (message: Message, embeds: APIEmbed[]) => Promise<StatsPublication | null>;
   } = {}
 ): (message: Message) => Promise<void> {
   const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
@@ -331,14 +332,11 @@ export function createLinkRepostHandler(
         return video && youtube.has(video.id) && visibleLink(translated.content, position) ? video.url : url;
       });
       const formatted = formatLinkRepost(canonical, message.author.id, replyUrl);
-      let content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
-      let youtubeSuffix = youtubeLinks.filter(link => youtube.has(link.id))
-        .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url)).filter(Boolean).join('\n');
-      if (content.length + youtubeSuffix.length + 2 > MAX_CONTENT_LENGTH) {
-        youtubeSuffix = '';
-        content = formatLinkRepost(translated.content, message.author.id, replyUrl);
-      }
-      if (rewritten === message.content && !youtubeSuffix) return;
+      const content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
+      const youtubeCards = youtubeLinks.filter(link => youtube.has(link.id))
+        .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url))
+        .filter((card): card is APIEmbed => card !== null);
+      if (rewritten === message.content && !youtubeCards.length) return;
       const embeds = translated.embeds;
       const translationFiles = translated.translationFiles ?? [];
       if (translationFiles.length && !permissions.has(PermissionFlagsBits.AttachFiles)) {
@@ -374,20 +372,24 @@ export function createLinkRepostHandler(
       reposted.add(message.id);
       if (reposted.size > RECENT_MESSAGE_LIMIT) reposted.delete(reposted.values().next().value!);
       const resultContext = { ...context, replacementId: replacement.id };
-      if (!enabled()) {
+      let publication: StatsPublication | null = null;
+      const removeReplacement = async () => {
+        await publication?.remove();
         await replacement.delete();
+      };
+      if (!enabled()) {
+        await removeReplacement();
         return;
       }
       if (replacement.attachments.size !== files.length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         return;
       }
-      if (youtubeSuffix) {
-        let published = false;
-        try { published = await publishYouTube!(replacement, youtubeSuffix); }
-        catch { log.warn(resultContext, 'Could not append YouTube statistics'); }
-        if (!published && rewritten === message.content) {
-          await replacement.delete();
+      if (youtubeCards.length) {
+        try { publication = await publishYouTube!(replacement, youtubeCards); }
+        catch { log.warn(resultContext, 'Could not publish YouTube details'); }
+        if (!publication && rewritten === message.content) {
+          await removeReplacement();
           return;
         }
       }
@@ -397,14 +399,14 @@ export function createLinkRepostHandler(
       } catch (err) {
         if (typeof err === 'object' && err !== null && 'code' in err && err.code === 10008) {
           log.info(resultContext, 'Removing repost: original was deleted during copying');
-          await replacement.delete();
+          await removeReplacement();
           return;
         }
         throw err;
       }
       if (!enabled() || !canCopy(latest) || sourceVersion(latest) !== version) {
         log.warn(resultContext, 'Keeping original: message changed or link fixing was disabled while reposting');
-        await replacement.delete();
+        await removeReplacement();
         return;
       }
       if (reply) {
