@@ -19,7 +19,7 @@ You must be the server owner or have **Administrator** or **Manage Server** perm
 
 1. Choose your server and authorize Linky.
 2. Open a text channel in that server, type `/setup`, select **Linky's `/setup` command** from the command picker and send it.
-3. In the private panel, choose your channels, posting mode and platforms, then select **Enable server**.
+3. The private setup card shows whether Linky is active in this channel. Choose your posting mode, platforms and channels, then select **Enable server**. Menu selections save automatically.
 4. Send a fresh supported link in a selected channel. If the preview does not appear, run `/diagnose link:` there to check permissions, settings, URL support and recent provider observations.
 
 If Linky's `/setup` command is missing from the picker, follow the [setup troubleshooting guide](https://linkybot.dev/setup).
