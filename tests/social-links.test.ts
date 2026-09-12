@@ -105,6 +105,17 @@ test('reply attribution places a small literal excerpt under the sharer and refe
   assert.equal(formatLinkRepost(body, AUTHOR_ID, undefined), formatLinkRepost(body, AUTHOR_ID));
 });
 
+test('decoding punctuation in a reply excerpt cannot recreate a URL or expose its path', () => {
+  const body = 'https://fixupx.com/user/status/2';
+  for (const excerpt of [String.raw`https\://fixupx.com/user/status/1`, String.raw`www\.example.com/private-token`]) {
+    const formatted = formatLinkRepost(body, AUTHOR_ID, { excerpt });
+    assert.equal(formatted.split('\n')[1], '-# *[link]*');
+    assert(!formatted.includes('private-token'));
+    assert(!formatted.includes('https://fixupx.com/user/status/1'));
+    assert(!formatted.includes('www.example.com'));
+  }
+});
+
 test('reply excerpts cap visible characters before Markdown escaping without splitting emoji', () => {
   const body = 'https://fixupx.com/user/status/1';
   const escaped = formatLinkRepost(body, AUTHOR_ID, { excerpt: '*word* '.repeat(22) + 'finish' }).split('\n')[1];
@@ -434,6 +445,19 @@ test('link-only parents use displayed embed text then title or a short fallback'
     assert(!f.sent[0].content!.includes('ParentOnly'));
     assert(!f.sent[0].content!.includes('Suppressed private metadata'));
   }
+});
+
+test('parent preview punctuation is readable without exposing its Markdown escape backslashes', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: 'https://x.com/parent/status/2',
+    embeds: [{ description: 'After its release \\(Early 2021\\) this still matters\\.' }] });
+  await f.run();
+  const excerpt = f.sent[0].content!.split('\n')[1];
+  assert.equal(excerpt, '-# *After its release (Early 2021) this still matters.*');
+  assert(!excerpt.includes('\\'));
 });
 
 test('many parent links followed by text finish promptly and do not select an embed fallback', { timeout: 1000 }, async () => {

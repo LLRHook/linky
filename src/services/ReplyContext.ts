@@ -30,7 +30,8 @@ function excerptText(content: string): string {
 }
 
 export function formatReplyExcerpt(excerpt: string): string {
-  const text = excerptText(excerpt) || UNAVAILABLE;
+  // Providers escape punctuation for Discord; quote the displayed characters.
+  const text = excerptText(excerpt.replace(/\\([()[\].,!?:;])/g, '$1')) || UNAVAILABLE;
   const characters = Array.from(text);
   const short = characters.length > MAX_EXCERPT_LENGTH
     ? characters.slice(0, MAX_EXCERPT_LENGTH - 1).join('').trimEnd() + '\u2026' : text;
