@@ -3,12 +3,13 @@ import { after, afterEach, test } from 'node:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials, PermissionFlagsBits, PermissionsBitField, Routes, type ClientEvents, type Interaction, type Guild, type Message, type InteractionReplyOptions } from 'discord.js';
+import { Client, Collection, Events, GatewayIntentBits, MessageFlags, MessageFlagsBitField, MessageType, Partials, PermissionFlagsBits, PermissionsBitField, Routes, type ClientEvents, type Interaction, type Guild, type Message, type MessageCreateOptions, type InteractionReplyOptions } from 'discord.js';
 import { createBot } from '../src/bot';
 import type { Config } from '../src/config';
 import { data } from '../src/commands/help';
 import { commandDefinitions, registerCommands } from '../src/commands/register';
 import { ServerSettings, type ServerPreferences } from '../src/services/ServerSettings';
+import { RepostRegistry } from '../src/services/RepostRegistry';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-bot-tests-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -181,6 +182,72 @@ test('failed startup registration disconnects without reporting readiness', asyn
   assert.equal(destroyed, true);
   assert.equal(errors.length, 1);
   assert.equal(logs.some(entry => /Logged in as|Serving /.test(JSON.stringify(entry))), false);
+});
+
+test('startup restores repost ownership for replies to Linky across bot restarts', { timeout: 5000 }, async () => {
+  const caseDirectory = mkdtempSync(join(directory, 'reply-owner-'));
+  const settingsPath = join(caseDirectory, 'servers.json');
+  const botId = '1491240385031311470', guildId = '987654321098765432', channelId = '123456789012345678';
+  const parentAuthorId = '666666666666666666', sharerId = '777777777777777777';
+  const now = BigInt(Date.now() - 1_420_070_400_000) << 22n;
+  const snowflake = (sequence: number) => String(now + BigInt(sequence));
+  const parent = { guildId, channelId, sourceId: snowflake(1), replacementId: snowflake(2),
+    authorId: parentAuthorId, mode: 'replace' as const };
+  const saved = new RepostRegistry({ path: join(caseDirectory, 'reposts.json'), botUserId: botId,
+    fetchMessage: async () => assert.fail('Saving ownership must not fetch Discord messages'),
+    canManageMessages: async () => false });
+  assert.equal(await saved.remember(parent), true);
+  saved.stop();
+
+  for (const restart of [0, 1]) {
+    const { client, errors } = fixture({ settingsPath, channelIds: [channelId], rewritePlatforms: ['x'],
+      translateTweets: false }, new ServerSettings(settingsPath));
+    Object.assign(client, { user: { id: botId } });
+    for (const listener of client.listeners(Events.ClientReady)) await listener({
+      application: { commands: { set: async () => {} } }, user: { id: botId, tag: 'Linky' },
+      guilds: { cache: new Map() },
+    } as unknown as Client<true>);
+    assert.deepEqual(errors, []);
+    const sent: MessageCreateOptions[] = [];
+    let sourceDeleted = false;
+    let complete!: () => void;
+    const completed = new Promise<void>(resolve => { complete = resolve; });
+    const replacement = {
+      id: snowflake(4 + restart * 2), guildId, channelId, author: { id: botId, bot: true },
+      attachments: new Collection(), embeds: [{ toJSON: () => ({ url: 'https://fixupx.com/jack/status/20',
+        title: 'Jack', description: 'Public tweet' }) }],
+      fetch: async () => replacement,
+      edit: async () => { complete(); return replacement; },
+      delete: async () => assert.fail('A verified repost must be retained'),
+    };
+    const source = {
+      id: snowflake(3 + restart * 2), guildId, channelId, client,
+      content: 'https://x.com/jack/status/20', author: { id: sharerId, bot: false },
+      guild: { members: { me: { id: botId } } }, type: MessageType.Reply, partial: false,
+      webhookId: null, poll: null, pinned: false, hasThread: false, editedTimestamp: null,
+      stickers: new Collection(), components: [], messageSnapshots: new Collection(),
+      flags: new MessageFlagsBitField(), attachments: new Collection(),
+      reference: { messageId: parent.replacementId, guildId, channelId },
+      mentions: { repliedUser: { id: botId } },
+      fetchReference: async () => assert.fail('Persisted attribution must avoid fetching the parent'),
+      inGuild: () => true, deletable: true,
+      channel: { isSendable: () => true, isThread: () => false,
+        permissionsFor: () => new PermissionsBitField(PermissionsBitField.All),
+        send: async (options: MessageCreateOptions) => { sent.push(options); return replacement; } },
+      fetch: async () => source,
+      delete: async () => { sourceDeleted = true; },
+    };
+    client.emit(Events.MessageCreate, source as unknown as Message<true>);
+    await completed;
+    assert.deepEqual(errors, [], `restart ${restart}`);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].content!.split('\n')[0], `> **Shared by <@${sharerId}>** (reply to <@${parentAuthorId}> · ` +
+      `[message](https://discord.com/channels/${guildId}/${channelId}/${parent.replacementId}))`);
+    assert(!sent[0].content!.includes(parent.sourceId), 'The jump link must target the surviving repost');
+    assert.deepEqual(sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+    assert.equal(sourceDeleted, true);
+    await client.destroy();
+  }
 });
 
 test('/help reflects persisted choices before and after restarting', async () => {

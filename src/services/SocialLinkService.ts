@@ -255,11 +255,15 @@ function sourceVersion(message: Message): string {
 }
 
 /** Resolve attribution from Discord's reply metadata, without delaying preview delivery on lookup failure. */
-async function findReplyAuthor(message: Message): Promise<string | undefined> {
+async function findReplyAuthor(message: Message, findRepost?: (id: string) => RepostRecord | undefined): Promise<string | undefined> {
   const { messageId, channelId = message.channelId, guildId = message.guildId } = message.reference ?? {};
   if (!messageId || guildId !== message.guildId) return;
+  const botId = message.client?.user?.id;
+  const record = findRepost?.(messageId);
+  if (record?.replacementId === messageId && record.channelId === channelId && record.guildId === guildId &&
+      DISCORD_ID.test(record.authorId) && record.authorId !== botId) return record.authorId;
   const knownAuthor = message.mentions?.repliedUser?.id;
-  if (knownAuthor && DISCORD_ID.test(knownAuthor)) return knownAuthor;
+  if (knownAuthor && knownAuthor !== botId && DISCORD_ID.test(knownAuthor)) return knownAuthor;
 
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -268,8 +272,14 @@ async function findReplyAuthor(message: Message): Promise<string | undefined> {
       new Promise<undefined>(resolve => { timeout = setTimeout(() => resolve(undefined), REPLY_AUTHOR_TIMEOUT_MS); }),
     ]);
     const authorId = parent?.author?.id;
-    return parent?.id === messageId && parent.channelId === channelId && parent.guildId === guildId &&
-      authorId && DISCORD_ID.test(authorId) ? authorId : undefined;
+    if (parent?.id !== messageId || parent.channelId !== channelId || parent.guildId !== guildId ||
+        !authorId || !DISCORD_ID.test(authorId)) return;
+    if (authorId !== botId) return authorId;
+    // Older reposts can outlive their ownership journal. Trust only our own generated
+    // leading credit, never quoted user text or interaction/webhook responses.
+    if (parent.webhookId) return;
+    const credited = /^> \*\*Shared by <@([1-9]\d{16,19})>\*\*(?: \(reply to [^\r\n]+\))?\r?\n/.exec(parent.content)?.[1];
+    return credited !== botId ? credited : undefined;
   } catch {
     return;
   } finally {
@@ -282,7 +292,7 @@ export function createLinkRepostHandler(
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
   { platforms = REWRITE_PLATFORMS, translateTweet, serverIds = [], serverEnabled, serverPreferences,
-    lookupYouTube, publishYouTube, verifyPreview = waitForPreviews, observePreview, rememberRepost }: {
+    lookupYouTube, publishYouTube, verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost }: {
     platforms?: readonly RewritePlatform[];
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
     serverIds?: readonly string[];
@@ -293,6 +303,7 @@ export function createLinkRepostHandler(
     verifyPreview?: (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult>;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     rememberRepost?: (record: RepostRecord) => Promise<boolean>;
+    findRepost?: (replacementId: string) => RepostRecord | undefined;
   } = {}
 ): (message: Message, options?: { refresh?: boolean; forceReply?: boolean }) => Promise<RepostRefreshResult> {
   const allowedChannelIds = typeof channelIds === 'string' ? [channelIds] : channelIds;
@@ -360,7 +371,7 @@ export function createLinkRepostHandler(
       }
       // Preview-only keeps Discord's already-native YouTube message untouched.
       if (rewritten === message.content && !youtube.size) return;
-      const replyAuthorId = replyUrl ? await findReplyAuthor(message) : undefined;
+      const replyAuthorId = replyUrl ? await findReplyAuthor(message, findRepost) : undefined;
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       const body = formatLinkRepost(rewritten, message.author.id, replyUrl, replyAuthorId);
       const translated = translateTweet && preferences.translateTweets !== false && activePlatforms.includes('x') &&
