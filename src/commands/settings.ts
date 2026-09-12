@@ -13,6 +13,8 @@ export function effectivePreferences(config: Config, preferences: ServerPreferen
     mode: preferences.mode ?? 'replace',
     platforms,
     translateTweets: config.translateTweets && preferences.translateTweets !== false && platforms.includes('x'),
+    translateInstagram: Boolean(config.translateInstagram && config.captionApiKey?.trim()) &&
+      preferences.translateInstagram !== false && platforms.includes('instagram'),
     youtubeDisplay: preferences.youtubeDisplay ?? 'counts-and-comment',
   };
 }
@@ -33,6 +35,7 @@ export const data = new SlashCommandBuilder()
   .addBooleanOption(option => option.setName('reddit').setDescription('Fix Reddit post previews in this server.'))
   .addBooleanOption(option => option.setName('twitch').setDescription('Fix Twitch clip previews in this server.'))
   .addBooleanOption(option => option.setName('translate_tweets').setDescription('Translate non-English tweets when enabled by the bot operator.'))
+  .addBooleanOption(option => option.setName('translate_instagram').setDescription('Translate non-English Instagram captions when enabled by the bot operator.'))
   .addStringOption(option => option.setName('youtube_display').setDescription('Choose the extra details shown with YouTube previews.')
     .addChoices({ name: 'Preview only', value: 'preview' }, { name: 'Counts only', value: 'counts' },
       { name: 'Counts and top comment', value: 'counts-and-comment' }));
@@ -54,6 +57,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
   }
   const translateTweets = interaction.options.getBoolean('translate_tweets');
   if (translateTweets !== null) patch.translateTweets = translateTweets;
+  const translateInstagram = interaction.options.getBoolean('translate_instagram');
+  if (translateInstagram !== null) patch.translateInstagram = translateInstagram;
   const youtubeDisplay = interaction.options.getString('youtube_display');
   if (youtubeDisplay !== null) patch.youtubeDisplay = youtubeDisplay as ServerPreferences['youtubeDisplay'];
   const changed = Object.keys(patch).length > 0;
@@ -85,6 +90,9 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
       `English tweet translation: ${effective.translateTweets ? 'On when translation is available' :
         !config.translateTweets ? 'Off (disabled by the bot operator)' :
           !effective.platforms.includes('x') ? 'Off (X link fixing is disabled)' : 'Off'}.`,
+      `English Instagram caption translation: ${effective.translateInstagram ? 'On when translation and media are available' :
+        !config.translateInstagram || !config.captionApiKey?.trim() ? 'Off (unavailable from the bot operator)' :
+          !effective.platforms.includes('instagram') ? 'Off (Instagram link fixing is disabled)' : 'Off'}.`,
       `YouTube display: ${effective.youtubeDisplay === 'preview' ? 'Preview only' :
         effective.youtubeDisplay === 'counts' ? 'Counts only' : 'Counts and top comment'}${effective.platforms.includes('youtube') ? '.' : ' (YouTube is currently off).'}`,
       'Use /setup to choose channels or change server enablement. Preview availability depends on the source and preview provider.',

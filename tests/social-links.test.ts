@@ -361,6 +361,29 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     run: () => handler(source as unknown as Message) };
 }
 
+test('Instagram automatically translates captions when X translation is disabled', async () => {
+  const f = fixture();
+  f.source.content = 'https://www.instagram.com/p/DdFwAIqgncQ/';
+  const requests: string[] = [];
+  const options = {
+    platforms: ['instagram'] as const,
+    translateInstagram: async (sourceUrl: string) => {
+      requests.push(sourceUrl);
+      return { sourceUrl, shortcode: 'DdFwAIqgncQ', username: 'bustervro', text: 'The complete English caption.',
+        languages: ['et'], mediaOnlyUrl: 'https://g.instagram7.com/p/DdFwAIqgncQ/', mediaTypes: ['GraphImage'] };
+    },
+    verifyPreview: async () => ({ ok: true, missing: [], videoMetadata: false }),
+  };
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, options)(f.source as unknown as Message);
+  assert.deepEqual(requests, [f.source.content]);
+  assert.match(f.sent[0].content!, /The complete English caption/);
+  assert.match(f.sent[0].content!, /Translated from Estonian/);
+  assert.match(f.sent[0].content!, /https:\/\/g\.instagram7\.com\/p\/DdFwAIqgncQ\//);
+  assert.equal(f.sent[0].embeds, undefined);
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.ok(f.events.includes('delete original'));
+});
+
 test('reposts with credit and all mentions disabled, then fetches and deletes original', async () => {
   const f = fixture();
   await f.run();

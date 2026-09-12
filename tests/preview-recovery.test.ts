@@ -30,6 +30,16 @@ test('every visible rewritten post requires its own preview and hidden posts are
   assert.equal(inspectPreviews([media], items).missing[0].source, 'https://www.instagram.com/p/Another/');
 });
 
+test('suppressed caption links cannot replace or create a rendered Instagram preview expectation', () => {
+  const gallery = 'https://g.instagram7.com/p/DdFKS1ABmK4/';
+  for (const hidden of [`<${fixed}>`, `\`${fixed}\``, `\`\`\`\n${fixed}\n\`\`\``, `||${fixed}||`]) {
+    const rendered = `${gallery}\n\nThe English caption refers to ${hidden}`;
+    assert.deepEqual(expectedPreviews(source, rendered), [{ source, url: gallery,
+      platform: 'instagram', providerId: 'instagram7' }]);
+    assert.deepEqual(expectedPreviews(source, hidden), [], 'a deliberately hidden link requires no native embed');
+  }
+});
+
 test('video metadata and useful image previews are reported separately from playback', () => {
   const imageSource = 'https://instagram.com/p/Photo/';
   const imageFixed = 'https://www.instagram7.com/p/Photo/';
@@ -182,6 +192,40 @@ test('Instagram recovery preserves working mixed links, hidden posts and surroun
 test('plural Instagram reel URLs match the canonical singular path', () => {
   const expected = expectedPreviews('https://instagram.com/reels/DdFKS1ABmK4/', 'https://www.instagram7.com/reels/DdFKS1ABmK4/');
   assert.equal(inspectPreviews([media], expected).ok, true);
+});
+
+test('translated Instagram recovery changes only the gallery URL and preserves its English caption', () => {
+  const original = 'https://www.instagram.com/p/DdKVPMEhTXe/';
+  const primary = 'https://g.instagram7.com/p/DdKVPMEhTXe/';
+  const alternate = 'https://g.oginstagram.com/p/DdKVPMEhTXe/';
+  const caption = 'The English caption.\n-# Translated from Japanese';
+  const rendered = `${primary}\n${caption}`;
+  const missing = expectedPreviews(original, rendered).map(item => ({ ...item, captionFree: true }));
+  assert.equal(missing.length, 1);
+  const attempted = new Set<string>();
+  const recovered = nextProviderContent(rendered, missing, attempted);
+  assert.equal(recovered, `${alternate}\n${caption}`);
+  const retry = expectedPreviews(original, recovered).map(item => ({ ...item, captionFree: true }));
+  assert.equal(retry[0]?.providerId, 'oginstagram');
+  assert.equal(nextProviderContent(recovered, retry, attempted), recovered, 'Do not retry the same service in its ordinary caption mode');
+});
+
+test('caption-free Instagram galleries require the same post media and reject original-language descriptions', () => {
+  for (const host of ['g.instagram7.com', 'g.oginstagram.com']) {
+    const source = 'https://www.instagram.com/p/DdKVPMEhTXe/';
+    const url = `https://${host}/p/DdKVPMEhTXe/`;
+    const expected = expectedPreviews(source, url).map(item => ({ ...item, captionFree: true }));
+    assert.equal(expected.length, 1);
+    const image = { url, image: { url: 'https://cdn.example/photo.jpg' } };
+    assert.equal(inspectPreviews([image], expected).ok, true);
+    assert.equal(inspectPreviews([{ ...image, description: 'Algne eestikeelne pealdis.' }], expected).ok, false);
+    assert.equal(inspectPreviews([{ ...image, url: `https://${host}/p/Other/` }], expected).ok, false);
+    const video = expected.map(item => ({ ...item, requireVideo: true }));
+    assert.equal(inspectPreviews([image], video).ok, false, 'GraphVideo metadata requires actual video even on a /p path');
+    assert.equal(inspectPreviews([{ ...image, video: { url: 'https://cdn.example/video.mp4' } }], video).ok, true);
+    const reel = expectedPreviews(source.replace('/p/', '/reel/'), url).map(item => ({ ...item, captionFree: true }));
+    assert.equal(inspectPreviews([image], reel).ok, false, 'the original Reel path still requires video on a gallery /p URL');
+  }
 });
 
 test('translated gallery previews recover using the actual rendered provider URL', () => {

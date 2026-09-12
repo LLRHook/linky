@@ -43,6 +43,29 @@ test('Instagram recovery keeps the original path and fragment with Instagram7 fi
   }
 });
 
+test('caption-free Instagram recovery uses gallery routes without inventing separate providers', () => {
+  for (const kind of ['p', 'reel', 'reels', 'tv']) {
+    const path = `/${kind}/DdKVPMEhTXe/`;
+    const source = `https://www.instagram.com${path}?igsh=tracking#reply`;
+    const candidates = getProviderCandidates(source, { captionFree: true });
+    assert.deepEqual(candidates, [
+      { providerId: 'instagram7', platform: 'instagram', url: `https://g.instagram7.com${path}#reply` },
+      { providerId: 'oginstagram', platform: 'instagram', url: `https://g.oginstagram.com${path}#reply` },
+    ]);
+    for (const candidate of candidates) {
+      assert.deepEqual(parseProviderUrl(candidate.url), { platform: 'instagram',
+        sourceUrl: `https://www.instagram.com${path}#reply`, path, fragment: '#reply', providerId: candidate.providerId });
+      assert.deepEqual(getProviderCandidates(candidate.url, { captionFree: true }), []);
+      const host = new URL(candidate.url).hostname;
+      for (const invalid of [`https://${host}.evil.test${path}`, `https://user@${host}${path}`, `https://${host}:443${path}`]) {
+        assert.equal(parseProviderUrl(invalid), null, invalid);
+      }
+    }
+    assert.deepEqual(getProviderCandidates(source).map(candidate => new URL(candidate.url).hostname),
+      ['www.instagram7.com', 'oginstagram.com'], 'ordinary reposts retain their existing caption-bearing providers');
+  }
+});
+
 test('OGInstagram recognition rejects unapproved authorities and non-post paths', () => {
   for (const url of [
     'http://oginstagram.com/p/DdKVPMEhTXe/',
