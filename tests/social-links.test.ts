@@ -96,14 +96,23 @@ test('quoted layout preserves complex whitespace without trimming or reordering'
   }
 });
 
-test('reply attribution distinguishes the sharer and referenced author and labels the message link', () => {
-  const url = `https://discord.com/channels/987654321098765432/${CHANNEL_ID}/${PARENT_MESSAGE_ID}`;
+test('reply attribution places a small literal excerpt under the sharer and referenced author', () => {
   const body = 'Context https://fixupx.com/user/status/1';
-  assert.equal(formatLinkRepost(body, AUTHOR_ID, url, PARENT_AUTHOR_ID),
-    `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](${url}))\n> Context\nhttps://fixupx.com/user/status/1`);
-  assert.equal(formatLinkRepost(body, AUTHOR_ID, url),
-    `${QUOTED_CREDIT} (reply to [message](${url}))\n> Context\nhttps://fixupx.com/user/status/1`);
-  assert.equal(formatLinkRepost(body, AUTHOR_ID, undefined, PARENT_AUTHOR_ID), formatLinkRepost(body, AUTHOR_ID));
+  assert.equal(formatLinkRepost(body, AUTHOR_ID, { authorId: PARENT_AUTHOR_ID, excerpt: '**hello**' }),
+    `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *\\*\\*hello\\*\\**\n> Context\nhttps://fixupx.com/user/status/1`);
+  assert.equal(formatLinkRepost(body, AUTHOR_ID, { excerpt: 'Original message unavailable.' }),
+    `${QUOTED_CREDIT} (reply)\n-# *Original message unavailable.*\n> Context\nhttps://fixupx.com/user/status/1`);
+  assert.equal(formatLinkRepost(body, AUTHOR_ID, undefined), formatLinkRepost(body, AUTHOR_ID));
+});
+
+test('reply excerpts cap visible characters before Markdown escaping without splitting emoji', () => {
+  const body = 'https://fixupx.com/user/status/1';
+  const escaped = formatLinkRepost(body, AUTHOR_ID, { excerpt: '*word* '.repeat(22) + 'finish' }).split('\n')[1];
+  assert.equal(escaped, `-# *${'\\*word\\* '.repeat(22)}finish*`);
+  const repeatedMarkers = formatLinkRepost(body, AUTHOR_ID, { excerpt: '*'.repeat(160) }).split('\n')[1];
+  assert.equal(repeatedMarkers, `-# *${'\\*'.repeat(160)}*`);
+  const shortened = formatLinkRepost(body, AUTHOR_ID, { excerpt: '😀'.repeat(161) }).split('\n')[1];
+  assert.equal(shortened, `-# *${'😀'.repeat(159)}…*`);
 });
 
 test('rewrites links while preserving text, punctuation, paths and fragments, and dropping queries', () => {
@@ -289,7 +298,8 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
   const permissions = new PermissionsBitField(PermissionsBitField.All);
   const referenceLookup = { calls: 0, fetch: async (): Promise<{
     id: string; channelId: string; guildId: string | null; author: { id: string; bot?: boolean };
-    content?: string; webhookId?: string | null;
+    content?: string; webhookId?: string | null; embeds?: APIEmbed[]; attachments?: Collection<string, Attachment>;
+    flags?: MessageFlagsBitField;
   }> => { throw { code: 10008 }; } };
   const replacement = {
     id: 'replacement-1', attachments: new Collection<string, Attachment>(),
@@ -354,13 +364,189 @@ test('reposts with credit and all mentions disabled, then fetches and deletes or
   assert.equal(f.sent[0].flags, undefined);
 });
 
+test('reply presentation shows the actual referenced text beneath both authors without a jump link', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: 'This is the message I meant.' });
+  await f.run();
+  assert.deepEqual(f.sent[0].content!.split('\n').slice(0, 2), [
+    `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`, '-# *This is the message I meant.*',
+  ]);
+  assert.equal(f.referenceLookup.calls, 1);
+  assert(!f.sent[0].content!.includes('discord.com/channels/'));
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+});
+
+test('reply excerpts collapse whitespace, escape formatting and neutralize links without adding previews', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID },
+    content: 'First\n\t**bold** _literal_ @everyone <@444444444444444444> https://instagram.com/p/ParentOnly/ www.example.com  last' });
+  await f.run();
+  const excerpt = f.sent[0].content!.split('\n')[1];
+  assert(excerpt.startsWith('-# *First \\*\\*bold\\*\\* \\_literal\\_'));
+  assert(excerpt.endsWith('[link] [link] last*'));
+  assert(!f.sent[0].content!.includes('ParentOnly'));
+  assert(!f.sent[0].content!.includes('www.example.com'));
+  assert.equal(f.replacement.embeds.length, 1, 'Only the source share produces a preview');
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+});
+
+test('reply excerpts never expose closed, unclosed or escaped-closing spoiler content', async () => {
+  for (const [content, expected] of [
+    ['Before ||private https://x.com/hidden/status/99|| after', '-# *Before [spoiler] after*'],
+    ['Before ||private without a closing delimiter', '-# *Before [spoiler]*'],
+    ['Before ||private \\|| still private|| after', '-# *Before [spoiler] after*'],
+  ]) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content });
+    await f.run();
+    assert.equal(f.sent[0].content!.split('\n')[1], expected);
+    assert(!f.sent[0].content!.includes('private'));
+    assert(!f.sent[0].content!.includes('/hidden/'));
+  }
+});
+
+test('link-only parents use displayed embed text then title or a short fallback', async () => {
+  for (const scenario of [
+    { embeds: [{ description: 'A helpful caption.', title: 'Less useful title' }], expected: 'A helpful caption.' },
+    { embeds: [{ title: 'A helpful title.' }], expected: 'A helpful title.' },
+    { embeds: [{}, { description: 'The first readable card.' }], expected: 'The first readable card.' },
+    { embeds: [], expected: 'Shared a link.' },
+    { embeds: [{ description: 'Suppressed private metadata.' }], suppressed: true, expected: 'Shared a link.' },
+  ]) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: 'https://instagram.com/p/ParentOnly/',
+      embeds: scenario.embeds, flags: new MessageFlagsBitField(scenario.suppressed ? MessageFlags.SuppressEmbeds : 0) });
+    await f.run();
+    assert.equal(f.sent[0].content!.split('\n')[1], `-# *${scenario.expected}*`);
+    assert(!f.sent[0].content!.includes('ParentOnly'));
+    assert(!f.sent[0].content!.includes('Suppressed private metadata'));
+  }
+});
+
+test('many parent links followed by text finish promptly and do not select an embed fallback', { timeout: 1000 }, async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID },
+    content: 'https://example.com/parent '.repeat(28) + 'This is meaningful text after the links.',
+    embeds: [{ description: 'An embed fallback must not replace real parent text.' }] });
+  await f.run();
+  const excerpt = f.sent[0].content!.split('\n')[1];
+  assert(excerpt.startsWith('-# *[link] [link]'));
+  assert(excerpt.endsWith('…*'));
+  assert(!excerpt.includes('embed fallback'));
+  assert(!f.sent[0].content!.includes('example.com/parent'));
+});
+
+test('embed descriptions pass through the same spoiler and URL protection as message text', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: 'https://instagram.com/p/ParentOnly/',
+    embeds: [{ description: '**Caption** ||private|| https://example.com/private-preview' }] });
+  await f.run();
+  assert.equal(f.sent[0].content!.split('\n')[1], '-# *\\*\\*Caption\\*\\* [spoiler] [link]*');
+  assert(!f.sent[0].content!.includes('private'));
+});
+
+test('attachment-only and empty parents have useful excerpts without copying files', async () => {
+  for (const attached of [true, false]) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: '',
+      attachments: new Collection(attached ? [['photo', makeAttachment()]] : []) });
+    await f.run();
+    assert.equal(f.sent[0].content!.split('\n')[1], attached ? '-# *Shared an attachment.*' : '-# *Original message unavailable.*');
+    assert.deepEqual(f.sent[0].files, []);
+  }
+});
+
+test('a nested Linky reply quotes its actual body once and keeps persisted human ownership', async () => {
+  for (const suffix of [` (reply to <@${OTHER_MENTION_ID}>)`, ' (reply)']) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: LINKY_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: LINKY_ID, bot: true }, webhookId: null,
+      content: `> **Shared by <@${OTHER_MENTION_ID}>**${suffix}\n-# *Older context that must not repeat.*\n` +
+        '> Actual parent caption.\nhttps://fixupx.com/user/status/2' });
+    const record: RepostRecord = { guildId: f.source.guildId, channelId: CHANNEL_ID, sourceId: '333333333333333333',
+      replacementId: PARENT_MESSAGE_ID, authorId: PARENT_AUTHOR_ID, mode: 'replace' };
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { findRepost: () => record })(f.source as unknown as Message);
+    assert.deepEqual(f.sent[0].content!.split('\n').slice(0, 2), [
+      `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`, '-# *Actual parent caption. [link]*',
+    ]);
+    assert.equal(f.referenceLookup.calls, 1);
+    assert(!f.sent[0].content!.includes('Older context'));
+  }
+});
+
+test('legacy Linky reply headers do not discard subtext written by the original sharer', async () => {
+  for (const suffix of [
+    ' (reply to https://discord.com/channels/1/2/3)',
+    ` (reply to <@${OTHER_MENTION_ID}> · [message](https://discord.com/channels/1/2/3))`,
+  ]) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: LINKY_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: LINKY_ID, bot: true }, webhookId: null,
+      content: `> **Shared by <@${PARENT_AUTHOR_ID}>**${suffix}\n-# *user-written subtext*\nhttps://fixupx.com/user/status/2` });
+    await f.run();
+    const excerpt = f.sent[0].content!.split('\n')[1];
+    assert(excerpt.includes('user-written subtext'));
+    assert(excerpt.includes('\\*user-written subtext\\*'));
+    assert(!excerpt.includes('Shared by'));
+    assert(!excerpt.includes('discord.com/channels/'));
+  }
+});
+
+test('known attribution survives failed or mismatched reference fetches without exposing unrelated text', async () => {
+  for (const mismatch of ['unavailable', 'message', 'channel', 'guild'] as const) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+    f.referenceLookup.fetch = async () => {
+      if (mismatch === 'unavailable') throw { code: 50013 };
+      return { id: mismatch === 'message' ? f.source.id : PARENT_MESSAGE_ID,
+        channelId: mismatch === 'channel' ? SECOND_CHANNEL_ID : CHANNEL_ID,
+        guildId: mismatch === 'guild' ? '887654321098765432' : f.source.guildId,
+        author: { id: OTHER_MENTION_ID }, content: 'Private unrelated text.' };
+    };
+    await f.run();
+    assert.deepEqual(f.sent[0].content!.split('\n').slice(0, 2), [
+      `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`, '-# *Original message unavailable.*',
+    ]);
+    assert(!f.sent[0].content!.includes('Private unrelated text'));
+  }
+});
+
 test('retains reply context in attribution without replying to the original', async () => {
   const f = fixture();
   f.source.type = MessageType.Reply;
   f.source.reference = { messageId: 'parent-1' };
   await f.run();
-  assert.ok(f.sent[0].content!.includes(`reply to [message](https://discord.com/channels/987654321098765432/${CHANNEL_ID}/parent-1)`));
-  assert.ok(f.sent[0].content?.startsWith(`${QUOTED_CREDIT} (reply to `));
+  assert.ok(f.sent[0].content?.startsWith(`${QUOTED_CREDIT} (reply)\n-# *Original message unavailable.*`));
   assert.ok(f.sent[0].content?.includes('\n> Look\nhttps://fixupx.com/'));
   assert.equal(f.sent[0].reply, undefined);
 });
@@ -375,24 +561,24 @@ test('reference lookup attributes the parent author instead of the sharer or ano
     guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID } });
   await f.run();
   assert.equal(f.referenceLookup.calls, 1);
-  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · ` +
-    `[message](https://discord.com/channels/${f.source.guildId}/${CHANNEL_ID}/${PARENT_MESSAGE_ID}))`);
+  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`);
   assert(f.sent[0].content!.includes(`<@${OTHER_MENTION_ID}> Look`));
   assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
   assert.equal(f.sent[0].reply, undefined);
   assert(f.events.includes('delete original'));
 });
 
-test('Discord’s known repliedUser author avoids a reference lookup without using arbitrary mentions', async () => {
+test('Discord’s known repliedUser author still fetches the excerpt without using arbitrary mentions', async () => {
   const f = fixture();
   f.source.type = MessageType.Reply;
   f.source.reference = { messageId: PARENT_MESSAGE_ID };
   f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
   f.source.mentions.users.set(OTHER_MENTION_ID, { id: OTHER_MENTION_ID });
-  f.referenceLookup.fetch = async () => assert.fail('Known reference author should not need a request');
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: 'The actual parent text.' });
   await f.run();
-  assert.equal(f.referenceLookup.calls, 0);
-  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+  assert.equal(f.referenceLookup.calls, 1);
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *The actual parent text.*`));
   assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
 });
 
@@ -408,22 +594,23 @@ test('replying to a persisted Linky repost credits its original human author ins
     assert.equal(replacementId, PARENT_MESSAGE_ID); return record;
   } };
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, options)(f.source as unknown as Message);
-  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · ` +
-    `[message](https://discord.com/channels/${f.source.guildId}/${CHANNEL_ID}/${PARENT_MESSAGE_ID}))`);
+  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`);
+  assert.equal(f.sent[0].content!.split('\n')[1], '-# *Original message unavailable.*');
+  assert.equal(f.referenceLookup.calls, 1);
   assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
 });
 
-test('persisted parent attribution works without cached reply metadata and retains a cross-channel jump', async () => {
+test('persisted cross-channel ownership retains attribution without copying another channel’s text', async () => {
   const f = fixture();
   f.source.type = MessageType.Reply;
   f.source.reference = { messageId: PARENT_MESSAGE_ID, channelId: SECOND_CHANNEL_ID };
   const record: RepostRecord = { guildId: f.source.guildId, channelId: SECOND_CHANNEL_ID,
     sourceId: '333333333333333333', replacementId: PARENT_MESSAGE_ID, authorId: PARENT_AUTHOR_ID, mode: 'reply' };
-  f.referenceLookup.fetch = async () => assert.fail('Persisted ownership avoids fetching the old parent');
+  f.referenceLookup.fetch = async () => assert.fail('A cross-channel parent must not be fetched for an excerpt');
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { findRepost: () => record })(f.source as unknown as Message);
   assert.equal(f.referenceLookup.calls, 0);
-  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · ` +
-    `[message](https://discord.com/channels/${f.source.guildId}/${SECOND_CHANNEL_ID}/${PARENT_MESSAGE_ID}))`);
+  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`);
+  assert.equal(f.sent[0].content!.split('\n')[1], '-# *Original message unavailable.*');
 });
 
 test('mismatched or invalid persisted parent records never replace the known real author', async () => {
@@ -440,8 +627,8 @@ test('mismatched or invalid persisted parent records never replace the known rea
       mode: 'replace',
     };
     await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { findRepost: () => record })(f.source as unknown as Message);
-    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${OTHER_MENTION_ID}> · [message](`), mismatch);
-    assert.equal(f.referenceLookup.calls, 0);
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${OTHER_MENTION_ID}>)\n-# *`), mismatch);
+    assert.equal(f.referenceLookup.calls, 1);
   }
 });
 
@@ -451,8 +638,8 @@ test('ordinary human replies remain attributed to that human when no ownership r
   f.source.reference = { messageId: PARENT_MESSAGE_ID };
   f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { findRepost: () => undefined })(f.source as unknown as Message);
-  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
-  assert.equal(f.referenceLookup.calls, 0);
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *`));
+  assert.equal(f.referenceLookup.calls, 1);
 });
 
 test('an older same-bot repost recovers only its anchored original-author header', async () => {
@@ -466,12 +653,12 @@ test('an older same-bot repost recovers only its anchored original-author header
       content: `> **Shared by <@${PARENT_AUTHOR_ID}>**${suffix}\nhttps://fixupx.com/user/status/1` });
     await f.run();
     assert.equal(f.referenceLookup.calls, 1);
-    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *`));
     assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
   }
 });
 
-test('unknown self-bot output and untrusted header positions fall back to the message link', async () => {
+test('unknown self-bot output and untrusted header positions never invent a reply author', async () => {
   for (const content of [
     'Linky could not confirm a preview.', `Ordinary text\n> **Shared by <@${PARENT_AUTHOR_ID}>**\nA link`,
     `\`\`\`\n> **Shared by <@${PARENT_AUTHOR_ID}>**\n\`\`\``, '> **Shared by <@invalid>**\nA link',
@@ -484,7 +671,7 @@ test('unknown self-bot output and untrusted header positions fall back to the me
     f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
       guildId: f.source.guildId, author: { id: LINKY_ID, bot: true }, content });
     await f.run();
-    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`), content);
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *`), content);
   }
 });
 
@@ -498,8 +685,8 @@ test('a quoted Linky-style header cannot override a human, another bot or a webh
       ...(kind === 'webhook' ? { webhookId: '222222222222222222' } : {}),
       content: `> **Shared by <@${PARENT_AUTHOR_ID}>**\nhttps://fixupx.com/user/status/1` });
     await f.run();
-    assert(f.sent[0].content!.startsWith(kind === 'webhook' ? `${QUOTED_CREDIT} (reply to [message](` :
-      `${QUOTED_CREDIT} (reply to <@${OTHER_MENTION_ID}> · [message](`), kind);
+    assert(f.sent[0].content!.startsWith(kind === 'webhook' ? `${QUOTED_CREDIT} (reply)\n-# *` :
+      `${QUOTED_CREDIT} (reply to <@${OTHER_MENTION_ID}>)\n-# *`), kind);
   }
 });
 
@@ -514,7 +701,7 @@ test('legacy header recovery rejects a fetched parent with the wrong identity', 
       guildId: mismatch === 'guild' ? '887654321098765432' : f.source.guildId, author: { id: LINKY_ID, bot: true },
       content: `> **Shared by <@${PARENT_AUTHOR_ID}>**\nhttps://fixupx.com/user/status/1` });
     await f.run();
-    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`), mismatch);
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *`), mismatch);
   }
 });
 
@@ -529,13 +716,13 @@ test('reply mode retains parent attribution while replying to the sharer without
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
     serverPreferences: () => ({ mode: 'reply' }),
   })(f.source as unknown as Message);
-  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *`));
   assert.deepEqual(f.sent[0].reply, { messageReference: f.source.id, failIfNotExists: true });
   assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
   assert(!f.events.includes('delete original'));
 });
 
-test('deleted or inaccessible references preserve the labeled link and continue fixing the source', async () => {
+test('deleted or inaccessible references show an unavailable excerpt and continue fixing the source', async () => {
   for (const code of [10008, 50001, 50013]) {
     const f = fixture();
     f.source.type = MessageType.Reply;
@@ -543,7 +730,7 @@ test('deleted or inaccessible references preserve the labeled link and continue 
     f.referenceLookup.fetch = async () => { throw { code }; };
     await f.run();
     assert.equal(f.referenceLookup.calls, 1);
-    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`));
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *`));
     assert(f.sent[0].content!.includes('https://fixupx.com/user/status/1'));
     assert(f.events.includes('delete original'));
   }
@@ -562,7 +749,7 @@ test('a stalled reference lookup times out after 1500ms and contains a late reje
   assert.equal(f.sent.length, 0);
   t.mock.timers.tick(1);
   await run;
-  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`));
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *`));
   assert(f.events.includes('delete original'));
   rejectReference(new Error('The timed-out reference request failed later'));
   await new Promise<void>(resolve => { setImmediate(resolve); });
@@ -579,15 +766,14 @@ test('a message without a reference never fetches or invents a parent author', a
   assert.equal(f.sent[0].content!.split('\n')[0], QUOTED_CREDIT);
 });
 
-test('cross-channel attribution uses the exact referenced channel and same-guild author', async () => {
+test('cross-channel references without known ownership never copy text or fetch another channel', async () => {
   const f = fixture();
   f.source.type = MessageType.Reply;
   f.source.reference = { messageId: PARENT_MESSAGE_ID, channelId: SECOND_CHANNEL_ID, guildId: f.source.guildId };
-  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: SECOND_CHANNEL_ID,
-    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID } });
+  f.referenceLookup.fetch = async () => assert.fail('The original channel may be private to readers here');
   await f.run();
-  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · ` +
-    `[message](https://discord.com/channels/${f.source.guildId}/${SECOND_CHANNEL_ID}/${PARENT_MESSAGE_ID}))`);
+  assert.equal(f.referenceLookup.calls, 0);
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *Original message unavailable.*`));
 });
 
 test('mismatched reference messages and invalid author IDs cannot supply attribution', async () => {
@@ -602,7 +788,7 @@ test('mismatched reference messages and invalid author IDs cannot supply attribu
       author: { id: mismatch === 'author' ? 'not-a-discord-id' : PARENT_AUTHOR_ID },
     });
     await f.run();
-    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`), mismatch);
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *`), mismatch);
   }
 });
 
@@ -614,7 +800,7 @@ test('a declared cross-guild reference cannot provide a known or fetched parent 
   f.referenceLookup.fetch = async () => assert.fail('Cross-guild author lookup is not allowed');
   await f.run();
   assert.equal(f.referenceLookup.calls, 0);
-  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`));
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *`));
 });
 
 for (const refresh of [false, true]) test(`a source edit during reference lookup cancels ${refresh ? 'refresh' : 'initial delivery'} before sending`, async () => {
@@ -863,7 +1049,7 @@ test('one handler processes two exact channels in different guilds and ignores u
   assert.deepEqual(first.events, ['send', 'fetch', 'delete original']);
   assert.deepEqual(second.events, ['send', 'fetch', 'delete original']);
   assert.deepEqual(unrelated.events, []);
-  assert.ok(second.sent[0].content?.includes(`reply to [message](https://discord.com/channels/887654321098765432/${SECOND_CHANNEL_ID}/parent-2)`));
+  assert.ok(second.sent[0].content?.startsWith(`${QUOTED_CREDIT} (reply)\n-# *Original message unavailable.*`));
 });
 
 test('both configured channels use the same quoted layout', async () => {
@@ -1017,19 +1203,20 @@ test('the 2000-character limit includes credit and every quote prefix', async ()
   assert.deepEqual(oversized.events, []);
 });
 
-test('the longer reply-author attribution is included in the message-size limit', async () => {
-  const replyUrl = `https://discord.com/channels/987654321098765432/${CHANNEL_ID}/${PARENT_MESSAGE_ID}`;
+test('the escaped reply excerpt is included in the message-size limit', async () => {
   const fixed = 'https://fixupx.com/user/status/1';
-  const attribution = `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](${replyUrl}))`;
+  const attribution = `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *A \\*literal\\* excerpt.*`;
   const padding = 'a'.repeat(2000 - `${attribution}\n> \n${fixed}`.length);
   for (const excess of ['', 'a']) {
     const f = fixture();
     f.source.type = MessageType.Reply;
     f.source.reference = { messageId: PARENT_MESSAGE_ID };
     f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: 'A *literal* excerpt.' });
     f.source.content = `${padding}${excess}\nhttps://x.com/user/status/1`;
-    assert(formatLinkRepost(rewriteSocialLinks(f.source.content), AUTHOR_ID, replyUrl).length < 2000,
-      'the same message would fit without the newly added author attribution');
+    assert(formatLinkRepost(rewriteSocialLinks(f.source.content), AUTHOR_ID).length < 2000,
+      'the same message would fit without the reply excerpt');
     await f.run();
     if (!excess) {
       assert.equal(f.sent[0].content!.length, 2000);
@@ -1261,14 +1448,17 @@ const JAPANESE: TweetTranslation = {
   photos: [], hasMedia: false, hasVideo: false,
 };
 
-test('translated cards and video captions retain the sharer and referenced author without notifications', async () => {
+test('translated cards and video captions retain the reply excerpt and both authors without notifications', async () => {
   for (const hasVideo of [false, true]) {
     const f = fixture(async () => ({ ...JAPANESE, hasVideo, hasMedia: hasVideo }));
     f.source.type = MessageType.Reply;
     f.source.reference = { messageId: PARENT_MESSAGE_ID };
     f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: 'Please translate this.' });
     await f.run();
-    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *`));
+    assert.equal(f.sent[0].content!.split('\n')[1], '-# *Please translate this.*');
     if (hasVideo) assert(f.sent[0].content!.includes(JAPANESE.text));
     else assert.equal((f.sent[0].embeds![0] as APIEmbed).description, JAPANESE.text);
     assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });

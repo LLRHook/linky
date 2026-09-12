@@ -184,7 +184,7 @@ test('failed startup registration disconnects without reporting readiness', asyn
   assert.equal(logs.some(entry => /Logged in as|Serving /.test(JSON.stringify(entry))), false);
 });
 
-test('startup restores repost ownership for replies to Linky across bot restarts', { timeout: 5000 }, async () => {
+test('startup restores repost ownership and fetches reply excerpts across bot restarts', { timeout: 5000 }, async () => {
   const caseDirectory = mkdtempSync(join(directory, 'reply-owner-'));
   const settingsPath = join(caseDirectory, 'servers.json');
   const botId = '1491240385031311470', guildId = '987654321098765432', channelId = '123456789012345678';
@@ -210,6 +210,7 @@ test('startup restores repost ownership for replies to Linky across bot restarts
     assert.deepEqual(errors, []);
     const sent: MessageCreateOptions[] = [];
     let sourceDeleted = false;
+    let referenceFetches = 0;
     let complete!: () => void;
     const completed = new Promise<void>(resolve => { complete = resolve; });
     const replacement = {
@@ -229,7 +230,12 @@ test('startup restores repost ownership for replies to Linky across bot restarts
       flags: new MessageFlagsBitField(), attachments: new Collection(),
       reference: { messageId: parent.replacementId, guildId, channelId },
       mentions: { repliedUser: { id: botId } },
-      fetchReference: async () => assert.fail('Persisted attribution must avoid fetching the parent'),
+      fetchReference: async () => {
+        referenceFetches++;
+        return { id: parent.replacementId, guildId, channelId, author: { id: botId, bot: true }, webhookId: null,
+          content: `> **Shared by <@${parentAuthorId}>** (reply to <@${sharerId}>)\n-# *Older quoted context.*\n` +
+            '> This is the parent message.\nhttps://fixupx.com/jack/status/20' };
+      },
       inGuild: () => true, deletable: true,
       channel: { isSendable: () => true, isThread: () => false,
         permissionsFor: () => new PermissionsBitField(PermissionsBitField.All),
@@ -241,9 +247,13 @@ test('startup restores repost ownership for replies to Linky across bot restarts
     await completed;
     assert.deepEqual(errors, [], `restart ${restart}`);
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].content!.split('\n')[0], `> **Shared by <@${sharerId}>** (reply to <@${parentAuthorId}> · ` +
-      `[message](https://discord.com/channels/${guildId}/${channelId}/${parent.replacementId}))`);
-    assert(!sent[0].content!.includes(parent.sourceId), 'The jump link must target the surviving repost');
+    assert.deepEqual(sent[0].content!.split('\n').slice(0, 2), [
+      `> **Shared by <@${sharerId}>** (reply to <@${parentAuthorId}>)`,
+      '-# *This is the parent message. [link]*',
+    ]);
+    assert.equal(referenceFetches, 1, 'Persisted ownership does not replace fetching the actual parent text');
+    assert(!sent[0].content!.includes('discord.com/channels/'));
+    assert(!sent[0].content!.includes('Older quoted context'));
     assert.deepEqual(sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
     assert.equal(sourceDeleted, true);
     await client.destroy();
