@@ -29,6 +29,7 @@ import { mapLinks } from '../src/services/LinkTokens';
 import { parseProviderUrl } from '../src/services/SocialProviders';
 import { parseYouTubeUrl } from '../src/services/YouTube';
 import type { YouTubeStatistics } from '../src/services/YouTube';
+import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { APIEmbed } from 'discord.js';
 
 const CHANNEL_ID = '123456789012345678';
@@ -37,6 +38,7 @@ const AUTHOR_ID = '777777777777777777';
 const PARENT_AUTHOR_ID = '666666666666666666';
 const PARENT_MESSAGE_ID = '555555555555555555';
 const OTHER_MENTION_ID = '444444444444444444';
+const LINKY_ID = '1491240385031311470';
 const QUOTED_CREDIT = `> **Shared by <@${AUTHOR_ID}>**`;
 const YOUTUBE_ID = 'dQw4w9WgXcQ';
 const YOUTUBE_STATS: YouTubeStatistics = { viewCount: '12', likeCount: '0', commentCount: '3',
@@ -286,7 +288,8 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     error: (...args: unknown[]) => { logs.push(args); } };
   const permissions = new PermissionsBitField(PermissionsBitField.All);
   const referenceLookup = { calls: 0, fetch: async (): Promise<{
-    id: string; channelId: string; guildId: string | null; author: { id: string };
+    id: string; channelId: string; guildId: string | null; author: { id: string; bot?: boolean };
+    content?: string; webhookId?: string | null;
   }> => { throw { code: 10008 }; } };
   const replacement = {
     id: 'replacement-1', attachments: new Collection<string, Attachment>(),
@@ -298,6 +301,7 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     id: '123456789012345679', channelId: CHANNEL_ID, guildId: '987654321098765432',
     content: 'Look https://x.com/user/status/1?q=%2F+ok#part @everyone <@&999> <@888>',
     author: { id: '777777777777777777', bot: false },
+    client: { user: { id: LINKY_ID } },
     guild: { members: { me: { id: 'bot-1' } } },
     partial: false, webhookId: null as string | null, type: MessageType.Default,
     poll: null as unknown, pinned: false, hasThread: false, editedTimestamp: null as number | null,
@@ -390,6 +394,128 @@ test('Discord’s known repliedUser author avoids a reference lookup without usi
   assert.equal(f.referenceLookup.calls, 0);
   assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
   assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+});
+
+test('replying to a persisted Linky repost credits its original human author instead of Linky', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.source.mentions.repliedUser = { id: LINKY_ID };
+  f.source.guild.members.me.id = LINKY_ID;
+  const record: RepostRecord = { guildId: f.source.guildId, channelId: CHANNEL_ID,
+    sourceId: '333333333333333333', replacementId: PARENT_MESSAGE_ID, authorId: PARENT_AUTHOR_ID, mode: 'replace' };
+  const options = { findRepost: (replacementId: string) => {
+    assert.equal(replacementId, PARENT_MESSAGE_ID); return record;
+  } };
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, options)(f.source as unknown as Message);
+  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · ` +
+    `[message](https://discord.com/channels/${f.source.guildId}/${CHANNEL_ID}/${PARENT_MESSAGE_ID}))`);
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+});
+
+test('persisted parent attribution works without cached reply metadata and retains a cross-channel jump', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID, channelId: SECOND_CHANNEL_ID };
+  const record: RepostRecord = { guildId: f.source.guildId, channelId: SECOND_CHANNEL_ID,
+    sourceId: '333333333333333333', replacementId: PARENT_MESSAGE_ID, authorId: PARENT_AUTHOR_ID, mode: 'reply' };
+  f.referenceLookup.fetch = async () => assert.fail('Persisted ownership avoids fetching the old parent');
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { findRepost: () => record })(f.source as unknown as Message);
+  assert.equal(f.referenceLookup.calls, 0);
+  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · ` +
+    `[message](https://discord.com/channels/${f.source.guildId}/${SECOND_CHANNEL_ID}/${PARENT_MESSAGE_ID}))`);
+});
+
+test('mismatched or invalid persisted parent records never replace the known real author', async () => {
+  for (const mismatch of ['message', 'channel', 'guild', 'invalid-author', 'self-author'] as const) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: OTHER_MENTION_ID };
+    const record: RepostRecord = {
+      guildId: mismatch === 'guild' ? '887654321098765432' : f.source.guildId,
+      channelId: mismatch === 'channel' ? SECOND_CHANNEL_ID : CHANNEL_ID,
+      sourceId: '333333333333333333', replacementId: mismatch === 'message' ? f.source.id : PARENT_MESSAGE_ID,
+      authorId: mismatch === 'invalid-author' ? 'not-an-id' : mismatch === 'self-author' ? LINKY_ID : PARENT_AUTHOR_ID,
+      mode: 'replace',
+    };
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { findRepost: () => record })(f.source as unknown as Message);
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${OTHER_MENTION_ID}> · [message](`), mismatch);
+    assert.equal(f.referenceLookup.calls, 0);
+  }
+});
+
+test('ordinary human replies remain attributed to that human when no ownership record exists', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { findRepost: () => undefined })(f.source as unknown as Message);
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+  assert.equal(f.referenceLookup.calls, 0);
+});
+
+test('an older same-bot repost recovers only its anchored original-author header', async () => {
+  for (const suffix of ['', ` (reply to <@${OTHER_MENTION_ID}> · [message](https://discord.com/channels/1/2/3))`]) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: LINKY_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: LINKY_ID, bot: true }, webhookId: null,
+      content: `> **Shared by <@${PARENT_AUTHOR_ID}>**${suffix}\nhttps://fixupx.com/user/status/1` });
+    await f.run();
+    assert.equal(f.referenceLookup.calls, 1);
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+    assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  }
+});
+
+test('unknown self-bot output and untrusted header positions fall back to the message link', async () => {
+  for (const content of [
+    'Linky could not confirm a preview.', `Ordinary text\n> **Shared by <@${PARENT_AUTHOR_ID}>**\nA link`,
+    `\`\`\`\n> **Shared by <@${PARENT_AUTHOR_ID}>**\n\`\`\``, '> **Shared by <@invalid>**\nA link',
+    `> **Shared by <@${PARENT_AUTHOR_ID}>**`, `> **Shared by <@${PARENT_AUTHOR_ID}>** unrelated suffix\nA link`,
+  ]) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: LINKY_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+      guildId: f.source.guildId, author: { id: LINKY_ID, bot: true }, content });
+    await f.run();
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`), content);
+  }
+});
+
+test('a quoted Linky-style header cannot override a human, another bot or a webhook author', async () => {
+  for (const kind of ['human', 'other-bot', 'webhook'] as const) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID, guildId: f.source.guildId,
+      author: { id: kind === 'webhook' ? LINKY_ID : OTHER_MENTION_ID, bot: kind !== 'human' },
+      ...(kind === 'webhook' ? { webhookId: '222222222222222222' } : {}),
+      content: `> **Shared by <@${PARENT_AUTHOR_ID}>**\nhttps://fixupx.com/user/status/1` });
+    await f.run();
+    assert(f.sent[0].content!.startsWith(kind === 'webhook' ? `${QUOTED_CREDIT} (reply to [message](` :
+      `${QUOTED_CREDIT} (reply to <@${OTHER_MENTION_ID}> · [message](`), kind);
+  }
+});
+
+test('legacy header recovery rejects a fetched parent with the wrong identity', async () => {
+  for (const mismatch of ['message', 'channel', 'guild'] as const) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: LINKY_ID };
+    f.referenceLookup.fetch = async () => ({ id: mismatch === 'message' ? f.source.id : PARENT_MESSAGE_ID,
+      channelId: mismatch === 'channel' ? SECOND_CHANNEL_ID : CHANNEL_ID,
+      guildId: mismatch === 'guild' ? '887654321098765432' : f.source.guildId, author: { id: LINKY_ID, bot: true },
+      content: `> **Shared by <@${PARENT_AUTHOR_ID}>**\nhttps://fixupx.com/user/status/1` });
+    await f.run();
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`), mismatch);
+  }
 });
 
 test('reply mode retains parent attribution while replying to the sharer without notifications', async () => {
