@@ -34,6 +34,9 @@ import type { APIEmbed } from 'discord.js';
 const CHANNEL_ID = '123456789012345678';
 const SECOND_CHANNEL_ID = '223456789012345678';
 const AUTHOR_ID = '777777777777777777';
+const PARENT_AUTHOR_ID = '666666666666666666';
+const PARENT_MESSAGE_ID = '555555555555555555';
+const OTHER_MENTION_ID = '444444444444444444';
 const QUOTED_CREDIT = `> **Shared by <@${AUTHOR_ID}>**`;
 const YOUTUBE_ID = 'dQw4w9WgXcQ';
 const YOUTUBE_STATS: YouTubeStatistics = { viewCount: '12', likeCount: '0', commentCount: '3',
@@ -89,6 +92,16 @@ test('quoted layout preserves complex whitespace without trimming or reordering'
     const rewritten = rewriteSocialLinks(body);
     assert.equal(formatLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
   }
+});
+
+test('reply attribution distinguishes the sharer and referenced author and labels the message link', () => {
+  const url = `https://discord.com/channels/987654321098765432/${CHANNEL_ID}/${PARENT_MESSAGE_ID}`;
+  const body = 'Context https://fixupx.com/user/status/1';
+  assert.equal(formatLinkRepost(body, AUTHOR_ID, url, PARENT_AUTHOR_ID),
+    `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](${url}))\n> Context\nhttps://fixupx.com/user/status/1`);
+  assert.equal(formatLinkRepost(body, AUTHOR_ID, url),
+    `${QUOTED_CREDIT} (reply to [message](${url}))\n> Context\nhttps://fixupx.com/user/status/1`);
+  assert.equal(formatLinkRepost(body, AUTHOR_ID, undefined, PARENT_AUTHOR_ID), formatLinkRepost(body, AUTHOR_ID));
 });
 
 test('rewrites links while preserving text, punctuation, paths and fragments, and dropping queries', () => {
@@ -272,6 +285,9 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     warn: (...args: unknown[]) => { logs.push(args); },
     error: (...args: unknown[]) => { logs.push(args); } };
   const permissions = new PermissionsBitField(PermissionsBitField.All);
+  const referenceLookup = { calls: 0, fetch: async (): Promise<{
+    id: string; channelId: string; guildId: string | null; author: { id: string };
+  }> => { throw { code: 10008 }; } };
   const replacement = {
     id: 'replacement-1', attachments: new Collection<string, Attachment>(),
     embeds: [] as { toJSON(): APIEmbed }[],
@@ -288,7 +304,9 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     stickers: new Collection<string, unknown>(), components: [] as unknown[],
     messageSnapshots: new Collection<string, unknown>(),
     flags: new MessageFlagsBitField(), attachments: new Collection<string, Attachment>(),
-    reference: null as { messageId: string; channelId?: string } | null,
+    reference: null as { messageId: string; channelId?: string; guildId?: string } | null,
+    mentions: { repliedUser: null as { id: string } | null, users: new Collection<string, { id: string }>() },
+    fetchReference: async () => { referenceLookup.calls++; return referenceLookup.fetch(); },
     deletable: true,
     inGuild: () => true,
     channel: {
@@ -314,7 +332,7 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     delete: async () => { events.push('delete original'); },
   };
   const handler = createLinkRepostHandler(CHANNEL_ID, log, undefined, { translateTweet });
-  return { source, replacement, handler, log, logs, permissions, events, sent,
+  return { source, replacement, handler, log, logs, permissions, events, sent, referenceLookup,
     run: () => handler(source as unknown as Message) };
 }
 
@@ -337,10 +355,162 @@ test('retains reply context in attribution without replying to the original', as
   f.source.type = MessageType.Reply;
   f.source.reference = { messageId: 'parent-1' };
   await f.run();
-  assert.match(f.sent[0].content!, /reply to https:\/\/discord.com\/channels\/987654321098765432\/123456789012345678\/parent-1/);
+  assert.ok(f.sent[0].content!.includes(`reply to [message](https://discord.com/channels/987654321098765432/${CHANNEL_ID}/parent-1)`));
   assert.ok(f.sent[0].content?.startsWith(`${QUOTED_CREDIT} (reply to `));
   assert.ok(f.sent[0].content?.includes('\n> Look\nhttps://fixupx.com/'));
   assert.equal(f.sent[0].reply, undefined);
+});
+
+test('reference lookup attributes the parent author instead of the sharer or another mentioned user', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.source.content = `<@${OTHER_MENTION_ID}> Look https://x.com/user/status/1`;
+  f.source.mentions.users.set(OTHER_MENTION_ID, { id: OTHER_MENTION_ID });
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID } });
+  await f.run();
+  assert.equal(f.referenceLookup.calls, 1);
+  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · ` +
+    `[message](https://discord.com/channels/${f.source.guildId}/${CHANNEL_ID}/${PARENT_MESSAGE_ID}))`);
+  assert(f.sent[0].content!.includes(`<@${OTHER_MENTION_ID}> Look`));
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.equal(f.sent[0].reply, undefined);
+  assert(f.events.includes('delete original'));
+});
+
+test('Discord’s known repliedUser author avoids a reference lookup without using arbitrary mentions', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+  f.source.mentions.users.set(OTHER_MENTION_ID, { id: OTHER_MENTION_ID });
+  f.referenceLookup.fetch = async () => assert.fail('Known reference author should not need a request');
+  await f.run();
+  assert.equal(f.referenceLookup.calls, 0);
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+});
+
+test('reply mode retains parent attribution while replying to the sharer without notifications', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID } });
+  f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.ManageMessages);
+  f.source.deletable = false;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    serverPreferences: () => ({ mode: 'reply' }),
+  })(f.source as unknown as Message);
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+  assert.deepEqual(f.sent[0].reply, { messageReference: f.source.id, failIfNotExists: true });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert(!f.events.includes('delete original'));
+});
+
+test('deleted or inaccessible references preserve the labeled link and continue fixing the source', async () => {
+  for (const code of [10008, 50001, 50013]) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.referenceLookup.fetch = async () => { throw { code }; };
+    await f.run();
+    assert.equal(f.referenceLookup.calls, 1);
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`));
+    assert(f.sent[0].content!.includes('https://fixupx.com/user/status/1'));
+    assert(f.events.includes('delete original'));
+  }
+});
+
+test('a stalled reference lookup times out after 1500ms and contains a late rejection', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  let rejectReference!: (reason: Error) => void;
+  f.referenceLookup.fetch = () => new Promise((_resolve, reject) => { rejectReference = reject; });
+  const run = f.run();
+  assert.equal(f.referenceLookup.calls, 1);
+  t.mock.timers.tick(1499);
+  assert.equal(f.sent.length, 0);
+  t.mock.timers.tick(1);
+  await run;
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`));
+  assert(f.events.includes('delete original'));
+  rejectReference(new Error('The timed-out reference request failed later'));
+  await new Promise<void>(resolve => { setImmediate(resolve); });
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.events.filter(event => event === 'delete original').length, 1);
+});
+
+test('a message without a reference never fetches or invents a parent author', async () => {
+  const f = fixture();
+  f.source.mentions.users.set(OTHER_MENTION_ID, { id: OTHER_MENTION_ID });
+  f.referenceLookup.fetch = async () => assert.fail('No parent reference was supplied');
+  await f.run();
+  assert.equal(f.referenceLookup.calls, 0);
+  assert.equal(f.sent[0].content!.split('\n')[0], QUOTED_CREDIT);
+});
+
+test('cross-channel attribution uses the exact referenced channel and same-guild author', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID, channelId: SECOND_CHANNEL_ID, guildId: f.source.guildId };
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: SECOND_CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID } });
+  await f.run();
+  assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · ` +
+    `[message](https://discord.com/channels/${f.source.guildId}/${SECOND_CHANNEL_ID}/${PARENT_MESSAGE_ID}))`);
+});
+
+test('mismatched reference messages and invalid author IDs cannot supply attribution', async () => {
+  for (const mismatch of ['message', 'channel', 'guild', 'author'] as const) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.referenceLookup.fetch = async () => ({
+      id: mismatch === 'message' ? f.source.id : PARENT_MESSAGE_ID,
+      channelId: mismatch === 'channel' ? SECOND_CHANNEL_ID : CHANNEL_ID,
+      guildId: mismatch === 'guild' ? '887654321098765432' : f.source.guildId,
+      author: { id: mismatch === 'author' ? 'not-a-discord-id' : PARENT_AUTHOR_ID },
+    });
+    await f.run();
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`), mismatch);
+  }
+});
+
+test('a declared cross-guild reference cannot provide a known or fetched parent author', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID, guildId: '887654321098765432' };
+  f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+  f.referenceLookup.fetch = async () => assert.fail('Cross-guild author lookup is not allowed');
+  await f.run();
+  assert.equal(f.referenceLookup.calls, 0);
+  assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to [message](`));
+});
+
+for (const refresh of [false, true]) test(`a source edit during reference lookup cancels ${refresh ? 'refresh' : 'initial delivery'} before sending`, async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  let begin!: () => void;
+  const started = new Promise<void>(resolve => { begin = resolve; });
+  let finish!: () => void;
+  const waiting = new Promise<void>(resolve => { finish = resolve; });
+  f.referenceLookup.fetch = async () => {
+    begin(); await waiting;
+    return { id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID, guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID } };
+  };
+  const run = f.handler(f.source as unknown as Message, { refresh });
+  await started;
+  f.source.content = 'An edited source https://x.com/user/status/2';
+  f.source.editedTimestamp = Date.now();
+  finish();
+  assert.equal(await run, refresh ? 'retry' : undefined);
+  assert.equal(f.sent.length, 0);
+  assert(!f.events.includes('delete original'));
 });
 
 test('reply mode preserves the original, references it, and never notifies mentions', async () => {
@@ -567,7 +737,7 @@ test('one handler processes two exact channels in different guilds and ignores u
   assert.deepEqual(first.events, ['send', 'fetch', 'delete original']);
   assert.deepEqual(second.events, ['send', 'fetch', 'delete original']);
   assert.deepEqual(unrelated.events, []);
-  assert.ok(second.sent[0].content?.includes(`reply to https://discord.com/channels/887654321098765432/${SECOND_CHANNEL_ID}/parent-2`));
+  assert.ok(second.sent[0].content?.includes(`reply to [message](https://discord.com/channels/887654321098765432/${SECOND_CHANNEL_ID}/parent-2)`));
 });
 
 test('both configured channels use the same quoted layout', async () => {
@@ -719,6 +889,30 @@ test('the 2000-character limit includes credit and every quote prefix', async ()
   oversized.source.content = `First line\n${padding}a\nhttps://x.com/a/status/1`;
   await oversized.run();
   assert.deepEqual(oversized.events, []);
+});
+
+test('the longer reply-author attribution is included in the message-size limit', async () => {
+  const replyUrl = `https://discord.com/channels/987654321098765432/${CHANNEL_ID}/${PARENT_MESSAGE_ID}`;
+  const fixed = 'https://fixupx.com/user/status/1';
+  const attribution = `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](${replyUrl}))`;
+  const padding = 'a'.repeat(2000 - `${attribution}\n> \n${fixed}`.length);
+  for (const excess of ['', 'a']) {
+    const f = fixture();
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+    f.source.content = `${padding}${excess}\nhttps://x.com/user/status/1`;
+    assert(formatLinkRepost(rewriteSocialLinks(f.source.content), AUTHOR_ID, replyUrl).length < 2000,
+      'the same message would fit without the newly added author attribution');
+    await f.run();
+    if (!excess) {
+      assert.equal(f.sent[0].content!.length, 2000);
+      assert(f.events.includes('delete original'));
+    } else {
+      assert.equal(f.sent.length, 0);
+      assert(!f.events.includes('delete original'));
+    }
+  }
 });
 
 for (const [name, change] of Object.entries({
@@ -940,6 +1134,20 @@ const JAPANESE: TweetTranslation = {
   author: { name: 'Nintendo (@Nintendo)', url: 'https://x.com/Nintendo' },
   photos: [], hasMedia: false, hasVideo: false,
 };
+
+test('translated cards and video captions retain the sharer and referenced author without notifications', async () => {
+  for (const hasVideo of [false, true]) {
+    const f = fixture(async () => ({ ...JAPANESE, hasVideo, hasMedia: hasVideo }));
+    f.source.type = MessageType.Reply;
+    f.source.reference = { messageId: PARENT_MESSAGE_ID };
+    f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
+    await f.run();
+    assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}> · [message](`));
+    if (hasVideo) assert(f.sent[0].content!.includes(JAPANESE.text));
+    else assert.equal((f.sent[0].embeds![0] as APIEmbed).description, JAPANESE.text);
+    assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  }
+});
 
 test('text-only translation replaces the native card with English and a small footer', async () => {
   const f = fixture(async () => JAPANESE);

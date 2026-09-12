@@ -27,6 +27,7 @@ import { splitDescription, translationAttachment, translationCaption, translatio
 const MAX_CONTENT_LENGTH = 2_000;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
+const REPLY_AUTHOR_TIMEOUT_MS = 1_500;
 const RECENT_MESSAGE_LIMIT = 1_000;
 const DISCORD_ID = /^[1-9]\d{16,19}$/;
 
@@ -84,8 +85,9 @@ export function repostControls(original: string, { retry = false, remove = true 
 }
 
 /** Quote plain leading context without pulling apart existing Markdown or URLs. */
-export function formatLinkRepost(content: string, authorId: string, replyUrl?: string): string {
-  const credit = `> **Shared by <@${authorId}>**${replyUrl ? ` (reply to ${replyUrl})` : ''}`;
+export function formatLinkRepost(content: string, authorId: string, replyUrl?: string, replyAuthorId?: string): string {
+  const reply = replyUrl ? ` (reply to ${replyAuthorId ? `<@${replyAuthorId}> · ` : ''}[message](${replyUrl}))` : '';
+  const credit = `> **Shared by <@${authorId}>**${reply}`;
   const fallback = `${credit}\n${content}`;
   // Start at the first URL, even if it is unrelated to X. Never extract a nested URL.
   const firstUrl = /[a-z][a-z\d+.-]*:\/\//i.exec(content);
@@ -252,6 +254,29 @@ function sourceVersion(message: Message): string {
   });
 }
 
+/** Resolve attribution from Discord's reply metadata, without delaying preview delivery on lookup failure. */
+async function findReplyAuthor(message: Message): Promise<string | undefined> {
+  const { messageId, channelId = message.channelId, guildId = message.guildId } = message.reference ?? {};
+  if (!messageId || guildId !== message.guildId) return;
+  const knownAuthor = message.mentions?.repliedUser?.id;
+  if (knownAuthor && DISCORD_ID.test(knownAuthor)) return knownAuthor;
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const parent = await Promise.race([
+      message.fetchReference(),
+      new Promise<undefined>(resolve => { timeout = setTimeout(() => resolve(undefined), REPLY_AUTHOR_TIMEOUT_MS); }),
+    ]);
+    const authorId = parent?.author?.id;
+    return parent?.id === messageId && parent.channelId === channelId && parent.guildId === guildId &&
+      authorId && DISCORD_ID.test(authorId) ? authorId : undefined;
+  } catch {
+    return;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
@@ -323,9 +348,9 @@ export function createLinkRepostHandler(
 
       // IDs provide unambiguous credit without interpolating user-controlled display names.
       const replyUrl = message.reference?.messageId
-        ? `https://discord.com/channels/${message.guildId}/${message.reference.channelId ?? channelId}/${message.reference.messageId}`
+        ? `https://discord.com/channels/${message.reference.guildId ?? message.guildId}/${message.reference.channelId ?? channelId}/${message.reference.messageId}`
         : undefined;
-      // Discord can mutate this cached message while a language lookup is pending.
+      // Discord can mutate this cached message while a metadata lookup is pending.
       const version = sourceVersion(message);
       let youtube = new Map<string, YouTubeStatistics>();
       const youtubeDisplay = preferences.youtubeDisplay ?? 'counts-and-comment';
@@ -335,7 +360,9 @@ export function createLinkRepostHandler(
       }
       // Preview-only keeps Discord's already-native YouTube message untouched.
       if (rewritten === message.content && !youtube.size) return;
-      const body = formatLinkRepost(rewritten, message.author.id, replyUrl);
+      const replyAuthorId = replyUrl ? await findReplyAuthor(message) : undefined;
+      if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
+      const body = formatLinkRepost(rewritten, message.author.id, replyUrl, replyAuthorId);
       const translated = translateTweet && preferences.translateTweets !== false && activePlatforms.includes('x') &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
         ? await translateRepost(message.content, activePlatforms, translateTweet,
@@ -348,7 +375,7 @@ export function createLinkRepostHandler(
         const video = parseYouTubeUrl(url);
         return video && youtube.has(video.id) && visibleLink(translated.content, position) ? video.url : url;
       });
-      const formatted = formatLinkRepost(canonical, message.author.id, replyUrl);
+      const formatted = formatLinkRepost(canonical, message.author.id, replyUrl, replyAuthorId);
       let content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
       const youtubeCards = youtubeLinks.filter(link => youtube.has(link.id))
         .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url, youtubeDisplay))
