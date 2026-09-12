@@ -122,6 +122,23 @@ test('expired command replies are logged without sending another reply', async (
   assert.equal(errors.length, 1);
 });
 
+test('failed private button replies never log webhook tokens or response contents', async () => {
+  const { client, errors } = fixture();
+  const failure = Object.assign(new Error('private-response-secret'), { code: 10062, status: 404,
+    url: 'https://discord.com/api/webhooks/application/private-response-secret',
+    requestBody: { json: { embeds: [{ description: 'private-comment-secret' }] } },
+  });
+  client.emit(Events.InteractionCreate, {
+    isButton: () => true, isChatInputCommand: () => false,
+    customId: 'linky:yt:stats:dQw4w9WgXcQ', guildId: null,
+    reply: async () => { throw failure; },
+  } as unknown as Interaction);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(errors.length, 1);
+  assert(!JSON.stringify(errors).includes('secret'));
+  assert(!JSON.stringify(errors).includes('webhooks'));
+});
+
 test('registration replaces the entire global command list with /help, /setup and /settings', async () => {
   const calls: unknown[] = [];
   await registerCommands({

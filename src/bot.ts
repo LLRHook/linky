@@ -10,6 +10,7 @@ import { createLinkRepostHandler } from './services/SocialLinkService';
 import { fetchTweetTranslation } from './services/TweetTranslation';
 import { createYouTubeLookup } from './services/YouTube';
 import { YouTubeStats } from './services/YouTubeStats';
+import { replyToYouTubeControl } from './services/YouTubeInteractions';
 
 export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
   servers = new ServerSettings(settings.settingsPath)): Client {
@@ -20,6 +21,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     ],
   });
   let youtubeStats: YouTubeStats | undefined;
+  const lookupYouTube = settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined;
   const destroy = client.destroy.bind(client);
   client.destroy = async () => { youtubeStats?.stop(); await destroy(); };
 
@@ -29,10 +31,8 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     serverIds: settings.serverIds,
     platforms: settings.rewritePlatforms,
     translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
-    lookupYouTube: settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined,
-    publishYouTube: (message, embeds) => message.channel.isSendable() && youtubeStats
-      ? youtubeStats.publish({ id: message.id, channelId: message.channelId, author: message.author,
-        channel: message.channel }, embeds) : Promise.resolve(null),
+    lookupYouTube,
+    publishYouTube: (message, embeds) => youtubeStats?.publish(message, embeds) ?? Promise.resolve(null),
   }));
   log.info({
     channelIds: settings.channelIds,
@@ -42,13 +42,24 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   }, 'Social link replacement ready for configured and opted-in servers');
 
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
     try {
+      if (interaction.isButton?.() && await replyToYouTubeControl(interaction, { stats: youtubeStats, lookup: lookupYouTube,
+          enabled: (guildId, channelId) => settings.rewritePlatforms.includes('youtube') &&
+            servers.getPreferences(guildId).platforms?.youtube !== false &&
+            (servers.get(guildId) ?? (settings.serverIds.includes(guildId) || settings.channelIds.includes(channelId))),
+        })) return;
+      if (!interaction.isChatInputCommand()) return;
       if (interaction.commandName === 'help') await help(interaction, settings, servers);
       else if (interaction.commandName === 'setup') await setup(interaction, servers);
       else if (interaction.commandName === 'settings') await preferences(interaction, settings, servers);
     } catch (err) {
-      log.error({ err, commandName: interaction.commandName }, 'Could not reply to command');
+      // Discord REST errors can contain interaction tokens and private reply bodies.
+      const failure = err as { code?: unknown; status?: unknown } | null;
+      log.error({
+        ...(typeof failure?.code === 'number' ? { code: failure.code } : {}),
+        ...(typeof failure?.status === 'number' ? { status: failure.status } : {}),
+        ...(interaction.isChatInputCommand() ? { commandName: interaction.commandName } : {}),
+      }, 'Could not reply to interaction');
     }
   });
 
@@ -62,7 +73,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         botUserId: readyClient.user.id,
         fetchMessage: async (channelId, messageId) => {
           const channel = await client.channels.fetch(channelId);
-          return channel && 'messages' in channel ? channel.messages.fetch(messageId) : null;
+          return channel && 'messages' in channel ? channel.messages.fetch({ message: messageId, force: true }) : null;
         },
         onError: () => log.warn('YouTube statistics cleanup failed; retained records will be retried'),
       });

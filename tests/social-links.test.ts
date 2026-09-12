@@ -426,7 +426,7 @@ test('a server can disable translation while retaining plain link fixing', async
 });
 
 for (const mode of ['replace', 'reply'] as const) {
-  test(`YouTube sends the native video before a separate statistics card in ${mode} mode`, async () => {
+  test(`YouTube sends the native video before attaching statistics controls in ${mode} mode`, async () => {
     const f = fixture();
     f.source.content = `https://youtu.be/${YOUTUBE_ID}?si=tracking&t=1m30s`;
     let cards: APIEmbed[] = [];
@@ -489,7 +489,7 @@ test('hidden, disabled, inaccessible or unconfigured YouTube links make no API r
   }
 });
 
-test('source edits, deletion and scope changes remove both the stale video and its details card', async () => {
+test('source edits, deletion and scope changes remove the stale video and its statistics controls', async () => {
   for (const change of ['edit', 'delete', 'scope']) {
     const f = fixture(); f.source.content = `https://youtu.be/${YOUTUBE_ID}`;
     let enabled = true;
@@ -521,7 +521,7 @@ test('a long YouTube message still gets details without consuming its content bu
   assert(f.sent[0].content!.includes('a'.repeat(1850)));
 });
 
-test('multiple YouTube cards follow the native links in order and each links to its own video', async () => {
+test('statistics for multiple YouTube videos retain the native link order and video URLs', async () => {
   const f = fixture(); const ids = [YOUTUBE_ID, 'abcdefghijk', '0123456789_'];
   f.source.content = ids.map(id => `https://youtu.be/${id}`).join('\n');
   let cards: APIEmbed[] = [];
