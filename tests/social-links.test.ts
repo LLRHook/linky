@@ -25,7 +25,11 @@ import {
 
 import type { TweetTranslation } from '../src/services/TweetTranslation';
 import type { ServerPreferences } from '../src/services/ServerSettings';
+import { mapLinks } from '../src/services/LinkTokens';
+import { parseProviderUrl } from '../src/services/SocialProviders';
+import { parseYouTubeUrl } from '../src/services/YouTube';
 import type { YouTubeStatistics } from '../src/services/YouTube';
+import type { APIEmbed } from 'discord.js';
 
 const CHANNEL_ID = '123456789012345678';
 const SECOND_CHANNEL_ID = '223456789012345678';
@@ -46,29 +50,29 @@ test('quoted layout places plain leading context above a native URL', () => {
 });
 
 test('quoted layout preserves multiline context and all text after the first URL', () => {
-  const body = 'First line\nSecond line\nhttps://x.com/a\nAfter the first link. https://x.com/b  \n';
+  const body = 'First line\nSecond line\nhttps://x.com/a/status/1\nAfter the first link. https://x.com/b/status/1  \n';
   assert.equal(formatLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
-    `${QUOTED_CREDIT}\n> First line\n> Second line\nhttps://fixupx.com/a\nAfter the first link. https://fixupx.com/b  \n`);
-  assert.equal(formatLinkRepost(rewriteSocialLinks('Compare https://x.com/a with https://x.com/b then decide.'), AUTHOR_ID),
-    `${QUOTED_CREDIT}\n> Compare\nhttps://fixupx.com/a with https://fixupx.com/b then decide.`);
+    `${QUOTED_CREDIT}\n> First line\n> Second line\nhttps://fixupx.com/a/status/1\nAfter the first link. https://fixupx.com/b/status/1  \n`);
+  assert.equal(formatLinkRepost(rewriteSocialLinks('Compare https://x.com/a/status/1 with https://x.com/b/status/1 then decide.'), AUTHOR_ID),
+    `${QUOTED_CREDIT}\n> Compare\nhttps://fixupx.com/a/status/1 with https://fixupx.com/b/status/1 then decide.`);
 });
 
 test('quoted layout preserves an unrelated first URL and nested URLs in its query', () => {
-  const body = 'Read http://example.test/?next=(https://x.com/a) then https://x.com/b';
+  const body = 'Read http://example.test/?next=(https://x.com/a/status/1) then https://x.com/b/status/1';
   assert.equal(formatLinkRepost(rewriteSocialLinks(body), AUTHOR_ID),
-    `${QUOTED_CREDIT}\n> Read\nhttp://example.test/?next=(https://x.com/a) then https://fixupx.com/b`);
+    `${QUOTED_CREDIT}\n> Read\nhttp://example.test/?next=(https://x.com/a/status/1) then https://fixupx.com/b/status/1`);
 });
 
 test('quoted layout leaves existing Markdown and link wrappers intact beneath the credit', () => {
   for (const body of [
-    '**Bold context** https://x.com/a', '_Emphasis_ https://x.com/a',
-    '[Read this](https://x.com/a) and then https://x.com/b',
-    'Code sample:\n```text\nhttps://x.com/a\n```\nAfter the fence.',
-    '`https://x.com/a`', '> Existing quotation\nhttps://x.com/a',
-    '> https://x.com/a', '>>> Existing multiline quotation\nhttps://x.com/a',
-    '||Spoiler https://x.com/a||', 'Read <https://x.com/a>',
-    '- List item\nhttps://x.com/a', '1. Ordered item\nhttps://x.com/a',
-    '# Heading\nhttps://x.com/a', 'Escaped \\*asterisk https://x.com/a',
+    '**Bold context** https://x.com/a/status/1', '_Emphasis_ https://x.com/a/status/1',
+    '[Read this](https://x.com/a/status/1) and then https://x.com/b/status/1',
+    'Code sample:\n```text\nhttps://x.com/a/status/1\n```\nAfter the fence.',
+    '`https://x.com/a/status/1`', '> Existing quotation\nhttps://x.com/a/status/1',
+    '> https://x.com/a/status/1', '>>> Existing multiline quotation\nhttps://x.com/a/status/1',
+    '||Spoiler https://x.com/a/status/1||', 'Read <https://x.com/a/status/1>',
+    '- List item\nhttps://x.com/a/status/1', '1. Ordered item\nhttps://x.com/a/status/1',
+    '# Heading\nhttps://x.com/a/status/1', 'Escaped \\*asterisk https://x.com/a/status/1',
   ]) {
     const rewritten = rewriteSocialLinks(body);
     assert.equal(formatLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
@@ -77,10 +81,10 @@ test('quoted layout leaves existing Markdown and link wrappers intact beneath th
 
 test('quoted layout preserves complex whitespace without trimming or reordering', () => {
   for (const body of [
-    '  Indented context https://x.com/a', 'Context  https://x.com/a',
-    'Context\n\nhttps://x.com/a', 'Context \nhttps://x.com/a',
-    'Context\t https://x.com/a', 'Context\r\nhttps://x.com/a',
-    'Context\u00a0https://x.com/a', '\nhttps://x.com/a',
+    '  Indented context https://x.com/a/status/1', 'Context  https://x.com/a/status/1',
+    'Context\n\nhttps://x.com/a/status/1', 'Context \nhttps://x.com/a/status/1',
+    'Context\t https://x.com/a/status/1', 'Context\r\nhttps://x.com/a/status/1',
+    'Context\u00a0https://x.com/a/status/1', '\nhttps://x.com/a/status/1',
   ]) {
     const rewritten = rewriteSocialLinks(body);
     assert.equal(formatLinkRepost(rewritten, AUTHOR_ID), `${QUOTED_CREDIT}\n${rewritten}`, body);
@@ -92,21 +96,21 @@ test('rewrites links while preserving text, punctuation, paths and fragments, an
     '<https://x.com/u/status/2> and https://x.com.\nKeep @everyone and **text**.';
   assert.equal(rewriteSocialLinks(original),
     'See [this](https://fixupx.com/user/status/1#part), ' +
-    '<https://fixupx.com/u/status/2> and https://fixupx.com.\nKeep @everyone and **text**.');
-  assert.equal(rewriteSocialLinks('[a](https://x.com/a)[b](https://x.com/b)'),
-    '[a](https://fixupx.com/a)[b](https://fixupx.com/b)');
+    '<https://x.com/u/status/2> and https://x.com.\nKeep @everyone and **text**.');
+  assert.equal(rewriteSocialLinks('[a](https://x.com/a/status/1)[b](https://x.com/b/status/1)'),
+    '[a](https://fixupx.com/a/status/1)[b](https://fixupx.com/b/status/1)');
 });
 
 test('strips the tracking query string, including any share params or nested URLs within it', () => {
   const original = 'https://x.com/venturetwins/status/2097769059937047002?s=46&t=JnU-mg-_ruRIqJJQHP3cxg';
   assert.equal(rewriteSocialLinks(original), 'https://fixupx.com/venturetwins/status/2097769059937047002');
-  for (const nested of ['(https://x.com/a)', '[https://x.com/a]', '{https://x.com/a}', '([https://x.com/a])']) {
-    assert.equal(rewriteSocialLinks(`https://x.com/a?url=${nested}`), 'https://fixupx.com/a');
+  for (const nested of ['(https://x.com/a/status/1)', '[https://x.com/a/status/1]', '{https://x.com/a/status/1}', '([https://x.com/a/status/1])']) {
+    assert.equal(rewriteSocialLinks(`https://x.com/a/status/1?url=${nested}`), 'https://fixupx.com/a/status/1');
     // A query on an unrelated host is untouched — only x.com links have their query dropped.
     assert.equal(rewriteSocialLinks(`https://other.test/?url=${nested}`), `https://other.test/?url=${nested}`);
   }
-  assert.equal(rewriteSocialLinks('[a](https://x.com/a?x=(https://x.com/b))[b](https://x.com/c)'),
-    '[a](https://fixupx.com/a)[b](https://fixupx.com/c)');
+  assert.equal(rewriteSocialLinks('[a](https://x.com/a/status/1?x=(https://x.com/b/status/1))[b](https://x.com/c/status/1)'),
+    '[a](https://fixupx.com/a/status/1)[b](https://fixupx.com/c/status/1)');
 });
 
 test('preserves question marks in fragments when stripping queries', () => {
@@ -128,7 +132,7 @@ test('preserves surrounding punctuation after stripped share queries', () => {
 });
 
 test('preserves closing Markdown around links when stripping queries', () => {
-  for (const marker of ['*', '**', '***', '_', '__', '~~', '||']) {
+  for (const marker of ['*', '**', '***', '_', '__', '~~']) {
     for (const context of ['', 'Read ']) {
       assert.equal(rewriteSocialLinks(`${marker}${context}https://x.com/u/status/1?s=20${marker}.`),
         `${marker}${context}https://fixupx.com/u/status/1${marker}.`);
@@ -146,7 +150,7 @@ test('does not preserve query punctuation as Markdown without an unmatched opene
   assert.equal(rewriteSocialLinks('https://x.com/u/status/1?t=abc_'),
     'https://fixupx.com/u/status/1');
   assert.equal(rewriteSocialLinks('**Read https://x.com/u/status/1?t=abc\\**'),
-    '**Read https://fixupx.com/u/status/1');
+    '**Read https://x.com/u/status/1?t=abc\\**');
 });
 
 for (const url of [
@@ -154,9 +158,9 @@ for (const url of [
   'https://x.com@evil.test/a', 'https://evil@x.com/a',
   'https://x.com:443/a', 'https://x.com:8443/a', 'https://x.com./a',
   'https://х.com/a', 'https://x．com/a', 'https://x.com\\@evil.test',
-  'http://x.com/a', 'ftp://x.com/a', 'x.com/a', 'https://fixupx.com/a',
-  'https://other.test/?url=https://x.com/a',
-  'http://other.test/?url=https://x.com/a',
+  'http://x.com/a', 'ftp://x.com/a', 'x.com/a', 'https://fixupx.com/a/status/1',
+  'https://other.test/?url=https://x.com/a/status/1',
+  'http://other.test/?url=https://x.com/a/status/1',
   // Instagram and TikTok inherit the same authority rules.
   'https://instagram.com.evil/p/abc', 'https://evil@instagram.com/p/abc',
   'https://instagram.com@evil.test/p/abc', 'https://instagram.com:443/p/abc',
@@ -217,8 +221,8 @@ test('platform names select which hosts are rewritten', () => {
 });
 
 test('platform configuration defaults to every platform and rejects unknown names', () => {
-  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube']);
-  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube']);
+  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch']);
+  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch']);
   assert.deepEqual(parseRewritePlatforms(' tiktok , x '), ['tiktok', 'x']);
   assert.deepEqual(parseRewritePlatforms('x,x'), ['x']);
   for (const invalid of ['twitter', 'x,', ',x', 'x,,tiktok', 'X', 'all']) {
@@ -270,6 +274,8 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
   const permissions = new PermissionsBitField(PermissionsBitField.All);
   const replacement = {
     id: 'replacement-1', attachments: new Collection<string, Attachment>(),
+    embeds: [] as { toJSON(): APIEmbed }[],
+    fetch: async () => replacement,
     delete: async () => { events.push('delete replacement'); },
   };
   const source = {
@@ -293,6 +299,14 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
         const originals = [...source.attachments.values()];
         replacement.attachments = new Collection((options.files ?? []).map((_, index) =>
           [`uploaded-${index}`, originals[index] ?? makeAttachment({ name: 'translation.txt' })]));
+        replacement.embeds = [];
+        mapLinks(options.content ?? '', url => {
+          if (parseProviderUrl(url) || parseYouTubeUrl(url)) replacement.embeds.push({
+            toJSON: () => ({ url, title: 'Post preview', description: 'Post text', video: { url: 'https://cdn.example/video.mp4' } }),
+          });
+          return url;
+        });
+        for (const embed of options.embeds ?? []) replacement.embeds.push({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed });
         return replacement;
       },
     },
@@ -379,13 +393,13 @@ test('reply mode removes a stale reply when the source changes', async () => {
 
 test('server platform choices take effect without overriding operator disables or channel scope', async () => {
   for (const [platforms, preferences, scoped, expected] of [
-    [['instagram', 'x'], { platforms: { instagram: false } }, true, 'https://instagram.com/p/abc/ https://fixupx.com/a'],
-    [['x'], { platforms: { instagram: true } }, true, 'https://instagram.com/p/abc/ https://fixupx.com/a'],
+    [['instagram', 'x'], { platforms: { instagram: false } }, true, 'https://instagram.com/p/abc/ https://fixupx.com/a/status/1'],
+    [['x'], { platforms: { instagram: true } }, true, 'https://instagram.com/p/abc/ https://fixupx.com/a/status/1'],
     [['instagram', 'x'], { mode: 'reply' }, false, undefined],
     [['instagram'], { platforms: { instagram: false } }, true, undefined],
   ] as const) {
     const f = fixture();
-    f.source.content = 'https://instagram.com/p/abc/ https://x.com/a';
+    f.source.content = 'https://instagram.com/p/abc/ https://x.com/a/status/1';
     await createLinkRepostHandler(scoped ? CHANNEL_ID : [], f.log, undefined, {
       platforms, serverPreferences: () => preferences,
     })(f.source as unknown as Message);
@@ -425,22 +439,28 @@ test('a server can disable translation while retaining plain link fixing', async
 });
 
 for (const mode of ['replace', 'reply'] as const) {
-  test(`YouTube adds counts and a comment beside a native video in ${mode} mode`, async () => {
+  test(`YouTube sends the native video before a separate statistics card in ${mode} mode`, async () => {
     const f = fixture();
     f.source.content = `https://youtu.be/${YOUTUBE_ID}?si=tracking&t=1m30s`;
-    let suffix = '';
+    let cards: APIEmbed[] = [];
     await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
       serverPreferences: () => ({ mode }),
       lookupYouTube: async ids => { assert.deepEqual(ids, [YOUTUBE_ID]); return new Map([[YOUTUBE_ID, YOUTUBE_STATS]]); },
-      publishYouTube: async (_message, value) => { f.events.push('stats'); suffix = value; return true; },
+      publishYouTube: async (_message, value) => {
+        f.events.push('stats'); cards = value;
+        return { remove: async () => { f.events.push('delete stats'); } };
+      },
     })(f.source as unknown as Message);
     assert.deepEqual(f.events, ['send', 'stats', 'fetch', ...(mode === 'replace' ? ['delete original'] : [])]);
     assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://www.youtube.com/watch?v=${YOUTUBE_ID}&t=90`);
     assert.equal(f.sent[0].embeds, undefined);
-    assert.match(suffix, /12 views/);
-    assert.match(suffix, /0 likes/);
-    assert.match(suffix, /3 comments/);
-    assert.match(suffix, /A useful video/);
+    assert.deepEqual(cards[0].fields, [
+      { name: 'Views', value: '**12**', inline: true },
+      { name: 'Likes', value: '**0**', inline: true },
+      { name: 'Comments', value: '**3**', inline: true },
+      { name: 'Top comment', value: 'A useful video.\n\nBy Viewer', inline: false },
+    ]);
+    assert.equal(cards[0].url, `https://www.youtube.com/watch?v=${YOUTUBE_ID}&t=90`);
   });
 }
 
@@ -452,7 +472,7 @@ test('YouTube leaves its original alone when lookup or durable publication fails
         if (failure === 'lookup') throw new Error('Unavailable');
         return failure === 'empty' ? new Map() : new Map([[YOUTUBE_ID, YOUTUBE_STATS]]);
       },
-      publishYouTube: async () => false,
+      publishYouTube: async () => null,
     })(f.source as unknown as Message);
     assert.deepEqual(f.events, failure === 'publish' ? ['send', 'delete replacement'] : []);
   }
@@ -482,22 +502,49 @@ test('hidden, disabled, inaccessible or unconfigured YouTube links make no API r
   }
 });
 
-test('a source edit during YouTube publication removes only the stale repost', async () => {
-  const f = fixture(); f.source.content = `https://youtu.be/${YOUTUBE_ID}`;
-  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
-    lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
-    publishYouTube: async () => { f.source.content = 'Edited while posting'; return true; },
-  })(f.source as unknown as Message);
-  assert.deepEqual(f.events, ['send', 'fetch', 'delete replacement']);
+test('source edits, deletion and scope changes remove both the stale video and its details card', async () => {
+  for (const change of ['edit', 'delete', 'scope']) {
+    const f = fixture(); f.source.content = `https://youtu.be/${YOUTUBE_ID}`;
+    let enabled = true;
+    if (change === 'delete') f.source.fetch = async () => {
+      f.events.push('fetch'); throw Object.assign(new Error('Unknown message'), { code: 10008 });
+    };
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+      serverEnabled: () => enabled,
+      lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
+      publishYouTube: async () => {
+        if (change === 'edit') f.source.content = 'Edited while posting';
+        if (change === 'scope') enabled = false;
+        return { remove: async () => { f.events.push('delete stats'); } };
+      },
+    })(f.source as unknown as Message);
+    assert.deepEqual(f.events, ['send', 'fetch', 'delete stats', 'delete replacement'], change);
+  }
 });
 
-test('a YouTube message too long for statistics stays intact', async () => {
+test('a long YouTube message still gets details without consuming its content budget', async () => {
   const f = fixture(); f.source.content = 'a'.repeat(1850) + ` https://youtu.be/${YOUTUBE_ID}`;
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
     lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
-    publishYouTube: async () => assert.fail('No space for statistics'),
+    publishYouTube: async () => {
+      f.events.push('stats'); return { remove: async () => { f.events.push('delete stats'); } };
+    },
   })(f.source as unknown as Message);
-  assert.deepEqual(f.events, []);
+  assert.deepEqual(f.events, ['send', 'stats', 'fetch', 'delete original']);
+  assert(f.sent[0].content!.includes('a'.repeat(1850)));
+});
+
+test('multiple YouTube cards follow the native links in order and each links to its own video', async () => {
+  const f = fixture(); const ids = [YOUTUBE_ID, 'abcdefghijk', '0123456789_'];
+  f.source.content = ids.map(id => `https://youtu.be/${id}`).join('\n');
+  let cards: APIEmbed[] = [];
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    lookupYouTube: async () => new Map(ids.map(id => [id, YOUTUBE_STATS])),
+    publishYouTube: async (_message, values) => { cards = values; return { remove: async () => {} }; },
+  })(f.source as unknown as Message);
+  assert.deepEqual(cards.map(card => card.url), ids.map(id => `https://www.youtube.com/watch?v=${id}`));
+  assert.equal(f.sent[0].embeds, undefined);
+  assert(!f.sent[0].content?.includes('Top comment'));
 });
 
 test('one handler processes two exact channels in different guilds and ignores unrelated channels', async () => {
@@ -658,18 +705,18 @@ test('overlapping channel and server scopes produce only one repost', async () =
 });
 
 test('the 2000-character limit includes credit and every quote prefix', async () => {
-  const url = 'https://fixupx.com/a';
+  const url = 'https://fixupx.com/a/status/1';
   const fixedText = `${QUOTED_CREDIT}\n> First line\n> \n${url}`;
   const padding = 'a'.repeat(2000 - fixedText.length);
   const fitting = fixture();
-  fitting.source.content = `First line\n${padding}\nhttps://x.com/a`;
+  fitting.source.content = `First line\n${padding}\nhttps://x.com/a/status/1`;
   await fitting.run();
   assert.deepEqual(fitting.events, ['send', 'fetch', 'delete original']);
   assert.equal(fitting.sent[0].content?.length, 2000);
   assert.equal(fitting.sent[0].content, `${QUOTED_CREDIT}\n> First line\n> ${padding}\n${url}`);
 
   const oversized = fixture();
-  oversized.source.content = `First line\n${padding}a\nhttps://x.com/a`;
+  oversized.source.content = `First line\n${padding}a\nhttps://x.com/a/status/1`;
   await oversized.run();
   assert.deepEqual(oversized.events, []);
 });
@@ -818,12 +865,12 @@ test('a link warning flag update does not hide a real content edit', async () =>
 test('a failed final fetch never deletes the original', async () => {
   const f = fixture();
   f.source.fetch = async () => { f.events.push('fetch failed'); throw new Error('Not found'); };
-  await f.run(); assert.deepEqual(f.events, ['send', 'fetch failed']);
+  await f.run(); assert.deepEqual(f.events, ['send', 'fetch failed', 'delete replacement']);
 });
 
 test('preserves suppressed embed preference', async () => {
   const f = fixture(); f.source.flags.add(MessageFlags.SuppressEmbeds);
-  await f.run(); assert.equal(f.sent[0].flags, MessageFlags.SuppressEmbeds);
+  await f.run(); assert.deepEqual(f.sent, []);
 });
 
 test('downloads and reuploads attachment bytes and metadata before deleting', async () => {
@@ -873,7 +920,7 @@ test('an attachment omitted from Discord response prevents deletion', async () =
   f.source.channel.send = async (options) => { f.events.push('send'); f.sent.push(options); return f.replacement; };
   const handler = createLinkRepostHandler(CHANNEL_ID, f.log, async () => new AttachmentBuilder(Buffer.from('abc')));
   await handler(f.source as unknown as Message);
-  assert.deepEqual(f.events, ['send']);
+  assert.deepEqual(f.events, ['send', 'delete replacement']);
 });
 
 test('removes a stale repost if the original was deleted during upload', async () => {
@@ -969,22 +1016,20 @@ test('suppressed, code and spoiler links never expose translated text', async ()
     const f = fixture(async () => { assert.fail('hidden link lookup'); });
     f.source.content = content;
     await f.run();
-    assert.equal(f.sent[0].embeds, undefined);
-    assert.doesNotMatch(f.sent[0].content!, /Translated from/);
+    assert.deepEqual(f.sent, []);
   }
   const f = fixture(async () => { assert.fail('suppressed message lookup'); });
   f.source.flags.add(MessageFlags.SuppressEmbeds);
   await f.run();
-  assert.equal(f.sent[0].embeds, undefined);
-  assert.equal(f.sent[0].flags, MessageFlags.SuppressEmbeds);
+  assert.deepEqual(f.sent, []);
 });
 
-test('existing fixer URLs, nested URLs and path modifiers do not request translations', async () => {
+test('existing fixer and nested URLs stay untouched while valid media paths translate', async () => {
   const calls: string[] = [];
   const f = fixture(async (id) => { calls.push(id); return JAPANESE; });
   f.source.content = 'https://x.com/user/status/123 https://fixupx.com/user/status/456 https://other.test/?next=https://x.com/user/status/789 https://x.com/user/status/999/photo/1';
   await f.run();
-  assert.deepEqual(calls, ['123']);
+  assert.deepEqual(calls, ['123', '999']);
   assert.match(f.sent[0].content!, /https:\/\/fixupx.com\/user\/status\/456/);
   assert.match(f.sent[0].content!, /next=https:\/\/x.com\/user\/status\/789/);
 });

@@ -8,6 +8,9 @@ export interface ServerPreferences {
   mode?: 'replace' | 'reply';
   platforms?: Partial<Record<RewritePlatform, boolean>>;
   translateTweets?: boolean;
+  /** Additional channel restriction; absent inherits scope, empty disables every channel. */
+  channelIds?: string[];
+  youtubeDisplay?: 'preview' | 'counts' | 'counts-and-comment';
 }
 
 type ServerRecord = ServerPreferences & { enabled?: boolean };
@@ -19,7 +22,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
-  const fields = ['mode', 'platforms', 'translateTweets', ...(allowEnabled ? ['enabled'] : [])];
+  const fields = ['mode', 'platforms', 'translateTweets', 'channelIds', 'youtubeDisplay', ...(allowEnabled ? ['enabled'] : [])];
   if (!isRecord(value) || Reflect.ownKeys(value).some(key => typeof key !== 'string' || !fields.includes(key))) {
     throw new Error('Unknown server preference fields.');
   }
@@ -35,6 +38,20 @@ function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
   if (Object.hasOwn(value, 'translateTweets')) {
     if (typeof value.translateTweets !== 'boolean') throw new Error('Tweet translation must be a boolean.');
     result.translateTweets = value.translateTweets;
+  }
+  if (Object.hasOwn(value, 'youtubeDisplay')) {
+    if (value.youtubeDisplay !== 'preview' && value.youtubeDisplay !== 'counts' && value.youtubeDisplay !== 'counts-and-comment') {
+      throw new Error('YouTube display must be preview, counts, or counts-and-comment.');
+    }
+    result.youtubeDisplay = value.youtubeDisplay;
+  }
+  if (Object.hasOwn(value, 'channelIds')) {
+    if (!Array.isArray(value.channelIds) || value.channelIds.length > 25 ||
+        [...value.channelIds].some(id => typeof id !== 'string' || !DISCORD_ID.test(id)) ||
+        new Set(value.channelIds).size !== value.channelIds.length) {
+      throw new Error('Channel preferences require up to 25 unique Discord channel IDs.');
+    }
+    result.channelIds = [...value.channelIds];
   }
   if (Object.hasOwn(value, 'platforms')) {
     const platforms = value.platforms;
@@ -90,7 +107,10 @@ export class ServerSettings {
 
   getPreferences(serverId: string): ServerPreferences {
     const { enabled: _enabled, ...preferences } = this.values.get(serverId) ?? {};
-    return { ...preferences, ...(preferences.platforms ? { platforms: { ...preferences.platforms } } : {}) };
+    return { ...preferences,
+      ...(preferences.platforms ? { platforms: { ...preferences.platforms } } : {}),
+      ...(preferences.channelIds ? { channelIds: [...preferences.channelIds] } : {}),
+    };
   }
 
   set(serverId: string, enabled: boolean): Promise<void> {
@@ -112,6 +132,17 @@ export class ServerSettings {
       ...previous, ...preferences,
       ...(preferences.platforms ? { platforms: { ...previous.platforms, ...preferences.platforms } } : {}),
     }));
+  }
+
+  /** Remove only the channel preference, preserving saved enablement and legacy operator scope. */
+  resetChannelScope(serverId: string): Promise<void> {
+    if (typeof serverId !== 'string' || !DISCORD_ID.test(serverId)) {
+      return Promise.reject(new Error('Server settings require a Discord server ID.'));
+    }
+    return this.change(serverId, previous => {
+      const { channelIds: _channelIds, ...rest } = previous;
+      return rest;
+    });
   }
 
   private change(serverId: string, update: (previous: ServerRecord) => ServerRecord): Promise<void> {

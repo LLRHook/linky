@@ -109,7 +109,7 @@ test('comment failures and missing comments retain statistics without an empty c
     const stats = (await lookup([A])).get(A)!;
     assert.equal(stats.viewCount, '12345');
     assert.equal(stats.topComment, undefined);
-    assert(!formatYouTubeStatistics(stats, native()).includes('Top comment'));
+    assert(!formatYouTubeStatistics(stats, native())?.fields?.some(field => field.name === 'Top comment'));
   }
 });
 
@@ -150,17 +150,80 @@ test('quota errors open an hour-long circuit; recovery and the per-minute limit 
   assert.equal((await lookup([B])).size, 1);
 });
 
-test('statistics and comment presentation remains literal, bounded and explicitly attributed', () => {
-  const text = formatYouTubeStatistics({ viewCount: '12345678901234567890', likeCount: '0',
+test('statistics use readable fields followed by a literal, bounded comment and separate author', () => {
+  const card = formatYouTubeStatistics({ viewCount: '12345678901234567890', likeCount: '0',
     topComment: { author: '@everyone **Viewer**', text: '> hacked\n-# changed ||spoiler|| <@123> https://evil.test/x discord.gg/invite ' + 'x'.repeat(400) } }, native());
-  assert(text.startsWith(`-# [YouTube](<${native()}>) · 12,345,678,901,234,567,890 views · 0 likes`));
-  assert(text.includes('snapshot when shared'));
-  assert.equal(text.split('\n').length, 2);
+  assert(card);
+  assert.equal(card.title, 'YouTube stats');
+  assert.equal(card.url, native());
+  assert.equal(card.footer?.text, 'Snapshot when shared');
+  assert.equal(card.description, undefined, 'The comment must appear after the count fields');
+  assert.deepEqual(card.fields?.slice(0, 2), [
+    { name: 'Views', value: '**12,345,678,901,234,567,890**', inline: true },
+    { name: 'Likes', value: '**0**', inline: true },
+  ]);
+  const comment = card.fields?.at(-1);
+  assert.equal(comment?.name, 'Top comment');
+  assert.equal(comment?.inline, false);
+  const text = comment!.value;
   assert(!text.includes('https://evil.test'));
   assert(!text.includes('discord.gg'));
   assert(!text.includes('@everyone'));
-  assert(!text.includes('20 comments'));
-  assert(text.endsWith('…'));
-  assert.equal(formatYouTubeStatistics({}, native()), '');
-  assert.equal(formatYouTubeStatistics({ viewCount: '2' }, 'https://evil.test'), '');
+  assert(!card.fields?.some(field => field.name === 'Comments'));
+  assert(text.split('\n\n')[0].endsWith('…'));
+  assert(text.split('\n\n')[1].startsWith('By @\u200beveryone'));
+  assert.equal(formatYouTubeStatistics({}, native()), null);
+  assert.equal(formatYouTubeStatistics({ viewCount: '2' }, 'https://evil.test'), null);
+});
+
+test('preview performs no lookup and counts can later gain a comment without refetching statistics', async () => {
+  const paths: string[] = [];
+  const lookup = createYouTubeLookup('key', { fetch: async input => {
+    const path = new URL(String(input)).pathname;
+    paths.push(path);
+    return path.endsWith('/videos') ? json({ items: [video()] }) : json(comment());
+  } });
+  assert.equal((await lookup([A], 'preview')).size, 0);
+  assert.deepEqual(paths, []);
+  const counts = (await lookup([A], 'counts')).get(A)!;
+  assert.deepEqual(counts, { viewCount: '12345', likeCount: '0', commentCount: '20' });
+  assert.deepEqual(paths, ['/youtube/v3/videos']);
+  assert.equal((await lookup([A])).get(A)?.topComment?.text, 'A useful comment');
+  assert.deepEqual(paths, ['/youtube/v3/videos', '/youtube/v3/commentThreads']);
+  assert(!('topComment' in counts), 'a later lookup must not mutate a counts-only result');
+  assert.equal((await lookup([A], 'counts')).get(A)?.topComment, undefined);
+  assert.equal(paths.length, 2);
+});
+
+test('display mode limits the card even when the caller supplies richer cached statistics', () => {
+  const statistics = { viewCount: '42', topComment: { text: 'Keep this private in counts mode', author: 'Viewer' } };
+  assert.equal(formatYouTubeStatistics(statistics, native(), 'preview'), null);
+  assert.deepEqual(formatYouTubeStatistics(statistics, native(), 'counts')?.fields,
+    [{ name: 'Views', value: '**42**', inline: true }]);
+  assert.equal(formatYouTubeStatistics({ topComment: statistics.topComment }, native(), 'counts'), null);
+  assert.equal(formatYouTubeStatistics(statistics, native())?.fields?.at(-1)?.name, 'Top comment');
+});
+
+test('concurrent counts finish while comments load and shared comment results remain isolated', async () => {
+  let finishComment!: () => void;
+  const commentReady = new Promise<void>(resolve => { finishComment = resolve; });
+  let videoCalls = 0, commentCalls = 0;
+  const lookup = createYouTubeLookup('key', { fetch: async input => {
+    if (String(input).includes('/videos?')) { videoCalls++; return json({ items: [video()] }); }
+    commentCalls++;
+    await commentReady;
+    return json(comment());
+  } });
+  const first = lookup([A]), second = lookup([A]);
+  try {
+    const counts = (await lookup([A], 'counts')).get(A)!;
+    assert.equal(counts.viewCount, '12345');
+    assert.equal(counts.topComment, undefined);
+    assert.equal(videoCalls, 1);
+    assert.equal(commentCalls, 1);
+  } finally { finishComment(); }
+  const [one, two] = await Promise.all([first, second]);
+  one.get(A)!.topComment!.text = 'caller mutation';
+  assert.equal(two.get(A)?.topComment?.text, 'A useful comment');
+  assert.equal((await lookup([A])).get(A)?.topComment?.text, 'A useful comment');
 });

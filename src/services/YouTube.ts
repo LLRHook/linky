@@ -1,6 +1,8 @@
 import { mapLinks, visibleLink } from './LinkTokens';
+import type { APIEmbed, APIEmbedField } from 'discord.js';
 
 export interface YouTubeLink { id: string; url: string }
+export type YouTubeDisplay = 'preview' | 'counts' | 'counts-and-comment';
 export interface YouTubeStatistics {
   viewCount?: string;
   likeCount?: string;
@@ -56,7 +58,7 @@ export function findYouTubeLinks(content: string): YouTubeLink[] {
 }
 
 interface LookupOptions { fetch?: typeof fetch; now?: () => number; timeoutMs?: number }
-type Cached = { value: YouTubeStatistics | null; expiresAt: number };
+type Cached = { value: YouTubeStatistics | null; expiresAt: number; comment?: Promise<YouTubeStatistics['topComment']> };
 type Pending = { promise: Promise<YouTubeStatistics | null>; resolve: (value: YouTubeStatistics | null) => void };
 
 /** Public API only; bounded batches, coalescing, cache and backoff keep failure optional. */
@@ -130,13 +132,6 @@ export function createYouTubeLookup(apiKey: string, options: LookupOptions = {})
             for (const key of ['viewCount', 'likeCount', 'commentCount'] as const) {
               if (typeof statistics[key] === 'string' && COUNT.test(statistics[key])) stats[key] = statistics[key];
             }
-            const comments = await request({ part: 'snippet', videoId: item.id, order: 'relevance', maxResults: '1', textFormat: 'plainText',
-              fields: 'items(snippet(videoId,topLevelComment(snippet(textDisplay,authorDisplayName))))' }, true);
-            const first = Array.isArray(comments?.items) ? record(comments.items[0]) : {};
-            const thread = record(first.snippet), top = record(record(thread.topLevelComment).snippet);
-            if (thread.videoId === item.id && typeof top.textDisplay === 'string' && top.textDisplay.trim() && typeof top.authorDisplayName === 'string') {
-              stats.topComment = { text: top.textDisplay.slice(0, 2000), author: top.authorDisplayName.slice(0, 200) };
-            }
             values.set(item.id, stats);
           }
         }
@@ -155,22 +150,39 @@ export function createYouTubeLookup(apiKey: string, options: LookupOptions = {})
     } finally { running = false; }
   }
 
-  return async (videoIds: readonly string[]): Promise<Map<string, YouTubeStatistics>> => {
+  async function fetchComment(id: string): Promise<YouTubeStatistics['topComment']> {
+    const comments = await request({ part: 'snippet', videoId: id, order: 'relevance', maxResults: '1', textFormat: 'plainText',
+      fields: 'items(snippet(videoId,topLevelComment(snippet(textDisplay,authorDisplayName))))' }, true);
+    const first = Array.isArray(comments?.items) ? record(comments.items[0]) : {};
+    const thread = record(first.snippet), top = record(record(thread.topLevelComment).snippet);
+    if (thread.videoId === id && typeof top.textDisplay === 'string' && top.textDisplay.trim() && typeof top.authorDisplayName === 'string') {
+      return { text: top.textDisplay.slice(0, 2000), author: top.authorDisplayName.slice(0, 200) };
+    }
+    return undefined;
+  }
+
+  return async (videoIds: readonly string[], display: YouTubeDisplay = 'counts-and-comment'): Promise<Map<string, YouTubeStatistics>> => {
+    if (display === 'preview' || !apiKey.trim()) return new Map();
     expire();
     const ids = [...new Set(videoIds.filter(id => VIDEO_ID.test(id)))].slice(0, LIMIT);
-    if (!apiKey.trim()) return new Map();
     const results = await Promise.all(ids.map(async id => {
       const hit = cache.get(id);
-      if (hit) return [id, hit.value] as const;
       let waiting = pending.get(id);
-      if (!waiting && pending.size < 1000 && now() >= blockedUntil) {
+      if (!hit && !waiting && pending.size < 1000 && now() >= blockedUntil) {
         let resolve!: Pending['resolve'];
         waiting = { promise: new Promise(done => { resolve = done; }), resolve };
         pending.set(id, waiting);
         queued.add(id);
         queueMicrotask(() => { void flush(); });
       }
-      return [id, waiting ? await waiting.promise : null] as const;
+      const value = hit ? hit.value : waiting ? await waiting.promise : null;
+      if (!value) return [id, null] as const;
+      // Counts and comments share the video cache, but only an explicit comment
+      // request starts enrichment. Separate return objects prevent cross-mode leaks.
+      const entry = cache.get(id);
+      const topComment = display === 'counts-and-comment' && entry
+        ? await (entry.comment ??= fetchComment(id)) : undefined;
+      return [id, { ...value, ...(topComment ? { topComment: { ...topComment } } : {}) }] as const;
     }));
     return new Map(results.filter((entry): entry is readonly [string, YouTubeStatistics] => entry[1] !== null));
   };
@@ -184,14 +196,17 @@ function commentText(value: string, limit: number): string {
   return shortened.replace(/[\\`*_{}\[\]()<>~|#+\-]/g, '\\$&').replace(/@/g, '@\u200b');
 }
 
-export function formatYouTubeStatistics(stats: YouTubeStatistics, videoUrl: string): string {
-  const counts = (['viewCount', 'likeCount', 'commentCount'] as const).flatMap((key, index) =>
+export function formatYouTubeStatistics(stats: YouTubeStatistics, videoUrl: string, display: YouTubeDisplay = 'counts-and-comment'): APIEmbed | null {
+  if (display === 'preview') return null;
+  const fields: APIEmbedField[] = (['viewCount', 'likeCount', 'commentCount'] as const).flatMap((key, index) =>
     stats[key] !== undefined && COUNT.test(stats[key])
-      ? [`${BigInt(stats[key]).toLocaleString('en-US')} ${['views', 'likes', 'comments'][index]}`] : []);
-  const comment = stats.topComment && commentText(stats.topComment.text, 240);
-  if (!counts.length && !comment) return '';
+      ? [{ name: ['Views', 'Likes', 'Comments'][index],
+        value: `**${BigInt(stats[key]).toLocaleString('en-US')}**`, inline: true }] : []);
+  const comment = display === 'counts-and-comment' && stats.topComment && commentText(stats.topComment.text, 240);
+  if (!fields.length && !comment) return null;
   const url = parseYouTubeUrl(videoUrl)?.url;
-  if (!url) return '';
-  const line = `-# [YouTube](<${url}>) · ${[...counts, 'snapshot when shared'].join(' · ')}`;
-  return line + (comment ? `\n> Top comment by ${commentText(stats.topComment!.author, 50) || 'YouTube user'}: ${comment}` : '');
+  if (!url) return null;
+  if (comment) fields.push({ name: 'Top comment',
+    value: `${comment}\n\nBy ${commentText(stats.topComment!.author, 50) || 'YouTube user'}`, inline: false });
+  return { title: 'YouTube stats', url, color: 0xff0000, fields, footer: { text: 'Snapshot when shared' } };
 }

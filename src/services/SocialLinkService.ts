@@ -1,4 +1,5 @@
 import { mapLinks, visibleLink } from './LinkTokens';
+import { randomBytes } from 'node:crypto';
 import {
   Attachment,
   AttachmentBuilder,
@@ -7,12 +8,20 @@ import {
   MessageFlags,
   MessageType,
   PermissionFlagsBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } from 'discord.js';
 import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
 import type { TweetTranslation } from './TweetTranslation';
 import type { ServerPreferences } from './ServerSettings';
-import { findYouTubeLinks, formatYouTubeStatistics, parseYouTubeUrl, type YouTubeStatistics } from './YouTube';
+import type { StatsPublication } from './YouTubeStats';
+import { findYouTubeLinks, formatYouTubeStatistics, parseYouTubeUrl, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
+import { getProviderCandidates, parseSocialUrl } from './SocialProviders';
+import { evaluateScope } from './ServerScope';
+import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
+import { expectedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
 import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
 
 const MAX_CONTENT_LENGTH = 2_000;
@@ -21,43 +30,8 @@ const DOWNLOAD_TIMEOUT_MS = 15_000;
 const RECENT_MESSAGE_LIMIT = 1_000;
 const DISCORD_ID = /^[1-9]\d{16,19}$/;
 
-export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok', 'youtube'] as const;
+export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch'] as const;
 export type RewritePlatform = typeof REWRITE_PLATFORMS[number];
-
-interface Platform {
-  name: RewritePlatform;
-  /** An allowed subdomain plus the literal apex host, anchored at the scheme. */
-  host: RegExp;
-  /** Replacement authority; a matched subdomain is dropped. */
-  fixer: string;
-  /** Paths worth rewriting. Without one, every path on the host qualifies. */
-  path?: RegExp;
-}
-
-// Subdomains are a fixed allowlist per platform, never a wildcard: `www.x.com` and
-// other lookalike authorities must keep falling through untouched.
-const PLATFORMS: readonly Platform[] = [
-  { name: 'x', host: /^https:\/\/x\.com(?=[/?#]|$)/i, fixer: 'https://fixupx.com' },
-  {
-    name: 'instagram',
-    host: /^https:\/\/(?:www\.|m\.|mobile\.)?instagram\.com(?=[/?#]|$)/i,
-    fixer: 'https://www.instagram7.com',
-    path: /^\/(?:p|reels?|tv)\/[\w-]+\/?$/,
-  },
-  {
-    name: 'tiktok',
-    host: /^https:\/\/(?:www\.|m\.)?tiktok\.com(?=[/?#]|$)/i,
-    fixer: 'https://tnktok.com',
-    path: /^\/(?:@[\w.-]+\/(?:video|photo)\/\d+|t\/[\w-]+)\/?$/,
-  },
-  // Share links carry the code at the root, which must not be accepted on the apex host.
-  {
-    name: 'tiktok',
-    host: /^https:\/\/(?:vm|vt)\.tiktok\.com(?=[/?#]|$)/i,
-    fixer: 'https://tnktok.com',
-    path: /^\/[\w-]+\/?$/,
-  },
-];
 
 /** Reject an unknown name instead of silently leaving that platform unrewritten. */
 export function parseRewritePlatforms(value: string | undefined): readonly RewritePlatform[] {
@@ -76,20 +50,37 @@ export function parseRewritePlatforms(value: string | undefined): readonly Rewri
 /** Rewrite supported post URLs, retaining surrounding text and fragments. */
 export function rewriteSocialLinks(content: string, platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS): string {
   const enabled = new Set(platforms);
-  return mapLinks(content, (url) => rewriteUrl(url, enabled) ?? url);
+  return mapLinks(content, (url, position) => {
+    if (!visibleLink(content, position)) return url;
+    const source = parseSocialUrl(url);
+    return source && enabled.has(source.platform) ? getProviderCandidates(source)[0]?.url ?? url : url;
+  });
 }
 
-function rewriteUrl(url: string, enabled: ReadonlySet<RewritePlatform>): string | undefined {
-  for (const platform of PLATFORMS) {
-    if (!enabled.has(platform.name)) continue;
-    const host = platform.host.exec(url);
-    if (!host) continue;
-    // The query string is share/tracking noise (?s=..&t=..); drop it, keeping any fragment.
-    const rest = url.slice(host[0].length).replace(/^([^?#]*)\?[^#]*/, '$1');
-    if (platform.path && !platform.path.test(rest.split('#', 1)[0])) continue;
-    return platform.fixer + rest;
-  }
-  return undefined;
+export function bypassLinky(content: string): boolean {
+  return /(?:^|\s)!nolinky(?=\s|$)/i.test(content);
+}
+
+export function originalPostUrl(source: string): string {
+  const url = new URL(source);
+  url.hash = '';
+  return url.href;
+}
+
+export function repostControls(original: string, { retry = false, remove = true } = {}) {
+  const urls = new Set<string>();
+  mapLinks(original, (url, position) => {
+    if (visibleLink(original, position)) {
+      const source = parseSocialUrl(url)?.sourceUrl ?? parseYouTubeUrl(url)?.url;
+      if (source) urls.add(originalPostUrl(source));
+    }
+    return url;
+  });
+  const buttons = [...urls].slice(0, retry ? 3 : 4).map((url, index) => new ButtonBuilder()
+    .setStyle(ButtonStyle.Link).setLabel(index ? `Original post ${index + 1}` : 'Original post').setURL(url));
+  if (retry) buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Retry preview').setCustomId('linky:retry'));
+  if (remove) buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Remove').setCustomId('linky:remove'));
+  return buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)] : [];
 }
 
 /** Quote plain leading context without pulling apart existing Markdown or URLs. */
@@ -117,14 +108,14 @@ async function translateRepost(
   platforms: readonly RewritePlatform[],
   fetchTranslation: (statusId: string) => Promise<TweetTranslation | null>,
   contentLimit: number,
-): Promise<{ content: string; embeds?: APIEmbed[]; translationFiles?: AttachmentBuilder[] } | null> {
+): Promise<{ content: string; embeds?: APIEmbed[]; translationFiles?: AttachmentBuilder[];
+  textStatusIds?: string[]; videoStatusIds?: string[]; mediaSources?: string } | null> {
   const content = rewriteSocialLinks(original, platforms);
-  const statusLink = /^https:\/\/x\.com\/[^\s/?#]+\/status\/(\d+)(?=[?#]|$)/i;
   const links = new Map<string, string>();
   let linkCount = 0;
   mapLinks(original, (url, position) => {
     linkCount++;
-    const id = statusLink.exec(url)?.[1];
+    const id = parseSocialUrl(url)?.statusId;
     if (id && visibleLink(original, position)) links.set(id, rewriteSocialLinks(url, platforms));
     return url;
   });
@@ -140,13 +131,24 @@ async function translateRepost(
     if (embeds) return { content, embeds };
   }
   const galleries = new Set<string>();
+  const mediaSources = new Set<string>();
+  const textStatusIds: string[] = [];
+  const videoStatusIds: string[] = [];
   const rewritten = mapLinks(original, (url, position) => {
+    if (!visibleLink(original, position)) return url;
     const rewritten = rewriteSocialLinks(url, platforms);
-    const id = statusLink.exec(url)?.[1];
+    const id = parseSocialUrl(url)?.statusId;
     const translation = id && translations.get(id);
-    if (!translation || !visibleLink(original, position)) return rewritten;
+    if (!translation) return rewritten;
+    if (!translation.hasMedia) textStatusIds.push(id!);
+    if (translation.hasVideo) videoStatusIds.push(id!);
     for (const quote of tweetParts(translation).slice(1)) {
-      if (quote.hasMedia && quote.url) galleries.add(quote.url.replace(/^https:\/\/(?:x|twitter)\.com\//, 'https://g.fixupx.com/'));
+      if (quote.hasMedia && quote.url) {
+        mediaSources.add(quote.url);
+        const quoteId = parseSocialUrl(quote.url)?.statusId;
+        if (quote.hasVideo && quoteId) videoStatusIds.push(quoteId);
+        galleries.add(quote.url.replace(/^https:\/\/(?:x|twitter)\.com\//, 'https://g.fixupx.com/'));
+      }
     }
     return translation.hasMedia ? rewritten.replace('https://fixupx.com/', 'https://g.fixupx.com/') : `<${rewritten}>`;
   });
@@ -154,7 +156,8 @@ async function translateRepost(
   const captions = tweets.map((tweet) => translationCaption(tweet)).join('\n\n');
   const withMedia = `${rewritten}${galleries.size ? '\n' + [...galleries].join('\n') : ''}`;
   const translated = `${withMedia}\n\n${captions}`;
-  if (translated.length <= contentLimit) return { content: translated };
+  const rendered = { textStatusIds, videoStatusIds, mediaSources: [...mediaSources].join('\n') };
+  if (translated.length <= contentLimit) return { content: translated, ...rendered };
   if (withMedia.length > contentLimit) return null;
 
   // Keep complete long translations downloadable instead of silently abandoning them.
@@ -166,6 +169,7 @@ async function translateRepost(
   return {
     content: summary.length <= contentLimit ? summary : base,
     translationFiles: [translationAttachment(tweets)],
+    ...rendered,
   };
 }
 
@@ -253,32 +257,43 @@ export function createLinkRepostHandler(
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
   { platforms = REWRITE_PLATFORMS, translateTweet, serverIds = [], serverEnabled, serverPreferences,
-    lookupYouTube, publishYouTube }: {
+    lookupYouTube, publishYouTube, verifyPreview = waitForPreviews, observePreview, rememberRepost }: {
     platforms?: readonly RewritePlatform[];
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
     serverIds?: readonly string[];
     serverEnabled?: (serverId: string) => boolean | undefined;
     serverPreferences?: (serverId: string) => ServerPreferences;
-    lookupYouTube?: (ids: readonly string[]) => Promise<Map<string, YouTubeStatistics>>;
-    publishYouTube?: (message: Message, suffix: string) => Promise<boolean>;
+    lookupYouTube?: (ids: readonly string[], display?: YouTubeDisplay) => Promise<Map<string, YouTubeStatistics>>;
+    publishYouTube?: (message: Message, embeds: APIEmbed[]) => Promise<StatsPublication | null>;
+    verifyPreview?: (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult>;
+    observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
+    rememberRepost?: (record: RepostRecord) => Promise<boolean>;
   } = {}
-): (message: Message) => Promise<void> {
-  const allowedChannelIds = new Set(typeof channelIds === 'string' ? [channelIds] : channelIds);
-  const allowedServerIds = new Set(serverIds);
+): (message: Message, options?: { refresh?: boolean; forceReply?: boolean }) => Promise<RepostRefreshResult> {
+  const allowedChannelIds = typeof channelIds === 'string' ? [channelIds] : channelIds;
   const inFlight = new Set<string>();
   const reposted = new Set<string>();
 
-  return async (message) => {
+  return async (message, { refresh = false, forceReply = false } = {}) => {
     if (!message.inGuild()) return;
     const preferences = serverPreferences?.(message.guildId) ?? {};
     const preferenceVersion = JSON.stringify(preferences);
-    const enabled = () => (serverEnabled?.(message.guildId) ??
-      (allowedChannelIds.has(message.channelId) || allowedServerIds.has(message.guildId))) &&
+    const enabled = () => evaluateScope({
+      guildId: message.guildId, channelId: message.channelId,
+      threadParentId: message.channel.isThread() ? message.channel.parentId : undefined,
+      serverEnabled: serverEnabled?.(message.guildId), preferences,
+      operatorChannelIds: allowedChannelIds, operatorServerIds: serverIds,
+    }).enabled &&
       JSON.stringify(serverPreferences?.(message.guildId) ?? {}) === preferenceVersion;
     const activePlatforms = platforms.filter(platform => preferences.platforms?.[platform] !== false);
-    const reply = preferences.mode === 'reply';
+    const reply = forceReply || preferences.mode === 'reply';
     if (!enabled() ||
-        !canCopy(message) || inFlight.has(message.id) || reposted.has(message.id)) return;
+        !canCopy(message) || bypassLinky(message.content) || message.flags.has(MessageFlags.SuppressEmbeds) ||
+        (!refresh && reposted.has(message.id))) return;
+    if (inFlight.has(message.id)) {
+      if (refresh) throw new Error('Source repost is still in flight.');
+      return;
+    }
     const rewritten = rewriteSocialLinks(message.content, activePlatforms);
     const youtubeLinks = activePlatforms.includes('youtube') && lookupYouTube && publishYouTube &&
       !message.flags.has(MessageFlags.SuppressEmbeds) ? findYouTubeLinks(message.content).slice(0, 3) : [];
@@ -287,6 +302,7 @@ export function createLinkRepostHandler(
     const channelId = message.channelId;
     const context = { messageId: message.id, channelId, guildId: message.guildId };
     inFlight.add(message.id);
+    let rollback: (() => Promise<void>) | undefined;
     try {
       const channel = message.channel;
       const member = message.guild.members.me;
@@ -312,10 +328,12 @@ export function createLinkRepostHandler(
       // Discord can mutate this cached message while a language lookup is pending.
       const version = sourceVersion(message);
       let youtube = new Map<string, YouTubeStatistics>();
-      if (youtubeLinks.length) {
-        try { youtube = await lookupYouTube!(youtubeLinks.map(link => link.id)); }
+      const youtubeDisplay = preferences.youtubeDisplay ?? 'counts-and-comment';
+      if (youtubeLinks.length && youtubeDisplay !== 'preview') {
+        try { youtube = await lookupYouTube!(youtubeLinks.map(link => link.id), youtubeDisplay); }
         catch { log.warn(context, 'YouTube lookup unavailable; keeping native links'); }
       }
+      // Preview-only keeps Discord's already-native YouTube message untouched.
       if (rewritten === message.content && !youtube.size) return;
       const body = formatLinkRepost(rewritten, message.author.id, replyUrl);
       const translated = translateTweet && preferences.translateTweets !== false && activePlatforms.includes('x') &&
@@ -332,13 +350,10 @@ export function createLinkRepostHandler(
       });
       const formatted = formatLinkRepost(canonical, message.author.id, replyUrl);
       let content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
-      let youtubeSuffix = youtubeLinks.filter(link => youtube.has(link.id))
-        .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url)).filter(Boolean).join('\n');
-      if (content.length + youtubeSuffix.length + 2 > MAX_CONTENT_LENGTH) {
-        youtubeSuffix = '';
-        content = formatLinkRepost(translated.content, message.author.id, replyUrl);
-      }
-      if (rewritten === message.content && !youtubeSuffix) return;
+      const youtubeCards = youtubeLinks.filter(link => youtube.has(link.id))
+        .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url, youtubeDisplay))
+        .filter((card): card is APIEmbed => card !== null);
+      if (rewritten === message.content && !youtubeCards.length) return;
       const embeds = translated.embeds;
       const translationFiles = translated.translationFiles ?? [];
       if (translationFiles.length && !permissions.has(PermissionFlagsBits.AttachFiles)) {
@@ -363,8 +378,9 @@ export function createLinkRepostHandler(
         content,
         ...(embeds ? { embeds } : {}),
         files,
+        components: repostControls(message.content, { remove: false }),
         allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
-        nonce: message.id,
+        nonce: refresh ? randomBytes(12).toString('hex') : message.id,
         enforceNonce: true,
         ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}),
         ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds } : {}),
@@ -374,20 +390,82 @@ export function createLinkRepostHandler(
       reposted.add(message.id);
       if (reposted.size > RECENT_MESSAGE_LIMIT) reposted.delete(reposted.values().next().value!);
       const resultContext = { ...context, replacementId: replacement.id };
-      if (!enabled()) {
+      let publication: StatsPublication | null = null;
+      const removeReplacement = async () => {
+        await publication?.remove();
         await replacement.delete();
+      };
+      rollback = removeReplacement;
+      if (!enabled()) {
+        await removeReplacement();
         return;
       }
       if (replacement.attachments.size !== files.length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
+        await removeReplacement();
         return;
       }
-      if (youtubeSuffix) {
-        let published = false;
-        try { published = await publishYouTube!(replacement, youtubeSuffix); }
-        catch { log.warn(resultContext, 'Could not append YouTube statistics'); }
-        if (!published && rewritten === message.content) {
-          await replacement.delete();
+      // Caption-mode text is already delivered as translated message content (or
+      // a verified attachment). Only media and untranslated posts need an embed.
+      const textStatusIds = new Set(content === formatted ? translated.textStatusIds : []);
+      const videoStatusIds = new Set(translated.videoStatusIds);
+      const expectations = () => expectedPreviews(`${message.content}\n${translated.mediaSources ?? ''}`, content)
+        .filter(item => !textStatusIds.has(parseSocialUrl(item.source)?.statusId ?? ''))
+        .map(item => videoStatusIds.has(parseSocialUrl(item.source)?.statusId ?? '') ? { ...item, requireVideo: true } : item);
+      const verify = (expected: ExpectedPreview[]) => expected.length
+        ? verifyPreview(replacement, expected)
+        : Promise.resolve({ ok: textStatusIds.size > 0, missing: [], videoMetadata: false });
+      let expected = expectations();
+      const attempted = new Set<string>();
+      let preview = await verify(expected);
+      observePreview?.(expected, preview);
+      // Retry only catalogued alternatives, on the same output, with a bounded budget.
+      for (let attempt = 0; !preview.ok && attempt < 2 && enabled(); attempt++) {
+        const recovered = nextProviderContent(content, preview.missing, attempted);
+        if (recovered === content) break;
+        content = recovered;
+        await replacement.edit({ content, embeds: embeds ?? [], allowedMentions: { parse: [] } });
+        expected = expectations();
+        preview = await verify(expected);
+        observePreview?.(expected, preview);
+      }
+      if (!preview.ok) {
+        await removeReplacement();
+        log.warn({ ...resultContext, providers: expected.map(item => item.providerId) }, 'Keeping original: no useful preview appeared');
+        // A small retry reply is useful only when ownership can be saved and checked.
+        if (rememberRepost && enabled()) {
+          const latest = await message.fetch(true);
+          if (!enabled() || !canCopy(latest)) return;
+          if (sourceVersion(latest) !== version) return refresh ? 'retry' : undefined;
+          const notice = await channel.send({
+            content: 'Linky could not confirm a preview. Your original is still here. You can retry or use /diagnose.',
+            components: repostControls(message.content, { retry: true }),
+            allowedMentions: { parse: [], repliedUser: false },
+            reply: { messageReference: message.id, failIfNotExists: true },
+          });
+          rollback = async () => { await notice.delete(); };
+          const saved = await rememberRepost({ guildId: message.guildId, channelId, sourceId: message.id,
+            replacementId: notice.id, authorId: message.author.id, mode: 'reply' });
+          const current = saved ? await message.fetch(true) : latest;
+          if (!saved || !enabled() || !canCopy(current) || sourceVersion(current) !== version) {
+            await notice.delete();
+            rollback = undefined;
+            if (!saved && refresh) throw new Error('Could not save regenerated retry notice ownership.');
+            if (saved && enabled() && canCopy(current) && refresh) return 'retry';
+            return;
+          }
+          rollback = undefined;
+        }
+        return;
+      }
+      log.info({ ...resultContext, providers: expected.map(item => item.providerId), videoMetadata: preview.videoMetadata,
+        playbackChecked: false, translatedTextPosts: textStatusIds.size },
+      expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
+      if (youtubeCards.length) {
+        try { publication = await publishYouTube!(replacement, youtubeCards); }
+        catch { log.warn(resultContext, 'Could not publish YouTube details'); }
+        if (!publication && rewritten === message.content) {
+          await removeReplacement();
           return;
         }
       }
@@ -397,27 +475,52 @@ export function createLinkRepostHandler(
       } catch (err) {
         if (typeof err === 'object' && err !== null && 'code' in err && err.code === 10008) {
           log.info(resultContext, 'Removing repost: original was deleted during copying');
-          await replacement.delete();
+          await removeReplacement();
           return;
         }
         throw err;
       }
       if (!enabled() || !canCopy(latest) || sourceVersion(latest) !== version) {
         log.warn(resultContext, 'Keeping original: message changed or link fixing was disabled while reposting');
-        await replacement.delete();
+        await removeReplacement();
+        if (enabled() && canCopy(latest) && refresh) return 'retry';
+        return;
+      }
+      if (rememberRepost && !await rememberRepost({ guildId: message.guildId, channelId, sourceId: message.id,
+        replacementId: replacement.id, authorId: message.author.id, mode: reply ? 'reply' : 'replace' })) {
+        await removeReplacement();
+        log.warn(resultContext, 'Keeping original: could not save repost ownership');
+        if (refresh) throw new Error('Could not save regenerated repost ownership.');
+        return;
+      }
+      // State may have changed while the durable ownership record was written.
+      const confirmed = rememberRepost ? await message.fetch(true) : latest;
+      if (!enabled() || !canCopy(confirmed) || sourceVersion(confirmed) !== version) {
+        await removeReplacement();
+        if (enabled() && canCopy(confirmed) && refresh) return 'retry';
         return;
       }
       if (reply) {
+        rollback = undefined;
         log.info(resultContext, 'Replied with fixed social links; kept original message');
       } else {
         // Sending, checking and deleting are separate Discord requests, not a transaction.
-        await latest.delete();
+        // An ambiguous deletion error must not remove the only remaining copy.
+        rollback = undefined;
+        await confirmed.delete();
         log.info(resultContext, 'Replaced social links and deleted original message');
       }
+      // Do not expose a Remove action while original deletion is still in flight.
+      if (rememberRepost) await replacement.edit({
+        components: [...repostControls(message.content), ...publication?.controls ?? []], allowedMentions: { parse: [] },
+      });
     } catch (err) {
+      if (rollback) await rollback().catch(() => log.warn(context, 'Could not remove incomplete preview'));
       log.error({ ...context, err }, 'link replacement failed; no further deletion will be attempted');
+      if (refresh) throw err;
     } finally {
       inFlight.delete(message.id);
     }
+    return undefined;
   };
 }
