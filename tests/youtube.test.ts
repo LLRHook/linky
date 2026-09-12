@@ -109,7 +109,7 @@ test('comment failures and missing comments retain statistics without an empty c
     const stats = (await lookup([A])).get(A)!;
     assert.equal(stats.viewCount, '12345');
     assert.equal(stats.topComment, undefined);
-    assert(!formatYouTubeStatistics(stats, native()).includes('Top comment'));
+    assert(!formatYouTubeStatistics(stats, native())?.fields?.some(field => field.name === 'Top comment'));
   }
 });
 
@@ -150,17 +150,28 @@ test('quota errors open an hour-long circuit; recovery and the per-minute limit 
   assert.equal((await lookup([B])).size, 1);
 });
 
-test('statistics and comment presentation remains literal, bounded and explicitly attributed', () => {
-  const text = formatYouTubeStatistics({ viewCount: '12345678901234567890', likeCount: '0',
+test('statistics use readable fields followed by a literal, bounded comment and separate author', () => {
+  const card = formatYouTubeStatistics({ viewCount: '12345678901234567890', likeCount: '0',
     topComment: { author: '@everyone **Viewer**', text: '> hacked\n-# changed ||spoiler|| <@123> https://evil.test/x discord.gg/invite ' + 'x'.repeat(400) } }, native());
-  assert(text.startsWith(`-# [YouTube](<${native()}>) · 12,345,678,901,234,567,890 views · 0 likes`));
-  assert(text.includes('snapshot when shared'));
-  assert.equal(text.split('\n').length, 2);
+  assert(card);
+  assert.equal(card.title, 'YouTube stats');
+  assert.equal(card.url, native());
+  assert.equal(card.footer?.text, 'Snapshot when shared');
+  assert.equal(card.description, undefined, 'The comment must appear after the count fields');
+  assert.deepEqual(card.fields?.slice(0, 2), [
+    { name: 'Views', value: '**12,345,678,901,234,567,890**', inline: true },
+    { name: 'Likes', value: '**0**', inline: true },
+  ]);
+  const comment = card.fields?.at(-1);
+  assert.equal(comment?.name, 'Top comment');
+  assert.equal(comment?.inline, false);
+  const text = comment!.value;
   assert(!text.includes('https://evil.test'));
   assert(!text.includes('discord.gg'));
   assert(!text.includes('@everyone'));
-  assert(!text.includes('20 comments'));
-  assert(text.endsWith('…'));
-  assert.equal(formatYouTubeStatistics({}, native()), '');
-  assert.equal(formatYouTubeStatistics({ viewCount: '2' }, 'https://evil.test'), '');
+  assert(!card.fields?.some(field => field.name === 'Comments'));
+  assert(text.split('\n\n')[0].endsWith('…'));
+  assert(text.split('\n\n')[1].startsWith('By @\u200beveryone'));
+  assert.equal(formatYouTubeStatistics({}, native()), null);
+  assert.equal(formatYouTubeStatistics({ viewCount: '2' }, 'https://evil.test'), null);
 });
