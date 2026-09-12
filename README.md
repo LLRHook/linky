@@ -5,7 +5,7 @@
 [![CI](https://github.com/LLRHook/linky/actions/workflows/ci.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/ci.yml)
 [![Deploy](https://github.com/LLRHook/linky/actions/workflows/deploy.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/deploy.yml)
 
-Linky fixes social links in Discord. Add the hosted bot to your server for automatic previews, or install its commands to your account for links you choose to fix. It supports X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit and Twitch clips, with optional English tweet translation and YouTube statistics. Self-hosting is optional.
+Linky fixes social links in Discord: X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit and Twitch clips. Add it to your server for automatic previews or to your account for links you choose to fix. The hosted bot is free; you do not need to run a server or supply API keys. Self-hosting is optional.
 
 Visit the [Linky website](https://linkybot.dev) for setup guides and troubleshooting.
 
@@ -13,19 +13,18 @@ Visit the [Linky website](https://linkybot.dev) for setup guides and troubleshoo
 
 **[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=277025516544&integration_type=0&scope=bot+applications.commands)**
 
-**[Add Linky to your account](https://discord.com/oauth2/authorize?client_id=1491240385031311470&integration_type=1&scope=applications.commands)** to use `/fix link:` and a message's **Apps → Fix with Linky** action. Personal installation runs explicit commands; it does not watch your DMs or enable automatic fixing in servers. Manual fixes keep the source message and use native YouTube previews without API statistics.
+**[Add Linky to your account](https://discord.com/oauth2/authorize?client_id=1491240385031311470&integration_type=1&scope=applications.commands)** to use `/fix link:` and a message's **Apps → Fix with Linky** action in servers or DMs. Each request handles up to three supported links, keeps the source message and uses native YouTube previews without API statistics. Personal installation does not watch your DMs or enable automatic fixing in servers.
 
 You must be the server owner or have **Administrator** or **Manage Server** permission in that server to enable Linky.
 
 1. Choose your server and authorize Linky.
-2. In Discord, open a text channel in the server you just added Linky to.
-3. Type `/setup` in the message box, then select **Linky's `/setup` command** from the command picker.
-4. Press **Enter** or tap **Send**. In the private panel, choose the channels, posting mode and platforms you want, then select **Enable**.
-5. Send a fresh supported link in a selected channel. Use `/diagnose link:` in that channel if the preview does not appear; it checks scope, permissions, URL support and recent provider observations.
+2. Open a text channel in that server, type `/setup`, select **Linky's `/setup` command** from the command picker and send it.
+3. In the private panel, choose your channels, posting mode and platforms, then select **Enable server**.
+4. Send a fresh supported link in a selected channel. If the preview does not appear, run `/diagnose link:` there to check permissions, settings, URL support and recent provider observations.
 
 If Linky's `/setup` command is missing from the picker, follow the [setup troubleshooting guide](https://linkybot.dev/setup).
 
-New servers stay inactive until an admin enables them. Changing preferences alone never enables a server. Choose specific channels or **All channels**; selected parent channels include their accessible threads. `/setup enabled:true` and `/setup enabled:false` remain available and preserve selected restrictions. Setup, settings, help and diagnostics are private; saved choices survive restarts. Linky sends nothing when it joins. Discord may display its own system join notice.
+New servers stay inactive until an admin enables them. Changing preferences alone never enables a server. Choose specific channels or **All channels**; selected parent channels include their accessible threads. **Disable server** stops automatic processing. `/setup enabled:true` and `/setup enabled:false` also work and preserve channel selections. Setup, settings, help and diagnostics are private; saved choices survive restarts. Linky sends nothing when it joins. Discord may display its own system join notice.
 
 The default Replace mode uses **View Channel**, **Read Message History**, **Send Messages**, **Send Messages in Threads**, **Embed Links**, **Attach Files** and **Manage Messages**. The invite requests these permissions. Reply mode does not require **Manage Messages** or copy the original attachments. If a link stays unchanged, check channel/category overrides for the **Linky** role. Private threads must also be accessible to the bot.
 
@@ -35,7 +34,7 @@ With **Manage Server** permission, run `/settings` without options to see the ef
 
 Each platform has a `/settings` switch, such as `/settings instagram:false`. `translate_tweets` controls English translation. `youtube_display` selects **preview**, **counts**, or **counts-and-comment**. Preview-only leaves native YouTube messages untouched and makes no API calls; counts skips comment requests. Existing servers retain Replace mode and counts plus comment until an admin changes them. A server cannot enable an operator-disabled feature.
 
-Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brackets>`, code or spoilers are also left alone. Reposts offer **Original post** links and **Remove**, available only to the original author or a moderator with Manage Messages. Replies follow later edits and deletions of their source while their ownership record is retained (up to 30 days).
+Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brackets>`, code or spoilers are also left alone. Reposts include **Original post** links. Only the original author or a moderator with Manage Messages can use **Remove** or **Retry preview**; manual previews can be removed by their requester or a moderator. Replies follow edits and deletions of their source while their ownership record is retained (up to 30 days).
 
 ## Supported links
 
@@ -49,13 +48,13 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | Reddit | `vxreddit.com` | Public post URLs; profile and community index pages stay unchanged |
 | Twitch clips | `fxtwitch.seria.moe` | Clip URLs, including channel `/clip/` links; streams and VODs stay unchanged |
 
-Tracking query strings are removed; valid YouTube start timestamps are retained. Surrounding text is preserved. Automatic fixing starts with new messages from people. Existing tracked replies follow source edits; editing an unrelated old message does not start a new repost. Bots and webhooks are ignored.
+Supported links must use HTTPS and point to posts. Tracking query strings are removed; valid YouTube start timestamps and surrounding text are retained. Automatic fixing starts with new messages from people; editing an unrelated old message does not start a repost. Bots and webhooks are ignored.
 
 When English translation is enabled, translated tweet text replaces the original with a small source-language label. Photos, playable videos and quoted posts retain their media. Long translations continue across cards or include a text attachment. Unsupported posts and failed translations keep the native preview. Preview availability and translation quality depend on the listed services and FxEmbed.
 
 When enabled, YouTube keeps one native video message with compact counts on buttons. Click counts for exact values or **Top comment** for a private, attributed excerpt selected by YouTube's relevance order. Missing fields are omitted; comment failure can still leave counts available. A missing API key or failed video lookup leaves the native YouTube message untouched. YouTube buttons expire after 24 hours; cleanup is retried across restarts while preserving the video, source text and other controls.
 
-Before removing an original, Linky waits for a useful preview tied to each rewritten post, checks attachments, and rechecks the source and settings. Known videos require video metadata; translated text delivered as a caption does not need a separate native embed. Failed previews try another vetted provider when available; otherwise the original stays with a small retry notice. Instagram, TikTok, Reddit and Twitch currently have no verified alternate provider. These checks establish preview metadata, not actual playback in every Discord client.
+Before removing an original, Linky waits for a useful preview tied to each rewritten post, checks attachments, and rechecks the source and settings. Known videos require video metadata; translated text delivered as a caption does not need a separate native embed. Failed previews try an alternate provider when available. If that fails, the original stays with a **Retry preview** notice; retrying posts a reply and keeps the source. Manual fixes check previews and try alternates in the same response. Instagram, TikTok, Reddit and Twitch currently have no verified alternate provider. Preview metadata cannot guarantee playback in every Discord client.
 
 Attachment names, descriptions, spoilers and reply context are preserved. Missing permissions, failed copies and size limits leave the original intact. Polls, stickers, forwards, pinned messages and thread starters are skipped. A failed source deletion can leave both messages. Reply mode keeps the source and its attachments. Both modes suppress mention notifications.
 
