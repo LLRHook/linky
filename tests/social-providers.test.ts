@@ -13,15 +13,82 @@ test('recognizes X and legacy Twitter posts with one status identity and cleaned
   }
 });
 
-test('provides only independently vetted X recovery and retains existing Instagram/TikTok primaries', () => {
+test('preserves X recovery and Instagram/TikTok primaries when adding Instagram recovery', () => {
   assert.deepEqual(getProviderCandidates('https://twitter.com/jack/status/20?s=46#reply'), [
     { providerId: 'fixupx', platform: 'x', url: 'https://fixupx.com/jack/status/20#reply' },
     { providerId: 'fixvx', platform: 'x', url: 'https://vxtwitter.com/jack/status/20#reply' },
   ]);
   assert.deepEqual(getProviderCandidates('https://m.instagram.com/reels/DdFKS1ABmK4/?igsh=tracking'),
-    [{ providerId: 'instagram7', platform: 'instagram', url: 'https://www.instagram7.com/reels/DdFKS1ABmK4/' }]);
+    [{ providerId: 'instagram7', platform: 'instagram', url: 'https://www.instagram7.com/reels/DdFKS1ABmK4/' },
+      { providerId: 'oginstagram', platform: 'instagram', url: 'https://oginstagram.com/reels/DdFKS1ABmK4/' }]);
   assert.deepEqual(getProviderCandidates('https://www.tiktok.com/@person/video/12345?share=1'),
     [{ providerId: 'tnktok', platform: 'tiktok', url: 'https://tnktok.com/@person/video/12345' }]);
+});
+
+test('Instagram recovery keeps the original path and fragment with Instagram7 first', () => {
+  for (const kind of ['p', 'reel', 'reels', 'tv']) {
+    const path = `/${kind}/DdKVPMEhTXe/`;
+    assert.deepEqual(getProviderCandidates(`https://www.instagram.com${path}?stkn=tracking#reply`), [
+      { providerId: 'instagram7', platform: 'instagram', url: `https://www.instagram7.com${path}#reply` },
+      { providerId: 'oginstagram', platform: 'instagram', url: `https://oginstagram.com${path}#reply` },
+    ]);
+  }
+  for (const host of ['oginstagram.com', 'www.oginstagram.com']) {
+    assert.deepEqual(parseProviderUrl(`https://${host}/p/DdKVPMEhTXe/?share=tracking#reply`), {
+      platform: 'instagram', sourceUrl: 'https://www.instagram.com/p/DdKVPMEhTXe/#reply',
+      path: '/p/DdKVPMEhTXe/', fragment: '#reply', providerId: 'oginstagram',
+    });
+    assert.deepEqual(getProviderCandidates(`https://${host}/p/DdKVPMEhTXe/`), [],
+      'A provider URL must not be treated as another original Instagram link');
+  }
+});
+
+test('caption-free Instagram recovery uses gallery routes without inventing separate providers', () => {
+  for (const kind of ['p', 'reel', 'reels', 'tv']) {
+    const path = `/${kind}/DdKVPMEhTXe/`;
+    const source = `https://www.instagram.com${path}?igsh=tracking#reply`;
+    const candidates = getProviderCandidates(source, { captionFree: true });
+    assert.deepEqual(candidates, [
+      { providerId: 'instagram7', platform: 'instagram', url: `https://g.instagram7.com${path}#reply` },
+      { providerId: 'oginstagram', platform: 'instagram', url: `https://g.oginstagram.com${path}#reply` },
+    ]);
+    for (const candidate of candidates) {
+      assert.deepEqual(parseProviderUrl(candidate.url), { platform: 'instagram',
+        sourceUrl: `https://www.instagram.com${path}#reply`, path, fragment: '#reply', providerId: candidate.providerId });
+      assert.deepEqual(getProviderCandidates(candidate.url, { captionFree: true }), []);
+      const host = new URL(candidate.url).hostname;
+      for (const invalid of [`https://${host}.evil.test${path}`, `https://user@${host}${path}`, `https://${host}:443${path}`]) {
+        assert.equal(parseProviderUrl(invalid), null, invalid);
+      }
+    }
+    assert.deepEqual(getProviderCandidates(source).map(candidate => new URL(candidate.url).hostname),
+      ['www.instagram7.com', 'oginstagram.com'], 'ordinary reposts retain their existing caption-bearing providers');
+  }
+});
+
+test('OGInstagram recognition rejects unapproved authorities and non-post paths', () => {
+  for (const url of [
+    'http://oginstagram.com/p/DdKVPMEhTXe/',
+    'https://oginstagram.com:443/p/DdKVPMEhTXe/',
+    'https://www.oginstagram.com:8443/p/DdKVPMEhTXe/',
+    'https://user@oginstagram.com/p/DdKVPMEhTXe/',
+    'https://oginstagram.com.evil.test/p/DdKVPMEhTXe/',
+    'https://oginstagram.com./p/DdKVPMEhTXe/',
+    'https://d.oginstagram.com/p/DdKVPMEhTXe/',
+    'https://evil.oginstagram.com/p/DdKVPMEhTXe/',
+    'https://oginstagram.com/', 'https://oginstagram.com/person',
+    'https://oginstagram.com/redirect?url=https://instagram.com/p/DdKVPMEhTXe/',
+    'https://oginstagram.com/p/DdKVPMEhTXe/extra',
+    'https://oginstagram.com/p/../p/DdKVPMEhTXe/',
+    'https://oginstagram.com/%2e%2e/p/DdKVPMEhTXe/',
+    'https://oginstagram.com/p%2fDdKVPMEhTXe/',
+    'https://oginstagram.com/offload/DdKVPMEhTXe',
+    'https://oginstagram.com\\@evil.test/p/DdKVPMEhTXe/',
+    'https://oginstagram.com/p/DdKVPMEhTXe/\n',
+  ]) assert.equal(parseProviderUrl(url), null, url);
+  const source = parseSocialUrl('https://instagram.com/p/DdKVPMEhTXe/')!;
+  assert.deepEqual(getProviderCandidates({ ...source, path: '//evil.test/collect', platform: 'x', postId: 'forged' }),
+    getProviderCandidates(source.sourceUrl));
 });
 
 test('recognizes observed provider URLs only through the static catalog and original post shapes', () => {

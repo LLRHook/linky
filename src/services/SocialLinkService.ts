@@ -25,6 +25,7 @@ import { evaluateScope } from './ServerScope';
 import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
 import { expectedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
 import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
+import { findReplyContext, formatReplyExcerpt, type ReplyContext } from './ReplyContext';
 
 const MAX_CONTENT_LENGTH = 2_000;
 const INSTAGRAM_PREVIEW_NOTICE = '\n-# Instagram preview could not be verified; the original post is still here.';
@@ -87,8 +88,9 @@ export function repostControls(original: string, { retry = false, remove = true 
 }
 
 /** Quote plain leading context without pulling apart existing Markdown or URLs. */
-export function formatLinkRepost(content: string, authorId: string, replyUrl?: string): string {
-  const credit = `> **Shared by <@${authorId}>**${replyUrl ? ` (reply to ${replyUrl})` : ''}`;
+export function formatLinkRepost(content: string, authorId: string, reply?: ReplyContext): string {
+  const attribution = reply ? reply.authorId ? ` (reply to <@${reply.authorId}>)` : ' (reply)' : '';
+  const credit = `> **Shared by <@${authorId}>**${attribution}${reply ? '\n' + formatReplyExcerpt(reply.excerpt) : ''}`;
   const fallback = `${credit}\n${content}`;
   // Start at the first URL, even if it is unrelated to X. Never extract a nested URL.
   const firstUrl = /[a-z][a-z\d+.-]*:\/\//i.exec(content);
@@ -260,7 +262,7 @@ export function createLinkRepostHandler(
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
   { platforms = REWRITE_PLATFORMS, translateTweet, translateInstagram, serverIds = [], serverEnabled, serverPreferences,
-    lookupYouTube, publishYouTube, verifyPreview = waitForPreviews, observePreview, rememberRepost }: {
+    lookupYouTube, publishYouTube, verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost }: {
     platforms?: readonly RewritePlatform[];
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
     translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
@@ -272,6 +274,7 @@ export function createLinkRepostHandler(
     verifyPreview?: (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult>;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     rememberRepost?: (record: RepostRecord) => Promise<boolean>;
+    findRepost?: (replacementId: string) => RepostRecord | undefined;
   } = {}
 ): (message: Message, options?: { refresh?: boolean; forceReply?: boolean }) => Promise<RepostRefreshResult> {
   const allowedChannelIds = typeof channelIds === 'string' ? [channelIds] : channelIds;
@@ -325,11 +328,7 @@ export function createLinkRepostHandler(
         return;
       }
 
-      // IDs provide unambiguous credit without interpolating user-controlled display names.
-      const replyUrl = message.reference?.messageId
-        ? `https://discord.com/channels/${message.guildId}/${message.reference.channelId ?? channelId}/${message.reference.messageId}`
-        : undefined;
-      // Discord can mutate this cached message while a language lookup is pending.
+      // Discord can mutate this cached message while a metadata lookup is pending.
       const version = sourceVersion(message);
       let youtube = new Map<string, YouTubeStatistics>();
       const youtubeDisplay = preferences.youtubeDisplay ?? 'counts-and-comment';
@@ -339,7 +338,9 @@ export function createLinkRepostHandler(
       }
       // Preview-only keeps Discord's already-native YouTube message untouched.
       if (rewritten === message.content && !youtube.size) return;
-      const body = formatLinkRepost(rewritten, message.author.id, replyUrl);
+      const replyContext = await findReplyContext(message, findRepost);
+      if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
+      const body = formatLinkRepost(rewritten, message.author.id, replyContext);
       const tweetPresentation = translateTweet && preferences.translateTweets !== false && activePlatforms.includes('x') &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
         ? await translateRepost(message.content, activePlatforms, translateTweet,
@@ -357,7 +358,7 @@ export function createLinkRepostHandler(
         const video = parseYouTubeUrl(url);
         return video && youtube.has(video.id) && visibleLink(translated.content, position) ? video.url : url;
       });
-      const formatted = formatLinkRepost(canonical, message.author.id, replyUrl);
+      const formatted = formatLinkRepost(canonical, message.author.id, replyContext);
       let content = formatted.length <= MAX_CONTENT_LENGTH ? formatted : body;
       const youtubeCards = youtubeLinks.filter(link => youtube.has(link.id))
         .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url, youtubeDisplay))
@@ -441,7 +442,10 @@ export function createLinkRepostHandler(
       // Retry only catalogued alternatives, on the same output, with a bounded budget.
       for (let attempt = 0; !preview.ok && attempt < 2 && enabled(); attempt++) {
         const recovered = nextProviderContent(content, preview.missing, attempted);
-        if (recovered === content) break;
+        // An alternate hostname can be longer, including once per repeated link.
+        // Preserve room for the retained-caption notice if neither provider works.
+        const recoveryLimit = MAX_CONTENT_LENGTH - (instagramIds.size ? INSTAGRAM_PREVIEW_NOTICE.length : 0);
+        if (recovered === content || recovered.length > recoveryLimit) break;
         content = recovered;
         await replacement.edit({ content, embeds: embeds ?? [], allowedMentions: { parse: [] } });
         expected = expectations();

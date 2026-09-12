@@ -62,7 +62,7 @@ function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   const same = identity(embed.url) !== null && identity(embed.url) === identity(expected.url);
   if (!same) return false;
   if (expected.captionFree && embed.description?.trim()) return false;
-  const errorTitle = /^(?:error(?:\s+\d+)?|not found|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;
+  const errorTitle = /^(?:error(?:\s+\d+)?|not found|temporarily unavailable|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;
   const errorText = /^(?:sorry,? (?:that |this )?(?:post|tweet) (?:doesn.t exist|could not be found)|this (?:tweet|post|video) (?:is (?:unavailable|private)|has been deleted)|could not (?:find|load) (?:this |the )?(?:tweet|post|video)|try again later)/i;
   if (errorTitle.test(embed.title?.trim() ?? '') || errorText.test(embed.description?.trim() ?? '')) return false;
   const media = Boolean(embed.video?.url || embed.image?.url || embed.thumbnail?.url);
@@ -103,10 +103,9 @@ export async function waitForPreviews(message: Pick<Message, 'embeds' | 'fetch'>
 export function nextProviderContent(content: string, missing: readonly ExpectedPreview[], attempted: Set<string>): string {
   let next = content;
   for (const item of missing) {
-    // Normal provider fallbacks would reintroduce the caption already translated above.
-    if (item.captionFree) continue;
     attempted.add(`${item.source}:${item.providerId}`);
-    const candidate = getProviderCandidates(item.source).find(candidate => !attempted.has(`${item.source}:${candidate.providerId}`));
+    const candidate = getProviderCandidates(item.source, { captionFree: item.captionFree })
+      .find(candidate => !attempted.has(`${item.source}:${candidate.providerId}`));
     if (!candidate) continue;
     attempted.add(`${item.source}:${candidate.providerId}`);
     next = mapLinks(next, url => url === item.url ? candidate.url : url);

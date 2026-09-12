@@ -65,6 +65,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     lookupYouTube,
     observePreview: (expected, result) => health.record(expected, result),
     rememberRepost: record => registry?.remember(record) ?? Promise.resolve(false),
+    findRepost: id => registry?.findByReplacement(id),
     publishYouTube: (message, embeds) => youtubeStats?.publish(message, embeds) ?? Promise.resolve(null),
   });
   client.on(Events.MessageCreate, message => { void repost(message); });

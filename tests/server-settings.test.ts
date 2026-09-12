@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ApplicationIntegrationType, InteractionContextType, MessageFlags, PermissionFlagsBits, PermissionsBitField, type ChatInputCommandInteraction } from 'discord.js';
+import { ApplicationIntegrationType, ComponentType, InteractionContextType, MessageFlags, PermissionFlagsBits, PermissionsBitField,
+  type APIMessageTopLevelComponent, type ChatInputCommandInteraction } from 'discord.js';
 import { ServerSettings, type ServerPreferences } from '../src/services/ServerSettings';
 import { data, execute } from '../src/commands/setup';
 
@@ -15,11 +16,21 @@ const SECOND = '222222222222222222';
 let nextFile = 0;
 const file = () => join(directory, `${nextFile++}.json`);
 
+function setupView(payload: { components: { toJSON(): APIMessageTopLevelComponent }[] }) {
+  assert.equal(payload.components.length, 1);
+  const container = payload.components[0].toJSON();
+  assert(container.type === ComponentType.Container);
+  return {
+    text: container.components.filter(component => component.type === ComponentType.TextDisplay).map(component => component.content).join('\n'),
+    rows: container.components.filter(component => component.type === ComponentType.ActionRow),
+  };
+}
+
 function interaction(enabled: boolean | null, guildId: string | null = FIRST,
   permissions: bigint = PermissionFlagsBits.ManageGuild) {
   const events: { name: string; payload: any }[] = [];
   const command = {
-    guildId, memberPermissions: new PermissionsBitField(permissions),
+    guildId, channelId: SECOND, memberPermissions: new PermissionsBitField(permissions),
     options: { getBoolean: (name: string, required: boolean) => {
       assert.equal(name, 'enabled'); assert.equal(required, undefined); return enabled;
     } },
@@ -114,7 +125,11 @@ test('setup defers privately and acknowledges only after the setting is saved', 
   release();
   await pending;
   assert.equal(new ServerSettings(path).get(FIRST), true);
-  assert.match(events[1].payload.content, /enabled throughout this server/);
+  assert.match(setupView(events[1].payload).text, /Server enabled/);
+  assert.match(setupView(events[1].payload).text, /Active in this channel/);
+  assert.equal(events[1].payload.flags, MessageFlags.IsComponentsV2);
+  assert.equal(events[1].payload.content, null);
+  assert.deepEqual(events[1].payload.embeds, []);
   assert.deepEqual(events[1].payload.allowedMentions, { parse: [] });
   await execute(interaction(false).command, servers);
   assert.equal(new ServerSettings(path).get(FIRST), false);
@@ -244,7 +259,11 @@ test('setup without an option opens a private panel without changing legacy enab
   const { command, events } = interaction(null);
   await execute(command, servers);
   assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
-  assert.equal(events[1].payload.components.length, 4);
+  assert.equal(setupView(events[1].payload).rows.length, 4);
+  assert.match(setupView(events[1].payload).text, /Active in this channel/);
+  assert.equal(events[1].payload.flags, MessageFlags.IsComponentsV2);
+  assert.equal(events[1].payload.content, null);
+  assert.deepEqual(events[1].payload.embeds, []);
   assert.equal(servers.get(FIRST), true);
   assert.equal(servers.get(SECOND), false);
   assert.deepEqual(servers.getPreferences(FIRST), {});

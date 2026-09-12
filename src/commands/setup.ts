@@ -30,11 +30,9 @@ export async function execute(interaction: ChatInputCommandInteraction, servers:
     await interaction.editReply({ content: 'Could not save this setting. Linky’s previous configuration is unchanged. Try again or contact the bot operator.', allowedMentions: { parse: [] } });
     throw err;
   }
-  const restricted = servers.getPreferences(interaction.guildId).channelIds !== undefined;
   const notice = enabled === null ? undefined : enabled
-    ? restricted ? 'Linky is enabled in your selected channels wherever it has the required permissions.'
-      : 'Linky is enabled throughout this server wherever it has channel permissions. New channels and threads are included.'
-    : 'Linky is disabled throughout this server. Your preferences are saved for later.';
+    ? 'Server enabled. Channel selection kept.'
+    : 'Server disabled. Your choices are saved.';
   await interaction.editReply(buildSetupPanel({ guildId: interaction.guildId, channelId: interaction.channelId,
     threadParentId: interaction.channel?.isThread() ? interaction.channel.parentId : undefined }, config, servers, notice));
 }
