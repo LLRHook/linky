@@ -1,12 +1,12 @@
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType,
-  MessageFlags, PermissionFlagsBits, StringSelectMenuBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, ContainerBuilder,
+  MessageFlags, PermissionFlagsBits, SeparatorBuilder, StringSelectMenuBuilder, TextDisplayBuilder,
   type ButtonInteraction, type ChannelSelectMenuInteraction, type StringSelectMenuInteraction,
 } from 'discord.js';
 import type { Config } from '../config';
 import type { ServerSettings } from '../services/ServerSettings';
 import { REWRITE_PLATFORMS } from '../services/SocialLinkService';
-import { describeScope, evaluateScope } from '../services/ServerScope';
+import { evaluateScope } from '../services/ServerScope';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
 
 const PREFIX = 'linky:setup:';
@@ -30,40 +30,56 @@ export function buildSetupPanel(context: PanelContext, config: Config, servers: 
   const scope = evaluateScope({ ...context, serverEnabled: enabled, preferences,
     operatorChannelIds: config.channelIds, operatorServerIds: config.serverIds });
   const channels = preferences.channelIds;
-  const mode = new StringSelectMenuBuilder().setCustomId(SETUP_ACTIONS.mode).setPlaceholder('Choose Replace or Reply')
-    .addOptions({ label: 'Replace', value: 'replace', description: 'Replace the source after the replacement is checked.', default: effective.mode === 'replace' },
+  const mode = new StringSelectMenuBuilder().setCustomId(SETUP_ACTIONS.mode).setPlaceholder('Choose how Linky posts')
+    .addOptions({ label: 'Replace', value: 'replace', description: 'Replace the original after its new preview is checked.', default: effective.mode === 'replace' },
       { label: 'Reply', value: 'reply', description: 'Keep the original and add a reply.', default: effective.mode === 'reply' });
   const platforms = new StringSelectMenuBuilder().setCustomId(SETUP_ACTIONS.platforms)
-    .setPlaceholder('Choose platforms; clear to turn all off').setMinValues(0).setMaxValues(REWRITE_PLATFORMS.length)
+    .setPlaceholder('Select platforms; clear to turn all off').setMinValues(0).setMaxValues(REWRITE_PLATFORMS.length)
     .addOptions(REWRITE_PLATFORMS.map(platform => ({ label: PLATFORM_NAMES[platform], value: platform,
-      description: config.rewritePlatforms.includes(platform) ? `Process ${PLATFORM_NAMES[platform]} links.` : 'Currently unavailable from the bot operator.',
+      description: config.rewritePlatforms.includes(platform) ? `Fix ${PLATFORM_NAMES[platform]} links.` : 'Unavailable on this bot.',
       default: effective.platforms.includes(platform) })));
   const channelSelect = new ChannelSelectMenuBuilder().setCustomId(SETUP_ACTIONS.channels)
     .setPlaceholder('Choose up to 25 channels; clear for none').setMinValues(0).setMaxValues(25)
     .addChannelTypes(CHANNEL_TYPES);
   if (channels?.length) channelSelect.setDefaultChannels(channels);
+  const status = scope.enabled ? '**Active in this channel**' :
+    scope.reason === 'server-disabled' ? '**Server disabled**' :
+      scope.reason === 'channel-excluded' ? '**Not active in this channel**' : '**Not enabled in this channel**';
+  const access = scope.source === 'operator-channel' ? 'Access is limited to the bot’s configured channels.' :
+    scope.reason === 'channel-excluded' ? 'This channel is outside your selection.' :
+      scope.enabled ? 'Linky fixes links wherever your selection and permissions allow.' :
+        'Enable the server to start in your chosen channels.';
+  const channelSummary = channels === undefined ? 'All allowed channels' :
+    channels.length ? `${channels.length} selected` : 'None selected · Linky will stay inactive';
+  const threadHint = enabled === true || config.serverIds.includes(context.guildId)
+    ? 'Selected parent channels include their accessible threads.' : 'Existing channel access still applies.';
+  const text = (content: string) => new TextDisplayBuilder().setContent(content);
+  const card = new ContainerBuilder().setAccentColor(scope.enabled ? 0x24c8d5 : 0x747f8d)
+    .addTextDisplayComponents(text(`## Linky setup\n${status}\n-# ${access}`))
+    .addSeparatorComponents(new SeparatorBuilder())
+    .addTextDisplayComponents(text('**Posting mode**'))
+    .addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(mode))
+    .addTextDisplayComponents(text(`**Platforms** · ${effective.platforms.length} enabled`))
+    .addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(platforms))
+    .addTextDisplayComponents(text(`**Channels** · ${channelSummary}\n-# ${threadHint}`))
+    .addActionRowComponents(new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(channelSelect))
+    .addSeparatorComponents(new SeparatorBuilder())
+    .addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(SETUP_ACTIONS.enable).setLabel('Enable server').setStyle(ButtonStyle.Primary).setDisabled(enabled === true),
+      new ButtonBuilder().setCustomId(SETUP_ACTIONS.disable).setLabel('Disable server').setStyle(ButtonStyle.Secondary).setDisabled(enabled === false),
+      new ButtonBuilder().setCustomId(SETUP_ACTIONS.allChannels).setLabel('All channels').setStyle(ButtonStyle.Secondary).setDisabled(channels === undefined),
+    ))
+    .addTextDisplayComponents(text([
+      notice && `-# ${notice}`,
+      '-# Selections save automatically. They never enable the server.',
+      '-# /settings · Translation & YouTube   /diagnose · Channel check',
+    ].filter(Boolean).join('\n')));
   return {
-    content: [
-      notice, '**Linky setup**',
-      enabled === true ? 'Server enabled.' : enabled === false ? 'Server disabled.' : 'No saved enablement; existing operator scope applies.',
-      describeScope(scope),
-      channels === undefined ? 'Channel preference: all channels allowed by the current enablement.' :
-        channels.length ? `Selected channels: ${channels.map(id => `<#${id}>`).join(', ')}.` : 'Channel preference: none.',
-      'Selecting a parent channel includes its accessible threads. Existing operator-only channel scope remains exact until you explicitly enable the server.',
-      `Mode: ${effective.mode === 'reply' ? 'Reply' : 'Replace'}. Platforms: ${effective.platforms.map(platform => PLATFORM_NAMES[platform]).join(', ') || 'none'}.`,
-      'Menu changes save immediately without enabling Linky. Enable server keeps your channel selection; Disable server stops all processing.',
-      'Use /settings for translation and YouTube details, or /diagnose to check this channel. Preview availability depends on Discord and the provider.',
-    ].filter(Boolean).join('\n'),
-    components: [
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(mode),
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(platforms),
-      new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(channelSelect),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId(SETUP_ACTIONS.enable).setLabel('Enable server').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(SETUP_ACTIONS.disable).setLabel('Disable server').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(SETUP_ACTIONS.allChannels).setLabel('All channels').setStyle(ButtonStyle.Secondary),
-      ),
-    ],
+    // Clear legacy panel text when an existing pre-V2 message is updated.
+    content: null,
+    embeds: [],
+    flags: MessageFlags.IsComponentsV2 as const,
+    components: [card],
     allowedMentions: { parse: [] as [] },
   };
 }
@@ -80,7 +96,7 @@ export async function handleSetupComponent(interaction: SetupComponent, config: 
   const context = { guildId: interaction.guildId, channelId: interaction.channelId,
     threadParentId: interaction.channel?.isThread() ? interaction.channel.parentId : undefined };
   let change: () => Promise<void>;
-  let notice = 'Preferences saved. Server enablement is unchanged.';
+  let notice = 'Saved.';
   if (id === SETUP_ACTIONS.mode && interaction.isStringSelectMenu() && interaction.values.length === 1 &&
       (interaction.values[0] === 'replace' || interaction.values[0] === 'reply')) {
     const mode = interaction.values[0];
@@ -100,13 +116,13 @@ export async function handleSetupComponent(interaction: SetupComponent, config: 
     change = () => servers.update(interaction.guildId!, { channelIds });
   } else if (interaction.isButton() && id === SETUP_ACTIONS.enable) {
     change = () => servers.set(interaction.guildId!, true);
-    notice = 'Server enabled. Your selected channel restriction still applies.';
+    notice = 'Server enabled. Channel selection kept.';
   } else if (interaction.isButton() && id === SETUP_ACTIONS.disable) {
     change = () => servers.set(interaction.guildId!, false);
-    notice = 'Server disabled. Your preferences are saved for later.';
+    notice = 'Server disabled. Your choices are saved.';
   } else if (interaction.isButton() && id === SETUP_ACTIONS.allChannels) {
     change = () => servers.resetChannelScope(interaction.guildId!);
-    notice = 'Channel restriction cleared. Saved enablement and operator scope are unchanged.';
+    notice = 'All allowed channels selected.';
   } else {
     await interaction.reply({ content: 'This setup selection is invalid. Run /setup to open a new panel.',
       flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
