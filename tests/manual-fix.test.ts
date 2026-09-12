@@ -194,6 +194,37 @@ test('manual X fallback verifies the alternate on the same response and preserve
   for (const event of f.events.filter(event => event.name === 'edit')) assert.deepEqual(event.payload.allowedMentions, { parse: [] });
 });
 
+test('manual Instagram fallback recovers slash and context actions on the same response', async () => {
+  const original = 'https://www.instagram.com/p/DdKVPMEhTXe/?igsh=tracking';
+  const primary = 'https://www.instagram7.com/p/DdKVPMEhTXe/', alternate = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+  for (const context of [false, true]) {
+    const f = command(original, context), preview = previewChecks(f);
+    f.state.render = content => content === alternate
+      ? [{ url: alternate, image: { url: 'https://media.example/requested-photo.jpg' } }] : [];
+    await execute(f.interaction, config, preview.dependencies);
+    assert.deepEqual(f.events.map(event => event.name), ['defer', 'edit', 'edit']);
+    assert.deepEqual(f.events.filter(event => event.name === 'edit').map(event => event.payload.content), [primary, alternate]);
+    assert.deepEqual(preview.observations.map(item => item.result.ok), [false, true]);
+    assert.equal(f.response.content, alternate);
+    assert.deepEqual(originalControls(f), ['https://www.instagram.com/p/DdKVPMEhTXe/']);
+    assert.equal(f.input.targetMessage.content, original);
+    for (const event of f.events.filter(event => event.name === 'edit')) assert.deepEqual(event.payload.allowedMentions, { parse: [] });
+  }
+});
+
+test('manual Instagram recovery reports failure when both providers return a matching error card', async () => {
+  const original = 'https://www.instagram.com/p/DdKVPMEhTXe/';
+  const f = command(original, true), preview = previewChecks(f);
+  f.state.render = content => [{ url: content.split('\n')[0], title: 'Error', description: 'Could not retrieve this post.' }];
+  await execute(f.interaction, config, preview.dependencies);
+  assert.deepEqual(preview.checks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
+  assert(preview.observations.every(item => !item.result.ok));
+  assert.equal(f.events.filter(event => event.name === 'edit').length, 3);
+  assert.match(f.response.content, /preview could not be confirmed/i);
+  assert.deepEqual(originalControls(f), [original]);
+  assert.equal(f.input.targetMessage.content, original);
+});
+
 test('missing, unrelated and matching error previews exhaust manual X recovery with an honest failure note', async () => {
   const badPreviews: APIEmbed[][] = [[],
     [{ url: 'https://fixupx.com/jack/status/999', title: 'Other post', description: 'Not the requested post.' }],

@@ -16,6 +16,8 @@ const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '1700000000000000005';
 const ORIGINAL_X = 'https://twitter.com/jack/status/20?s=46';
 const PRIMARY_X = 'https://fixupx.com/jack/status/20', ALTERNATE_X = 'https://vxtwitter.com/jack/status/20';
+const ORIGINAL_IG = 'https://www.instagram.com/p/DdKVPMEhTXe/?igsh=tracking';
+const PRIMARY_IG = 'https://www.instagram7.com/p/DdKVPMEhTXe/', ALTERNATE_IG = 'https://oginstagram.com/p/DdKVPMEhTXe/';
 const YOUTUBE_ID = 'dQw4w9WgXcQ', NATIVE_YOUTUBE = `https://www.youtube.com/watch?v=${YOUTUBE_ID}`;
 const xPreview: APIEmbed = { url: PRIMARY_X, title: 'Jack', description: 'A public post.' };
 const videoPreview: APIEmbed = { url: NATIVE_YOUTUBE, video: { url: `https://www.youtube.com/embed/${YOUTUBE_ID}` } };
@@ -161,6 +163,61 @@ test('automatic X fallback edits one output and verifies it before saving owners
   assert.deepEqual(replacement.options.allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
   assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
     replacementId: replacement.message.id, authorId: AUTHOR, mode: 'replace' }]);
+});
+
+test('automatic Instagram recovery verifies OGInstagram on the same replacement before deleting the original', async () => {
+  const f = delivery(ORIGINAL_IG);
+  f.state.render = (_round, message) => message.content.includes(ALTERNATE_IG)
+    ? [{ url: ALTERNATE_IG, image: { url: 'https://media.example/requested-photo.jpg' }, description: 'The requested photo.' }]
+    : [];
+  await f.create()(f.source);
+  assert.equal(f.sent.length, 1, 'recovery edits one message instead of sending another replacement');
+  const replacement = f.sent[0];
+  assert(replacement.options.content?.includes(PRIMARY_IG));
+  assert(replacement.message.content.includes(ALTERNATE_IG));
+  assert(!replacement.message.content.includes(PRIMARY_IG));
+  assert.equal(replacement.edits.filter(edit => typeof edit.content === 'string').length, 1);
+  assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
+  assert.equal(replacement.deleted, false);
+  assert.equal(f.state.originalDeleted, true);
+  const verified = f.events.indexOf('verify:2:passed'), saved = f.events.indexOf(`remember:${replacement.message.id}`);
+  assert(verified >= 0 && saved > verified && f.events.indexOf('delete:source') > saved);
+  assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
+    replacementId: replacement.message.id, authorId: AUTHOR, mode: 'replace' }]);
+  assert.deepEqual(replacement.options.allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+});
+
+test('failed Instagram providers preserve the source and leave only an owned retry notice', async () => {
+  for (const previews of [[],
+    [{ url: 'https://oginstagram.com/p/Unrelated/', image: { url: 'https://media.example/other-photo.jpg' } }],
+    [{ url: ALTERNATE_IG, title: 'Error', description: 'Could not retrieve this post.' }],
+  ] as APIEmbed[][]) {
+    const f = delivery(ORIGINAL_IG);
+    f.state.render = () => previews;
+    await f.create()(f.source);
+    assert.equal(f.state.originalDeleted, false);
+    assert.equal(f.source.content, ORIGINAL_IG);
+    assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
+    assert.equal(f.sent.length, 2);
+    assert(f.sent[0].deleted);
+    assert.equal(f.sent[1].deleted, false);
+    assert.deepEqual(f.sent[1].options.reply, { messageReference: SOURCE, failIfNotExists: true });
+    assert.match(JSON.stringify(f.sent[1].options.components), /linky:retry/);
+    assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
+      replacementId: f.sent[1].message.id, authorId: AUTHOR, mode: 'reply' }]);
+  }
+});
+
+test('matching Instagram reel thumbnails from both providers cannot authorize source deletion', async () => {
+  const f = delivery('https://www.instagram.com/reels/DdFKS1ABmK4/');
+  f.state.render = round => [{ url: round === 1 ? 'https://www.instagram7.com/reels/DdFKS1ABmK4/' :
+    'https://oginstagram.com/reels/DdFKS1ABmK4/', thumbnail: { url: 'https://media.example/reel-poster.jpg' } }];
+  await f.create()(f.source);
+  assert.equal(f.expectedChecks.length, 2);
+  assert(f.events.includes('verify:1:failed') && f.events.includes('verify:2:failed'));
+  assert.equal(f.state.originalDeleted, false);
+  assert(f.sent[0].deleted);
+  assert.equal(f.remembered[0].mode, 'reply');
 });
 
 test('editing the source during preview loading removes the stale output without touching the edit', async () => {
