@@ -436,6 +436,19 @@ test('link-only parents use displayed embed text then title or a short fallback'
   }
 });
 
+test('parent preview punctuation is readable without exposing its Markdown escape backslashes', async () => {
+  const f = fixture();
+  f.source.type = MessageType.Reply;
+  f.source.reference = { messageId: PARENT_MESSAGE_ID };
+  f.referenceLookup.fetch = async () => ({ id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID,
+    guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID }, content: 'https://x.com/parent/status/2',
+    embeds: [{ description: 'After its release \\(Early 2021\\) this still matters\\.' }] });
+  await f.run();
+  const excerpt = f.sent[0].content!.split('\n')[1];
+  assert.equal(excerpt, '-# *After its release (Early 2021) this still matters.*');
+  assert(!excerpt.includes('\\'));
+});
+
 test('many parent links followed by text finish promptly and do not select an embed fallback', { timeout: 1000 }, async () => {
   const f = fixture();
   f.source.type = MessageType.Reply;
