@@ -131,6 +131,28 @@ test('Remove rejects other members even with Manage Messages in both repost mode
   }
 });
 
+test('hosted media cleanup runs after confirmed deletion and survives a failed cleanup across restart', async t => {
+  const f = await fixture(t); let fail = true; const released: string[] = [];
+  const cleanup = async (record: RepostRecord) => {
+    assert.equal(f.messages.has(record.replacementId), false);
+    if (fail) throw Error('Storage unavailable');
+    released.push(record.replacementId);
+  };
+  const registry = f.manager({ afterReplacementRemoved: cleanup });
+  await registry.remember(f.record);
+  await registry.handleRemove(f.interaction(MOD).value);
+  assert.deepEqual(released, []); assert.deepEqual(f.deleted, []);
+  await registry.handleRemove(f.interaction().value);
+  assert.deepEqual(f.deleted, [f.replacement.id]);
+  assert((await f.saved()).remove.includes(f.replacement.id));
+  registry.stop(); fail = false;
+  const restored = f.manager({ afterReplacementRemoved: cleanup });
+  await restored.sweep();
+  assert.deepEqual(released, [f.replacement.id]);
+  assert.deepEqual((await f.saved()).records, []);
+  assert(f.messages.has(f.source.id));
+});
+
 test('Retry still checks moderator permissions fresh and fetched ownership cannot be forged', async t => {
   const f = await fixture(t), registry = f.manager();
   await registry.remember(f.record);

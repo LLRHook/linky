@@ -6,6 +6,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+test('original media inspection preserves native 720p and 1080p bytes and rejects incompatible codecs', {
+  skip: process.env.LINKY_VIDEO_RUNTIME_TEST !== 'true', timeout: 60_000,
+}, async () => {
+  const require = createRequire(join(process.cwd(), 'package.json'));
+  const { createOriginalVideoInspector } = require('./dist/services/VideoAttachment.js');
+  const directory = mkdtempSync(join(tmpdir(), 'linky-original-runtime-'));
+  try {
+    for (const [width, height, codec] of [[1280, 720, 'libx264'], [1920, 1080, 'libx264'], [640, 360, 'mpeg4']]) {
+      const input = join(directory, `${width}-${codec}.mp4`);
+      execFileSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', `testsrc2=size=${width}x${height}:rate=24`,
+        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100', '-t', '2', '-c:v', codec,
+        ...codec === 'libx264' ? ['-preset', 'ultrafast'] : [], '-threads', '2', '-c:a', 'aac', '-pix_fmt', 'yuv420p', input],
+      { timeout: 20_000, windowsHide: true, stdio: 'pipe' });
+      const bytes = readFileSync(input), copy = Buffer.from(bytes);
+      const result = await createOriginalVideoInspector()(bytes);
+      assert.deepEqual(bytes, copy, 'Inspection must not transcode or mutate the original');
+      if (codec === 'libx264') {
+        assert(result); assert.equal(result.width, width); assert.equal(result.height, height);
+        assert(result.duration >= 1.9 && result.duration <= 2.2); assert.equal(result.fps, 24);
+      } else assert.equal(result, null);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('production FFmpeg prepares a complete, playable MP4 from a generated test pattern', {
   skip: process.env.LINKY_VIDEO_RUNTIME_TEST !== 'true', timeout: 180_000,
 }, async () => {

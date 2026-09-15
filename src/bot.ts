@@ -24,9 +24,11 @@ import { replyToYouTubeControl } from './services/YouTubeInteractions';
 import { evaluateScope } from './services/ServerScope';
 import { PromptService } from './services/PromptService';
 import { createEromePreparer } from './services/Erome';
+import { createEromeMediaRuntime } from './services/EromeMediaRuntime';
 
 export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
-  servers = new ServerSettings(settings.settingsPath)): Client {
+  servers = new ServerSettings(settings.settingsPath),
+  startMedia = createEromeMediaRuntime): Client {
   const client = new Client({
     partials: [Partials.Message],
     intents: [
@@ -55,6 +57,20 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   }
   const health = new PreviewHealth();
   const prepareErome = createEromePreparer();
+  const mediaReady = settings.eromeMedia ? startMedia(settings.eromeMedia).catch(() => {
+    log.warn('Original video hosting is unavailable; using the attachment fallback');
+    return undefined;
+  }) : Promise.resolve(undefined);
+  const releaseEromeMedia = async (messageId: string) => {
+    const media = await mediaReady;
+    if (settings.eromeMedia && !media) throw Error('Video storage unavailable');
+    await media?.release(messageId);
+  };
+  const mediaOptions = settings.eromeMedia ? {
+    prepareEromeMedia: async (source: string) => (await mediaReady)?.prepare(source) ?? null,
+    bindEromeMedia: async (id: string, messageId: string) => (await mediaReady)?.bind(id, messageId) ?? false,
+    releaseEromeMedia,
+  } : {};
   const retrying = new Set<string>();
   const retries = new Map<string, number>();
   const fetchMessage = async (channelId: string, messageId: string) => {
@@ -62,7 +78,10 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     return channel && 'messages' in channel ? channel.messages.fetch({ message: messageId, force: true }) : null;
   };
   const destroy = client.destroy.bind(client);
-  client.destroy = async () => { registry?.stop(); youtubeStats?.stop(); await destroy(); };
+  client.destroy = async () => {
+    registry?.stop(); youtubeStats?.stop();
+    try { await (await mediaReady)?.close(); } finally { await destroy(); }
+  };
 
   const repost = createLinkRepostHandler(settings.channelIds, log, undefined, {
     serverEnabled: id => servers.get(id),
@@ -73,6 +92,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     translateInstagram,
     lookupYouTube,
     prepareErome,
+    ...mediaOptions,
     observePreview: (expected, result) => health.record(expected, result),
     rememberRepost: record => registry?.remember(record) ?? Promise.resolve(false),
     findRepost: id => registry?.findByReplacement(id),
@@ -80,11 +100,13 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   });
   client.on(Events.MessageCreate, message => { void repost(message); });
   client.on(Events.MessageDelete, message => {
+    void releaseEromeMedia(message.id).catch(() => log.warn('Video storage cleanup failed'));
     void registry?.handleSourceDelete(message).catch(() => log.warn('Source deletion cleanup will be retried'));
     void registry?.handleReplacementDelete(message).catch(() => log.warn('Preview deletion cleanup will be retried'));
   });
   client.on(Events.MessageBulkDelete, messages => {
     for (const message of messages.values()) {
+      void releaseEromeMedia(message.id).catch(() => log.warn('Video storage cleanup failed'));
       void registry?.handleSourceDelete(message).catch(() => log.warn('Bulk source deletion cleanup will be retried'));
       void registry?.handleReplacementDelete(message).catch(() => log.warn('Bulk preview deletion cleanup will be retried'));
     }
@@ -108,11 +130,11 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         else if (interaction.commandName === 'setup') await setup(interaction, servers, settings);
         else if (interaction.commandName === 'settings') await preferences(interaction, settings, servers);
         else if (interaction.commandName === 'diagnose') await diagnose(interaction, settings, servers, async link => health.describe(link));
-        else if (interaction.commandName === 'fix') await fix(interaction, settings, { prepareErome,
+        else if (interaction.commandName === 'fix') await fix(interaction, settings, { prepareErome, ...mediaOptions,
           serverPreferences: id => servers.getPreferences(id), observePreview: (expected, result) => health.record(expected, result) });
         else if (interaction.commandName === 'prompt') await prompt(interaction, prompts);
       } else if (interaction.isMessageContextMenuCommand()) {
-        if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { prepareErome,
+        if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { prepareErome, ...mediaOptions,
           serverPreferences: id => servers.getPreferences(id), observePreview: (expected, result) => health.record(expected, result) });
       } else if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
         if (interaction.isButton() && await promptStatus(interaction, prompts)) return;
@@ -131,7 +153,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         })) return;
         if (await handleSetupComponent(interaction, settings, servers)) return;
         if (!interaction.isButton()) return;
-        if (await removeManual(interaction) || await registry?.handleRemove(interaction)) return;
+        if (await removeManual(interaction, releaseEromeMedia) || await registry?.handleRemove(interaction)) return;
         if (interaction.customId !== 'linky:retry' || !registry) return;
         const record = await registry.authorize(interaction);
         if (!record) return;
@@ -162,6 +184,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   client.once(Events.ClientReady, async (readyClient) => {
     try {
       await readyClient.application.commands.set(commandDefinitions);
+      await mediaReady;
       // Cleanup continues even if the API key or YouTube support is later disabled.
       youtubeStats = new YouTubeStats({
         path: join(dirname(settings.settingsPath), 'youtube-stats.json'),
@@ -173,6 +196,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
       registry = new RepostRegistry({
         path: join(dirname(settings.settingsPath), 'reposts.json'), botUserId: readyClient.user.id, fetchMessage,
         removeRelated: record => youtubeStats!.removeForMessage(record.replacementId),
+        afterReplacementRemoved: record => releaseEromeMedia(record.replacementId),
         regenerate: source => repost(source as Message, { refresh: true, forceReply: true }),
         canManageMessages: async (record, userId) => {
           const guild = await client.guilds.fetch(record.guildId);
