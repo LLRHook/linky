@@ -25,6 +25,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "check:workers": "tsc --project tsconfig.worker.json",
     "test": "tsc --project tsconfig.test.json && tsx --test tests/*.test.ts && node --test tests/*.test.mjs",
     "start": "node dist/index.js",
     "register-commands": "tsx src/commands/register.ts"

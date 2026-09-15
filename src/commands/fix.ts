@@ -1,6 +1,6 @@
-import { ActionRowBuilder, ApplicationCommandType, ApplicationIntegrationType, ButtonBuilder, ButtonStyle,
+import { ActionRowBuilder, ApplicationCommandType, ApplicationIntegrationType, ButtonBuilder, ButtonStyle, ComponentType,
   ContextMenuCommandBuilder, InteractionContextType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
-  type ButtonInteraction, type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
+  type ButtonInteraction, type ChatInputCommandInteraction, type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../config';
 import { mapLinks, visibleLink } from '../services/LinkTokens';
 import { getProviderCandidates, parseSocialUrl } from '../services/SocialProviders';
@@ -11,6 +11,8 @@ import { parseEromeUrl } from '../services/Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer, type EromeProgress, type EromeStage } from '../services/EromeDelivery';
 import type { ServerPreferences } from '../services/ServerSettings';
 import { attachmentBudget, fitsAttachmentBudget } from '../services/AttachmentLimits';
+import { eromeMediaComponents, messageHasEromeMedia, onlyEromeLinks, sendEromeMedia, watchEromeMedia,
+  type EromeMediaBinding, type EromeMediaPreparer } from '../services/EromeMedia';
 
 const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall];
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
@@ -51,10 +53,14 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
 }
 
 export async function execute(interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
-  config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment, serverPreferences }: {
+  config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment,
+    prepareEromeMedia, bindEromeMedia, releaseEromeMedia, serverPreferences }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     prepareErome?: EromePreparer;
+    prepareEromeMedia?: EromeMediaPreparer;
+    bindEromeMedia?: EromeMediaBinding;
+    releaseEromeMedia?: (messageId: string) => Promise<void>;
     verifyErome?: typeof verifyEromeAttachment;
     serverPreferences?: (guildId: string) => ServerPreferences;
   } = {}): Promise<void> {
@@ -90,6 +96,54 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
   const buttons = links.map((link, index) => new ButtonBuilder().setStyle(ButtonStyle.Link)
     .setLabel(index ? `Original post ${index + 1}` : 'Original post').setURL(link.source));
   buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Remove').setCustomId('linky:remove-manual'));
+  const media = eromeSource && links.length === 1 && findEromeLinks(content).length === 1 && onlyEromeLinks(content) &&
+    prepareEromeMedia && bindEromeMedia && releaseEromeMedia
+    ? await prepareEromeMedia(eromeSource).catch(() => null) : null;
+  if (media) {
+    const initialControls = [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(0, -1)).toJSON()];
+    if (!eromeAllowed()) {
+      await interaction.editReply({ content: 'Erome previews are no longer allowed here. The album is unchanged.',
+        components: initialControls, allowedMentions: { parse: [] } });
+      return;
+    }
+    const watcher = watchEromeMedia(interaction.client, interaction.channelId, media);
+    let published: Message | undefined, rollbackAttempted = false;
+    const rollback = async () => {
+      rollbackAttempted = true;
+      try {
+        // A reply that entered V2 must keep using components, including its failure notice.
+        await interaction.editReply({ flags: MessageFlags.IsComponentsV2, components: [
+          { type: ComponentType.TextDisplay, content: `<${eromeSource}>\n-# The video preview could not be confirmed or is no longer allowed here. The album is unchanged.` },
+          ...initialControls,
+        ], allowedMentions: { parse: [] } });
+      } finally {
+        if (published) await releaseEromeMedia!(published.id);
+      }
+    };
+    try {
+      published = await sendEromeMedia(() => interaction.editReply({ flags: MessageFlags.IsComponentsV2,
+        components: eromeMediaComponents(media, links[0].fixed, initialControls), allowedMentions: { parse: [] } }), async () => {
+        const existing = await interaction.fetchReply();
+        return messageHasEromeMedia(existing, media.url) ? existing : null;
+      });
+      const bound = await bindEromeMedia!(media.id, published.id).catch(() => false);
+      if (!bound || !eromeAllowed()) { await rollback(); return; }
+      const verified = await watcher.verify(published).catch(() => false);
+      if (!verified || !eromeAllowed()) {
+        observePreview?.([], { ok: false, missing: [], videoMetadata: false });
+        await rollback();
+        return;
+      }
+      await interaction.editReply({ components: eromeMediaComponents(media, links[0].fixed,
+        [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons).toJSON()]), allowedMentions: { parse: [] } });
+      if (!eromeAllowed()) { await rollback(); return; }
+      observePreview?.([], { ok: true, missing: [], videoMetadata: true });
+    } catch (error) {
+      if (rollbackAttempted) throw error;
+      await rollback();
+    } finally { watcher.close(); }
+    return;
+  }
   let progress = Promise.resolve(), acceptingProgress = true;
   const onStage: EromeProgress = stage => {
     if (!acceptingProgress) return;
@@ -135,7 +189,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     ...(erome && !eromeVerified ? { attachments: [] } : {}), allowedMentions: { parse: [] } });
 }
 
-export async function removeManual(interaction: ButtonInteraction): Promise<boolean> {
+export async function removeManual(interaction: ButtonInteraction, releaseEromeMedia?: (messageId: string) => Promise<void>): Promise<boolean> {
   if (interaction.customId !== 'linky:remove-manual') return false;
   const message = interaction.message;
   // Discord supplies this metadata; a custom ID or display name is never authority.
@@ -148,5 +202,6 @@ export async function removeManual(interaction: ButtonInteraction): Promise<bool
   }
   await interaction.deferUpdate();
   await interaction.deleteReply();
+  await releaseEromeMedia?.(message.id);
   return true;
 }

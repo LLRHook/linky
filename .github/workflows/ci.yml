@@ -39,6 +39,9 @@ jobs:
       - name: TypeScript build (strict)
         run: npm run build
 
+      - name: Check regional video workers
+        run: npm run check:workers
+
       - name: Test link fixing and bot startup
         run: npm test
 
