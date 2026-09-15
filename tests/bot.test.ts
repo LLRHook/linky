@@ -296,18 +296,24 @@ test('failed application authentication leaves registered commands untouched', a
 });
 
 test('startup installs all commands before reporting readiness', async () => {
-  const { client, logs } = fixture();
+  const { client, logs, errors } = fixture();
   const calls: unknown[] = [];
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const application = { commands: { set: async (definitions: unknown) => { calls.push(definitions); await gate; } } };
   assert.deepEqual(calls, []);
-  client.emit(Events.ClientReady, { application, user: { id: '1491240385031311470', tag: 'Linky' }, guilds: { cache: new Map() } } as unknown as Client<true>);
-  await new Promise<void>(resolve => setImmediate(resolve));
+  const ready = { application, user: { id: '1491240385031311470', tag: 'Linky' }, guilds: { cache: new Map() } } as unknown as Client<true>;
+  const listeners = client.listeners(Events.ClientReady);
+  assert.equal(listeners.length, 1);
+  // EventEmitter.emit does not await an async listener. Observe its actual completion,
+  // including diagnostics initialization, while registration stays explicitly gated.
+  const startup = Promise.all(listeners.map(listener => listener(ready)));
   assert.deepEqual(calls, [commandDefinitions]);
   assert.equal(logs.some(entry => JSON.stringify(entry).includes('Logged in as')), false);
   release();
-  await new Promise<void>(resolve => setImmediate(resolve));
+  await startup;
+  assert.deepEqual(calls, [commandDefinitions], 'The complete command set is installed exactly once');
+  assert.deepEqual(errors, []);
   assert.ok(logs.some(entry => JSON.stringify(entry).includes('Logged in as Linky')));
 });
 
