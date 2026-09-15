@@ -1,11 +1,11 @@
 import { AttachmentBuilder } from 'discord.js';
-import { createVideoAttachment, MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES } from './VideoAttachment';
+import { createVideoAttachment, normalizeAttachmentLimit, MAX_VIDEO_BYTES, type VideoInput, type VideoOptions } from './VideoAttachment';
 import type { EromePreparer, EromeProgress, EromeStage } from './EromeDelivery';
 
 const MAX_HTML_BYTES = 1024 * 1024;
 const MAX_WAITING = 2, WAIT_TIMEOUT_MS = 300_000;
 const MAX_CONSUMERS = 8;
-const CACHE_TTL_MS = 300_000, MAX_CACHE_ENTRIES = 2, MAX_CACHE_BYTES = 18 * 1024 * 1024;
+const CACHE_TTL_MS = 300_000, MAX_CACHE_ENTRIES = 2, MAX_CACHE_BYTES = 128 * 1024 * 1024;
 type Prepared = { bytes: Buffer; videoCount: number };
 type Job = { result: Promise<Prepared | null>; stage: EromeStage; consumers: number; observers: Set<EromeProgress> };
 const jobs = new Map<string, Job>();
@@ -106,9 +106,9 @@ async function boundedBody(response: Response, limit: number): Promise<Buffer | 
 
 /** Prepare the first distinct video, without cookies, redirects, persistent media or an unbounded work queue. */
 export function createEromePreparer({ fetch: request = fetch, convert = createVideoAttachment() }: {
-  fetch?: typeof fetch; convert?: (input: Buffer) => Promise<Buffer | null>;
+  fetch?: typeof fetch; convert?: (input: VideoInput, options?: VideoOptions) => Promise<Buffer | null>;
 } = {}): EromePreparer {
-  const prepare = async (url: string, progress: (stage: EromeStage) => void): Promise<Prepared | null> => {
+  const prepare = async (url: string, maxBytes: number, progress: (stage: EromeStage) => void): Promise<Prepared | null> => {
     if (!await enter()) return null;
     try {
       progress('downloading');
@@ -123,42 +123,67 @@ export function createEromePreparer({ fetch: request = fetch, convert = createVi
       if (/Please wait a few moments|cf-challenge|Just a moment/i.test(text)) return null;
       const videos = videoSources(text);
       if (!videos.length) return null;
-      const media = await request(videos[0], { redirect: 'error', signal: AbortSignal.timeout(120_000),
+      const abort = new AbortController();
+      const media = await request(videos[0], { redirect: 'error', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120_000)]),
         headers: { Accept: 'video/mp4', Referer: url, 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
-      if (!/^video\/mp4(?:;|$)/i.test(media.headers.get('content-type') ?? '')) {
+      const length = media.headers.get('content-length');
+      const size = length === null ? undefined : Number(length);
+      if (!media.ok || !/^video\/mp4(?:;|$)/i.test(media.headers.get('content-type') ?? '') ||
+          (length !== null && (!/^\d+$/.test(length) || !Number.isSafeInteger(size) || !size || size > MAX_VIDEO_BYTES))) {
         await media.body?.cancel(); return null;
       }
-      const input = await boundedBody(media, MAX_VIDEO_BYTES);
-      if (input) progress('preparing');
-      const output = input && await convert(input);
-      return output?.length && output.length <= MAX_ATTACHMENT_BYTES ? { bytes: output, videoCount: videos.length } : null;
+      const reader = media.body?.getReader();
+      if (!reader) return null;
+      let complete = false;
+      const cancel = () => { abort.abort(); void reader.cancel().catch(() => {}); };
+      const stream = (async function* () {
+        let total = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > MAX_VIDEO_BYTES || (size !== undefined && total > size)) throw new Error('Erome media exceeds its size limit');
+          yield value;
+        }
+        if (!total || (size !== undefined && total !== size)) throw new Error('Incomplete Erome media');
+        complete = true;
+      })();
+      try {
+        const output = await convert({ stream, size, cancel }, { maxBytes, onEncoding: () => progress('preparing') });
+        return complete && output?.length && output.length <= maxBytes ? { bytes: output, videoCount: videos.length } : null;
+      } finally {
+        if (!complete) cancel();
+        reader.releaseLock();
+      }
     } catch { return null; }
     finally { leave(); }
   };
-  return async (raw, onStage) => {
+  return async (raw, onStage, options) => {
     const source = parseEromeUrl(raw);
-    if (!source) return null;
-    const cached = cache.get(source.url);
+    const maxBytes = normalizeAttachmentLimit(options?.maxBytes);
+    if (!source || maxBytes === null) return null;
+    const key = `${maxBytes}:${source.url}`;
+    const cached = cache.get(key);
     if (cached && cached.expiresAt > Date.now()) {
-      cache.delete(source.url);
-      cache.set(source.url, cached);
+      cache.delete(key);
+      cache.set(key, cached);
       notify(onStage, 'cached');
       return attachment(cached);
     }
-    if (cached) evict(source.url);
-    let job = jobs.get(source.url);
+    if (cached) evict(key);
+    let job = jobs.get(key);
     if (!job) {
       if (jobs.size >= MAX_WAITING + 1) return null;
       const created: Job = { result: Promise.resolve(null), stage: busy ? 'queued' : 'downloading', consumers: 0, observers: new Set() };
-      jobs.set(source.url, created);
-      created.result = prepare(source.url, stage => {
+      jobs.set(key, created);
+      created.result = prepare(source.url, maxBytes, stage => {
         if (created.stage === stage) return;
         created.stage = stage;
         for (const observer of created.observers) notify(observer, stage);
       }).then(result => {
-        if (result) remember(source.url, result);
+        if (result) remember(key, result);
         return result;
-      }).finally(() => { jobs.delete(source.url); });
+      }).finally(() => { jobs.delete(key); });
       job = created;
     }
     if (job.consumers >= MAX_CONSUMERS) return null;

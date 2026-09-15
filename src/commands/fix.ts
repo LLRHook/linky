@@ -10,6 +10,7 @@ import { expectedPreviews, nextProviderContent, waitForPreviews, type ExpectedPr
 import { parseEromeUrl } from '../services/Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer, type EromeProgress, type EromeStage } from '../services/EromeDelivery';
 import type { ServerPreferences } from '../services/ServerSettings';
+import { attachmentBudget, fitsAttachmentBudget } from '../services/AttachmentLimits';
 
 const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall];
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
@@ -77,6 +78,12 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
     return;
   }
+  const eromeBudget = attachmentBudget(interaction.attachmentSizeLimit);
+  if (eromeSource && !eromeBudget) {
+    await interaction.reply({ content: 'Discord has not provided a usable file upload limit for this preview. The album is unchanged.',
+      flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+    return;
+  }
   const sendPermission = interaction.channel?.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
   const privateResponse = interaction.inGuild() && !interaction.memberPermissions?.has(sendPermission);
   await interaction.deferReply(privateResponse ? { flags: MessageFlags.Ephemeral } : {});
@@ -91,11 +98,11 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     }).catch(() => {});
     return progress;
   };
-  const erome = eromeSource && prepareErome ? await prepareErome(eromeSource, onStage).catch(() => null) : null;
+  const erome = eromeSource && prepareErome ? await prepareErome(eromeSource, onStage, { maxBytes: eromeBudget }).catch(() => null) : null;
   acceptingProgress = false;
   // Discord REST bounds each request; drain accepted edits so none can overwrite the final reply.
   await progress;
-  if (eromeSource && (!erome || !eromeAllowed())) {
+  if (eromeSource && (!erome || !eromeAllowed() || !fitsAttachmentBudget(erome.file, eromeBudget))) {
     await interaction.editReply({ content: 'The Erome video could not be prepared. The album is unchanged. Limits: 64 MiB input and 5 minutes; unavailable, protected or busy media is skipped.',
       components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)], allowedMentions: { parse: [] } });
     return;
