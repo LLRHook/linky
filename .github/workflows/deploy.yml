@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Deploy the tested commit
+        id: deploy
         shell: bash
         env:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -52,4 +53,12 @@ jobs:
             -o ConnectionAttempts=3 \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=3 \
-            "root@$DEPLOY_HOST" "deploy $DEPLOY_SHA"
+            "root@$DEPLOY_HOST" "deploy $DEPLOY_SHA" | tee "$RUNNER_TEMP/linky-deploy.log"
+
+          if [[ $(tail -n 1 "$RUNNER_TEMP/linky-deploy.log") == "LINKY_DEPLOYED_SHA=$DEPLOY_SHA" ]]; then
+            printf 'verified=true\n' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Hostinger confirmed commit ${{ github.event.workflow_run.head_sha }}
+        if: steps.deploy.outputs.verified == 'true'
+        run: echo 'The host verified this revision and its Discord connection.'

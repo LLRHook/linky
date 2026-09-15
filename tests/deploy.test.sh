@@ -120,6 +120,11 @@ run_case() {
   elif [[ "$name" != marker-missing ]]; then
     [[ $(cat "$marker") == "$previous_revision" ]]
   fi
+  if [[ "$name" == success || "$name" == same-healthy || "$name" == same-unhealthy ]]; then
+    [[ $(tail -n 1 "$MOCK_DIR/output") == "LINKY_DEPLOYED_SHA=$MOCK_SHA" ]]
+  else
+    ! grep -q '^LINKY_DEPLOYED_SHA=' "$MOCK_DIR/output"
+  fi
   case "$name" in
     invalid) [[ ! -e "$MOCK_DIR/events" ]] ;;
     same-healthy)

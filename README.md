@@ -62,6 +62,27 @@ Attachment names, descriptions, spoilers and reply context are preserved. Replie
 
 ## Self-host
 
+### Request a feature from Discord
+
+In a server approved by the bot operator, an **Administrator** can type
+`/prompt`, choose Linky's command, and describe one change in **request**. For
+example: `/prompt request: Add a setting to hide the original-post button`.
+Use **Check status** on the private response to follow the job and open its PR.
+If that response disappears, run `/prompt` without a request to recover this server's latest job.
+
+The feature request and coding run are public on GitHub. Send a feature description,
+without private messages, credentials, or personal information. A successful request
+changes the shared hosted bot for every server. Installing Linky or running `/setup`
+does not grant coding access.
+
+The optional worker uses GPT-6 Astra with Codex's Ultra mode in an isolated checkout.
+A separate reviewer must approve the patch, the existing required checks must pass,
+and a protected merge must succeed before the normal Hostinger deployment runs.
+Failed or unsupported changes stop with an explanation or an open PR. Operator
+setup and limitations are in [Discord coding requests](docs/discord-prompt.md).
+
+### Run your own bot
+
 Requires Node.js 22+ and npm, or Docker Compose on Linux. Create an application in the [Discord developer portal](https://discord.com/developers/applications), enable **Message Content Intent**, and put its bot token in `.env`. Enable both **Guild Install** and **User Install** in Installation settings. User installation needs only `applications.commands`; guild installation also needs `bot` and the permissions listed above. The invite links in this README add the hosted Linky, not your self-hosted instance.
 
 ```bash
@@ -87,6 +108,9 @@ Linky registers its commands automatically at startup. Open `/setup` to enable y
 | `GOOGLE_TRANSLATE_API_KEY` | Optional dedicated Cloud Translation Basic v2 key; independent of the YouTube key |
 | `YOUTUBE_API_KEY` | Optional operator key for YouTube Data API v3; absent means YouTube is left untouched |
 | `LOG_LEVEL` | Logging level; default `info` |
+| `PROMPT_ENABLED` | Explicitly enables the optional coding integration after worker setup; default `false` |
+| `PROMPT_GUILD_IDS` | Separate operator list of servers whose Administrators may request code changes |
+| `PROMPT_GITHUB_TOKEN` | Repository-scoped Actions dispatch/read credential; never the publishing credential |
 
 The optional ID lists preserve operator channel restrictions. Saved server enablement takes priority, then selected channel preferences narrow that scope. With no saved choice or configured IDs, a server stays inactive. Legacy exact-channel scope still requires each thread's own ID. DMs have no automatic processing. Malformed settings stop startup rather than silently changing scope.
 
