@@ -139,11 +139,17 @@ test('production FFmpeg preserves variable frame timing while encoding a compati
     { encoding: 'utf8', timeout: 15_000, windowsHide: true })).streams[0];
     const before = probe(source), after = probe(output);
     assert.equal(after.nb_frames, before.nb_frames);
-    assert(Math.abs(Number(after.duration) - Number(before.duration)) <= 1 / 30 + 0.001);
-    const timestamps = path => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
-      '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', path],
-    { encoding: 'utf8', timeout: 15_000, windowsHide: true })).frames.map(frame => Number(frame.best_effort_timestamp_time));
-    assert.deepEqual(timestamps(output), timestamps(source), 'encoding must retain every source frame timestamp below the cap');
+    const frames = path => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'frame=best_effort_timestamp_time,pkt_duration_time,duration_time', '-of', 'json', path],
+    { encoding: 'utf8', timeout: 15_000, windowsHide: true })).frames;
+    const sourceFrames = frames(source), outputFrames = frames(output);
+    const timestamps = values => values.map(frame => Number(frame.best_effort_timestamp_time));
+    assert.deepEqual(timestamps(outputFrames), timestamps(sourceFrames), 'encoding must retain every source frame timestamp below the cap');
+    // Older FFmpeg versions report a shorter stream duration for reordered VFR packets, despite identical presentation times.
+    const presentationEnd = values => Number(values.at(-1).best_effort_timestamp_time) +
+      Number(values.at(-1).duration_time ?? values.at(-1).pkt_duration_time);
+    assert(Math.abs(presentationEnd(outputFrames) - presentationEnd(sourceFrames)) < 0.000001,
+      'the final decoded frame must retain its presentation end time');
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
