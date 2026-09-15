@@ -6,7 +6,8 @@ import type { ServerPreferences } from './ServerSettings';
 
 export type EromeStage = 'queued' | 'downloading' | 'preparing' | 'cached';
 export type EromeProgress = (stage: EromeStage) => void | Promise<void>;
-export type EromePreparer = (source: string, onStage?: EromeProgress) => Promise<{ file: AttachmentBuilder; videoCount: number } | null>;
+export type EromePreparer = (source: string, onStage?: EromeProgress, options?: { maxBytes?: number }) =>
+  Promise<{ file: AttachmentBuilder; videoCount: number } | null>;
 
 export function findEromeLinks(content: string): string[] {
   const links = new Set<string>();

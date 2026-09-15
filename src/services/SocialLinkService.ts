@@ -28,6 +28,7 @@ import { splitDescription, translationAttachment, translationCaption, translatio
 import { findReplyContext, formatReplyExcerpt, type ReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from './EromeDelivery';
+import { fitsAttachmentBudget, guildAttachmentBudget } from './AttachmentLimits';
 
 const MAX_CONTENT_LENGTH = 2_000;
 const INSTAGRAM_PREVIEW_NOTICE = '\n-# Instagram preview could not be verified; the original post is still here.';
@@ -339,9 +340,10 @@ export function createLinkRepostHandler(
 
       // Discord can mutate this cached message while a metadata lookup is pending.
       const version = sourceVersion(message);
-      const erome = eromeSource ? await prepareErome!(eromeSource).catch(() => null) : null;
+      const eromeBudget = guildAttachmentBudget(message.guild.premiumTier);
+      const erome = eromeSource ? await prepareErome!(eromeSource, undefined, { maxBytes: eromeBudget }).catch(() => null) : null;
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
-      if (eromeSource && !erome) {
+      if (eromeSource && (!erome || !fitsAttachmentBudget(erome.file, eromeBudget))) {
         log.warn(context, 'Erome video unavailable or outside processing limits; kept original');
         return;
       }
@@ -388,7 +390,8 @@ export function createLinkRepostHandler(
       }
       // Reply mode leaves source attachments on the original instead of duplicating them.
       const attachments = reply ? [] : [...message.attachments.values()];
-      const translationBytes = translationFiles.reduce((total, file) =>
+      // Erome's separately bounded video is a reply; keep the original source-copy limit unchanged.
+      const translationBytes = (translated.translationFiles ?? []).reduce((total, file) =>
         total + (Buffer.isBuffer(file.attachment) ? file.attachment.byteLength : 0), 0);
       if (content.length > MAX_CONTENT_LENGTH || attachments.length + translationFiles.length > 10 ||
           attachments.reduce((total, attachment) => total + attachment.size, translationBytes) > MAX_ATTACHMENT_BYTES) {
@@ -399,7 +402,7 @@ export function createLinkRepostHandler(
       const files: AttachmentBuilder[] = [];
       for (const attachment of attachments) files.push(await copyAttachment(attachment));
       files.push(...translationFiles);
-      if (!enabled()) return;
+      if (!enabled() || erome && !fitsAttachmentBudget(erome.file, guildAttachmentBudget(message.guild.premiumTier))) return;
       const replacement = await channel.send({
         content,
         ...(embeds ? { embeds } : {}),
