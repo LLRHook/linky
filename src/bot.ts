@@ -23,6 +23,7 @@ import { PreviewHealth } from './services/PreviewRecovery';
 import { replyToYouTubeControl } from './services/YouTubeInteractions';
 import { evaluateScope } from './services/ServerScope';
 import { PromptService } from './services/PromptService';
+import { createEromePreparer } from './services/Erome';
 
 export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
   servers = new ServerSettings(settings.settingsPath)): Client {
@@ -53,6 +54,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     }
   }
   const health = new PreviewHealth();
+  const prepareErome = createEromePreparer();
   const retrying = new Set<string>();
   const retries = new Map<string, number>();
   const fetchMessage = async (channelId: string, messageId: string) => {
@@ -70,6 +72,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
     translateInstagram,
     lookupYouTube,
+    prepareErome,
     observePreview: (expected, result) => health.record(expected, result),
     rememberRepost: record => registry?.remember(record) ?? Promise.resolve(false),
     findRepost: id => registry?.findByReplacement(id),
@@ -105,10 +108,10 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         else if (interaction.commandName === 'setup') await setup(interaction, servers, settings);
         else if (interaction.commandName === 'settings') await preferences(interaction, settings, servers);
         else if (interaction.commandName === 'diagnose') await diagnose(interaction, settings, servers, async link => health.describe(link));
-        else if (interaction.commandName === 'fix') await fix(interaction, settings, { observePreview: (expected, result) => health.record(expected, result) });
+        else if (interaction.commandName === 'fix') await fix(interaction, settings, { prepareErome, observePreview: (expected, result) => health.record(expected, result) });
         else if (interaction.commandName === 'prompt') await prompt(interaction, prompts);
       } else if (interaction.isMessageContextMenuCommand()) {
-        if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { observePreview: (expected, result) => health.record(expected, result) });
+        if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { prepareErome, observePreview: (expected, result) => health.record(expected, result) });
       } else if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
         if (interaction.isButton() && await promptStatus(interaction, prompts)) return;
         if (interaction.isButton() && await replyToYouTubeControl(interaction, {

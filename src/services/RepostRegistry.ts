@@ -235,7 +235,7 @@ export class RepostRegistry {
     else await interaction.reply({ ...options, flags: MessageFlags.Ephemeral });
   }
 
-  /** Also shared by Retry. Recognized interactions are deferred privately before network checks. */
+  /** Remove is owner-only; Retry also accepts a freshly verified channel moderator. */
   async authorize(interaction: RepostInteraction): Promise<RepostRecord | null> {
     const record = this.findByReplacement(interaction.message.id);
     if (!record || !['linky:remove', 'linky:retry'].includes(interaction.customId) ||
@@ -245,6 +245,10 @@ export class RepostRegistry {
       return null;
     }
     if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (interaction.customId === REMOVE_REPOST_CUSTOM_ID && interaction.user.id !== record.authorId) {
+      await this.reply(interaction, 'Only the original author can remove this preview.');
+      return null;
+    }
     try {
       if (interaction.user.id !== record.authorId && !await this.options.canManageMessages(record, interaction.user.id)) {
         await this.reply(interaction, 'Only the original author or someone with Manage Messages here can do that.');
