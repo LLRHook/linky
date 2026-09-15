@@ -11,7 +11,7 @@ const media: EromeMedia = { id: 'a'.repeat(32), size: 20, sha256: 'b'.repeat(64)
   url: `https://media.example.test/media/${'a'.repeat(32)}.mp4`,
   metadata: { width: 1280, height: 720, duration: 160, fps: 24 } };
 
-function fixture() {
+function fixture(prepared = media, observed = { width: prepared.metadata.width, height: prepared.metadata.height }) {
   const client = new Client({ intents: [] }); Object.assign(client, { user: { id: bot } });
   const events: string[] = [], sends: MessageCreateOptions[] = [], errors: unknown[] = [];
   let preferences: ServerPreferences = { eromeChannels: 'all' };
@@ -38,7 +38,7 @@ function fixture() {
         components = (payload.components ?? []).map(component => 'toJSON' in component ? component.toJSON() : component) as APIMessageTopLevelComponent[];
         const ready = components.map(component => component.type === ComponentType.MediaGallery ? {
           ...component, items: component.items.map(item => ({ ...item, media: { ...item.media,
-            content_type: 'video/mp4', proxy_url: 'https://proxy.example/video', width: 1280, height: 720 } })) } : component);
+            content_type: 'video/mp4', proxy_url: 'https://proxy.example/video', ...observed } })) } : component);
         client.emit(Events.Raw, { t: 'MESSAGE_UPDATE', d: { id: replacement.id, channel_id: channelId, author: { id: bot }, components: ready } });
         return replacement;
       },
@@ -49,7 +49,7 @@ function fixture() {
   const options = {
     platforms: ['erome'] as const, serverPreferences: () => preferences,
     prepareErome: async () => { events.push('legacy'); return null; },
-    prepareEromeMedia: async () => { events.push('prepare'); return media; },
+    prepareEromeMedia: async () => { events.push('prepare'); return prepared; },
     bindEromeMedia: async () => { events.push('bind'); return true; },
     releaseEromeMedia: async (id: string) => { assert.equal(id, replacement.id); events.push('release'); },
     rememberRepost: async () => { events.push('ownership'); return true; },
@@ -83,6 +83,17 @@ test('automatic original video captures early metadata, binds ownership and keep
 test('failed media binding deletes only the new preview and releases its storage', async () => {
   const f = fixture(); await f.run({ bindEromeMedia: async () => false });
   assert.deepEqual(f.events, ['prepare', 'send', 'delete preview', 'release']);
+  assert.equal(f.client.listenerCount(Events.Raw), 0);
+});
+
+test('automatic preview survives Discord rounding a 480×852 source to 479×852', async () => {
+  const original = { ...media, metadata: { width: 480, height: 852, duration: 33.548, fps: 30 } };
+  const f = fixture(original, { width: 479, height: 852 });
+  await f.run();
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.events, ['prepare', 'send', 'bind', 'ownership', 'controls']);
+  assert.equal(f.sends.length, 1);
+  assert(f.replacement.components.some(component => component.toJSON().type === ComponentType.MediaGallery));
   assert.equal(f.client.listenerCount(Events.Raw), 0);
 });
 
