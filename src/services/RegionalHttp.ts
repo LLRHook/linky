@@ -68,7 +68,7 @@ export function validRegionalSourceResponse(response: Response, job: RegionalJob
     !response.headers.has('set-cookie') && (encoding === null || encoding.toLowerCase() === 'identity');
 }
 
-function connectHttps(options: RequestOptions, signal: AbortSignal, send = request): Promise<Response> {
+export function connectHttps(options: RequestOptions, signal: AbortSignal, send = request): Promise<Response> {
   return new Promise((resolve, reject) => {
     const outgoing = send({ ...options, signal }, incoming => {
       incoming.once('error', () => reject(new Error('regional_transport')));

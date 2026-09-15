@@ -2,12 +2,17 @@ import { Events, ComponentType, type APIMessageTopLevelComponent, type Client, t
 import { mapLinks, visibleLink } from './LinkTokens';
 import { parseEromeUrl } from './Erome';
 import type { MediaAsset } from './MediaAssetStore';
-import type { OriginalVideoMetadata } from './VideoAttachment';
+import type { OriginalVideoMetadata, OriginalImageMetadata } from './VideoAttachment';
+import type { DeliveryContext } from './DeliveryContext';
+import type { EromeSelection } from './EromeAlbum';
 import { setTimeout as delay } from 'node:timers/promises';
 
-export type EromeMedia = MediaAsset & { url: string; videoCount: number; metadata: OriginalVideoMetadata };
-export type EromeMediaPreparer = (source: string) => Promise<EromeMedia | null>;
-export type EromeMediaBinding = (id: string, messageId: string) => Promise<boolean>;
+export type EromeItemInfo = { kind?: 'video' | 'image'; itemIndex?: number; itemFingerprint?: string;
+  itemCount?: number; itemFingerprints?: string[]; truncated?: boolean };
+export type EromeMedia = MediaAsset & EromeItemInfo & { url: string; videoCount: number;
+  metadata: OriginalVideoMetadata | OriginalImageMetadata; reservation?: string };
+export type EromeMediaPreparer = (source: string, options?: { context?: DeliveryContext; selection?: EromeSelection }) => Promise<EromeMedia | null>;
+export type EromeMediaBinding = (id: string, messageId: string, reservation?: string) => Promise<boolean>;
 
 export function messageHasEromeMedia(message: Message, url: string): boolean {
   return message.components.some(component => {
@@ -40,10 +45,13 @@ export function onlyEromeLinks(content: string): boolean {
 }
 
 export function eromeMediaComponents(media: EromeMedia, content: string,
-  controls: APIMessageTopLevelComponent[] = []): APIMessageTopLevelComponent[] {
-  const notice = media.videoCount > 1 ? `First of ${media.videoCount} videos` : 'Video preview';
-  return [{ type: ComponentType.TextDisplay, content: `${content}\n-# ${notice} · Original video and audio. Album kept.` },
-    { type: ComponentType.MediaGallery, items: [{ media: { url: media.url }, description: 'Original video from the linked album.' }] },
+  controls: APIMessageTopLevelComponent[] = [], items: readonly EromeMedia[] = [media]): APIMessageTopLevelComponent[] {
+  const selected = items.slice(0, 10);
+  const notice = media.itemCount ? `${selected.length} of ${media.itemCount}${media.truncated ? '+' : ''} items` :
+    media.videoCount > 1 ? `First of ${media.videoCount} videos` : 'Video preview';
+  return [{ type: ComponentType.TextDisplay, content: `${content}\n-# ${notice} · Original media. Album kept.` },
+    { type: ComponentType.MediaGallery, items: selected.map(item => ({ media: { url: item.url },
+      description: `Original ${item.kind === 'image' ? 'image' : 'video'} from the linked album.` })) },
     ...controls];
 }
 
@@ -60,7 +68,7 @@ function matchesMedia(value: MediaMessage, media: EromeMedia): boolean {
       url?: string; content_type?: string; proxy_url?: string; width?: number; height?: number;
     } }) => {
       const video = item?.media, expected = media.metadata;
-      return video?.url === media.url && video.content_type === 'video/mp4' && Boolean(video.proxy_url) &&
+      return video?.url === media.url && video.content_type === (media.mimeType ?? 'video/mp4') && Boolean(video.proxy_url) &&
         (matchesDimension(video.width, expected.width) && matchesDimension(video.height, expected.height) ||
           matchesDimension(video.width, expected.height) && matchesDimension(video.height, expected.width));
     }));

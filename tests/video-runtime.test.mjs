@@ -6,6 +6,59 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+test('original image inspection preserves generated JPEG and PNG bytes and rejects invalid image inputs', {
+  skip: process.env.LINKY_VIDEO_RUNTIME_TEST !== 'true', timeout: 60_000,
+}, async () => {
+  const require = createRequire(join(process.cwd(), 'package.json'));
+  const { createOriginalImageInspector } = require('./dist/services/VideoAttachment.js');
+  const inspect = createOriginalImageInspector(), directory = mkdtempSync(join(tmpdir(), 'linky-image-runtime-'));
+  try {
+    for (const [extension, codec, mimeType] of [['jpg', 'mjpeg', 'image/jpeg'], ['png', 'png', 'image/png']]) {
+      const path = join(directory, `test.${extension}`);
+      execFileSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=1',
+        '-frames:v', '1', '-c:v', codec, '-threads', '1', '-update', '1', path],
+      { timeout: 10_000, windowsHide: true, stdio: 'pipe' });
+      const bytes = readFileSync(path), original = Buffer.from(bytes);
+      assert.deepEqual(await inspect(bytes, mimeType), { width: 1280, height: 720 });
+      assert.deepEqual(bytes, original, 'inspection must retain exact bytes and native resolution');
+      assert.equal(await inspect(bytes, mimeType === 'image/jpeg' ? 'image/png' : 'image/jpeg'), null);
+      assert.equal(await inspect(bytes.subarray(0, Math.floor(bytes.length / 2)), mimeType), null);
+      assert.equal(await inspect(bytes, mimeType, { signal: AbortSignal.abort() }), null);
+      if (mimeType === 'image/png') {
+        const text = Buffer.from('Comment\0This still image mentions acTL as plain text.'), chunk = Buffer.alloc(text.length + 12);
+        chunk.writeUInt32BE(text.length); chunk.write('tEXt', 4, 'ascii'); text.copy(chunk, 8);
+        let crc = 0xffffffff;
+        for (const byte of chunk.subarray(4, -4)) {
+          crc ^= byte;
+          for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+        }
+        chunk.writeUInt32BE((crc ^ 0xffffffff) >>> 0, chunk.length - 4);
+        const withText = Buffer.concat([bytes.subarray(0, 33), chunk, bytes.subarray(33)]), exact = Buffer.from(withText);
+        assert.deepEqual(await inspect(withText, mimeType), { width: 1280, height: 720 });
+        assert.deepEqual(withText, exact, 'ancillary text remains unchanged');
+        const overflow = Buffer.from(bytes); overflow.writeUInt32BE(0xffffffff, 33);
+        assert.equal(await inspect(overflow, mimeType), null);
+        const badType = Buffer.from(bytes); badType[37] |= 0x80;
+        assert.equal(await inspect(badType, mimeType), null, 'chunk types must be ASCII letters');
+        assert.equal(await inspect(bytes.subarray(0, -12), mimeType), null, 'missing IEND is rejected');
+        assert.equal(await inspect(Buffer.concat([bytes, Buffer.from('trailing')]), mimeType), null);
+      }
+    }
+    const animated = join(directory, 'animated.png');
+    execFileSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=64x64:rate=2',
+      '-frames:v', '2', '-c:v', 'apng', '-threads', '1', '-f', 'apng', animated],
+    { timeout: 10_000, windowsHide: true, stdio: 'pipe' });
+    assert.equal(await inspect(readFileSync(animated), 'image/png'), null);
+    const tooWide = join(directory, 'oversized.png');
+    execFileSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=size=8194x2:rate=1',
+      '-frames:v', '1', '-c:v', 'png', '-threads', '1', '-update', '1', tooWide],
+    { timeout: 10_000, windowsHide: true, stdio: 'pipe' });
+    assert.equal(await inspect(readFileSync(tooWide), 'image/png'), null);
+    assert.equal(await inspect(Buffer.alloc(8 * 1024 * 1024 + 1), 'image/png'), null);
+    assert.equal(await inspect(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'), 'image/png'), null);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('original media inspection preserves native 720p and 1080p bytes and rejects incompatible codecs', {
   skip: process.env.LINKY_VIDEO_RUNTIME_TEST !== 'true', timeout: 60_000,
 }, async () => {

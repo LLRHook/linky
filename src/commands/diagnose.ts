@@ -86,7 +86,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
         if (canPreviewErome(channel, effective.eromeChannels)) {
           lines.push(effective.eromeChannels === 'all' ? 'The server admin permits Erome in all enabled channels.'
             : 'This channel meets the server’s age restriction for Erome.');
-          lines.push('When enabled here, Erome uploads the first video as an MP4 reply and keeps the album. Limits: 64 MiB input and 5 minutes; output follows the destination’s upload allowance, capped at 63 MiB. Compatible media is preserved when it fits; other videos are compressed.');
+          lines.push('When enabled here, Erome keeps the album and uses a hosted gallery for eligible originals, with attachment fallback. Video limits: 64 MiB input and 5 minutes; hosted originals fit 24 MiB. JPEG/PNG images fit 8 MiB. Hosted galleries offer requester-only Load next item; Details shows private delivery timings. No media was fetched by this check.');
         } else lines.push('Erome previews require an age-restricted server channel or a thread in one under this server’s setting. An admin can change /settings erome_channels. No media was fetched.');
       } else if (platform === 'youtube' && effective.youtubeDisplay === 'preview') {
         lines.push('YouTube display is preview only: Linky leaves the native video link without fetching counts or comments.');

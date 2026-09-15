@@ -10,6 +10,50 @@ const MESSAGE = '12345678901234567';
 const SECOND_MESSAGE = '22345678901234567';
 const TTL = 15 * 60_000;
 
+test('typed image assets survive restart and legacy MP4 metadata remains readable', async t => {
+  const f = await fixture(t), store = await f.open();
+  for (const mimeType of ['image/jpeg', 'image/png', 'video/mp4'] as const) {
+    const asset = await store.publish(Buffer.from(mimeType), { mimeType }); assert.ok(asset);
+    assert.equal(await store.bind(asset.id, MESSAGE), true);
+    if (mimeType === 'video/mp4') {
+      const metadataPath = join(f.directory, `${asset.id}.json`), record = JSON.parse(await readFile(metadataPath, 'utf8'));
+      record.version = 1; delete record.mimeType; await writeFile(metadataPath, JSON.stringify(record));
+    }
+  }
+  assert.equal(await store.publish(Buffer.alloc(8 * 1024 * 1024 + 1), { mimeType: 'image/png' }), null);
+  await store.close(); const reopened = await f.open();
+  const metadata = (await readdir(f.directory)).filter(file => file.endsWith('.json'));
+  for (const name of metadata) {
+    const asset = await reopened.get(name.slice(0, -5)); assert.ok(asset);
+    const suffix = asset.mimeType === 'image/jpeg' ? '.jpg' : asset.mimeType === 'image/png' ? '.png' : '.mp4';
+    assert.ok(asset.path.endsWith(suffix));
+  }
+  await reopened.release(MESSAGE); assert.deepEqual(await readdir(f.directory), []);
+});
+
+test('reservations commit once, enforce the64-reference cap and expire without pinning assets', async t => {
+  const f = await fixture(t), store = await f.open(), asset = await store.publish(Buffer.from('media')); assert.ok(asset);
+  const tokens = await Promise.all(Array.from({ length: 65 }, () => store.reserve(asset.id)));
+  assert.equal(tokens.filter(Boolean).length, 64); assert.equal(await store.bind(asset.id, MESSAGE), false);
+  const token = tokens[0]!; assert.equal(await store.bind(asset.id, MESSAGE, token), true);
+  assert.equal(await store.bind(asset.id, MESSAGE, token), true, 'uncertain commit can be retried');
+  assert.equal(await store.bind(asset.id, SECOND_MESSAGE, token), false, 'token cannot bind a second message');
+  for (const pending of tokens.slice(1)) if (pending) store.cancelReservation(pending);
+  const expiring = await store.reserve(asset.id); assert.ok(expiring); f.advance(60_000);
+  assert.equal(await store.bind(asset.id, SECOND_MESSAGE, expiring), false);
+  const revoked = await store.reserve(asset.id); assert.ok(revoked); await store.release(MESSAGE);
+  assert.equal(await store.bind(asset.id, SECOND_MESSAGE, revoked), false);
+  assert.equal(await store.get(asset.id), null, 'last owner Remove revokes pending reservations');
+});
+
+test('rollback unbind only removes the failed appended asset, preserving earlier gallery items', async t => {
+  const f = await fixture(t), store = await f.open();
+  const first = await store.publish(Buffer.from('first')), second = await store.publish(Buffer.from('second'));
+  assert.ok(first && second); await store.bind(first.id, MESSAGE); await store.bind(second.id, MESSAGE);
+  await store.unbind(second.id, MESSAGE); assert.ok(await store.get(first.id)); assert.equal(await store.get(second.id), null);
+  await store.release(MESSAGE); assert.equal(await store.get(first.id), null);
+});
+
 async function fixture(t: TestContext, overrides: Partial<MediaAssetStoreOptions> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'linky-media-store-'));
   const directory = join(root, 'assets');
