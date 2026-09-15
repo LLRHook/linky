@@ -807,7 +807,8 @@ test('repeated Instagram links near the content limit use bounded fallback and d
   // Leave room for the notice, regardless of how many copies of the link were shared.
   const padding = 1998 - String(baseline.sent[0].options.content).length - notice.length;
   assert(padding > 0);
-  const long = { ...caption, text: caption.text + 'x'.repeat(padding) }, f = delivery(content);
+  const long = { ...caption, text: caption.text + 'x'.repeat(padding) };
+  const f = delivery(`${'x'.repeat(padding)} ${content}`);
   f.state.render = () => [];
   const handle = f.create({ translateInstagram: async () => long });
   await handle(f.source);
@@ -818,7 +819,9 @@ test('repeated Instagram links near the content limit use bounded fallback and d
   assert(f.sent[0].message.content.length <= 2000, 'suppression must not add characters for every repeated URL');
   assert.equal(f.state.originalDeleted, false); assert.equal(f.remembered[0].mode, 'reply');
   assert(f.sent[0].edits.some(edit => edit.flags === MessageFlags.SuppressEmbeds));
-  assert(f.sent[0].message.content.includes(long.text));
+  assert(!f.sent[0].message.content.includes(long.text));
+  assert(f.sent[0].message.content.includes('…'));
+  assert(f.sent[0].message.content.includes('Translated from'));
   f.state.render = () => [instagramImage()];
   await handle(f.source, { refresh: true, forceReply: true });
   const refreshed = f.sent[1];
