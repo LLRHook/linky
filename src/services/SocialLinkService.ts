@@ -251,8 +251,7 @@ export function createLinkRepostHandler(
       JSON.stringify(serverPreferences?.(message.guildId) ?? {}) === preferenceVersion;
     const activePlatforms = platforms.filter(platform => preferences.platforms?.[platform] !== false);
     const eromeSource = activePlatforms.includes('erome') && prepareErome ? eromeSources[0] : undefined;
-    // Albums may contain more than the first video, so never replace their source.
-    let reply = Boolean(eromeSources.length) || forceReply || preferences.mode === 'reply';
+    let reply = forceReply || preferences.mode === 'reply';
     if (!enabled() ||
         !canCopy(message) || bypassLinky(message.content) || message.flags.has(MessageFlags.SuppressEmbeds) ||
         (!refresh && reposted.has(message.id))) return;
@@ -310,10 +309,10 @@ export function createLinkRepostHandler(
         progressAttempted = true;
         progressMessage = await sendEromeMedia(() => channel.send({ content, nonce, enforceNonce: true,
           allowedMentions: { parse: [], repliedUser: false },
-          reply: { messageReference: message.id, failIfNotExists: true } }), async () => {
+          ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) }), async () => {
           const recent = await channel.messages.fetch({ limit: 25 });
           const matches = recent.filter(candidate => candidate.author.id === message.client.user.id &&
-            candidate.reference?.messageId === message.id && String(candidate.nonce) === nonce);
+            (!reply || candidate.reference?.messageId === message.id) && String(candidate.nonce) === nonce);
           return matches.size === 1 ? matches.first()! : null;
         });
       });
@@ -342,7 +341,8 @@ export function createLinkRepostHandler(
       };
       if (eromeSource) progress.update({ stage: 'resolve', state: 'running' });
       const eromeBudget = guildAttachmentBudget(message.guild.premiumTier);
-      originalMedia = eromeSource && prepareEromeMedia && bindEromeMedia && releaseEromeMedia && onlyEromeLinks(message.content)
+      originalMedia = eromeSource && prepareEromeMedia && bindEromeMedia && releaseEromeMedia &&
+        (reply || !message.attachments.size) && onlyEromeLinks(message.content)
         ? await prepareEromeMedia(eromeSource, { context: delivery.context }).catch(() => null) : null;
       if (eromeSource) delivery.context.trace?.setPath(originalMedia ? 'hosted-original' : 'attachment');
       const erome = eromeSource && !originalMedia && !delivery.context.signal?.aborted
@@ -403,7 +403,7 @@ export function createLinkRepostHandler(
       }
       // Reply mode leaves source attachments on the original instead of duplicating them.
       const attachments = reply ? [] : [...message.attachments.values()];
-      // Erome's separately bounded video is a reply; keep the original source-copy limit unchanged.
+      // Erome media has its own upload budget; retain the separate source-copy limit.
       const translationBytes = (translated.translationFiles ?? []).reduce((total, file) =>
         total + (Buffer.isBuffer(file.attachment) ? file.attachment.byteLength : 0), 0);
       if (content.length > MAX_CONTENT_LENGTH || attachments.length + translationFiles.length > 10 ||
@@ -471,7 +471,8 @@ export function createLinkRepostHandler(
       const replacement = originalMedia ? await sendEromeMedia(send, async () => {
         const recent = await channel.messages.fetch({ limit: 25 });
         const matches = recent.filter(candidate => candidate.author.id === message.client.user.id &&
-          candidate.reference?.messageId === message.id && (candidate.nonce == null || String(candidate.nonce) === nonce) &&
+          (reply ? candidate.reference?.messageId === message.id && (candidate.nonce == null || String(candidate.nonce) === nonce)
+            : String(candidate.nonce) === nonce) &&
           messageHasEromeMedia(candidate, preparedMedia!.url));
         return matches.size === 1 ? matches.first()! : null;
       }) : await send();
@@ -625,13 +626,13 @@ export function createLinkRepostHandler(
       const details = await delivery.controls(replacement.id);
       const albumControl = originalMedia && eromeSource && rememberRepost ? albums?.register({ media: originalMedia,
         source: eromeSource, requesterId: message.author.id, guildId: message.guildId, channelId,
-        messageId: replacement.id, sourceMessageId: message.id, mode: 'automatic' }) : undefined;
+        messageId: replacement.id, ...(reply ? { sourceMessageId: message.id } : {}), mode: 'automatic' }) : undefined;
       if (rememberRepost) await replacement.edit({
         components: originalMedia ? eromeMediaComponents(originalMedia, content,
           [...repostControls(message.content), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
           : [...repostControls(message.content), ...publication?.controls ?? [], ...details], allowedMentions: { parse: [] },
       });
-      if (originalMedia) {
+      if (originalMedia && reply) {
         const current = await message.fetch(true);
         if (!enabled() || !canCopy(current) || sourceVersion(current) !== version) {
           await removeReplacement();

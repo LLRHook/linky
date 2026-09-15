@@ -26,11 +26,13 @@ function fixture(overrides: Partial<Config> = {}, servers = new ServerSettings(s
   startMedia?: Parameters<typeof createBot>[3]) {
   const logs: unknown[] = [];
   const errors: unknown[] = [];
+  const warnings: unknown[] = [];
   const client = createBot({ ...settings, ...overrides }, {
-    info: (...args: unknown[]) => logs.push(args), warn() {}, error: (...args: unknown[]) => errors.push(args),
+    info: (...args: unknown[]) => logs.push(args), warn: (...args: unknown[]) => warnings.push(args),
+    error: (...args: unknown[]) => errors.push(args),
   } as Parameters<typeof createBot>[1], servers, startMedia);
   clients.push(client);
-  return { client, logs, errors };
+  return { client, logs, errors, warnings };
 }
 
 const predicates = {
@@ -103,6 +105,13 @@ test('failed optional media startup leaves normal bot commands available', async
 });
 
 test('configured media startup failure retains cleanup until a successful bot restart releases the binding', { timeout: 10_000 }, async t => {
+  const startupSweeps: Promise<void>[] = [];
+  const sweep = RepostRegistry.prototype.sweep;
+  t.mock.method(RepostRegistry.prototype, 'sweep', function (this: RepostRegistry) {
+    const pending = sweep.call(this);
+    startupSweeps.push(pending);
+    return pending;
+  });
   const caseDirectory = mkdtempSync(join(directory, 'media-cleanup-'));
   const settingsPath = join(caseDirectory, 'servers.json'), journalPath = join(caseDirectory, 'reposts.json');
   const botId = '1491240385031311470', authorId = '777777777777777777';
@@ -132,6 +141,7 @@ test('configured media startup failure retains cleanup until a successful bot re
     eromeMedia: { key: 'unused', workerBaseUrl: 'https://workers.example.test', publicBaseUrl: 'https://media.example.test',
       directory: join(caseDirectory, 'media'), port: 8092 } };
   const startBot = async (startMedia: NonNullable<Parameters<typeof createBot>[3]>) => {
+    const sweepCount = startupSweeps.length;
     const f = fixture(overrides, new ServerSettings(settingsPath), startMedia);
     Object.assign(f.client, { user: { id: botId } });
     t.mock.method(f.client.channels, 'fetch', async (id: string) => {
@@ -143,7 +153,8 @@ test('configured media startup failure retains cleanup until a successful bot re
       guilds: { cache: new Map() },
     } as unknown as Client<true>);
     assert.deepEqual(f.errors, []);
-    return f;
+    assert.equal(startupSweeps.length, sweepCount + 1, 'Readiness must start ownership reconciliation');
+    return { ...f, startupCleanup: startupSweeps[sweepCount] };
   };
 
   const failed = await startBot(async () => { throw Error('Storage unavailable'); });
@@ -164,10 +175,10 @@ test('configured media startup failure retains cleanup until a successful bot re
       bindings.delete(id); released.push(id);
     }, close: async () => {},
   }));
-  const cleanupDeadline = performance.now() + 5000;
-  while (journal().records.length && performance.now() < cleanupDeadline) {
-    await new Promise<void>(resolve => setTimeout(resolve, 20));
-  }
+  // start() deliberately launches cleanup in the background. Its release callback runs before
+  // the final durable write, so await that exact sweep instead of racing disk I/O with polling.
+  await restored.startupCleanup;
+  assert.deepEqual(restored.warnings, [], 'A cleanup failure must not be hidden as a polling timeout');
   assert.deepEqual(released, [record.replacementId]);
   assert.equal(bindings.size, 0);
   assert.deepEqual(journal(), { records: [], remove: [], refresh: [] });

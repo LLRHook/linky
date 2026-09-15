@@ -41,7 +41,7 @@ test('V2 rendering keeps text, exact original media URL, multi-video notice and 
   const rendered = eromeMediaComponents(media, content, controls);
   assert.equal(rendered[0].type, ComponentType.TextDisplay);
   if (rendered[0].type === ComponentType.TextDisplay) assert.equal(rendered[0].content,
-    `${content}\n-# Video preview · Original media. Album kept.`);
+    `${content}\n-# Video preview · Original media. Full album: Original post.`);
   assert.deepEqual(rendered[1], { type: ComponentType.MediaGallery, items: [{ media: { url: media.url },
     description: 'Original video from the linked album.' }] });
   assert.equal(rendered[2], controls[0]); assert.equal(controls.length, 1);

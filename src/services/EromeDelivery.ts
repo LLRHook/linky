@@ -33,8 +33,8 @@ export function canPreviewErome(channel: { isThread(): boolean; nsfw?: boolean; 
 }
 
 export function eromeNotice(videoCount: number, kind?: 'video' | 'image'): string {
-  if (kind === 'image') return '\n-# Image preview · Original album kept. Original image quality.';
-  return `\n-# ${videoCount > 1 ? `First of ${videoCount} videos` : 'Video preview'} · Original album kept. Video may be compressed to fit Discord.`;
+  if (kind === 'image') return '\n-# Image preview · Original image quality. Full album: Original post.';
+  return `\n-# ${videoCount > 1 ? `First of ${videoCount} videos` : 'Video preview'} · Full album: Original post. Video may be compressed to fit Discord.`;
 }
 
 /** Confirm Discord accepted the prepared file with matching media type, size and dimensions. */
