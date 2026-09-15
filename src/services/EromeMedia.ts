@@ -49,7 +49,7 @@ export function eromeMediaComponents(media: EromeMedia, content: string,
   const selected = items.slice(0, 10);
   const notice = media.itemCount ? `${selected.length} of ${media.itemCount}${media.truncated ? '+' : ''} items` :
     media.videoCount > 1 ? `First of ${media.videoCount} videos` : 'Video preview';
-  return [{ type: ComponentType.TextDisplay, content: `${content}\n-# ${notice} · Original media. Album kept.` },
+  return [{ type: ComponentType.TextDisplay, content: `${content}\n-# ${notice} · Original media. Full album: Original post.` },
     { type: ComponentType.MediaGallery, items: selected.map(item => ({ media: { url: item.url },
       description: `Original ${item.kind === 'image' ? 'image' : 'video'} from the linked album.` })) },
     ...controls];

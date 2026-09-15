@@ -1,6 +1,6 @@
 # Delivery, progress and private details
 
-Linky keeps an original message until its replacement is useful and ownership is saved. Erome albums always remain in place. Discord preview metadata confirms the type and dimensions of media; it does not prove playback on a particular device.
+Linky keeps an original message until its replacement is useful and ownership is saved. Automatic Erome previews follow the server's Replace or Reply mode; the repost preserves the album URL and **Original post** access. Manual fixes and retries keep the source. Discord preview metadata confirms the type and dimensions of media; it does not prove playback on a particular device.
 
 ## What members see
 
