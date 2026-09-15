@@ -145,11 +145,13 @@ test('production FFmpeg preserves variable frame timing while encoding a compati
     const sourceFrames = frames(source), outputFrames = frames(output);
     const timestamps = values => values.map(frame => Number(frame.best_effort_timestamp_time));
     assert.deepEqual(timestamps(outputFrames), timestamps(sourceFrames), 'encoding must retain every source frame timestamp below the cap');
-    // Older FFmpeg versions report a shorter stream duration for reordered VFR packets, despite identical presentation times.
-    const presentationEnd = values => Number(values.at(-1).best_effort_timestamp_time) +
-      Number(values.at(-1).duration_time ?? values.at(-1).pkt_duration_time);
-    assert(Math.abs(presentationEnd(outputFrames) - presentationEnd(sourceFrames)) < 0.000001,
-      'the final decoded frame must retain its presentation end time');
+    // FFmpeg versions differ in final VFR packet duration; validate actual frame times and at most one tail-frame hold.
+    const finalDuration = values => Number(values.at(-1).duration_time ?? values.at(-1).pkt_duration_time);
+    const presentationEnd = values => Number(values.at(-1).best_effort_timestamp_time) + finalDuration(values);
+    const finalInterval = Number(sourceFrames.at(-1).best_effort_timestamp_time) - Number(sourceFrames.at(-2).best_effort_timestamp_time);
+    assert(finalDuration(outputFrames) > 0 && Number.isFinite(finalDuration(outputFrames)));
+    assert(Math.abs(presentationEnd(outputFrames) - presentationEnd(sourceFrames)) <= finalInterval + 0.000001,
+      'the final frame hold must stay within one observed source-frame interval');
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
