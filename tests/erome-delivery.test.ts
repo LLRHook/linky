@@ -6,7 +6,7 @@ import { AttachmentBuilder, Collection, MessageFlags, MessageFlagsBitField, Mess
 import type { Config } from '../src/config';
 import { execute } from '../src/commands/fix';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
-import { verifyEromeAttachment } from '../src/services/EromeDelivery';
+import { verifyEromeAttachment, type EromeProgress } from '../src/services/EromeDelivery';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 
@@ -365,6 +365,59 @@ test('manual mixed-platform failure is still reported when the Erome upload succ
   assert.equal(f.edits.filter(edit => edit.files?.length).length, 1);
   assert.equal(f.edits.at(-1)!.attachments, undefined, 'retain the independently verified video');
   assert.equal(f.input.targetMessage.content, `${ALBUM} https://x.com/jack/status/20`);
+});
+
+test('manual Erome serializes progress before the final upload and ignores late stage notifications', async () => {
+  const f = manual(), started: InteractionEditReplyOptions[] = [];
+  let release!: () => void, late: EromeProgress | undefined;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const editReply = f.input.editReply;
+  f.input.editReply = async options => {
+    started.push(options);
+    if (started.length === 1) await gate;
+    return editReply(options);
+  };
+  const pending = f.run({ prepareErome: async (_url, onStage) => {
+    late = onStage;
+    void onStage?.('queued');
+    void onStage?.('downloading');
+    void onStage?.('preparing');
+    return prepared();
+  } });
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(started.length, 1, 'Only one progress edit may be in flight');
+    assert.match(String(started[0].content), /queued/i);
+    assert.equal(started[0].files, undefined);
+    release();
+    await pending;
+    assert.equal(f.edits.length, 4);
+    assert.match(String(f.edits[1].content), /downloading/i);
+    assert.match(String(f.edits[2].content), /preparing/i);
+    assert.equal(f.edits[3].files?.length, 1);
+    assert(f.edits.slice(0, 3).every(edit => !String(edit.content).includes('https://') && !edit.files));
+    await late?.('queued');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.edits.length, 4, 'A late progress edit must not replace the uploaded preview');
+    assert.match(f.response.content, /Synthetic01/);
+  } finally { release(); await pending; }
+});
+
+test('manual Erome completes despite rejected progress edits for a deleted or inaccessible reply', async () => {
+  const f = manual(), editReply = f.input.editReply;
+  let progressAttempts = 0;
+  f.input.editReply = async options => {
+    if (!options.files?.length) { progressAttempts++; throw new Error('Unknown message'); }
+    return editReply(options);
+  };
+  await f.run({ prepareErome: async (_url, onStage) => {
+    await onStage?.('cached');
+    return prepared();
+  } });
+  assert.equal(progressAttempts, 1);
+  assert.equal(f.edits.length, 1);
+  assert.equal(f.edits[0].files?.length, 1);
+  assert.match(f.response.content, /Synthetic01/);
 });
 
 function attachmentMessage(attachments: Partial<Attachment>[]) {

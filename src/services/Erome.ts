@@ -1,8 +1,15 @@
 import { AttachmentBuilder } from 'discord.js';
 import { createVideoAttachment, MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES } from './VideoAttachment';
+import type { EromePreparer, EromeProgress, EromeStage } from './EromeDelivery';
 
 const MAX_HTML_BYTES = 1024 * 1024;
 const MAX_WAITING = 2, WAIT_TIMEOUT_MS = 300_000;
+const MAX_CONSUMERS = 8;
+const CACHE_TTL_MS = 300_000, MAX_CACHE_ENTRIES = 2, MAX_CACHE_BYTES = 18 * 1024 * 1024;
+type Prepared = { bytes: Buffer; videoCount: number };
+type Job = { result: Promise<Prepared | null>; stage: EromeStage; consumers: number; observers: Set<EromeProgress> };
+const jobs = new Map<string, Job>();
+const cache = new Map<string, Prepared & { expiresAt: number; timer: ReturnType<typeof setTimeout> }>();
 let busy = false;
 const waiting: { resolve(accepted: boolean): void; expiresAt: number; timer: ReturnType<typeof setTimeout> }[] = [];
 
@@ -27,6 +34,30 @@ function leave(): void {
     if (accepted) return;
   }
   busy = false;
+}
+
+function notify(observer: EromeProgress | undefined, stage: EromeStage): void {
+  try { void Promise.resolve(observer?.(stage)).catch(() => {}); } catch { /* Progress must not interrupt preparation. */ }
+}
+
+function attachment(value: Prepared) {
+  return { file: new AttachmentBuilder(Buffer.from(value.bytes), { name: 'linky-video.mp4',
+    description: value.videoCount > 1 ? `First video of ${value.videoCount} in the linked album.` : 'Video from the linked album.' }),
+  videoCount: value.videoCount };
+}
+
+function evict(url: string): void {
+  clearTimeout(cache.get(url)?.timer);
+  cache.delete(url);
+}
+
+function remember(url: string, value: Prepared): void {
+  while (cache.size >= MAX_CACHE_ENTRIES || [...cache.values()].reduce((sum, item) => sum + item.bytes.length, value.bytes.length) > MAX_CACHE_BYTES) {
+    evict(cache.keys().next().value!);
+  }
+  const timer = setTimeout(() => { cache.delete(url); }, CACHE_TTL_MS);
+  timer.unref?.();
+  cache.set(url, { ...value, expiresAt: Date.now() + CACHE_TTL_MS, timer });
 }
 
 /** Only complete public album URLs are accepted; profiles, redirects and nested URLs are not followed. */
@@ -76,12 +107,12 @@ async function boundedBody(response: Response, limit: number): Promise<Buffer | 
 /** Prepare the first distinct video, without cookies, redirects, persistent media or an unbounded work queue. */
 export function createEromePreparer({ fetch: request = fetch, convert = createVideoAttachment() }: {
   fetch?: typeof fetch; convert?: (input: Buffer) => Promise<Buffer | null>;
-} = {}): (source: string) => Promise<{ file: AttachmentBuilder; videoCount: number } | null> {
-  return async raw => {
-    const source = parseEromeUrl(raw);
-    if (!source || !await enter()) return null;
+} = {}): EromePreparer {
+  const prepare = async (url: string, progress: (stage: EromeStage) => void): Promise<Prepared | null> => {
+    if (!await enter()) return null;
     try {
-      const response = await request(source.url, { redirect: 'error', signal: AbortSignal.timeout(10_000),
+      progress('downloading');
+      const response = await request(url, { redirect: 'error', signal: AbortSignal.timeout(10_000),
         headers: { Accept: 'text/html', 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
       if (!/^text\/html(?:;|$)/i.test(response.headers.get('content-type') ?? '')) {
         await response.body?.cancel(); return null;
@@ -93,16 +124,53 @@ export function createEromePreparer({ fetch: request = fetch, convert = createVi
       const videos = videoSources(text);
       if (!videos.length) return null;
       const media = await request(videos[0], { redirect: 'error', signal: AbortSignal.timeout(120_000),
-        headers: { Accept: 'video/mp4', Referer: source.url, 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
+        headers: { Accept: 'video/mp4', Referer: url, 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
       if (!/^video\/mp4(?:;|$)/i.test(media.headers.get('content-type') ?? '')) {
         await media.body?.cancel(); return null;
       }
       const input = await boundedBody(media, MAX_VIDEO_BYTES);
+      if (input) progress('preparing');
       const output = input && await convert(input);
-      return output?.length && output.length <= MAX_ATTACHMENT_BYTES ? { file: new AttachmentBuilder(output, { name: 'linky-video.mp4',
-        description: videos.length > 1 ? `First video of ${videos.length} in the linked album.` : 'Video from the linked album.' }),
-      videoCount: videos.length } : null;
+      return output?.length && output.length <= MAX_ATTACHMENT_BYTES ? { bytes: output, videoCount: videos.length } : null;
     } catch { return null; }
     finally { leave(); }
+  };
+  return async (raw, onStage) => {
+    const source = parseEromeUrl(raw);
+    if (!source) return null;
+    const cached = cache.get(source.url);
+    if (cached && cached.expiresAt > Date.now()) {
+      cache.delete(source.url);
+      cache.set(source.url, cached);
+      notify(onStage, 'cached');
+      return attachment(cached);
+    }
+    if (cached) evict(source.url);
+    let job = jobs.get(source.url);
+    if (!job) {
+      if (jobs.size >= MAX_WAITING + 1) return null;
+      const created: Job = { result: Promise.resolve(null), stage: busy ? 'queued' : 'downloading', consumers: 0, observers: new Set() };
+      jobs.set(source.url, created);
+      created.result = prepare(source.url, stage => {
+        if (created.stage === stage) return;
+        created.stage = stage;
+        for (const observer of created.observers) notify(observer, stage);
+      }).then(result => {
+        if (result) remember(source.url, result);
+        return result;
+      }).finally(() => { jobs.delete(source.url); });
+      job = created;
+    }
+    if (job.consumers >= MAX_CONSUMERS) return null;
+    job.consumers++;
+    if (onStage) job.observers.add(onStage);
+    notify(onStage, job.stage);
+    try {
+      const result = await job.result;
+      return result ? attachment(result) : null;
+    } finally {
+      job.consumers--;
+      if (onStage) job.observers.delete(onStage);
+    }
   };
 }
