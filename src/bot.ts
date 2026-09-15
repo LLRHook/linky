@@ -25,6 +25,15 @@ import { evaluateScope } from './services/ServerScope';
 import { PromptService } from './services/PromptService';
 import { createEromePreparer } from './services/Erome';
 import { createEromeMediaRuntime } from './services/EromeMediaRuntime';
+import { createEromeWorkScheduler } from './services/EromeWorkScheduler';
+import { DeliveryDiagnostics } from './services/DeliveryDiagnostics';
+import { handleDeliveryDetails } from './services/DeliveryDetails';
+import { PreviewWatcher } from './services/PreviewWatcher';
+import { ProviderHealth } from './services/ProviderHealth';
+import { EromeAlbumSessions } from './services/EromeAlbumSessions';
+import { createEromeAlbumPolicy } from './services/EromeAlbumPolicy';
+import type { EromeMediaPreparer } from './services/EromeMedia';
+import { bindDeliveryDetails } from './services/DeliveryAttempt';
 
 export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
   servers = new ServerSettings(settings.settingsPath),
@@ -39,6 +48,8 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   let youtubeStats: YouTubeStats | undefined;
   let registry: RepostRegistry | undefined;
   let prompts: PromptService | undefined;
+  const shutdown = new AbortController();
+  let closing: Promise<void> | undefined;
   if (settings.prompt) {
     try { prompts = new PromptService(settings.prompt, join(dirname(settings.settingsPath), 'prompt-jobs.json')); }
     catch { log.warn('Coding requests are unavailable because their job history could not be loaded'); }
@@ -56,19 +67,29 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     }
   }
   const health = new PreviewHealth();
-  const prepareErome = createEromePreparer();
-  const mediaReady = settings.eromeMedia ? startMedia(settings.eromeMedia).catch(() => {
+  const providerHealth = new ProviderHealth();
+  const previews = new PreviewWatcher(client);
+  const diagnostics = new DeliveryDiagnostics({ path: join(dirname(settings.settingsPath), 'delivery-diagnostics.json') });
+  const scheduler = createEromeWorkScheduler({ observe: event => {
+    if (event.kind === 'finished' || event.kind === 'rejected' || event.kind === 'quarantined')
+      log.info({ ...event, rssMiB: Math.round(process.memoryUsage().rss / 1024 / 1024) }, 'Media preparation resources');
+  } });
+  const prepareErome = createEromePreparer({ scheduler });
+  const mediaReady = settings.eromeMedia ? startMedia(settings.eromeMedia, { scheduler }).catch(() => {
     log.warn('Original video hosting is unavailable; using the attachment fallback');
     return undefined;
   }) : Promise.resolve(undefined);
+  let albums: EromeAlbumSessions | undefined;
   const releaseEromeMedia = async (messageId: string) => {
+    albums?.remove(messageId);
     const media = await mediaReady;
     if (settings.eromeMedia && !media) throw Error('Video storage unavailable');
     await media?.release(messageId);
   };
   const mediaOptions = settings.eromeMedia ? {
-    prepareEromeMedia: async (source: string) => (await mediaReady)?.prepare(source) ?? null,
-    bindEromeMedia: async (id: string, messageId: string) => (await mediaReady)?.bind(id, messageId) ?? false,
+    prepareEromeMedia: async (source: string, options?: Parameters<EromeMediaPreparer>[1]) => (await mediaReady)?.prepare(source, options) ?? null,
+    bindEromeMedia: async (id: string, messageId: string, reservation?: string) => (await mediaReady)?.bind(id, messageId, reservation) ?? false,
+    cancelMediaReservation: async (reservation: string) => { await (await mediaReady)?.cancelReservation?.(reservation); },
     releaseEromeMedia,
   } : {};
   const retrying = new Set<string>();
@@ -77,10 +98,29 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     const channel = await client.channels.fetch(channelId);
     return channel && 'messages' in channel ? channel.messages.fetch({ message: messageId, force: true }) : null;
   };
+  if (settings.eromeMedia) albums = new EromeAlbumSessions({
+    prepare: mediaOptions.prepareEromeMedia!, bind: mediaOptions.bindEromeMedia!,
+    cancelReservation: mediaOptions.cancelMediaReservation!,
+    unbind: async (id, messageId) => { await (await mediaReady)?.unbind?.(id, messageId); },
+    context: owner => ({ trace: diagnostics.begin({ requesterId: owner.requesterId, channelId: owner.channelId,
+      guildId: owner.guildId, mode: owner.mode, platform: 'erome' }) }),
+    details: async (id, messageId) => (await bindDeliveryDetails(diagnostics, id, messageId)).map(row => row.toJSON()),
+    allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
+  });
+  const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums, signal: shutdown.signal };
   const destroy = client.destroy.bind(client);
-  client.destroy = async () => {
+  client.destroy = () => {
+    if (closing) return closing;
+    shutdown.abort();
     registry?.stop(); youtubeStats?.stop();
-    try { await (await mediaReady)?.close(); } finally { await destroy(); }
+    albums?.close(); previews.close();
+    closing = (async () => {
+      try {
+        const results = await Promise.allSettled([scheduler.close(), mediaReady.then(media => media?.close()), diagnostics.close()]);
+        if (results.some(result => result.status === 'rejected')) log.warn('Some shutdown cleanup could not be confirmed');
+      } finally { await destroy(); }
+    })();
+    return closing;
   };
 
   const repost = createLinkRepostHandler(settings.channelIds, log, undefined, {
@@ -93,12 +133,13 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     lookupYouTube,
     prepareErome,
     ...mediaOptions,
+    ...deliveryOptions,
     observePreview: (expected, result) => health.record(expected, result),
     rememberRepost: record => registry?.remember(record) ?? Promise.resolve(false),
     findRepost: id => registry?.findByReplacement(id),
     publishYouTube: (message, embeds) => youtubeStats?.publish(message, embeds) ?? Promise.resolve(null),
   });
-  client.on(Events.MessageCreate, message => { void repost(message); });
+  client.on(Events.MessageCreate, message => { if (!shutdown.signal.aborted) void repost(message); });
   client.on(Events.MessageDelete, message => {
     void releaseEromeMedia(message.id).catch(() => log.warn('Video storage cleanup failed'));
     void registry?.handleSourceDelete(message).catch(() => log.warn('Source deletion cleanup will be retried'));
@@ -112,6 +153,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     }
   });
   client.on(Events.MessageUpdate, (before, after) => {
+    if (shutdown.signal.aborted) return;
     void registry?.handleSourceUpdate(before, after, source => repost(source as Message, { refresh: true, forceReply: true }))
       .catch(() => log.warn('Source edit synchronization will be retried'));
   });
@@ -124,19 +166,22 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   }, 'Social link replacement ready for configured and opted-in servers');
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    if (shutdown.signal.aborted) return;
     try {
       if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'help') await help(interaction, settings, servers);
         else if (interaction.commandName === 'setup') await setup(interaction, servers, settings);
         else if (interaction.commandName === 'settings') await preferences(interaction, settings, servers);
         else if (interaction.commandName === 'diagnose') await diagnose(interaction, settings, servers, async link => health.describe(link));
-        else if (interaction.commandName === 'fix') await fix(interaction, settings, { prepareErome, ...mediaOptions,
+        else if (interaction.commandName === 'fix') await fix(interaction, settings, { prepareErome, ...mediaOptions, ...deliveryOptions,
           serverPreferences: id => servers.getPreferences(id), observePreview: (expected, result) => health.record(expected, result) });
         else if (interaction.commandName === 'prompt') await prompt(interaction, prompts);
       } else if (interaction.isMessageContextMenuCommand()) {
-        if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { prepareErome, ...mediaOptions,
+        if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { prepareErome, ...mediaOptions, ...deliveryOptions,
           serverPreferences: id => servers.getPreferences(id), observePreview: (expected, result) => health.record(expected, result) });
       } else if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
+        if (interaction.isButton() && await handleDeliveryDetails(interaction, diagnostics)) return;
+        if (interaction.isButton() && await albums?.handle(interaction)) return;
         if (interaction.isButton() && await promptStatus(interaction, prompts)) return;
         if (interaction.isButton() && await replyToYouTubeControl(interaction, {
           stats: youtubeStats, lookup: lookupYouTube,
@@ -185,6 +230,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     try {
       await readyClient.application.commands.set(commandDefinitions);
       await mediaReady;
+      await diagnostics.ready;
       // Cleanup continues even if the API key or YouTube support is later disabled.
       youtubeStats = new YouTubeStats({
         path: join(dirname(settings.settingsPath), 'youtube-stats.json'),

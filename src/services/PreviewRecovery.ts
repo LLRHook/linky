@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { APIEmbed, Message } from 'discord.js';
 import { mapLinks, visibleLink } from './LinkTokens';
-import { getProviderCandidates, parseSocialUrl, parseProviderUrl, type SocialPlatform } from './SocialProviders';
+import { getProviderCandidates, parseSocialUrl, parseProviderUrl, type SocialPlatform, type ProviderCandidate } from './SocialProviders';
 import { parseYouTubeUrl } from './YouTube';
 
 export interface ExpectedPreview {
@@ -20,6 +20,8 @@ export interface PreviewResult {
   missing: ExpectedPreview[];
   /** Discord supplied video metadata; this does not establish client playback. */
   videoMetadata: boolean;
+  /** Only matching embeds whose URL identifies the attempted provider. Canonical source URLs remain unattributed. */
+  attributed?: ExpectedPreview[];
 }
 
 export function expectedPreviews(original: string, rendered: string): ExpectedPreview[] {
@@ -32,7 +34,7 @@ export function expectedPreviews(original: string, rendered: string): ExpectedPr
       mapLinks(rendered, (observed, position) => {
         if (!visibleLink(rendered, position)) return observed;
         const provider = parseProviderUrl(observed);
-        if (provider && identity(observed) === identity(social.sourceUrl)) {
+        if (provider && previewIdentity(observed) === previewIdentity(social.sourceUrl)) {
           expectations.set(social.sourceUrl, { source: social.sourceUrl, url: observed, platform: provider.platform, providerId: provider.providerId });
         }
         return observed;
@@ -45,7 +47,7 @@ export function expectedPreviews(original: string, rendered: string): ExpectedPr
   return [...expectations.values()];
 }
 
-function identity(raw: string): string | null {
+export function previewIdentity(raw: string): string | null {
   const video = parseYouTubeUrl(raw);
   if (video) return `youtube:${video.id}`;
   const source = parseSocialUrl(raw) ?? parseProviderUrl(raw);
@@ -59,7 +61,7 @@ function identity(raw: string): string | null {
 
 function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   if (!embed.url) return false;
-  const same = identity(embed.url) !== null && identity(embed.url) === identity(expected.url);
+  const same = previewIdentity(embed.url) !== null && previewIdentity(embed.url) === previewIdentity(expected.url);
   if (!same) return false;
   if (expected.captionFree && embed.description?.trim()) return false;
   const errorTitle = /^(?:error(?:\s+\d+)?|not found|temporarily unavailable|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;
@@ -81,6 +83,8 @@ export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly 
     ok: expected.length > 0 && expected.every(item => embeds.some(embed => matches(embed, item))),
     missing: expected.filter(item => !embeds.some(embed => matches(embed, item))),
     videoMetadata: embeds.some(embed => Boolean(embed.video?.url) && expected.some(item => matches(embed, item))),
+    attributed: expected.filter(item => embeds.some(embed => embed.type !== 'rich' && matches(embed, item) &&
+      (parseProviderUrl(embed.url!)?.providerId === item.providerId || (item.providerId === 'youtube' && parseYouTubeUrl(embed.url!) !== null)))),
   };
 }
 
@@ -100,11 +104,14 @@ export async function waitForPreviews(message: Pick<Message, 'embeds' | 'fetch'>
   return result;
 }
 
-export function nextProviderContent(content: string, missing: readonly ExpectedPreview[], attempted: Set<string>): string {
+export function nextProviderContent(content: string, missing: readonly ExpectedPreview[], attempted: Set<string>,
+  orderCandidates: (candidates: readonly ProviderCandidate[], item: ExpectedPreview) => readonly ProviderCandidate[] = candidates => candidates): string {
   let next = content;
   for (const item of missing) {
     attempted.add(`${item.source}:${item.providerId}`);
-    const candidate = getProviderCandidates(item.source, { captionFree: item.captionFree })
+    const candidates = getProviderCandidates(item.source, { captionFree: item.captionFree });
+    const candidate = orderCandidates(candidates, item)
+      .filter(candidate => candidates.some(known => known.providerId === candidate.providerId && known.url === candidate.url))
       .find(candidate => !attempted.has(`${item.source}:${candidate.providerId}`));
     if (!candidate) continue;
     attempted.add(`${item.source}:${candidate.providerId}`);
@@ -121,6 +128,7 @@ export class PreviewHealth {
     for (const item of expected) {
       const old = this.observations.get(item.providerId) ?? { succeeded: 0, failed: 0, checkedAt: 0, lastSucceeded: false };
       const passed = !result.missing.some(missing => missing.source === item.source);
+      if (passed && !(result.attributed ?? []).some(observed => observed.source === item.source && observed.providerId === item.providerId)) continue;
       this.observations.set(item.providerId, { succeeded: old.succeeded + Number(passed), failed: old.failed + Number(!passed),
         checkedAt: Date.now(), lastSucceeded: passed });
     }

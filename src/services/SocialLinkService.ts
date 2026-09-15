@@ -27,7 +27,13 @@ import { parseEromeUrl } from './Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from './EromeDelivery';
 import { fitsAttachmentBudget, guildAttachmentBudget } from './AttachmentLimits';
 import { eromeMediaComponents, onlyEromeLinks, watchEromeMedia, sendEromeMedia, messageHasEromeMedia,
-  type EromeMediaPreparer, type EromeMediaBinding } from './EromeMedia';
+  type EromeMedia, type EromeMediaPreparer, type EromeMediaBinding } from './EromeMedia';
+import { createDeliveryProgress } from './DeliveryProgress';
+import { createDeliveryAttempt, deliveryPlatform } from './DeliveryAttempt';
+import type { DeliveryDiagnostics } from './DeliveryDiagnostics';
+import type { PreviewWatcher, PreviewWatch } from './PreviewWatcher';
+import type { ProviderHealth, ProviderAttempt } from './ProviderHealth';
+import type { EromeAlbumSessions } from './EromeAlbumSessions';
 import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
 import { formatLinkRepost, repostControls } from './RepostPresentation';
 
@@ -199,9 +205,9 @@ export function createLinkRepostHandler(
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
   { platforms = REWRITE_PLATFORMS, translateTweet, translateInstagram, serverIds = [], serverEnabled, serverPreferences,
-    lookupYouTube, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia,
+    lookupYouTube, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
     verifyErome = verifyEromeAttachment,
-    verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost }: {
+    verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost, diagnostics, armPreview, providerHealth, albums, signal }: {
     platforms?: readonly RewritePlatform[];
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
     translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
@@ -214,11 +220,17 @@ export function createLinkRepostHandler(
     prepareEromeMedia?: EromeMediaPreparer;
     bindEromeMedia?: EromeMediaBinding;
     releaseEromeMedia?: (messageId: string) => Promise<void>;
+    cancelMediaReservation?: (reservation: string) => Promise<void>;
     verifyErome?: typeof verifyEromeAttachment;
     verifyPreview?: (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult>;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     rememberRepost?: (record: RepostRecord) => Promise<boolean>;
     findRepost?: (replacementId: string) => RepostRecord | undefined;
+    diagnostics?: DeliveryDiagnostics;
+    armPreview?: PreviewWatcher['arm'];
+    providerHealth?: ProviderHealth;
+    albums?: EromeAlbumSessions;
+    signal?: AbortSignal;
   } = {}
 ): (message: Message, options?: { refresh?: boolean; forceReply?: boolean }) => Promise<RepostRefreshResult> {
   const allowedChannelIds = typeof channelIds === 'string' ? [channelIds] : channelIds;
@@ -230,7 +242,7 @@ export function createLinkRepostHandler(
     const preferences = serverPreferences?.(message.guildId) ?? {};
     const preferenceVersion = JSON.stringify(preferences);
     const eromeSources = findEromeLinks(message.content);
-    const enabled = () => (!eromeSources.length || canPreviewErome(message.channel, preferences.eromeChannels)) && evaluateScope({
+    const enabled = () => !signal?.aborted && (!eromeSources.length || canPreviewErome(message.channel, preferences.eromeChannels)) && evaluateScope({
       guildId: message.guildId, channelId: message.channelId,
       threadParentId: message.channel.isThread() ? message.channel.parentId : undefined,
       serverEnabled: serverEnabled?.(message.guildId), preferences,
@@ -258,6 +270,14 @@ export function createLinkRepostHandler(
     inFlight.add(message.id);
     let rollback: (() => Promise<void>) | undefined;
     let mediaWatcher: ReturnType<typeof watchEromeMedia> | undefined;
+    let previewWatch: PreviewWatch | undefined;
+    let progress: ReturnType<typeof createDeliveryProgress> | undefined;
+    let progressMessage: Message | undefined;
+    let originalMedia: EromeMedia | null = null;
+    const providerAttempts: ProviderAttempt[] = [];
+    const delivery = createDeliveryAttempt({ requesterId: message.author.id, channelId, guildId: message.guildId,
+      mode: 'automatic', platform: deliveryPlatform(message.content) }, diagnostics,
+      event => progress?.update(event), signal);
     try {
       const channel = message.channel;
       const member = message.guild.members.me;
@@ -273,20 +293,70 @@ export function createLinkRepostHandler(
       if (!reply && message.attachments.size) required.push(PermissionFlagsBits.AttachFiles);
       if (eromeSource) required.push(PermissionFlagsBits.AttachFiles);
       if ((!reply && !message.deletable) || !permissions?.has(required)) {
+        delivery.finish('permission');
         log.warn(context, 'Skipping link replacement: missing channel permissions');
         return;
       }
 
       // Discord can mutate this cached message while a metadata lookup is pending.
       const version = sourceVersion(message);
+      const nonce = refresh ? randomBytes(12).toString('hex') : message.id;
+      let progressAttempted = false;
+      progress = createDeliveryProgress(async text => {
+        if (!eromeSource || !enabled() || sourceVersion(message) !== version || delivery.context.signal?.aborted) return;
+        const content = `Preparing your Erome preview…\n-# ${text}`;
+        if (progressMessage) { await progressMessage.edit({ content, allowedMentions: { parse: [] } }); return; }
+        if (progressAttempted) return;
+        progressAttempted = true;
+        progressMessage = await sendEromeMedia(() => channel.send({ content, nonce, enforceNonce: true,
+          allowedMentions: { parse: [], repliedUser: false },
+          reply: { messageReference: message.id, failIfNotExists: true } }), async () => {
+          const recent = await channel.messages.fetch({ limit: 25 });
+          const matches = recent.filter(candidate => candidate.author.id === message.client.user.id &&
+            candidate.reference?.messageId === message.id && String(candidate.nonce) === nonce);
+          return matches.size === 1 ? matches.first()! : null;
+        });
+      });
+      const failureNotice = async (text: string) => {
+        await progress!.stop();
+        if (!rememberRepost || !enabled()) return;
+        const current = await message.fetch(true);
+        if (!enabled() || !canCopy(current) || sourceVersion(current) !== version) return;
+        const initial = { content: text, components: repostControls(message.content, { remove: false }),
+          allowedMentions: { parse: [] as never[], repliedUser: false } };
+        const notice = progressMessage ? await progressMessage.edit(initial) : await channel.send({ ...initial,
+          reply: { messageReference: message.id, failIfNotExists: true } });
+        progressMessage = undefined;
+        rollback = async () => { await notice.delete(); };
+        if (!await rememberRepost({ guildId: message.guildId, channelId, sourceId: message.id,
+          replacementId: notice.id, authorId: message.author.id, mode: 'reply' })) {
+          await notice.delete(); rollback = undefined;
+          if (refresh) throw Error('Could not save regenerated retry notice ownership.');
+          return;
+        }
+        const latest = await message.fetch(true);
+        if (!enabled() || !canCopy(latest) || sourceVersion(latest) !== version) { await notice.delete(); rollback = undefined; return; }
+        const details = await delivery.controls(notice.id);
+        await notice.edit({ components: [...repostControls(message.content, { retry: true }), ...details], allowedMentions: { parse: [] } });
+        rollback = undefined;
+      };
+      if (eromeSource) progress.update({ stage: 'resolve', state: 'running' });
       const eromeBudget = guildAttachmentBudget(message.guild.premiumTier);
-      const originalMedia = eromeSource && prepareEromeMedia && bindEromeMedia && releaseEromeMedia && onlyEromeLinks(message.content)
-        ? await prepareEromeMedia(eromeSource).catch(() => null) : null;
-      const erome = eromeSource && !originalMedia
-        ? await prepareErome!(eromeSource, undefined, { maxBytes: eromeBudget }).catch(() => null) : null;
+      originalMedia = eromeSource && prepareEromeMedia && bindEromeMedia && releaseEromeMedia && onlyEromeLinks(message.content)
+        ? await prepareEromeMedia(eromeSource, { context: delivery.context }).catch(() => null) : null;
+      if (eromeSource) delivery.context.trace?.setPath(originalMedia ? 'hosted-original' : 'attachment');
+      const erome = eromeSource && !originalMedia && !delivery.context.signal?.aborted
+        ? await prepareErome!(eromeSource, undefined, { maxBytes: eromeBudget, context: delivery.context }).catch(() => null) : null;
+      if (delivery.context.signal?.aborted) {
+        delivery.finish('timeout');
+        await failureNotice('This media preparation reached its time limit. Your original is still here; try again later.');
+        return;
+      }
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       if (eromeSource && !originalMedia && (!erome || !fitsAttachmentBudget(erome.file, eromeBudget))) {
+        delivery.finish(delivery.context.signal?.aborted ? 'timeout' : 'unavailable');
         log.warn(context, 'Erome video unavailable or outside processing limits; kept original');
+        await failureNotice('The Erome preview could not be prepared within its limits. Your original is still here. Retry later if the source is busy or unavailable.');
         return;
       }
       let youtube = new Map<string, YouTubeStatistics>();
@@ -319,7 +389,8 @@ export function createLinkRepostHandler(
         return video && youtube.has(video.id) && visibleLink(translated.content, position) ? video.url : url;
       });
       const formatted = formatLinkRepost(canonical, message.author.id, replyContext);
-      let content = (formatted.length <= MAX_CONTENT_LENGTH ? formatted : body) + (erome ? eromeNotice(erome.videoCount) : '');
+      let content = (formatted.length <= MAX_CONTENT_LENGTH ? formatted : body) + (erome ? eromeNotice(erome.videoCount, erome.kind) : '');
+      const usedFormatted = content === formatted + (erome ? eromeNotice(erome.videoCount, erome.kind) : '');
       const youtubeCards = youtubeLinks.filter(link => youtube.has(link.id))
         .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url, youtubeDisplay))
         .filter((card): card is APIEmbed => card !== null);
@@ -345,52 +416,8 @@ export function createLinkRepostHandler(
       for (const attachment of attachments) files.push(await copyAttachment(attachment));
       files.push(...translationFiles);
       if (!enabled() || erome && !fitsAttachmentBudget(erome.file, guildAttachmentBudget(message.guild.premiumTier))) return;
-      const nonce = refresh ? randomBytes(12).toString('hex') : message.id;
-      mediaWatcher = originalMedia ? watchEromeMedia(message.client, channelId, originalMedia) : undefined;
-      const send = () => channel.send({
-        ...(originalMedia ? {
-          flags: MessageFlags.IsComponentsV2,
-          components: eromeMediaComponents(originalMedia, content,
-            repostControls(message.content, { remove: false }).map(row => row.toJSON())),
-        } : { content, ...(embeds ? { embeds } : {}), files,
-          components: repostControls(message.content, { remove: false }) }),
-        allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
-        nonce,
-        enforceNonce: true,
-        ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}),
-        ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds } : {}),
-      });
-      const replacement = originalMedia ? await sendEromeMedia(send, async () => {
-        const recent = await channel.messages.fetch({ limit: 25 });
-        const matches = recent.filter(candidate => candidate.author.id === message.client.user.id &&
-          candidate.reference?.messageId === message.id && (candidate.nonce == null || String(candidate.nonce) === nonce) &&
-          messageHasEromeMedia(candidate, originalMedia.url));
-        return matches.size === 1 ? matches.first()! : null;
-      }) : await send();
-
-      // Remember successes even when deletion fails. The nonce also guards REST retries.
-      reposted.add(message.id);
-      if (reposted.size > RECENT_MESSAGE_LIMIT) reposted.delete(reposted.values().next().value!);
-      const resultContext = { ...context, replacementId: replacement.id };
-      let publication: StatsPublication | null = null;
-      const removeReplacement = async () => {
-        await publication?.remove();
-        await replacement.delete();
-        if (originalMedia) await releaseEromeMedia?.(replacement.id);
-      };
-      rollback = removeReplacement;
-      if (!enabled() || originalMedia && !await bindEromeMedia!(originalMedia.id, replacement.id)) {
-        await removeReplacement();
-        return;
-      }
-      if (replacement.attachments.size !== files.length) {
-        log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
-        await removeReplacement();
-        return;
-      }
       // Caption-mode text is already delivered as translated message content (or
       // a verified attachment). Only media and untranslated posts need an embed.
-      const usedFormatted = content === formatted + (erome ? eromeNotice(erome.videoCount) : '');
       const textStatusIds = new Set(usedFormatted ? translated.textStatusIds : []);
       const videoStatusIds = new Set(translated.videoStatusIds);
       const instagramIds = new Set((usedFormatted ? translated.instagramSources ?? [] : [])
@@ -406,30 +433,118 @@ export function createLinkRepostHandler(
               (instagramId && instagramVideos.has(instagramId)) ? { requireVideo: true } : {}),
           };
         });
+      if (providerHealth) {
+        const current = expectations();
+        const preferred = mapLinks(content, (url, position) => {
+          if (!visibleLink(content, position)) return url;
+          const item = current.find(item => item.url === url);
+          return item ? providerHealth.preferContent(url, item) : url;
+        });
+        if (preferred.length <= MAX_CONTENT_LENGTH) content = preferred;
+      }
+      let expected = expectations();
+      await progress.stop();
+      if (!enabled()) return;
+      if (delivery.context.signal?.aborted) {
+        delivery.finish('timeout');
+        await failureNotice('This media preparation reached its time limit. Your original is still here; try again later.');
+        return;
+      }
+      previewWatch = expected.length ? armPreview?.(channelId, expected, delivery.context) : undefined;
+      mediaWatcher = originalMedia ? watchEromeMedia(message.client, channelId, originalMedia) : undefined;
+      const preparedMedia = originalMedia;
+      const publicationBody = {
+        ...(originalMedia ? {
+          flags: MessageFlags.IsComponentsV2 as const,
+          components: eromeMediaComponents(preparedMedia!, content,
+            repostControls(message.content, { remove: false }).map(row => row.toJSON())),
+        } : { content, ...(embeds ? { embeds } : {}), files,
+          components: repostControls(message.content, { remove: false }) }),
+        allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
+        ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds as const } : {}),
+      };
+      const send = () => progressMessage
+        ? progressMessage.edit({ ...publicationBody, ...(preparedMedia ? { content: null, embeds: [], attachments: [] } : {}) })
+        : channel.send({ ...publicationBody, nonce, enforceNonce: true,
+          ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) });
+      const publishStage = delivery.context.trace?.startStage('publish');
+      const replacement = originalMedia ? await sendEromeMedia(send, async () => {
+        const recent = await channel.messages.fetch({ limit: 25 });
+        const matches = recent.filter(candidate => candidate.author.id === message.client.user.id &&
+          candidate.reference?.messageId === message.id && (candidate.nonce == null || String(candidate.nonce) === nonce) &&
+          messageHasEromeMedia(candidate, preparedMedia!.url));
+        return matches.size === 1 ? matches.first()! : null;
+      }) : await send();
+      progressMessage = undefined;
+      publishStage?.finish();
+
+      // Remember successes even when deletion fails. The nonce also guards REST retries.
+      reposted.add(message.id);
+      if (reposted.size > RECENT_MESSAGE_LIMIT) reposted.delete(reposted.values().next().value!);
+      const resultContext = { ...context, replacementId: replacement.id };
+      let publication: StatsPublication | null = null;
+      const removeReplacement = async () => {
+        await publication?.remove();
+        await replacement.delete();
+        if (originalMedia) await releaseEromeMedia?.(replacement.id);
+      };
+      // Until the source is deleted, an expired attempt can safely discard its copy.
+      const stopExpired = async () => {
+        if (!delivery.context.signal?.aborted) return false;
+        delivery.finish('timeout');
+        await removeReplacement();
+        rollback = undefined;
+        await failureNotice('This preview reached its time limit. Your original is still here; try again later.');
+        return true;
+      };
+      rollback = removeReplacement;
+      const ownershipStage = delivery.context.trace?.startStage('ownership');
+      const mediaBound = !originalMedia || await bindEromeMedia!(originalMedia.id, replacement.id, originalMedia.reservation);
+      ownershipStage?.finish(mediaBound ? 'ok' : 'failed');
+      if (!enabled() || !mediaBound || delivery.context.signal?.aborted) {
+        if (delivery.context.signal?.aborted) delivery.finish('timeout');
+        await removeReplacement();
+        return;
+      }
+      if (replacement.attachments.size !== files.length) {
+        log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
+        await removeReplacement();
+        return;
+      }
+      const mediaPreviewStage = erome || originalMedia ? delivery.context.trace?.startStage('preview') : undefined;
       const eromeVerified = originalMedia ? await mediaWatcher!.verify(replacement)
         : erome ? await verifyErome(replacement, erome.file) : false;
+      mediaPreviewStage?.finish(eromeVerified ? 'ok' : 'unavailable');
       const verify = async (expected: ExpectedPreview[]): Promise<PreviewResult> => {
-        const result = expected.length ? await verifyPreview(replacement, expected)
+        if (delivery.context.signal?.aborted) return { ok: false, missing: [...expected], videoMetadata: false };
+        const stage = expected.length ? delivery.context.trace?.startStage('preview') : undefined;
+        const result = expected.length ? await (previewWatch?.verify(replacement) ?? verifyPreview(replacement, expected))
           : { ok: textStatusIds.size > 0 || eromeVerified, missing: [], videoMetadata: false };
-        return { ...result, ok: result.ok && (!(erome || originalMedia) || eromeVerified), videoMetadata: result.videoMetadata || eromeVerified };
+        stage?.finish(delivery.context.signal?.aborted ? 'timeout' : result.ok ? 'ok' : 'unavailable');
+        return { ...result, ok: !delivery.context.signal?.aborted && result.ok && (!(erome || originalMedia) || eromeVerified), videoMetadata: result.videoMetadata || eromeVerified && (originalMedia?.kind ?? erome?.kind) !== 'image' };
       };
-      let expected = expectations();
       const attempted = new Set<string>();
       let preview = await verify(expected);
+      providerAttempts.push({ expected, result: preview });
       observePreview?.(expected, preview);
       // Retry only catalogued alternatives, on the same output, with a bounded budget.
-      for (let attempt = 0; !preview.ok && attempt < 2 && enabled(); attempt++) {
-        const recovered = nextProviderContent(content, preview.missing, attempted);
+      for (let attempt = 0; !preview.ok && attempt < 2 && enabled() && !delivery.context.signal?.aborted; attempt++) {
+        const recovered = nextProviderContent(content, preview.missing, attempted,
+          providerHealth ? (candidates, item) => providerHealth.order(candidates, item) : undefined);
         // An alternate hostname can be longer, including once per repeated link.
         // Preserve room for the retained-caption notice if neither provider works.
         const recoveryLimit = MAX_CONTENT_LENGTH - (instagramIds.size ? INSTAGRAM_PREVIEW_NOTICE.length : 0);
         if (recovered === content || recovered.length > recoveryLimit) break;
         content = recovered;
-        await replacement.edit({ content, embeds: embeds ?? [], allowedMentions: { parse: [] } });
         expected = expectations();
+        previewWatch?.close();
+        previewWatch = armPreview?.(channelId, expected, delivery.context);
+        await replacement.edit({ content, embeds: embeds ?? [], allowedMentions: { parse: [] } });
         preview = await verify(expected);
+        providerAttempts.push({ expected, result: preview });
         observePreview?.(expected, preview);
       }
+      if (await stopExpired()) return;
       const captionFallback = !erome && !originalMedia && !preview.ok && expected.length === 1 && preview.missing.length === 1 && preview.missing.every(item => {
         const id = parseInstagramUrl(item.source)?.shortcode;
         return id && instagramIds.has(id);
@@ -445,36 +560,15 @@ export function createLinkRepostHandler(
       if (!preview.ok && !captionFallback) {
         await removeReplacement();
         log.warn({ ...resultContext, providers: expected.map(item => item.providerId) }, 'Keeping original: no useful preview appeared');
-        // A small retry reply is useful only when ownership can be saved and checked.
-        if (rememberRepost && enabled()) {
-          const latest = await message.fetch(true);
-          if (!enabled() || !canCopy(latest)) return;
-          if (sourceVersion(latest) !== version) return refresh ? 'retry' : undefined;
-          const notice = await channel.send({
-            content: 'Linky could not confirm a preview. Your original is still here. You can retry or use /diagnose.',
-            components: repostControls(message.content, { retry: true }),
-            allowedMentions: { parse: [], repliedUser: false },
-            reply: { messageReference: message.id, failIfNotExists: true },
-          });
-          rollback = async () => { await notice.delete(); };
-          const saved = await rememberRepost({ guildId: message.guildId, channelId, sourceId: message.id,
-            replacementId: notice.id, authorId: message.author.id, mode: 'reply' });
-          const current = saved ? await message.fetch(true) : latest;
-          if (!saved || !enabled() || !canCopy(current) || sourceVersion(current) !== version) {
-            await notice.delete();
-            rollback = undefined;
-            if (!saved && refresh) throw new Error('Could not save regenerated retry notice ownership.');
-            if (saved && enabled() && canCopy(current) && refresh) return 'retry';
-            return;
-          }
-          rollback = undefined;
-        }
+        delivery.finish('metadata-unconfirmed');
+        await failureNotice('Linky could not confirm a preview. Your original is still here. You can retry or check Details.');
         return;
       }
       log.info({ ...resultContext, providers: expected.map(item => item.providerId), videoMetadata: preview.videoMetadata,
         playbackChecked: false, translatedTextPosts: textStatusIds.size },
       captionFallback ? 'Translated Instagram caption delivered; kept original because preview could not be verified' :
-        expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
+        erome || originalMedia ? 'Erome media metadata confirmed; client playback not checked' :
+          expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
       if (youtubeCards.length) {
         try { publication = await publishYouTube!(replacement, youtubeCards); }
         catch { log.warn(resultContext, 'Could not publish YouTube details'); }
@@ -483,6 +577,7 @@ export function createLinkRepostHandler(
           return;
         }
       }
+      if (await stopExpired()) return;
       let latest: Message;
       try {
         latest = await message.fetch(true);
@@ -494,6 +589,7 @@ export function createLinkRepostHandler(
         }
         throw err;
       }
+      if (await stopExpired()) return;
       if (!enabled() || !canCopy(latest) || sourceVersion(latest) !== version) {
         log.warn(resultContext, 'Keeping original: message changed or link fixing was disabled while reposting');
         await removeReplacement();
@@ -509,6 +605,7 @@ export function createLinkRepostHandler(
       }
       // State may have changed while the durable ownership record was written.
       const confirmed = rememberRepost ? await message.fetch(true) : latest;
+      if (await stopExpired()) return;
       if (!enabled() || !canCopy(confirmed) || sourceVersion(confirmed) !== version) {
         await removeReplacement();
         if (enabled() && canCopy(confirmed) && refresh) return 'retry';
@@ -525,9 +622,14 @@ export function createLinkRepostHandler(
         log.info(resultContext, 'Replaced social links and deleted original message');
       }
       // Do not expose a Remove action while original deletion is still in flight.
+      const details = await delivery.controls(replacement.id);
+      const albumControl = originalMedia && eromeSource && rememberRepost ? albums?.register({ media: originalMedia,
+        source: eromeSource, requesterId: message.author.id, guildId: message.guildId, channelId,
+        messageId: replacement.id, sourceMessageId: message.id, mode: 'automatic' }) : undefined;
       if (rememberRepost) await replacement.edit({
-        components: originalMedia ? eromeMediaComponents(originalMedia, content, repostControls(message.content).map(row => row.toJSON()))
-          : [...repostControls(message.content), ...publication?.controls ?? []], allowedMentions: { parse: [] },
+        components: originalMedia ? eromeMediaComponents(originalMedia, content,
+          [...repostControls(message.content), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
+          : [...repostControls(message.content), ...publication?.controls ?? [], ...details], allowedMentions: { parse: [] },
       });
       if (originalMedia) {
         const current = await message.fetch(true);
@@ -539,12 +641,24 @@ export function createLinkRepostHandler(
         }
         rollback = undefined;
       }
+      // Once deletion has been sent, keep the potentially sole copy even if a final edit runs late.
+      delivery.finish(delivery.context.signal?.aborted ? 'timeout' : captionFallback ? 'partial' : 'confirmed');
     } catch (err) {
+      delivery.finish(delivery.context.signal?.aborted ? 'timeout' : 'discord-failure');
       if (rollback) await rollback().catch(() => log.warn(context, 'Could not remove incomplete preview'));
-      log.error({ ...context, err }, 'link replacement failed; no further deletion will be attempted');
+      const failure = err as { code?: unknown; status?: unknown } | null;
+      log.error({ ...context, ...(typeof failure?.code === 'number' ? { errorCode: failure.code } : {}),
+        ...(typeof failure?.status === 'number' ? { status: failure.status } : {}) },
+      'link replacement failed; no further deletion will be attempted');
       if (refresh) throw err;
     } finally {
+      await progress?.stop();
+      if (progressMessage) await progressMessage.delete().catch(() => log.warn(context, 'Could not remove expired progress reply'));
+      if (originalMedia?.reservation) await cancelMediaReservation?.(originalMedia.reservation).catch(() => {});
       mediaWatcher?.close();
+      previewWatch?.close();
+      providerHealth?.recordRecovery(providerAttempts);
+      delivery.close();
       inFlight.delete(message.id);
     }
     return undefined;

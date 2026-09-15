@@ -3,11 +3,15 @@ import type { AttachmentBuilder, Message } from 'discord.js';
 import { parseEromeUrl } from './Erome';
 import { mapLinks, visibleLink } from './LinkTokens';
 import type { ServerPreferences } from './ServerSettings';
+import type { DeliveryContext } from './DeliveryContext';
+import type { EromeSelection } from './EromeAlbum';
+import type { EromeItemInfo } from './EromeMedia';
 
 export type EromeStage = 'queued' | 'downloading' | 'preparing' | 'cached';
 export type EromeProgress = (stage: EromeStage) => void | Promise<void>;
-export type EromePreparer = (source: string, onStage?: EromeProgress, options?: { maxBytes?: number }) =>
-  Promise<{ file: AttachmentBuilder; videoCount: number } | null>;
+export type EromePreparer = (source: string, onStage?: EromeProgress,
+  options?: { maxBytes?: number; context?: DeliveryContext; selection?: EromeSelection }) =>
+  Promise<({ file: AttachmentBuilder; videoCount: number } & EromeItemInfo) | null>;
 
 export function findEromeLinks(content: string): string[] {
   const links = new Set<string>();
@@ -28,11 +32,12 @@ export function canPreviewErome(channel: { isThread(): boolean; nsfw?: boolean; 
     (target.nsfw === true || preference === 'all' && target.nsfw === false));
 }
 
-export function eromeNotice(videoCount: number): string {
+export function eromeNotice(videoCount: number, kind?: 'video' | 'image'): string {
+  if (kind === 'image') return '\n-# Image preview · Original album kept. Original image quality.';
   return `\n-# ${videoCount > 1 ? `First of ${videoCount} videos` : 'Video preview'} · Original album kept. Video may be compressed to fit Discord.`;
 }
 
-/** Confirm Discord accepted the prepared MP4 as video, not a thumbnail or unrelated attachment. */
+/** Confirm Discord accepted the prepared file with matching media type, size and dimensions. */
 export async function verifyEromeAttachment(message: Pick<Message, 'attachments' | 'fetch'>, file: AttachmentBuilder,
   sleep: (ms: number) => Promise<unknown> = delay): Promise<boolean> {
   if (!Buffer.isBuffer(file.attachment) || !file.name) return false;
@@ -44,7 +49,8 @@ export async function verifyEromeAttachment(message: Pick<Message, 'attachments'
       try { current = await message.fetch(true); } catch { return false; }
     }
     if (current.attachments.some(attachment => attachment.name === file.name && attachment.size === size &&
-      attachment.contentType === 'video/mp4' && (attachment.width ?? 0) > 0 && (attachment.height ?? 0) > 0)) return true;
+      attachment.contentType === (file.name.endsWith('.png') ? 'image/png' : file.name.endsWith('.jpg') ? 'image/jpeg' : 'video/mp4') &&
+      (attachment.width ?? 0) > 0 && (attachment.height ?? 0) > 0)) return true;
   }
   return false;
 }

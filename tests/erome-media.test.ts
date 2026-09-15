@@ -22,6 +22,17 @@ const packet = (components: unknown[], fields: Record<string, unknown> = {}) => 
   id: messageId, channel_id: channelId, author: { id: botId }, components, ...fields,
 } });
 
+test('image gallery metadata verifies the selected appended image and retains earlier items', async () => {
+  const image: EromeMedia = { ...media, kind: 'image', mimeType: 'image/png', videoCount: 0, itemCount: 3,
+    url: media.url.replace('.mp4', '.png'), metadata: { width: 1280, height: 720 } };
+  const rendered = eromeMediaComponents(image, 'Album', [], [media, image]);
+  assert.equal(rendered[1].type, ComponentType.MediaGallery);
+  if (rendered[1].type === ComponentType.MediaGallery) assert.deepEqual(rendered[1].items.map(item => item.media.url), [media.url, image.url]);
+  const bot = client(), watcher = watchEromeMedia(bot, channelId, image);
+  bot.emit(Events.Raw, packet([gallery({ url: image.url, content_type: 'image/png' })]));
+  assert.equal(await watcher.verify(message()), true); watcher.close();
+});
+
 test('V2 rendering keeps text, exact original media URL, multi-video notice and caller controls', () => {
   const controls: APIMessageTopLevelComponent[] = [{ type: ComponentType.ActionRow, components: [
     { type: ComponentType.Button, style: ButtonStyle.Link, label: 'Album', url: 'https://www.erome.com/a/Album' },
@@ -30,7 +41,7 @@ test('V2 rendering keeps text, exact original media URL, multi-video notice and 
   const rendered = eromeMediaComponents(media, content, controls);
   assert.equal(rendered[0].type, ComponentType.TextDisplay);
   if (rendered[0].type === ComponentType.TextDisplay) assert.equal(rendered[0].content,
-    `${content}\n-# Video preview · Original video and audio. Album kept.`);
+    `${content}\n-# Video preview · Original media. Album kept.`);
   assert.deepEqual(rendered[1], { type: ComponentType.MediaGallery, items: [{ media: { url: media.url },
     description: 'Original video from the linked album.' }] });
   assert.equal(rendered[2], controls[0]); assert.equal(controls.length, 1);

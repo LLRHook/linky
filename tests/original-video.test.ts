@@ -109,7 +109,7 @@ test('original inspection rejects extra tracks, attached pictures and malformed 
   }
 });
 
-test('probe failures and cancellation remove the private input, even when an injected executor ignores abort', async () => {
+test('probe failures clean input and cancellation waits for child exit before cleaning input', async () => {
   let failedDirectory = '';
   assert.equal(await createOriginalVideoInspector({ execute: async (_program, _args, options) => {
     failedDirectory = options.cwd; throw new Error('probe unavailable');
@@ -126,18 +126,24 @@ test('probe failures and cancellation remove the private input, even when an inj
   } })(source, { signal: controller.signal });
   await began;
   controller.abort();
-  assert.equal(await pending, null);
   assert.equal(processSignal?.aborted, true);
-  await assert.rejects(stat(directory), { code: 'ENOENT' });
-  finish(info());
+  let settled = false;
+  void pending.then(() => { settled = true; });
   await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal((await stat(directory)).isDirectory(), true);
+  finish(info());
+  assert.equal(await pending, null);
+  await assert.rejects(stat(directory), { code: 'ENOENT' });
 });
 
 test('the two-second probe deadline aborts a stalled executor and cleans its private input', async () => {
   let directory = '', processSignal: AbortSignal | undefined, began = 0;
   assert.equal(await createOriginalVideoInspector({ execute: async (_program, _args, options) => {
     directory = options.cwd; processSignal = options.signal; began = performance.now();
-    return new Promise<string>(() => {});
+    return new Promise<string>((_resolve, reject) => {
+      options.signal!.addEventListener('abort', () => reject(new Error('child exited after abort')), { once: true });
+    });
   } })(source), null);
   const elapsed = performance.now() - began;
   assert.ok(elapsed >= 1_900 && elapsed < 4_000, `probe deadline took ${elapsed}ms`);

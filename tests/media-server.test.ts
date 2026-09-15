@@ -10,6 +10,24 @@ import { PassThrough } from 'node:stream';
 import { createMediaServer, mediaRange } from '../src/services/MediaServer';
 import { REGIONAL_CLAIM_PATH } from '../src/services/RegionalProtocol';
 
+test('typed image media serves only the matching extension with safe content headers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linky-image-http-')), id = 'c'.repeat(32);
+  const bytes = Buffer.from('validated PNG fixture'), path = join(directory, 'image.png'); await writeFile(path, bytes);
+  const server = createMediaServer({ store: { get: async requested => requested === id ? {
+    id, path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), mimeType: 'image/png',
+  } : null }, claim: () => false });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}/media/${id}`;
+  try {
+    const response = await fetch(base + '.png'); assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/png');
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+    assert.equal((await fetch(base + '.jpg')).status, 404); assert.equal((await fetch(base + '.mp4')).status, 404);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true }); }
+});
+
 test('media ranges support seeks without accepting multiple, empty or overflowing ranges', () => {
   assert.deepEqual(mediaRange('bytes=2-4', 10), { start: 2, end: 4 });
   assert.deepEqual(mediaRange('bytes=7-', 10), { start: 7, end: 9 });
