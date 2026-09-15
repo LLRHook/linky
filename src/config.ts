@@ -11,6 +11,7 @@ export interface Config {
   captionApiKey?: string;
   settingsPath: string;
   youtubeApiKey?: string;
+  prompt?: { token: string; guildIds: readonly string[] };
 }
 
 function requireEnv(name: string): string {
@@ -21,6 +22,7 @@ function requireEnv(name: string): string {
 
 const youtubeApiKey = process.env['YOUTUBE_API_KEY']?.trim() || undefined;
 const captionApiKey = process.env['GOOGLE_TRANSLATE_API_KEY']?.trim() || undefined;
+const promptToken = process.env['PROMPT_GITHUB_TOKEN']?.trim();
 
 export const config: Config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
@@ -33,4 +35,7 @@ export const config: Config = {
   captionApiKey,
   settingsPath: process.env['LINK_SETTINGS_PATH']?.trim() || 'data/servers.json',
   youtubeApiKey,
+  prompt: process.env['PROMPT_ENABLED']?.toLowerCase() === 'true' && promptToken ? {
+    token: promptToken, guildIds: parseDiscordIds(process.env['PROMPT_GUILD_IDS'], 'Coding server IDs'),
+  } : undefined,
 };
