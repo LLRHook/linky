@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises';
 import { AttachmentBuilder, Collection, MessageFlags, MessageFlagsBitField, MessageType, PermissionFlagsBits,
   PermissionsBitField, type Attachment, type ChatInputCommandInteraction, type InteractionEditReplyOptions,
   type Message, type MessageContextMenuCommandInteraction, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
 import type { Config } from '../src/config';
 import { execute } from '../src/commands/fix';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
-import { verifyEromeAttachment, type EromeProgress } from '../src/services/EromeDelivery';
+import { eromeNotice, verifyEromeAttachment, type EromeProgress } from '../src/services/EromeDelivery';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
+import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
+import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '1700000000000000005';
@@ -74,7 +77,7 @@ function manual(content = ALBUM, context = false) {
   const edits: InteractionEditReplyOptions[] = [], deferrals: unknown[] = [];
   const response = { id: SOURCE, content: '', fetch: async () => response };
   const input = {
-    isChatInputCommand: () => !context, inGuild: () => true, guildId: GUILD, channel: ageChannel(),
+    isChatInputCommand: () => !context, inGuild: () => true, guildId: GUILD, channelId: CHANNEL, user: { id: AUTHOR }, channel: ageChannel(),
     memberPermissions: new PermissionsBitField(PermissionsBitField.All),
     appPermissions: new PermissionsBitField(PermissionsBitField.All),
     attachmentSizeLimit: undefined as number | undefined,
@@ -259,8 +262,12 @@ test('automatic Erome never uploads a file beyond the requested budget, an empty
     new AttachmentBuilder('https://example.test/unbounded.mp4')]) {
     const f = automatic();
     await f.run({ prepareErome: async () => ({ ...prepared(), file }) });
-    assert.deepEqual(f.outputs, []);
-    assert.deepEqual(f.records, []);
+    assert.equal(f.outputs.length, 1);
+    assert(!f.outputs[0].options.files?.length);
+    assert.match(String(f.outputs[0].options.content), /could not be prepared/);
+    assert.match(JSON.stringify(f.outputs[0].edits.at(-1)), /linky:retry/);
+    assert.equal(f.records.length, 1);
+    assert.equal(f.records[0].authorId, AUTHOR);
     assert.equal(f.state.originalDeleted, false);
   }
 });
@@ -298,12 +305,16 @@ test('automatic Erome stops uploads when scope, preferences, age restriction or 
   }
 });
 
-test('automatic unavailable or throwing Erome preparation preserves source without publishing', async () => {
+test('automatic unavailable or throwing Erome preparation preserves the source and offers an owned retry without uploading media', async () => {
   for (const fail of [false, true]) {
     const f = automatic();
     await f.run({ prepareErome: async () => { if (fail) throw new Error('unavailable'); return null; } });
-    assert.deepEqual(f.outputs, []);
-    assert.deepEqual(f.records, []);
+    assert.equal(f.outputs.length, 1);
+    assert(!f.outputs[0].options.files?.length);
+    assert.match(String(f.outputs[0].options.content), /could not be prepared/);
+    assert.match(JSON.stringify(f.outputs[0].edits.at(-1)), /linky:retry/);
+    assert.equal(f.records.length, 1);
+    assert.equal(f.records[0].authorId, AUTHOR);
     assert.equal(f.state.originalDeleted, false);
   }
 });
@@ -467,23 +478,22 @@ test('manual Erome serializes progress before the final upload and ignores late 
     void onStage?.('queued');
     void onStage?.('downloading');
     void onStage?.('preparing');
+    await delay(550);
     return prepared();
   } });
   try {
-    await new Promise<void>(resolve => setImmediate(resolve));
+    await delay(600);
     assert.equal(started.length, 1, 'Only one progress edit may be in flight');
-    assert.match(String(started[0].content), /queued/i);
+    assert.match(String(started[0].content), /preparing/i);
     assert.equal(started[0].files, undefined);
     release();
     await pending;
-    assert.equal(f.edits.length, 4);
-    assert.match(String(f.edits[1].content), /downloading/i);
-    assert.match(String(f.edits[2].content), /preparing/i);
-    assert.equal(f.edits[3].files?.length, 1);
-    assert(f.edits.slice(0, 3).every(edit => !String(edit.content).includes('https://') && !edit.files));
+    assert.equal(f.edits.length, 2);
+    assert.equal(f.edits[1].files?.length, 1);
+    assert(f.edits.slice(0, 1).every(edit => !String(edit.content).includes('https://') && !edit.files));
     await late?.('queued');
     await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(f.edits.length, 4, 'A late progress edit must not replace the uploaded preview');
+    assert.equal(f.edits.length, 2, 'A late progress edit must not replace the uploaded preview');
     assert.match(f.response.content, /Synthetic01/);
   } finally { release(); await pending; }
 });
@@ -497,6 +507,7 @@ test('manual Erome completes despite rejected progress edits for a deleted or in
   };
   await f.run({ prepareErome: async (_url, onStage) => {
     await onStage?.('cached');
+    await delay(550);
     return prepared();
   } });
   assert.equal(progressAttempts, 1);
@@ -510,6 +521,47 @@ function attachmentMessage(attachments: Partial<Attachment>[]) {
     fetch: async (_force?: boolean) => value as unknown as Awaited<ReturnType<Message['fetch']>> };
   return value;
 }
+
+test('image attachments use image metadata and do not claim video compression', async () => {
+  for (const [name, contentType] of [['linky-image.png', 'image/png'], ['linky-image.jpg', 'image/jpeg']]) {
+    const file = new AttachmentBuilder(Buffer.from('validated image'), { name });
+    const message = attachmentMessage([{ name, size: 15, contentType, width: 640, height: 480 }]);
+    assert.equal(await verifyEromeAttachment(message, file, async () => {}), true);
+  }
+  assert.match(eromeNotice(0, 'image'), /Original image quality/);
+  assert.doesNotMatch(eromeNotice(0, 'image'), /video|compressed/i);
+});
+
+test('manual Erome does not upload when its deadline expires while a progress edit drains', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = manual(), outcomes: DeliveryOutcome[] = [];
+  const diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
+    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const editReply = f.input.editReply;
+  let first = true;
+  f.input.editReply = async options => {
+    if (first) { first = false; entered(); await gate; }
+    return editReply(options);
+  };
+  const pending = f.run({ diagnostics, prepareErome: async (_source, onStage) => {
+    onStage?.('preparing');
+    t.mock.timers.tick(500);
+    await started;
+    return prepared();
+  }, verifyErome: async () => assert.fail('Expired work must not upload or verify a video') });
+  await started;
+  await nextTurn();
+  t.mock.timers.tick(120_000);
+  release();
+  await pending;
+  assert.ok(f.edits.every(edit => !edit.files?.length));
+  assert.match(f.response.content, /time limit/);
+  assert.deepEqual(outcomes, ['timeout']);
+  assert.equal(f.input.targetMessage.content, ALBUM);
+});
 
 test('Erome attachment verification rejects thumbnails, unrelated names, mismatched sizes and incomplete video metadata', async () => {
   const file = prepared().file;

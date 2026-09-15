@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
 import { ComponentType, Events, MessageFlags, PermissionFlagsBits, PermissionsBitField,
   type APIMessageTopLevelComponent, type ButtonInteraction, type ChatInputCommandInteraction,
@@ -8,6 +9,8 @@ import { ComponentType, Events, MessageFlags, PermissionFlagsBits, PermissionsBi
 import { execute, removeManual } from '../src/commands/fix';
 import type { Config } from '../src/config';
 import type { EromeMedia } from '../src/services/EromeMedia';
+import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
+import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 
 const BOT = '1491240385031311470', OWNER = '111111111111111111', MESSAGE = '333333333333333333';
 const album = 'https://www.erome.com/a/Album123';
@@ -86,6 +89,49 @@ function controls(payload: Payload): { custom_id?: string; url?: string }[] {
     .map(component => ({ ...'custom_id' in component ? { custom_id: component.custom_id } : {},
       ...'url' in component ? { url: component.url } : {} })) ?? [];
 }
+
+test('slow original-media preparation reports progress then clears legacy content on the V2 transition', async () => {
+  const f = fixture();
+  f.dependencies.prepareEromeMedia = async (_source, options) => {
+    assert.equal(options?.context?.fairnessKey, 'guild');
+    assert(options?.context?.signal);
+    await delay(550);
+    return media;
+  };
+  await execute(f.interaction, config, f.dependencies);
+  const edits = f.events.filter(event => event.name === 'edit').map(event => event.payload!);
+  assert.match(String(edits[0].content), /Checking the album/);
+  assert.equal(edits[0].flags, undefined);
+  assert.equal(edits[1].flags, MessageFlags.IsComponentsV2);
+  assert.equal(edits[1].content, null);
+  assert(edits.at(-1)?.components?.some(component => component.type === ComponentType.MediaGallery));
+  assert.equal(f.events.filter(event => event.name === 'bind').length, 1);
+});
+
+test('failed rollback never releases a gallery that Discord may still display', async () => {
+  const f = fixture(), edit = f.input.editReply;
+  let calls = 0;
+  f.input.editReply = async payload => {
+    if (++calls > 1) throw Error('Discord could not confirm the edit');
+    return edit(payload);
+  };
+  await assert.rejects(execute(f.interaction, config, f.dependencies));
+  assert(f.events.some(event => event.name === 'bind'));
+  assert(!f.events.some(event => event.name === 'release'));
+});
+
+test('manual hosted-media expiration during final controls rolls back and records timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(), outcomes: DeliveryOutcome[] = [];
+  f.state.afterControls = () => t.mock.timers.tick(120_000);
+  f.dependencies.diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
+    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+  await execute(f.interaction, config, f.dependencies);
+  assert.deepEqual(outcomes, ['timeout']);
+  const edits = f.events.filter(event => event.name === 'edit');
+  assert.ok(!edits.at(-1)?.payload?.components?.some(component => component.type === ComponentType.MediaGallery));
+  assert.equal(f.events.at(-1)?.name, 'release', 'Release only after Discord confirms gallery rollback');
+});
 function gallery(payload: Payload): boolean { return payload.components?.some(component => component.type === ComponentType.MediaGallery) ?? false; }
 async function advance(t: TestContext, ms: number): Promise<void> { await nextTurn(); t.mock.timers.tick(ms); await nextTurn(); }
 
@@ -101,7 +147,7 @@ for (const context of [false, true]) {
     assert.equal(controls(edits[0]).some(button => button.custom_id === 'linky:remove-manual'), false);
     assert.equal(controls(edits[1]).at(-1)?.custom_id, 'linky:remove-manual');
     assert.equal(controls(edits[0])[0].url, album);
-    assert(edits.every(edit => edit.content === undefined && edit.files === undefined));
+    assert(edits.every(edit => edit.content == null && edit.files === undefined));
     assert(edits.every(edit => JSON.stringify(edit.allowedMentions) === '{"parse":[]}'));
     assert.equal(f.client.listenerCount(Events.Raw), 0);
     assert.equal(f.input.targetMessage.content, album);
@@ -165,7 +211,7 @@ test('failed binding or revoked scope removes the V2 gallery and then releases i
     assert.deepEqual(f.events.map(event => event.name), ['defer', 'prepare', 'edit', 'bind', 'edit', 'release']);
     const rollback = f.events.at(-2)!.payload!;
     assert.equal(rollback.flags, MessageFlags.IsComponentsV2);
-    assert.equal(rollback.content, undefined);
+    assert.equal(rollback.content, null);
     assert.equal(gallery(rollback), false);
     assert.equal(controls(rollback).some(button => button.custom_id), false);
     assert.equal(f.client.listenerCount(Events.Raw), 0);
@@ -206,7 +252,7 @@ test('scope revocation or a failed final controls edit rolls back with V2 compon
     assert.deepEqual(f.events.map(event => event.name), ['defer', 'prepare', 'edit', 'bind', 'edit', 'edit', 'release']);
     const rollback = f.events.at(-2)!.payload!;
     assert.equal(gallery(rollback), false);
-    assert.equal(rollback.content, undefined);
+    assert.equal(rollback.content, null);
     assert.equal(rollback.flags, MessageFlags.IsComponentsV2);
     assert.equal(f.client.listenerCount(Events.Raw), 0);
   }

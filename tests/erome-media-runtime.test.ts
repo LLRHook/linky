@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { runInNewContext } from 'node:vm';
 import { ModuleKind, ScriptTarget, transpileModule } from 'typescript';
 import { createEromeMediaPreparer, mediaBaseUrl } from '../src/services/EromeMediaRuntime';
-import { withEromePreparation } from '../src/services/Erome';
+import { eromeScheduler, withEromePreparation } from '../src/services/Erome';
 import { createMediaAssetStore, type MediaAsset } from '../src/services/MediaAssetStore';
 
 const album = 'https://www.erome.com/a/RuntimeAlbum';
@@ -24,10 +24,10 @@ function fixture(overrides: Partial<Options> = {}) {
   const options: Options = { baseUrl, signal: controller.signal,
     resolve: async url => { calls.push('resolve'); return { source, album: url, videoCount: 2 }; },
     download: async (value, signal) => {
-      calls.push('download'); assert.equal(value.source, source); assert.equal(signal, controller.signal); return bytes;
+      calls.push('download'); assert.equal(value.source, source); assert.ok(signal); assert.equal(signal.aborted, false); return bytes;
     },
     inspect: async (value, options) => {
-      calls.push('inspect'); assert.equal(value, bytes); assert.equal(options?.signal, controller.signal); return metadata;
+      calls.push('inspect'); assert.equal(value, bytes); assert.ok(options?.signal); assert.equal(options.signal.aborted, false); return metadata;
     },
     store: { publish: async value => {
       calls.push('publish'); assert.equal(value, bytes);
@@ -45,22 +45,22 @@ test('preparation inspects complete unchanged bytes before publication and reuse
   assert.ok(first); assert.equal(first.url, `${baseUrl}/media/${first.id}.mp4`);
   assert.deepEqual(first.metadata, metadata); assert.equal(first.videoCount, 2);
   assert.deepEqual(value.calls, ['resolve', 'download', 'inspect', 'publish']);
-  assert.equal(await value.prepare('https://erome.com/a/RuntimeAlbum/?tracking=1#video'), first);
-  assert.deepEqual(value.calls, ['resolve', 'download', 'inspect', 'publish', 'get']);
+  assert.deepEqual(await value.prepare('https://erome.com/a/RuntimeAlbum/?tracking=1#video'), first);
+  assert.deepEqual(value.calls, ['resolve', 'download', 'inspect', 'publish', 'resolve', 'get']);
   value.assets.delete(first.id);
   const rebuilt = await value.prepare(album);
   assert.ok(rebuilt); assert.notEqual(rebuilt.id, first.id);
-  assert.deepEqual(value.calls.slice(5), ['get', 'resolve', 'download', 'inspect', 'publish']);
+  assert.deepEqual(value.calls.slice(6), ['resolve', 'get', 'download', 'inspect', 'publish']);
 });
 
-test('cache expires after five minutes and stores at most two album results', async context => {
+test('cache expires after five minutes and stores at most sixty-four album descriptors', async context => {
   let now = 1_000;
   context.mock.method(Date, 'now', () => now);
   const value = fixture();
   const first = await value.prepare(album);
   now += 300_000;
   assert.notEqual((await value.prepare(album))?.id, first?.id);
-  await value.prepare(album + '2'); await value.prepare(album + '3');
+  for (let i = 2; i <= 65; i++) await value.prepare(album + i);
   const before = value.calls.filter(call => call === 'publish').length;
   await value.prepare(album);
   assert.equal(value.calls.filter(call => call === 'publish').length, before + 1);
@@ -93,6 +93,7 @@ test('cached storage failures return null and cancellation during a persisted lo
   let release!: (value: (MediaAsset & { path: string }) | null) => void;
   cancelled.options.store.get = () => new Promise(resolve => { release = resolve; });
   const pending = cancelled.prepare(album);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
   cancelled.controller.abort(); release(cancelled.assets.get(saved.id)!);
   assert.equal(await pending, null);
 });
@@ -129,7 +130,7 @@ test('shutdown cancellation propagates through download and stops later inspecti
   let started!: () => void;
   const began = new Promise<void>(resolve => { started = resolve; });
   const value = fixture({ download: async (_source, signal) => {
-    assert.equal(signal, value.controller.signal); started();
+    assert.ok(signal); assert.equal(signal.aborted, false); started();
     return new Promise<null>(resolve => signal!.addEventListener('abort', () => resolve(null), { once: true }));
   } });
   const pending = value.prepare(album); await began; value.controller.abort();
@@ -205,21 +206,24 @@ async function lifecycleFixture(download: Options['download'], publish?: Options
     close(callback: () => void) { events.push('server-close'); queueMicrotask(callback); },
   });
   const dependencies: Record<string, unknown> = {
-    './MediaAssetStore': { createMediaAssetStore: async () => store },
+    './MediaAssetStore': { createMediaAssetStore: async () => store, mediaExtension: () => 'mp4' },
+    './MediaReuseIndex': { createMediaReuseIndex: async () => undefined },
+    './EromeImage': { createEromeImageDownloader: () => ({}) },
     './MediaServer': { createMediaServer: () => server },
     './RegionalDownloader': { createRegionalDownloader: () => ({ download, claim: () => false,
       close() { events.push('downloader-close'); } }) },
-    './VideoAttachment': { createOriginalVideoInspector: () => async () => metadata },
-    './Erome': { parseEromeUrl: (raw: string) => ({ url: raw }), withEromePreparation,
+    './VideoAttachment': { createOriginalVideoInspector: () => async () => metadata, createOriginalImageInspector: () => async () => null },
+    './Erome': { parseEromeUrl: (raw: string) => ({ url: raw }), eromeScheduler,
       resolveEromeAlbum: async (url: string) => ({ source, album: url, videoCount: 1 }) },
   };
   const code = transpileModule(await readFile(join(__dirname, '../src/services/EromeMediaRuntime.ts'), 'utf8'), {
     compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 },
   }).outputText;
   const loaded = { exports: {} };
-  runInNewContext(code, { module: loaded, exports: loaded.exports, URL, AbortController, AbortSignal,
+  runInNewContext(code, { module: loaded, exports: loaded.exports, URL, AbortController, AbortSignal, Buffer,
     setTimeout, clearTimeout, require: (name: string) => {
-      if (name === 'node:events') return require(name) as unknown;
+      if (name.startsWith('node:')) return require(name) as unknown;
+      if (name === './EromeJobs') return require('../src/services/EromeJobs') as unknown;
       if (Object.hasOwn(dependencies, name)) return dependencies[name];
       throw Error('Unexpected lifecycle test dependency');
     } }, { timeout: 1_000 });

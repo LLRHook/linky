@@ -2,13 +2,36 @@ import assert from 'node:assert/strict';
 import { beforeEach, test, type TestContext } from 'node:test';
 import { createEromePreparer as createStreamingEromePreparer, parseEromeUrl } from '../src/services/Erome';
 import { MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES } from '../src/services/VideoAttachment';
+import { MessagePayload } from 'discord.js';
 
 let source = 'https://www.erome.com/a/Test_123', sequence = 0;
 beforeEach(() => { source = `https://www.erome.com/a/Test_${++sequence}`; });
 const video = 'https://v54.erome.com/1/Test_123/video.mp4';
 const page = (html = `<video><source src="${video}" type="video/mp4"></video>`) =>
-  new Response(html, { headers: { 'content-type': 'text/html; charset=UTF-8' } });
+  new Response(`<div class="media-group">${html}</div>`, { headers: { 'content-type': 'text/html; charset=UTF-8' } });
 const media = () => new Response('synthetic video input', { headers: { 'content-type': 'video/mp4' } });
+
+test('the download trace covers body consumption and cached builders share bytes safely with Discord.js', async () => {
+  const events: string[] = [], output = Buffer.from('prepared immutable result');
+  const prepare = createStreamingEromePreparer({ fetch: async input => String(input).includes('www.erome') ? page() : media(),
+    convert: async input => {
+      assert.equal(events.includes('download:ok'), false, 'headers cannot finish the download span');
+      assert.ok(events.includes('convert:start')); assert.ok(!Buffer.isBuffer(input));
+      for await (const _chunk of input.stream) assert.equal(events.includes('download:ok'), false);
+      assert.ok(events.includes('download:ok')); return output;
+    } });
+  const first = await prepare(source, undefined, { context: { trace: { id: 'body', startStage(stage) {
+    events.push(`${stage}:start`); return { finish(outcome) { events.push(`${stage}:${outcome ?? 'ok'}`); } };
+  }, setPath() {}, finish() { assert.fail('preparation finalized a delivery'); } } } });
+  const second = await prepare(source); assert.ok(first && second);
+  assert.notEqual(first.file, second.file); assert.equal(first.file.attachment, second.file.attachment);
+  const before = Buffer.from(output);
+  // The library's narrower static typing excludes nullable builder names even though message upload accepts builders.
+  const [a, b] = await Promise.all([MessagePayload.resolveFile({ attachment: first.file.attachment, name: first.file.name! }),
+    MessagePayload.resolveFile({ attachment: second.file.attachment, name: second.file.name! })]);
+  assert.equal(a.data, output); assert.equal(b.data, output); assert.deepEqual(output, before);
+  second.file.setName('different.mp4'); assert.equal(first.file.name, 'linky-video.mp4');
+});
 
 // Most fixtures inspect the completed download. Streaming-specific cases use the real seam below.
 function createEromePreparer({ convert, ...options }: {
@@ -287,7 +310,7 @@ test('an expired Erome waiter is removed at five minutes and never fetches or pr
     const next = later.prepare(later.album);
     pending.push(next);
     first.release();
-    assert.ok(await active);
+    assert.equal(await active, null, 'The overall deadline also cancels already admitted work');
     await turn();
     later.release();
     assert.ok(await next);
@@ -299,7 +322,7 @@ test('an expired Erome waiter is removed at five minutes and never fetches or pr
   }
 });
 
-test('Erome drains queued requests after active conversion failure and clears admitted wait deadlines', async t => {
+test('Erome drains queued work after conversion failure and applies an overall deadline after admission', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const events: string[] = [], failed = heldPreparation('failed', events, true), second = heldPreparation('second', events), third = heldPreparation('third', events);
   const first = failed.prepare(failed.album), waiting = second.prepare(second.album);
@@ -315,7 +338,7 @@ test('Erome drains queued requests after active conversion failure and clears ad
     await turn();
     assert.deepEqual(events.filter(event => event.endsWith(':album')), ['failed:album', 'second:album']);
     second.release();
-    assert.ok(await waiting, 'An admitted request must not expire at its former queue deadline');
+    assert.equal(await waiting, null, 'The total deadline bounds admitted work too');
     await turn();
     third.release();
     assert.ok(await next);
@@ -337,9 +360,9 @@ test('Erome shares concurrent canonical-album preparation across instances and r
   assert.ok(a && b, 'Both callers should receive the shared successful preparation');
   assert.deepEqual(events, ['shared:album', 'shared:video', 'shared:convert']);
   assert.notEqual(a.file, b.file);
-  assert.notEqual(a.file.attachment, b.file.attachment);
+  assert.equal(a.file.attachment, b.file.attachment, 'Prepared bytes are shared read-only, avoiding a copy for every requester');
   a.file.setName('changed.mp4');
-  (a.file.attachment as Buffer).fill(0);
+  a.file.setFile(Buffer.from('different caller file'));
   assert.equal(b.file.name, 'linky-video.mp4');
   assert.equal((b.file.attachment as Buffer).toString(), 'shared');
 });
@@ -353,7 +376,7 @@ test('Erome reuses a successful recent album across instances without fetching a
   const first = await prepare(source);
   assert.ok(first);
   first.file.setName('changed.mp4');
-  (first.file.attachment as Buffer).fill(0);
+  first.file.setFile(Buffer.from('different caller file'));
   const stages: string[] = [];
   const second = await createEromePreparer({ fetch: async () => { assert.fail('A recent album should reuse its prepared video'); } })(
     source.replace('www.erome.com', 'erome.com') + '?tracking=1', stage => { stages.push(stage); });
@@ -385,7 +408,7 @@ test('Erome evicts cached bytes at five minutes even without another request and
   } finally { t.mock.timers.reset(); }
 });
 
-test('Erome retains at most two outputs and evicts the least recently used album', async () => {
+test('Erome retains more than two outputs while evicting the least recently used bytes at its cap', async () => {
   const fetched: string[] = [];
   const prepare = createEromePreparer({ fetch: async url => {
     if (parseEromeUrl(String(url))) { fetched.push(String(url)); return page(); }
@@ -395,7 +418,10 @@ test('Erome retains at most two outputs and evicts the least recently used album
   for (const url of [a, b, a, c, a]) assert.ok(await prepare(url));
   assert.deepEqual(fetched, [a, b, c]);
   assert.ok(await prepare(b));
-  assert.deepEqual(fetched, [a, b, c, b], 'A third output must evict one of the two retained outputs');
+  assert.deepEqual(fetched, [a, b, c], 'Three recent outputs are retained');
+  for (let i = 0; i < 7; i++) assert.ok(await prepare(`${source}_more_${i}`));
+  assert.ok(await prepare(b));
+  assert.equal(fetched.at(-1), b, 'More than 128 MiB must evict old outputs');
 });
 
 test('Erome caps one shared album at eight consumers without consuming the unique-album queue', async () => {
@@ -483,7 +509,7 @@ test('Erome passes a bounded stream to conversion before the media response fini
     return Buffer.from('prepared');
   } });
   assert.ok(await prepare(source, stage => { stages.push(stage); }, { maxBytes: 2 * 1024 * 1024 }));
-  assert.deepEqual(stages, ['downloading', 'preparing']);
+  assert.deepEqual(stages, ['queued', 'downloading', 'preparing']);
 });
 
 test('Erome cancels unused media and rejects an output when conversion does not consume the complete source', async () => {

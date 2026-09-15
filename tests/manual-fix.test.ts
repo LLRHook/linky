@@ -6,6 +6,8 @@ import { ApplicationCommandType, ApplicationIntegrationType, InteractionContextT
 import type { Config } from '../src/config';
 import { data, contextData, execute, manualLinks, removeManual } from '../src/commands/fix';
 import { inspectPreviews, type ExpectedPreview, type PreviewResult } from '../src/services/PreviewRecovery';
+import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
+import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
 const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['instagram', 'tiktok', 'x'],
@@ -56,6 +58,46 @@ function previewChecks(fixture: ReturnType<typeof command>) {
   };
   return { checks, observations, dependencies };
 }
+
+test('manual preview expiration stops provider retries and cannot record a late confirmation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const observed of [false, true]) {
+    const f = command(), outcomes: DeliveryOutcome[] = [];
+    const diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
+      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    let checks = 0;
+    await execute(f.interaction, config, { diagnostics, verifyPreview: async (_message, expected) => {
+      checks++;
+      t.mock.timers.tick(120_000);
+      return { ok: observed, missing: observed ? [] : [...expected], videoMetadata: observed };
+    } });
+    assert.equal(checks, 1);
+    assert.ok(f.events.every(event => !String(event.payload?.content).includes('vxtwitter.com')));
+    assert.match(f.response.content, /time limit/);
+    assert.deepEqual(outcomes, ['timeout']);
+  }
+});
+
+test('manual expiration during Details binding or final controls is recorded without deleting the preview', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const phase of ['binding', 'controls']) {
+    const f = command(), outcomes: DeliveryOutcome[] = [];
+    const expire = () => t.mock.timers.tick(120_000);
+    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }),
+      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
+    bind: async () => { if (phase === 'binding') expire(); return true; } } as unknown as DeliveryDiagnostics;
+    const editReply = f.input.editReply;
+    f.input.editReply = async payload => {
+      const result = await editReply(payload);
+      if (phase === 'controls' && payload.components && payload.content === undefined) expire();
+      return result;
+    };
+    await execute(f.interaction, config, { diagnostics, ...previewChecks(f).dependencies });
+    assert.deepEqual(outcomes, ['timeout'], phase);
+    assert.ok(f.response.content.includes('https://fixupx.com/jack/status/20'));
+    assert.ok(f.response.components.length);
+  }
+});
 
 function originalControls(fixture: ReturnType<typeof command>) {
   const controls = fixture.response.components.flatMap(row => row.toJSON().components);

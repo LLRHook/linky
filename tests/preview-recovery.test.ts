@@ -255,3 +255,20 @@ test('diagnostics describe recent observations without claiming a provider outag
   assert.match(health.describe(source), /passed/);
   assert.match(health.describe(source), /does not confirm video playback/);
 });
+
+test('recovery ranking cannot add unvetted URLs or revisit an attempted provider', () => {
+  const attempted = new Set<string>();
+  const recovered = nextProviderContent(fixed, expected, attempted, candidates => [
+    { ...candidates[1], url: 'https://unvetted.example/video' }, ...[...candidates].reverse(),
+  ]);
+  assert.equal(recovered, fixed.replace('www.instagram7.com', 'oginstagram.com'));
+  assert.equal(nextProviderContent(recovered, expectedPreviews(source, recovered), attempted, candidates => [...candidates].reverse()), recovered);
+});
+
+test('provider status does not credit canonical metadata to the most recently attempted service', () => {
+  const health = new PreviewHealth();
+  const canonical = inspectPreviews([{ ...media, url: source }], expected);
+  assert.equal(canonical.ok, true);
+  health.record(expected, canonical);
+  assert.match(health.describe(source), /no recent/);
+});
