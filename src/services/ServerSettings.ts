@@ -12,6 +12,8 @@ export interface ServerPreferences {
   /** Additional channel restriction; absent inherits scope, empty disables every channel. */
   channelIds?: string[];
   youtubeDisplay?: 'preview' | 'counts' | 'counts-and-comment';
+  /** Absent keeps the existing age restriction; this never changes server or channel enablement. */
+  eromeChannels?: 'age-restricted' | 'all';
 }
 
 type ServerRecord = ServerPreferences & { enabled?: boolean };
@@ -23,7 +25,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
-  const fields = ['mode', 'platforms', 'translateTweets', 'translateInstagram', 'channelIds', 'youtubeDisplay', ...(allowEnabled ? ['enabled'] : [])];
+  const fields = ['mode', 'platforms', 'translateTweets', 'translateInstagram', 'channelIds', 'youtubeDisplay', 'eromeChannels', ...(allowEnabled ? ['enabled'] : [])];
   if (!isRecord(value) || Reflect.ownKeys(value).some(key => typeof key !== 'string' || !fields.includes(key))) {
     throw new Error('Unknown server preference fields.');
   }
@@ -49,6 +51,12 @@ function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
       throw new Error('YouTube display must be preview, counts, or counts-and-comment.');
     }
     result.youtubeDisplay = value.youtubeDisplay;
+  }
+  if (Object.hasOwn(value, 'eromeChannels')) {
+    if (value.eromeChannels !== 'age-restricted' && value.eromeChannels !== 'all') {
+      throw new Error('Erome channels must be age-restricted or all.');
+    }
+    result.eromeChannels = value.eromeChannels;
   }
   if (Object.hasOwn(value, 'channelIds')) {
     if (!Array.isArray(value.channelIds) || value.channelIds.length > 25 ||
