@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, test } from 'node:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, Collection, Events, GatewayIntentBits, MessageFlags, MessageFlagsBitField, MessageType, Partials, PermissionFlagsBits, PermissionsBitField, Routes, type ClientEvents, type Interaction, type Guild, type Message, type MessageCreateOptions, type InteractionReplyOptions } from 'discord.js';
@@ -22,12 +22,13 @@ const settings: Config = {
 const clients: Client[] = [];
 afterEach(async () => { await Promise.all(clients.splice(0).map(client => client.destroy())); });
 
-function fixture(overrides: Partial<Config> = {}, servers = new ServerSettings(settings.settingsPath)) {
+function fixture(overrides: Partial<Config> = {}, servers = new ServerSettings(settings.settingsPath),
+  startMedia?: Parameters<typeof createBot>[3]) {
   const logs: unknown[] = [];
   const errors: unknown[] = [];
   const client = createBot({ ...settings, ...overrides }, {
     info: (...args: unknown[]) => logs.push(args), warn() {}, error: (...args: unknown[]) => errors.push(args),
-  } as Parameters<typeof createBot>[1], servers);
+  } as Parameters<typeof createBot>[1], servers, startMedia);
   clients.push(client);
   return { client, logs, errors };
 }
@@ -68,6 +69,109 @@ test('an unconfigured bot listens for messages so setup can activate it without 
   const { client } = fixture({ channelIds: [] });
   assert.deepEqual(client.options.intents.toArray().sort(), ['Guilds', 'GuildMessages', 'MessageContent'].sort());
   assert.equal(client.listenerCount(Events.MessageCreate), 1);
+});
+
+test('video hosting starts only when configured and shuts down after pending startup completes', async () => {
+  let starts = 0, closes = 0, finish!: () => void;
+  const releases: string[] = [];
+  const ready = new Promise<void>(resolve => { finish = resolve; });
+  const startMedia: NonNullable<Parameters<typeof createBot>[3]> = async () => {
+    starts++; await ready;
+    return { prepare: async () => null, bind: async () => true,
+      release: async id => { releases.push(id); }, close: async () => { closes++; } };
+  };
+  fixture({}, undefined, startMedia);
+  assert.equal(starts, 0);
+  const { client } = fixture({ eromeMedia: { key: 'unused', workerBaseUrl: 'https://workers.example.test',
+    publicBaseUrl: 'https://media.example.test', directory, port: 8092 } }, undefined, startMedia);
+  assert.equal(starts, 1);
+  client.emit(Events.MessageDelete, { id: '123456789012345678' } as ClientEvents[Events.MessageDelete][0]);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(releases, []);
+  const closing = client.destroy(); assert.equal(closes, 0);
+  finish(); await closing;
+  assert.equal(closes, 1); assert.deepEqual(releases, ['123456789012345678']);
+  clients.splice(clients.indexOf(client), 1);
+});
+
+test('failed optional media startup leaves normal bot commands available', async () => {
+  const { client, errors } = fixture({ eromeMedia: { key: 'unused', workerBaseUrl: 'https://workers.example.test',
+    publicBaseUrl: 'https://media.example.test', directory, port: 8092 } }, undefined,
+  async () => { throw Error('Storage unavailable'); });
+  const replies = await command(client, 'help');
+  assert.equal(replies.length, 1); assert.deepEqual(errors, []);
+});
+
+test('configured media startup failure retains cleanup until a successful bot restart releases the binding', { timeout: 5000 }, async t => {
+  const caseDirectory = mkdtempSync(join(directory, 'media-cleanup-'));
+  const settingsPath = join(caseDirectory, 'servers.json'), journalPath = join(caseDirectory, 'reposts.json');
+  const botId = '1491240385031311470', authorId = '777777777777777777';
+  const guildId = '987654321098765432', channelId = '123456789012345678';
+  const snowflake = BigInt(Date.now() - 1_420_070_400_000) << 22n;
+  const record = { guildId, channelId, sourceId: String(snowflake + 1n), replacementId: String(snowflake + 2n),
+    authorId, mode: 'reply' as const };
+  const saved = new RepostRegistry({ path: journalPath, botUserId: botId,
+    fetchMessage: async () => assert.fail('Saving ownership must not fetch Discord'), canManageMessages: async () => false });
+  assert.equal(await saved.remember(record), true); saved.stop();
+  const journal = () => JSON.parse(readFileSync(journalPath, 'utf8')) as {
+    records: typeof record[]; remove: string[]; refresh: string[];
+  };
+  let previewExists = true, deletes = 0;
+  const source = { id: record.sourceId, guildId, channelId, author: { id: authorId },
+    content: 'https://www.erome.com/a/Album123', editedTimestamp: null,
+    delete: async () => assert.fail('Hosted-media cleanup must preserve the original') };
+  const replacement = { id: record.replacementId, guildId, channelId, author: { id: botId },
+    delete: async () => { previewExists = false; deletes++; } };
+  const channel = { messages: { fetch: async (options: { message: string; force: boolean }) => {
+    assert.equal(options.force, true);
+    if (options.message === record.sourceId) return source;
+    assert.equal(options.message, record.replacementId);
+    return previewExists ? replacement : null;
+  } } };
+  const overrides: Partial<Config> = { settingsPath, channelIds: [channelId], translateTweets: false,
+    eromeMedia: { key: 'unused', workerBaseUrl: 'https://workers.example.test', publicBaseUrl: 'https://media.example.test',
+      directory: join(caseDirectory, 'media'), port: 8092 } };
+  const startBot = async (startMedia: NonNullable<Parameters<typeof createBot>[3]>) => {
+    const f = fixture(overrides, new ServerSettings(settingsPath), startMedia);
+    Object.assign(f.client, { user: { id: botId } });
+    t.mock.method(f.client.channels, 'fetch', async (id: string) => {
+      assert.equal(id, channelId);
+      return channel as unknown as Awaited<ReturnType<typeof f.client.channels.fetch>>;
+    });
+    for (const listener of f.client.listeners(Events.ClientReady)) await listener({
+      application: { commands: { set: async () => {} } }, user: { id: botId, tag: 'Linky' },
+      guilds: { cache: new Map() },
+    } as unknown as Client<true>);
+    assert.deepEqual(f.errors, []);
+    return f;
+  };
+
+  const failed = await startBot(async () => { throw Error('Storage unavailable'); });
+  const replies: string[] = [];
+  await dispatch(failed.client, { isButton: () => true, customId: 'linky:remove', guildId, channelId,
+    user: { id: authorId }, message: replacement, deferred: true,
+    editReply: async (payload: { content: string }) => { replies.push(payload.content); },
+  });
+  assert.deepEqual(replies, ['Could not remove the repost yet. Linky will retry.']);
+  assert.equal(previewExists, false); assert.equal(deletes, 1);
+  assert.deepEqual(journal(), { records: [record], remove: [record.replacementId], refresh: [] });
+  await failed.client.destroy(); clients.splice(clients.indexOf(failed.client), 1);
+
+  const released: string[] = [], bindings = new Set([record.replacementId]);
+  const restored = await startBot(async () => ({ prepare: async () => null, bind: async () => true,
+    release: async id => {
+      assert.equal(previewExists, false, 'The bot releases media only after confirmed Discord removal');
+      bindings.delete(id); released.push(id);
+    }, close: async () => {},
+  }));
+  for (let attempt = 0; journal().records.length && attempt < 100; attempt++) {
+    await new Promise<void>(resolve => setTimeout(resolve, 5));
+  }
+  assert.deepEqual(released, [record.replacementId]);
+  assert.equal(bindings.size, 0);
+  assert.deepEqual(journal(), { records: [], remove: [], refresh: [] });
+  assert.equal(deletes, 1, 'Restart reconciles the missing reply without deleting it again');
+  assert.deepEqual(restored.errors, []);
 });
 
 for (const hasSystemChannel of [true, false]) {
