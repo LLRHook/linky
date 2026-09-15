@@ -5,7 +5,7 @@ import { REWRITE_PLATFORMS } from '../services/SocialLinkService';
 import { describeScope, evaluateScope } from '../services/ServerScope';
 
 export const PLATFORM_NAMES = { x: 'X', instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube',
-  bluesky: 'Bluesky', reddit: 'Reddit', twitch: 'Twitch clips', erome: 'Erome (age-restricted channels)' };
+  bluesky: 'Bluesky', reddit: 'Reddit', twitch: 'Twitch clips', erome: 'Erome' };
 
 export function effectivePreferences(config: Config, preferences: ServerPreferences) {
   const platforms = config.rewritePlatforms.filter(platform => preferences.platforms?.[platform] !== false);
@@ -16,6 +16,7 @@ export function effectivePreferences(config: Config, preferences: ServerPreferen
     translateInstagram: Boolean(config.translateInstagram && config.captionApiKey?.trim()) &&
       preferences.translateInstagram !== false && platforms.includes('instagram'),
     youtubeDisplay: preferences.youtubeDisplay ?? 'counts-and-comment',
+    eromeChannels: preferences.eromeChannels ?? 'age-restricted',
   };
 }
 
@@ -34,7 +35,9 @@ export const data = new SlashCommandBuilder()
   .addBooleanOption(option => option.setName('bluesky').setDescription('Fix Bluesky post previews in this server.'))
   .addBooleanOption(option => option.setName('reddit').setDescription('Fix Reddit post previews in this server.'))
   .addBooleanOption(option => option.setName('twitch').setDescription('Fix Twitch clip previews in this server.'))
-  .addBooleanOption(option => option.setName('erome').setDescription('Preview the first Erome video in age-restricted channels; keep the album.'))
+  .addBooleanOption(option => option.setName('erome').setDescription('Automatically preview the first Erome video; keep the album.'))
+  .addStringOption(option => option.setName('erome_channels').setDescription('Choose where this server permits Erome previews.')
+    .addChoices({ name: 'Age-restricted channels', value: 'age-restricted' }, { name: 'All enabled channels', value: 'all' }))
   .addBooleanOption(option => option.setName('translate_tweets').setDescription('Translate non-English tweets when enabled by the bot operator.'))
   .addBooleanOption(option => option.setName('translate_instagram').setDescription('Translate non-English Instagram captions when enabled by the bot operator.'))
   .addStringOption(option => option.setName('youtube_display').setDescription('Choose the extra details shown with YouTube previews.')
@@ -62,6 +65,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
   if (translateInstagram !== null) patch.translateInstagram = translateInstagram;
   const youtubeDisplay = interaction.options.getString('youtube_display');
   if (youtubeDisplay !== null) patch.youtubeDisplay = youtubeDisplay as ServerPreferences['youtubeDisplay'];
+  const eromeChannels = interaction.options.getString('erome_channels');
+  if (eromeChannels !== null) patch.eromeChannels = eromeChannels as ServerPreferences['eromeChannels'];
   const changed = Object.keys(patch).length > 0;
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   if (changed) {
@@ -88,6 +93,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
       `Mode: ${effective.mode === 'reply' ? 'Reply (keep the original message).' : 'Replace (remove the original only after a replacement is sent).'}`,
       ...REWRITE_PLATFORMS.map(platform => `${PLATFORM_NAMES[platform]}: ${effective.platforms.includes(platform) ? 'On' :
         !config.rewritePlatforms.includes(platform) ? 'Off (disabled by the bot operator)' : 'Off'}.`),
+      `Erome channels: ${effective.eromeChannels === 'all' ? 'All enabled channels (chosen by a server admin).' : 'Age-restricted channels only.'}`,
       `English tweet translation: ${effective.translateTweets ? 'On when translation is available' :
         !config.translateTweets ? 'Off (disabled by the bot operator)' :
           !effective.platforms.includes('x') ? 'Off (X link fixing is disabled)' : 'Off'}.`,

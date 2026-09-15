@@ -10,7 +10,7 @@ import { parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
 import { parseEromeUrl } from '../services/Erome';
-import { isAgeRestricted } from '../services/EromeDelivery';
+import { canPreviewErome } from '../services/EromeDelivery';
 
 /** Returns known observations; diagnostics do not require an external network probe. */
 export type ProviderDiagnostic = (link: string) => Promise<string>;
@@ -65,6 +65,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     '**Linky diagnostics**', describeScope(scope),
     `Mode: ${effective.mode === 'reply' ? 'Reply (keeps originals)' : 'Replace'}.`,
     `Platforms: ${effective.platforms.map(platform => PLATFORM_NAMES[platform]).join(', ') || 'none'}.`,
+    `Erome channels: ${effective.eromeChannels === 'all' ? 'All enabled channels (chosen by a server admin).' : 'Age-restricted channels only.'}`,
     channel?.isSendable() ? undefined : 'This channel cannot receive Linky messages. For a forum or media post, check inside its thread.',
     missing === undefined ? 'Channel permissions could not be checked. Check Linky’s role and channel overrides.' :
       missing.length ? `Missing channel permissions: ${missing.join(', ')}.` : 'Required permissions for a plain link are present.',
@@ -82,8 +83,11 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
         ? 'This platform is disabled in this server’s preferences.' : 'This platform is unavailable from the bot operator.');
       else if (platform === 'erome') {
         if (permissions && !permissions.has(PermissionFlagsBits.AttachFiles)) lines.push('Missing Erome permission: Attach Files.');
-        lines.push(isAgeRestricted(channel) ? 'Erome uploads the first video as an MP4 reply and keeps the album. Limits: 64 MiB input, 5 minutes, 9 MiB output; protected or unavailable media is skipped.'
-          : 'Erome previews require an age-restricted server channel or a thread in one. No media was fetched.');
+        if (canPreviewErome(channel, effective.eromeChannels)) {
+          lines.push(effective.eromeChannels === 'all' ? 'The server admin permits Erome in all enabled channels.'
+            : 'This channel meets the server’s age restriction for Erome.');
+          lines.push('When enabled here, Erome uploads the first video as an MP4 reply and keeps the album. Limits: 64 MiB input, 5 minutes, 9 MiB output; protected or unavailable media is skipped.');
+        } else lines.push('Erome previews require an age-restricted server channel or a thread in one under this server’s setting. An admin can change /settings erome_channels. No media was fetched.');
       } else if (platform === 'youtube' && effective.youtubeDisplay === 'preview') {
         lines.push('YouTube display is preview only: Linky leaves the native video link without fetching counts or comments.');
       } else if (providerDiagnostic) {

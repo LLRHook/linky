@@ -346,3 +346,37 @@ test('Instagram translation merges independently with queued setup and existing 
   assert.equal(new ServerSettings(path).getPreferences(FIRST).translateInstagram, false);
   assert.equal(restarted.get(FIRST), true);
 });
+
+test('Erome channel policy persists per server and survives independent partial preference changes', async () => {
+  const path = file(), servers = new ServerSettings(path);
+  assert.equal(servers.getPreferences(FIRST).eromeChannels, undefined);
+  await servers.set(FIRST, false);
+  await servers.update(FIRST, { channelIds: [SECOND], platforms: { erome: false }, translateTweets: false });
+  await Promise.all([
+    servers.update(FIRST, { eromeChannels: 'all' }), servers.update(FIRST, { mode: 'reply' }),
+    servers.update(SECOND, { eromeChannels: 'age-restricted' }),
+  ]);
+  const restarted = new ServerSettings(path);
+  assert.equal(restarted.get(FIRST), false);
+  assert.equal(restarted.get(SECOND), undefined);
+  assert.deepEqual(restarted.getPreferences(FIRST), { channelIds: [SECOND], platforms: { erome: false },
+    translateTweets: false, eromeChannels: 'all', mode: 'reply' });
+  assert.deepEqual(restarted.getPreferences(SECOND), { eromeChannels: 'age-restricted' });
+  await restarted.update(FIRST, { youtubeDisplay: 'counts' });
+  assert.equal(new ServerSettings(path).getPreferences(FIRST).eromeChannels, 'all');
+  await restarted.update(FIRST, { eromeChannels: 'age-restricted' });
+  assert.equal(new ServerSettings(path).getPreferences(FIRST).eromeChannels, 'age-restricted');
+});
+
+test('invalid Erome channel policies cannot update state or load from disk', async () => {
+  const servers = new ServerSettings(file(), async () => assert.fail('Invalid policy wrote settings'));
+  for (const eromeChannels of ['ordinary', 'ALL', '', true, null, undefined, [], {}]) {
+    await assert.rejects(servers.update(FIRST, { eromeChannels } as ServerPreferences));
+    if (eromeChannels !== undefined) {
+      const path = file();
+      writeFileSync(path, JSON.stringify({ [FIRST]: { eromeChannels } }));
+      assert.throws(() => new ServerSettings(path), /Invalid server settings/);
+    }
+  }
+  assert.deepEqual(servers.getPreferences(FIRST), {});
+});

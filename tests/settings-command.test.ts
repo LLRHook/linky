@@ -38,7 +38,11 @@ test('settings is restricted to server installs and Manage Server with optional 
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome', 'translate_tweets', 'translate_instagram', 'youtube_display']);
+  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome', 'erome_channels', 'translate_tweets', 'translate_instagram', 'youtube_display']);
+  const eromeChannels = command.options?.find(option => option.name === 'erome_channels');
+  assert(eromeChannels && 'choices' in eromeChannels);
+  assert.deepEqual(eromeChannels.choices?.map(({ name, value }) => ({ name, value })), [{ name: 'Age-restricted channels', value: 'age-restricted' },
+    { name: 'All enabled channels', value: 'all' }]);
   assert.equal(command.options?.some(option => option.required), false);
 });
 
@@ -48,7 +52,7 @@ for (const [name, guildId, permissions] of [
 ] as const) {
   test(`settings denies a ${name} privately without reading options or saving`, async () => {
     const servers = new ServerSettings(file(), async () => assert.fail('Unauthorized write'));
-    const { command, events } = interaction({ mode: 'reply', translate_instagram: true }, guildId, permissions);
+    const { command, events } = interaction({ mode: 'reply', translate_instagram: true, erome_channels: 'all' }, guildId, permissions);
     command.options.getString = () => assert.fail('Unauthorized option access');
     command.options.getBoolean = () => assert.fail('Unauthorized option access');
     await execute(command, config, servers);
@@ -70,6 +74,7 @@ test('settings with no options displays effective defaults without writing or op
   assert.match(events[1].payload.content, /Disabled in this channel/);
   assert.match(events[1].payload.content, /Mode: Replace/);
   assert.match(events[1].payload.content, /Instagram: On/);
+  assert.match(events[1].payload.content, /Erome channels: Age-restricted channels only/);
   assert.equal(servers.get(SERVER), undefined);
   assert.deepEqual(servers.getPreferences(SERVER), {});
 });
@@ -257,4 +262,24 @@ test('help reports Instagram translation independently when X translation is off
   assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
   assert.deepEqual(events[0].payload.allowedMentions, { parse: [] });
   assert(content.length <= 2000);
+});
+
+test('Erome channel policy defaults to restricted and an admin can change it without enabling any scope or platform', async () => {
+  assert.equal(effectivePreferences(config, {}).eromeChannels, 'age-restricted');
+  for (const enabled of [undefined, false, true]) {
+    const path = file(), servers = new ServerSettings(path);
+    if (enabled !== undefined) await servers.set(SERVER, enabled);
+    await servers.update(SERVER, { channelIds: [], platforms: { erome: false } });
+    const { command, events } = interaction({ erome_channels: 'all' });
+    await execute(command, config, servers);
+    const restored = new ServerSettings(path);
+    assert.equal(restored.get(SERVER), enabled);
+    assert.deepEqual(restored.getPreferences(SERVER), { channelIds: [], platforms: { erome: false }, eromeChannels: 'all' });
+    assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
+    assert.match(events[1].payload.content, /Erome channels: All enabled channels/);
+    assert.match(events[1].payload.content, /Erome: Off \(disabled by the bot operator\)/);
+    assert.deepEqual(events[1].payload.allowedMentions, { parse: [] });
+    await execute(interaction({ erome_channels: 'age-restricted' }).command, config, restored);
+    assert.equal(new ServerSettings(path).getPreferences(SERVER).eromeChannels, 'age-restricted');
+  }
 });
