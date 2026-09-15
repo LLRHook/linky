@@ -10,6 +10,8 @@ services:
       NODE_ENV: production
     volumes:
       - linky-data:/app/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
     stop_grace_period: 15s
 
 volumes:

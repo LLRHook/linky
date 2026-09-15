@@ -38,7 +38,7 @@ test('settings is restricted to server installs and Manage Server with optional 
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'translate_tweets', 'translate_instagram', 'youtube_display']);
+  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome', 'translate_tweets', 'translate_instagram', 'youtube_display']);
   assert.equal(command.options?.some(option => option.required), false);
 });
 

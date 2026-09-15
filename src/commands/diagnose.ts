@@ -9,6 +9,8 @@ import type { RewritePlatform } from '../services/SocialLinkService';
 import { parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
+import { parseEromeUrl } from '../services/Erome';
+import { isAgeRestricted } from '../services/EromeDelivery';
 
 /** Returns known observations; diagnostics do not require an external network probe. */
 export type ProviderDiagnostic = (link: string) => Promise<string>;
@@ -24,6 +26,7 @@ function platformFor(link: string): RewritePlatform | undefined {
   try { if (new URL(link).protocol !== 'https:' || /\s/.test(link)) return undefined; }
   catch { return undefined; }
   if (parseYouTubeUrl(link)) return 'youtube';
+  if (parseEromeUrl(link)) return 'erome';
   return parseSocialUrl(link)?.platform;
 }
 
@@ -67,7 +70,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
       missing.length ? `Missing channel permissions: ${missing.join(', ')}.` : 'Required permissions for a plain link are present.',
     permissions && !permissions.has(PermissionFlagsBits.AttachFiles)
       ? effective.mode === 'replace' ? 'Attach Files is also needed when copying attachments or sending a long translation file.'
-        : 'Attach Files is needed only if a long translation requires a file. Original attachments stay on the source.' : undefined,
+        : 'Attach Files is needed for Erome videos and long translation files. Original attachments stay on the source.' : undefined,
   ];
   const link = interaction.options.getString('link')?.trim();
   if (link) {
@@ -77,7 +80,11 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
       lines.push(`Link format: recognized ${PLATFORM_NAMES[platform]} URL.`);
       if (!effective.platforms.includes(platform)) lines.push(config.rewritePlatforms.includes(platform)
         ? 'This platform is disabled in this server’s preferences.' : 'This platform is unavailable from the bot operator.');
-      else if (platform === 'youtube' && effective.youtubeDisplay === 'preview') {
+      else if (platform === 'erome') {
+        if (permissions && !permissions.has(PermissionFlagsBits.AttachFiles)) lines.push('Missing Erome permission: Attach Files.');
+        lines.push(isAgeRestricted(channel) ? 'Erome uploads the first video as an MP4 reply and keeps the album. Limits: 64 MiB input, 5 minutes, 9 MiB output; protected or unavailable media is skipped.'
+          : 'Erome previews require an age-restricted server channel or a thread in one. No media was fetched.');
+      } else if (platform === 'youtube' && effective.youtubeDisplay === 'preview') {
         lines.push('YouTube display is preview only: Linky leaves the native video link without fetching counts or comments.');
       } else if (providerDiagnostic) {
         try { lines.push(`Provider observation: ${plainObservation(await providerDiagnostic(link))}`); }
