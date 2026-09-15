@@ -1,6 +1,6 @@
-# Erome video previews
+# Erome media previews
 
-Linky prepares the first MP4 video from the first Erome album in a message and posts a reply. Optional regional hosting serves an eligible original file in a media gallery; the existing attachment path handles other inputs. Both keep the original album and support `/fix` and **Fix with Linky**. Automatic processing requires the existing server/channel scope and the Erome platform switch.
+Linky prepares the first video from the first Erome album in a message, or its first supported image when no video exists, and posts a reply. Hosted galleries can append additional items on request with **Load next item**, subject to ownership, current permissions and source validation. Optional regional hosting serves an eligible original file in a media gallery; the existing attachment path handles other inputs. Both keep the original album and support `/fix` and **Fix with Linky**. Automatic processing requires the existing server/channel scope and the Erome platform switch.
 
 The server preference `eromeChannels` defaults to `age-restricted`: Erome requires an age-restricted channel or a thread whose parent is age-restricted. Admins with Manage Server permission can select `/settings erome_channels:all` to allow ordinary server channels and their threads. This does not change automatic channel enablement, platform switches or permissions. DMs and unknown channels remain excluded. Manual previews use the same saved server policy, even for a personally installed command. The policy is checked again after preparation, so a revoked permission prevents an upload in an ordinary channel. Linky does not classify video content.
 
@@ -12,7 +12,7 @@ No maintained rewrite provider was verified. An independently written extractor 
 
 ## Bounds and failure behavior
 
-Only exact HTTPS `erome.com` or `www.erome.com` album links are accepted; profiles, nested URLs, ports and credentials are rejected. Album lookup has a 10-second deadline and selects the first video. There are no image, search or related-album requests.
+Only exact HTTPS `erome.com` or `www.erome.com` album links are accepted; profiles, nested URLs, ports and credentials are rejected. Album lookup has a 10-second deadline, a 1 MiB HTML limit and at most 100 accepted item descriptors. Only actual album media containers are parsed; avatars, posters, ads, related albums and search pages are excluded. JPEG/PNG image items must use the narrowly accepted Erome image CDN, fit 8 MiB, 8,192 pixels per side and 33,554,432 pixels total, and pass bounded decoding. Animated PNG and other image formats are rejected. Image requests require a strong ETag and exact byte/MIME agreement; compatible original bytes are retained.
 
 ### Optional regional original-video path
 
@@ -21,7 +21,7 @@ Only exact HTTPS `erome.com` or `www.erome.com` album links are accepted; profil
 - Workers require an HMAC-signed job for their fixed route and a live, one-use claim from the bot before fetching. Origin DNS results must be public IPv4 addresses and are pinned for the connection. Exact range, length, ETag, identity encoding and EOF checks reject changed or incomplete bytes. Failure cancels peer transfers; workers have their own deadline if the collector disconnects.
 - Hostinger assembles and inspects the complete file, then atomically saves it before posting a random media URL. The public server provides GET, HEAD and single-range seeks for stored assets only. Workers may stream their bounded parts to Hostinger, but Discord never receives an incomplete stored file.
 - The dedicated store holds at most 10 GiB and 4,096 files, with at most 64 message references per asset. Referenced files survive restarts and are not evicted to admit another video. Unknown files or unsafe storage block new admissions. Removing the final bound preview releases its asset; unbound publishes expire after 15 minutes, with bounded cleanup during startup, operations and a timer.
-- Recent successful originals can be reused by album for five minutes, with at most two cached asset references and eight consumers per shared job. The complete bytes remain in the persistent store. Larger, incompatible, unavailable or rejected regional preparations use the attachment path. Mixed-platform messages also use the existing attachment publisher.
+- Recent originals use a 64-entry memory index and a bounded persistent reuse index. Fresh requests revalidate the public album and source identity before using stored bytes. Eight consumers may share one preparation; cancelling one does not cancel the others. The complete bytes remain in the persistent store. Larger, incompatible, unavailable or rejected regional preparations use the attachment path. Mixed-platform messages also use the existing attachment publisher.
 
 Regional hosting defaults off for self-hosting and is enabled on hosted Linky. See [regional hosting and live-test status](erome-regional-hosting.md) for configuration and the scope of the recorded measurements.
 
@@ -30,22 +30,19 @@ Regional hosting defaults off for self-hosting and is enabled on hosted Linky. S
 - One video fetch accepts up to 64 MiB input and five minutes, with a two-minute download deadline. MP4 files with complete metadata near the beginning can encode while downloading; other layouts use a complete local file. A preview can still take more than a minute.
 - Output normally reserves 1 MiB below the destination's upload allowance, capped at 63 MiB. Manual requests use Discord's interaction allowance; automatic requests use the documented default or server boost tier. Invalid allowances and oversized results are rejected before upload.
 - Compatible H.264/yuv420p video and AAC audio up to 1080p can be remuxed without re-encoding when the source has a known size and fits. Otherwise the encoder preserves source resolution and aspect ratio up to 1920×1080, or 1080×1920 for portrait video, without upscaling smaller sources. It avoids raising the source frame rate. Compression can reduce quality; it never truncates a clip to fit.
-- Requests share an attachment job when the canonical album and output budget match. Each consumer receives independent attachment bytes and metadata. At most two successful variants, 128 MiB total, stay in memory for five minutes; failures are not cached. Different upload budgets use separate variants. This attachment cache clears on restart.
-- Local conversion uses fixed arguments, file/pipe-only protocols, process timeouts and private temporary files. Downloads are spooled to the bounded temporary mount; subprocesses and stream work finish or are cancelled before cleanup. FFmpeg never receives an external URL, cookies or bot credentials.
+- Requests can share an attachment job for the same canonical album, selected item and upload budget. Independent attachment objects reuse immutable bytes. At most 32 successful variants and 128 MiB remain in memory for five minutes; failures are not cached.
 
 ### Shared delivery rules
 
-One preparation runs at a time across servers and manual commands; up to two other jobs wait in arrival order for at most five minutes. Waiting jobs do not fetch or retain video bytes. A full queue or expired wait leaves the original untouched. Channel policy, source edits and delivery permissions are checked again before accepting the result. Attach Files remains required so attachment fallback is available.
+The complete Discord attempt has a two-minute deadline, including queueing and preparation. Work rotates fairly between servers, with one active job per server, at most eight queued globally and two queued per server. One original-media job can overlap an attachment job from another server within a 192 MiB preparation budget. Cancellation waits for process exit and cleanup before capacity is reused. The measured gains and costs are recorded in the [scheduling benchmark](../benchmarks/erome-scheduling.md).
 
-The original album is always kept. The original sharer owns **Remove** for an automatic preview, and the requester owns it for a manual preview; regional media uses these same controls. The first-video notice remains when an album has more videos. Image-only albums are not handled. An uncertain Discord POST is reconciled once without automatically submitting the same preview again.
+Slow requests report their current stage. A requester-bound **Details** button shows private outcomes and timings; Discord metadata is kept separate from a claim of client playback. Hosted **Load next item** appends one validated item at a time to the same gallery, up to ten items and 192 MiB total. It keeps prior items when the next item is unavailable. Only the requester can expand the gallery, and current view/send permission is required. Sessions expire after 24 hours or restart; source and media ownership stay independent. See [delivery reliability](delivery-reliability.md) for diagnostics, source validation, cache retention, uncertain edits and rollback.
 
-Manual attachment previews report processing progress without blocking shared preparation. Attachment delivery checks Discord's returned file metadata. Gallery delivery checks the returned message and Discord's video type, dimensions and proxy metadata. Neither check proves playback in every client. Failed preparation or delivery preserves the source message.
-
-## Validation
+## Earlier validation measurements
 
 Automated tests use synthetic HTML, bytes, media metadata and Discord interactions. They cover URL validation, redirected/oversized/failed upstream responses, processing bounds, cleanup, channel restrictions, original preservation and ownership. FFmpeg runtime tests use generated non-sensitive clips.
 
-Regional tests additionally cover HMAC and one-use claims, ten-part assembly, rejection of older protocol versions, stalled reads and cancellation races, original-file inspection, persistent quotas and references, and HTTP file serving. The [hosting guide](erome-regional-hosting.md#measured-results-and-pending-validation) records both the experiments with an already resolved source and the generic six- and eight-location trials. Validation of the ten-location candidate and activation in the hosted bot are pending.
+Regional tests additionally cover HMAC and one-use claims, ten-part assembly, rejection of older protocol versions, stalled reads and cancellation races, original-file inspection, persistent quotas and references, and HTTP file serving. The [hosting guide](erome-regional-hosting.md#measured-results-and-pending-validation) records the earlier experiments and the subsequently activated ten-location deployment. Those individual trials do not establish a production latency percentile.
 
 A Hostinger reproduction of the album reported in GAMBA found that the 32 MB music video downloaded successfully in about 51 seconds. The original 30-second video deadline rejected it before conversion. Regression tests now cover a progressing transfer beyond 30 seconds and cancellation at the two-minute deadline. Channel eligibility is checked independently before any media request.
 
@@ -73,4 +70,4 @@ Channel-policy tests cover default behavior, explicit ordinary-channel permissio
 - [Discord file uploads](https://docs.discord.com/developers/reference#uploading-files): default per-file limit.
 - [Discord message resource](https://docs.discord.com/developers/resources/message): attachments and bot embed limitations.
 - [FFmpeg documentation](https://www.ffmpeg.org/ffmpeg.html): bounded local MP4 conversion and stream selection.
-- [Debian Bookworm FFmpeg](https://packages.debian.org/bookworm/ffmpeg): maintained runtime package.
+- [Debian Trixie FFmpeg](https://packages.debian.org/trixie/ffmpeg): maintained runtime package.

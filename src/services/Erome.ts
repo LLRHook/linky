@@ -1,219 +1,149 @@
 import { AttachmentBuilder } from 'discord.js';
-import { createVideoAttachment, normalizeAttachmentLimit, MAX_VIDEO_BYTES, type VideoInput, type VideoOptions } from './VideoAttachment';
-import type { EromePreparer, EromeProgress, EromeStage } from './EromeDelivery';
+import { createVideoAttachment, createOriginalImageInspector, normalizeAttachmentLimit, MAX_VIDEO_BYTES,
+  type VideoInput, type VideoOptions } from './VideoAttachment';
+import type { EromePreparer, EromeProgress } from './EromeDelivery';
+import { parseEromeUrl, resolveEromeItems, selectEromeItem, type EromeSelection } from './EromeAlbum';
+import { createEromeImageDownloader } from './EromeImage';
+import { createEromeWorkScheduler, type EromeWorkScheduler } from './EromeWorkScheduler';
+import { createEromeJobs, eromeStage, safely } from './EromeJobs';
+import type { EromeItemInfo } from './EromeMedia';
+import type { DeliveryContext } from './DeliveryContext';
 
-const MAX_HTML_BYTES = 1024 * 1024;
-const MAX_WAITING = 2, WAIT_TIMEOUT_MS = 300_000;
-const MAX_CONSUMERS = 8;
-const CACHE_TTL_MS = 300_000, MAX_CACHE_ENTRIES = 2, MAX_CACHE_BYTES = 128 * 1024 * 1024;
-type Prepared = { bytes: Buffer; videoCount: number };
-type Job = { result: Promise<Prepared | null>; stage: EromeStage; consumers: number; observers: Set<EromeProgress> };
-const jobs = new Map<string, Job>();
-const cache = new Map<string, Prepared & { expiresAt: number; timer: ReturnType<typeof setTimeout> }>();
-let busy = false;
-const waiting: { resolve(accepted: boolean): void; expiresAt: number; timer: ReturnType<typeof setTimeout> }[] = [];
+export { parseEromeUrl } from './EromeAlbum';
+export const eromeScheduler = createEromeWorkScheduler();
+const CACHE_TTL_MS = 300_000, MAX_CACHE_ENTRIES = 32, MAX_CACHE_BYTES = 128 * 1024 * 1024;
+type Prepared = EromeItemInfo & { bytes: Buffer; videoCount: number; filename: string };
+type CacheEntry = Prepared & { expiresAt: number; timer: ReturnType<typeof setTimeout> };
+const sharedPreparations = new WeakMap<EromeWorkScheduler, { jobs: ReturnType<typeof createEromeJobs<Prepared>>; cache: Map<string, CacheEntry> }>();
 
-function enter(): Promise<boolean> {
-  if (!busy) { busy = true; return Promise.resolve(true); }
-  if (waiting.length >= MAX_WAITING) return Promise.resolve(false);
-  return new Promise(resolve => {
-    const entry = { resolve, expiresAt: Date.now() + WAIT_TIMEOUT_MS, timer: setTimeout(() => {
-      const index = waiting.indexOf(entry);
-      if (index >= 0) { waiting.splice(index, 1); resolve(false); }
-    }, WAIT_TIMEOUT_MS) };
-    waiting.push(entry);
-  });
+export async function resolveEromeAlbum(raw: string, request: typeof fetch = fetch, selection?: EromeSelection, signal?: AbortSignal) {
+  const album = await resolveEromeItems(raw, request, signal), item = album && selectEromeItem(album, selection);
+  return album && item ? { album: album.album, source: item.source, videoCount: album.videoCount, kind: item.kind,
+    itemIndex: item.index, itemFingerprint: item.fingerprint, itemCount: album.items.length,
+    itemFingerprints: album.items.map(value => value.fingerprint), truncated: album.truncated } : null;
 }
 
-function leave(): void {
-  while (waiting.length) {
-    const next = waiting.shift()!;
-    clearTimeout(next.timer);
-    const accepted = next.expiresAt > Date.now();
-    next.resolve(accepted);
-    if (accepted) return;
-  }
-  busy = false;
-}
-
-function notify(observer: EromeProgress | undefined, stage: EromeStage): void {
-  try { void Promise.resolve(observer?.(stage)).catch(() => {}); } catch { /* Progress must not interrupt preparation. */ }
-}
-
-function attachment(value: Prepared) {
-  return { file: new AttachmentBuilder(Buffer.from(value.bytes), { name: 'linky-video.mp4',
-    description: value.videoCount > 1 ? `First video of ${value.videoCount} in the linked album.` : 'Video from the linked album.' }),
-  videoCount: value.videoCount };
-}
-
-function evict(url: string): void {
-  clearTimeout(cache.get(url)?.timer);
-  cache.delete(url);
-}
-
-function remember(url: string, value: Prepared): void {
-  while (cache.size >= MAX_CACHE_ENTRIES || [...cache.values()].reduce((sum, item) => sum + item.bytes.length, value.bytes.length) > MAX_CACHE_BYTES) {
-    evict(cache.keys().next().value!);
-  }
-  const timer = setTimeout(() => { cache.delete(url); }, CACHE_TTL_MS);
-  timer.unref?.();
-  cache.set(url, { ...value, expiresAt: Date.now() + CACHE_TTL_MS, timer });
-}
-
-/** Only complete public album URLs are accepted; profiles, redirects and nested URLs are not followed. */
-export function parseEromeUrl(raw: string): { id: string; url: string } | null {
-  if (raw.length > 2048 || /[\\\s\u0000-\u001f\u007f]/.test(raw)) return null;
-  const parts = /^https:\/\/([^/?#]+)(\/[^?#]*)(?:\?[^#]*)?(?:#.*)?$/i.exec(raw);
-  const id = parts && /^(?:www\.)?erome\.com$/i.test(parts[1]) && /^\/a\/([A-Za-z0-9_]{1,64})\/?$/.exec(parts[2])?.[1];
-  return id ? { id, url: `https://www.erome.com/a/${id}` } : null;
-}
-
-function videoSources(html: string): string[] {
-  const sources = new Set<string>();
-  // Only source elements carry the video payload; never inspect page text, titles or unrelated links.
-  const markup = html.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
-  for (const video of markup.matchAll(/<video\b[^>]{0,4096}>([\s\S]*?)<\/video\s*>/gi)) {
-    for (const tag of video[1].matchAll(/<source\b[^>]{0,4096}>/gi)) {
-      const source = /\ssrc\s*=\s*(["'])([^"']{1,2048})\1/i.exec(tag[0])?.[2];
-      if (!source || !/^https:\/\/v\d{1,4}\.erome\.com\/(?:[A-Za-z0-9_-]{1,128}\/){0,5}[A-Za-z0-9_-]{1,128}\.mp4$/i.test(source)) continue;
-      sources.add(source);
-      break; // Alternate sources within a video element are qualities of the same video.
-    }
-  }
-  return [...sources];
-}
-
-async function boundedBody(response: Response, limit: number): Promise<Buffer | null> {
-  const length = response.headers.get('content-length');
-  if (!response.ok || (length !== null && (!/^\d+$/.test(length) || Number(length) > limit))) {
-    await response.body?.cancel(); return null;
-  }
-  const reader = response.body?.getReader();
-  if (!reader) return null;
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > limit) { await reader.cancel(); return null; }
-      chunks.push(value);
-    }
-    return total ? Buffer.concat(chunks, total) : null;
-  } finally { reader.releaseLock(); }
-}
-
-/** Resolve only video source elements from one public album, with the same bounds for both delivery paths. */
-export async function resolveEromeAlbum(raw: string, request: typeof fetch = fetch): Promise<{
-  album: string; source: string; videoCount: number;
-} | null> {
-  const album = parseEromeUrl(raw);
-  if (!album) return null;
-  try {
-    const response = await request(album.url, { redirect: 'error', signal: AbortSignal.timeout(10_000),
-      headers: { Accept: 'text/html', 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
-    if (!/^text\/html(?:;|$)/i.test(response.headers.get('content-type') ?? '')) {
-      await response.body?.cancel(); return null;
-    }
-    const html = await boundedBody(response, MAX_HTML_BYTES);
-    if (!html) return null;
-    const text = html.toString('utf8');
-    if (/Please wait a few moments|cf-challenge|Just a moment/i.test(text)) return null;
-    const videos = videoSources(text);
-    return videos.length ? { album: album.url, source: videos[0], videoCount: videos.length } : null;
-  } catch { return null; }
-}
-
-/** Share the existing preparation limit across attachment and original-media delivery. */
+/** Compatibility seam for existing callers; runtime preparation uses the injected shared scheduler. */
 export async function withEromePreparation<T>(work: () => Promise<T>): Promise<T | null> {
-  if (!await enter()) return null;
-  try { return await work(); } finally { leave(); }
+  try { return await eromeScheduler.run(undefined, 'attachment', work); } catch { return null; }
 }
 
-/** Prepare the first distinct video, without cookies, redirects, persistent media or an unbounded work queue. */
-export function createEromePreparer({ fetch: request = fetch, convert = createVideoAttachment() }: {
+function progressContext(context: DeliveryContext | undefined, observer?: EromeProgress): DeliveryContext {
+  let previous: string | undefined;
+  const notify = (stage: Parameters<NonNullable<EromeProgress>>[0]) => {
+    if (stage !== previous) { previous = stage; safely(() => observer?.(stage)); }
+  };
+  return { ...context, progress: event => {
+    safely(() => context?.progress?.(event));
+    if (event.cache === 'hit') notify('cached');
+    else if (event.state !== 'done') {
+      const stage = event.stage === 'queue' ? 'queued' : event.stage === 'convert' || event.stage === 'inspect' ? 'preparing' : 'downloading';
+      notify(stage);
+    }
+  } };
+}
+
+/** Complete bounded items, coalesced without allowing one consumer to cancel another. */
+export function createEromePreparer({ fetch: request = fetch, convert = createVideoAttachment(),
+  inspectImage = createOriginalImageInspector(), imageDownloader = createEromeImageDownloader(), scheduler = eromeScheduler }: {
   fetch?: typeof fetch; convert?: (input: VideoInput, options?: VideoOptions) => Promise<Buffer | null>;
+  inspectImage?: ReturnType<typeof createOriginalImageInspector>;
+  imageDownloader?: ReturnType<typeof createEromeImageDownloader>;
+  scheduler?: EromeWorkScheduler;
 } = {}): EromePreparer {
-  const prepare = async (url: string, maxBytes: number, progress: (stage: EromeStage) => void): Promise<Prepared | null> => {
-    if (!await enter()) return null;
-    try {
-      progress('downloading');
-      const resolved = await resolveEromeAlbum(url, request);
-      if (!resolved) return null;
-      const abort = new AbortController();
-      const media = await request(resolved.source, { redirect: 'error', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120_000)]),
-        headers: { Accept: 'video/mp4', Referer: url, 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
-      const length = media.headers.get('content-length');
-      const size = length === null ? undefined : Number(length);
-      if (!media.ok || !/^video\/mp4(?:;|$)/i.test(media.headers.get('content-type') ?? '') ||
-          (length !== null && (!/^\d+$/.test(length) || !Number.isSafeInteger(size) || !size || size > MAX_VIDEO_BYTES))) {
-        await media.body?.cancel(); return null;
-      }
-      const reader = media.body?.getReader();
-      if (!reader) return null;
-      let complete = false;
-      const cancel = () => { abort.abort(); void reader.cancel().catch(() => {}); };
-      const stream = (async function* () {
-        let total = 0;
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          total += value.byteLength;
-          if (total > MAX_VIDEO_BYTES || (size !== undefined && total > size)) throw new Error('Erome media exceeds its size limit');
-          yield value;
-        }
-        if (!total || (size !== undefined && total !== size)) throw new Error('Incomplete Erome media');
-        complete = true;
-      })();
-      try {
-        const output = await convert({ stream, size, cancel }, { maxBytes, onEncoding: () => progress('preparing') });
-        return complete && output?.length && output.length <= maxBytes ? { bytes: output, videoCount: resolved.videoCount } : null;
-      } finally {
-        if (!complete) cancel();
-        reader.releaseLock();
-      }
-    } catch { return null; }
-    finally { leave(); }
+  let shared = sharedPreparations.get(scheduler);
+  if (!shared) { shared = { jobs: createEromeJobs<Prepared>(), cache: new Map() }; sharedPreparations.set(scheduler, shared); }
+  const { jobs, cache } = shared;
+  const evict = (key: string) => { clearTimeout(cache.get(key)?.timer); cache.delete(key); };
+  function remember(key: string, value: Prepared) {
+    while (cache.size && (cache.size >= MAX_CACHE_ENTRIES || [...cache.values()].reduce((sum, entry) => sum + entry.bytes.length, value.bytes.length) > MAX_CACHE_BYTES)) evict(cache.keys().next().value!);
+    if (value.bytes.length > MAX_CACHE_BYTES) return;
+    const timer = setTimeout(() => cache.delete(key), CACHE_TTL_MS); timer.unref();
+    cache.set(key, { ...value, expiresAt: Date.now() + CACHE_TTL_MS, timer });
+  }
+  const attachment = (value: Prepared) => {
+    const { bytes, filename, ...info } = value;
+    // Discord.js reads Buffer inputs without mutation. Builders are independent; media bytes are internal read-only data.
+    return { ...info, file: new AttachmentBuilder(bytes, { name: filename,
+      description: `${value.kind === 'image' ? 'Image' : 'Video'} from the linked album.` }) };
   };
   return async (raw, onStage, options) => {
-    const source = parseEromeUrl(raw);
-    const maxBytes = normalizeAttachmentLimit(options?.maxBytes);
-    if (!source || maxBytes === null) return null;
-    const key = `${maxBytes}:${source.url}`;
+    const album = parseEromeUrl(raw), maxBytes = normalizeAttachmentLimit(options?.maxBytes);
+    const context = progressContext(options?.context, onStage);
+    if (!album || maxBytes === null || context.signal?.aborted) return null;
+    const key = `${maxBytes}:${album.url}:${JSON.stringify(options?.selection ?? null)}`;
     const cached = cache.get(key);
     if (cached && cached.expiresAt > Date.now()) {
-      cache.delete(key);
-      cache.set(key, cached);
-      notify(onStage, 'cached');
+      safely(() => context.trace?.setCache?.('hit'));
+      cache.delete(key); cache.set(key, cached); safely(() => context.progress?.({ stage: 'store', state: 'done', cache: 'hit' }));
       return attachment(cached);
     }
     if (cached) evict(key);
-    let job = jobs.get(key);
-    if (!job) {
-      if (jobs.size >= MAX_WAITING + 1) return null;
-      const created: Job = { result: Promise.resolve(null), stage: busy ? 'queued' : 'downloading', consumers: 0, observers: new Set() };
-      jobs.set(key, created);
-      created.result = prepare(source.url, maxBytes, stage => {
-        if (created.stage === stage) return;
-        created.stage = stage;
-        for (const observer of created.observers) notify(observer, stage);
-      }).then(result => {
-        if (result) remember(key, result);
-        return result;
-      }).finally(() => { jobs.delete(key); });
-      job = created;
-    }
-    if (job.consumers >= MAX_CONSUMERS) return null;
-    job.consumers++;
-    if (onStage) job.observers.add(onStage);
-    notify(onStage, job.stage);
+    safely(() => context.trace?.setCache?.('miss'));
     try {
-      const result = await job.result;
-      return result ? attachment(result) : null;
-    } finally {
-      job.consumers--;
-      if (onStage) job.observers.delete(onStage);
-    }
+      const result = await jobs.run(key, context, shared => scheduler.run(shared, 'attachment', async signal => {
+        const active = { ...shared, signal };
+        const resolved = await eromeStage(active, 'resolve', () => resolveEromeAlbum(album.url, request, options?.selection, signal));
+        if (!resolved || signal.aborted) return null;
+        const { source, album: canonical, ...info } = resolved;
+        if (resolved.kind === 'image') {
+          const head = await imageDownloader.inspect(source, canonical, signal);
+          if (!head || head.bytes > maxBytes) return null;
+          const bytes = await eromeStage(active, 'download', () => imageDownloader.download(source, canonical, head, signal));
+          if (!bytes || !await eromeStage(active, 'inspect', () => inspectImage(bytes, head.mimeType, { signal }))) return null;
+          return { ...info, bytes, filename: head.mimeType === 'image/png' ? 'linky-image.png' : 'linky-image.jpg' };
+        }
+        const abort = new AbortController(), downloadSignal = AbortSignal.any([signal, abort.signal, AbortSignal.timeout(120_000)]);
+        let downloadSpan: ReturnType<NonNullable<DeliveryContext['trace']>['startStage']> | undefined;
+        let transferEnded = false;
+        safely(() => { downloadSpan = active.trace?.startStage('download'); });
+        safely(() => active.progress?.({ stage: 'download', state: 'running' }));
+        const endTransfer = (ok: boolean) => {
+          if (transferEnded) return; transferEnded = true;
+          safely(() => downloadSpan?.finish(ok ? 'ok' : downloadSignal.aborted ? 'cancelled' : 'failed'));
+          safely(() => active.progress?.({ stage: 'download', state: 'done' }));
+        };
+        let media: Response;
+        try { media = await request(source, { redirect: 'error', signal: downloadSignal,
+          headers: { Accept: 'video/mp4', Referer: canonical, 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } }); }
+        catch (error) { endTransfer(false); throw error; }
+        const length = media.headers.get('content-length'), size = length === null ? undefined : Number(length);
+        if (!media.ok || media.redirected || !/^video\/mp4(?:;|$)/i.test(media.headers.get('content-type') ?? '') ||
+            length !== null && (!/^\d+$/.test(length) || !Number.isSafeInteger(size) || !size || size > MAX_VIDEO_BYTES)) {
+          await media.body?.cancel(); endTransfer(false); return null;
+        }
+        const reader = media.body?.getReader(); if (!reader) { endTransfer(false); return null; }
+        let complete = false;
+        const cancel = () => { abort.abort(); void reader.cancel().catch(() => {}); };
+        signal.addEventListener('abort', cancel, { once: true });
+        const stream = (async function* () {
+          let total = 0;
+          for (;;) {
+            downloadSignal.throwIfAborted();
+            const { done, value } = await reader.read();
+            downloadSignal.throwIfAborted();
+            if (done) break;
+            total += value.byteLength;
+            if (total > MAX_VIDEO_BYTES || size !== undefined && total > size) throw Error('Erome media exceeds its size limit');
+            yield value;
+          }
+          if (!total || size !== undefined && total !== size) throw Error('Incomplete Erome media');
+          complete = true;
+          endTransfer(true);
+        })();
+        try {
+          const output = await eromeStage(active, 'convert', () => convert({ stream, size, cancel }, { maxBytes, signal,
+            onEncoding: () => safely(() => shared.progress?.({ stage: 'convert', state: 'running' })) }));
+          return complete && !signal.aborted && output?.length && output.length <= maxBytes
+            ? { ...info, bytes: output, filename: 'linky-video.mp4' } : null;
+        } finally {
+          signal.removeEventListener('abort', cancel);
+          if (!complete) cancel();
+          endTransfer(complete);
+          reader.releaseLock();
+        }
+      }).then(value => { if (value) remember(key, value); return value; }));
+      return result && !context.signal?.aborted ? attachment(result) : null;
+    } catch { return null; }
   };
 }

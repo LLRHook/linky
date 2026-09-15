@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createRegionalDownloader, type RegionalDownloader } from '../src/services/RegionalDownloader';
+import { createRegionalDownloader, type RegionalDownloader, type RegionalObservation, type RegionalObserver } from '../src/services/RegionalDownloader';
 import { createRegionalWorker } from '../src/services/RegionalWorker';
 import { type requestErome } from '../src/services/RegionalHttp';
 import {
@@ -9,7 +9,7 @@ import {
   type RegionalJob,
 } from '../src/services/RegionalProtocol';
 
-const key = 'regional-test-key-with-at-least-32-characters';
+const key = 'synthetic-signing-fixture-'.repeat(2);
 const workerBaseUrl = 'https://workers.example.com';
 const input = { source: 'https://v63.erome.com/7242/9f9EJu3q/eMbG5fMA_720p.mp4', album: 'https://www.erome.com/a/9f9EJu3q' };
 const etag = '"unchanged-object"';
@@ -35,11 +35,13 @@ function harness(options: {
   head?: () => Response | Promise<Response>;
   worker?: (job: RegionalJob, raw: string) => Response | Promise<Response>;
   local?: (response: Response) => Response | Promise<Response>;
+  observe?: RegionalObserver; monotonic?: () => number;
 } = {}) {
   let now = 100_000, heads = 0;
   const source = options.source ?? bytes, starts: string[] = [], raws: string[] = [], signals: AbortSignal[] = [];
   let downloader!: RegionalDownloader;
   downloader = createRegionalDownloader({ key, workerBaseUrl, clock: () => now, startupGraceMs: options.grace ?? 0,
+    observe: options.observe, monotonic: options.monotonic,
     requestOrigin: async (url, request) => {
       assert.equal(url, input.source); assert.equal(request.album, input.album);
       signals.push(request.signal);
@@ -299,4 +301,113 @@ test('HEAD and every dispatched worker have independent bounded deadlines even i
   while (!waitingForEof) await new Promise(resolve => setImmediate(resolve));
   context.mock.timers.tick(8_000);
   assert.equal(await pendingEof, null); assert.equal(cancelled, 1); noEof.downloader.close();
+});
+
+test('validated source inspection avoids duplicate HEAD, preserves validators and cannot be forged or replayed', async () => {
+  const fixture = harness(), inspected = await fixture.downloader.inspectSource(input);
+  assert.deepEqual(inspected, { bytes: bytes.length, etag }); assert.ok(Object.isFrozen(inspected));
+  assert.equal(fixture.heads(), 1); assert.equal(fixture.starts.length, 0);
+  const result = await fixture.downloader.downloadValidated(input, undefined, inspected!);
+  assert.deepEqual(result, { bytes, etag }); assert.equal(fixture.heads(), 1);
+  assert.equal(await fixture.downloader.downloadValidated(input, undefined, inspected!), null);
+  assert.equal(await fixture.downloader.downloadValidated(input, undefined, { bytes: bytes.length, etag }), null);
+  const fresh = await fixture.downloader.inspectSource(input);
+  assert.equal(await fixture.downloader.downloadValidated({ ...input, source: 'https://v63.erome.com/different.mp4' }, undefined, fresh!), null);
+  const other = harness();
+  assert.equal(await other.downloader.downloadValidated(input, undefined, fresh!), null); assert.equal(other.heads(), 0);
+  fixture.downloader.close(); other.downloader.close();
+});
+
+test('expired inspection proof triggers fresh HEAD and concurrent inspections remain bounded', async () => {
+  const fixture = harness(), inspection = await fixture.downloader.inspectSource(input);
+  fixture.advance(2_001);
+  assert.deepEqual(await fixture.downloader.downloadValidated(input, undefined, inspection!), { bytes, etag });
+  assert.equal(fixture.heads(), 2); fixture.downloader.close();
+  let release!: (response: Response) => void;
+  const blocked = harness({ head: () => new Promise(resolve => { release = resolve; }) });
+  const pending = blocked.downloader.inspectSource(input);
+  assert.equal(await blocked.downloader.inspectSource(input), null);
+  assert.equal(await blocked.downloader.download(input), null);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  release(headResponse()); assert.deepEqual(await pending, { bytes: bytes.length, etag });
+  assert.equal(blocked.heads(), 1); blocked.downloader.close();
+});
+
+test('readiness waits through startup and late-worker cooldown without dispatching, with bounded cancellation', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const fixture = harness({ grace: 8_000 }), cancelled = new AbortController();
+  const ready = fixture.downloader.waitUntilReady(), removed = fixture.downloader.waitUntilReady(cancelled.signal);
+  cancelled.abort(); assert.equal(await removed, false); assert.equal(fixture.heads(), 0);
+  fixture.advance(8_000); context.mock.timers.tick(8_000); assert.equal(await ready, true);
+  assert.equal(fixture.heads(), 0); fixture.downloader.close(); assert.equal(await fixture.downloader.waitUntilReady(), false);
+
+  let failed = false;
+  const cooldown = harness({ worker: job => {
+    if (!failed) { failed = true; cooldown.advance(3_000); return workerResponse(job, bytes, { 'x-linky-streaming': 'false' }); }
+    return workerResponse(job);
+  } });
+  assert.equal(await cooldown.downloader.download(input), null);
+  let available = false; const wait = cooldown.downloader.waitUntilReady().then(value => { available = value; return value; });
+  cooldown.advance(5_000); context.mock.timers.tick(5_000); await Promise.resolve(); assert.equal(available, false);
+  cooldown.advance(3_000); context.mock.timers.tick(3_000); assert.equal(await wait, true);
+  assert.equal(cooldown.heads(), 1); cooldown.downloader.close();
+});
+
+test('readiness has at most eight waiters, wakes when busy work ends, and closes without orphan timers', async () => {
+  let release!: (response: Response) => void;
+  const fixture = harness({ head: () => new Promise(resolve => { release = resolve; }) });
+  const job = fixture.downloader.download(input);
+  const waiters = Array.from({ length: 8 }, () => fixture.downloader.waitUntilReady());
+  assert.equal(await fixture.downloader.waitUntilReady(), false);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  release(headResponse()); assert.deepEqual(await job, bytes);
+  assert.deepEqual(await Promise.all(waiters), Array(8).fill(true)); fixture.downloader.close();
+  const closed = harness({ grace: 8_000 }), pending = closed.downloader.waitUntilReady();
+  closed.downloader.close(); assert.equal(await pending, false);
+});
+
+test('observations contain bounded complete per-region timings and no source identities, even if a sink throws', async () => {
+  const events: RegionalObservation[] = []; let tick = 0;
+  const fixture = harness({ monotonic: () => tick++, observe: () => { throw Error('ignored-observer'); } });
+  assert.deepEqual(await fixture.downloader.downloadValidated(input, undefined, undefined, event => events.push(event)), { bytes, etag });
+  assert.equal(events.length, 12); assert.equal(events[0].kind, 'head'); assert.equal(events.at(-1)?.kind, 'complete');
+  const parts = events.filter(event => event.kind === 'part');
+  assert.equal(parts.length, 10); assert.equal(parts.reduce((sum, event) => sum + event.bytes, 0), bytes.length);
+  for (const part of parts) {
+    assert.equal(part.outcome, 'ok'); assert.equal(part.region, REGIONAL_REGIONS[part.part!]);
+    assert.ok(part.headersMs! <= part.firstByteMs! && part.firstByteMs! <= part.elapsedMs);
+    assert.equal(part.upstreamHeadersMs, part.region === 'local' ? undefined : 123.456);
+  }
+  assert.equal(events.at(-1)?.bytes, bytes.length);
+  const output = JSON.stringify(events);
+  for (const secret of [input.source, input.album, etag, key, 'x-linky-signature']) assert.equal(output.includes(secret), false);
+  fixture.downloader.close();
+});
+
+test('failure observations retain partial bytes and finite reasons after every peer settles', async () => {
+  const events: RegionalObservation[] = [], fixture = harness({ observe: event => events.push(event),
+    worker: job => job.part ? workerResponse(job) : workerResponse(job, bytes, {}, new ReadableStream({ start(controller) {
+      controller.enqueue(bytes.subarray(0, 1)); controller.close();
+    } })),
+  });
+  assert.equal(await fixture.downloader.download(input), null);
+  assert.equal(events.filter(event => event.kind === 'part').length, 10);
+  assert.equal(events.find(event => event.part === 0)?.bytes, 1);
+  assert.equal(events.find(event => event.part === 0)?.reason, 'body');
+  assert.equal(events.at(-1)?.kind, 'complete'); assert.equal(events.at(-1)?.reason, 'body');
+  fixture.downloader.close();
+});
+
+test('public inspection deadlines and close cancel responses arriving after an abort', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let release!: (response: Response) => void, cancelled = 0;
+  const events: RegionalObservation[] = [], fixture = harness({ observe: event => events.push(event),
+    head: () => new Promise(resolve => { release = resolve; }) });
+  const result = fixture.downloader.inspectSource(input);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  context.mock.timers.tick(2_000); assert.equal(await result, null);
+  release(new Response(new ReadableStream({ cancel() { cancelled++; } })));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(cancelled, 1);
+  assert.equal(events.at(-1)?.reason, 'deadline'); fixture.downloader.close();
+  assert.equal(await fixture.downloader.inspectSource(input), null);
 });

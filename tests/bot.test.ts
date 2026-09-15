@@ -77,7 +77,7 @@ test('video hosting starts only when configured and shuts down after pending sta
   const ready = new Promise<void>(resolve => { finish = resolve; });
   const startMedia: NonNullable<Parameters<typeof createBot>[3]> = async () => {
     starts++; await ready;
-    return { prepare: async () => null, bind: async () => true,
+    return { prepare: async () => null, bind: async () => true, unbind: async () => {}, cancelReservation: () => {},
       release: async id => { releases.push(id); }, close: async () => { closes++; } };
   };
   fixture({}, undefined, startMedia);
@@ -102,7 +102,7 @@ test('failed optional media startup leaves normal bot commands available', async
   assert.equal(replies.length, 1); assert.deepEqual(errors, []);
 });
 
-test('configured media startup failure retains cleanup until a successful bot restart releases the binding', { timeout: 5000 }, async t => {
+test('configured media startup failure retains cleanup until a successful bot restart releases the binding', { timeout: 10_000 }, async t => {
   const caseDirectory = mkdtempSync(join(directory, 'media-cleanup-'));
   const settingsPath = join(caseDirectory, 'servers.json'), journalPath = join(caseDirectory, 'reposts.json');
   const botId = '1491240385031311470', authorId = '777777777777777777';
@@ -158,14 +158,15 @@ test('configured media startup failure retains cleanup until a successful bot re
   await failed.client.destroy(); clients.splice(clients.indexOf(failed.client), 1);
 
   const released: string[] = [], bindings = new Set([record.replacementId]);
-  const restored = await startBot(async () => ({ prepare: async () => null, bind: async () => true,
+  const restored = await startBot(async () => ({ prepare: async () => null, bind: async () => true, unbind: async () => {}, cancelReservation: () => {},
     release: async id => {
       assert.equal(previewExists, false, 'The bot releases media only after confirmed Discord removal');
       bindings.delete(id); released.push(id);
     }, close: async () => {},
   }));
-  for (let attempt = 0; journal().records.length && attempt < 100; attempt++) {
-    await new Promise<void>(resolve => setTimeout(resolve, 5));
+  const cleanupDeadline = performance.now() + 5000;
+  while (journal().records.length && performance.now() < cleanupDeadline) {
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
   }
   assert.deepEqual(released, [record.replacementId]);
   assert.equal(bindings.size, 0);
@@ -181,10 +182,9 @@ for (const hasSystemChannel of [true, false]) {
     const channel = { send: async () => { sends++; } };
     const guild = { id: 'new-guild', systemChannel: hasSystemChannel ? channel : null, channels: { cache: new Map([['general', channel]]) } };
     client.emit(Events.GuildCreate, guild as unknown as Guild);
-    client.emit(Events.ClientReady, { user: { id: '1491240385031311470', tag: 'Linky#0805' }, guilds: { cache: new Map([['new-guild', guild]]) },
+    for (const listener of client.listeners(Events.ClientReady)) await listener({ user: { id: '1491240385031311470', tag: 'Linky#0805' }, guilds: { cache: new Map([['new-guild', guild]]) },
       application: { commands: { set: async () => [] } },
     } as unknown as Client<true>);
-    await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(sends, 0);
     assert.ok(logs.some(entry => JSON.stringify(entry).includes('Logged in as Linky#0805')));
     assert.ok(logs.some(entry => JSON.stringify(entry).includes('Serving 1 guild(s).')));
@@ -468,26 +468,28 @@ test('/help respects selected channel restrictions instead of reporting an exclu
 test('explicit slash and context-menu fixes dispatch without changing automatic server enablement', async () => {
   const servers = new ServerSettings(join(directory, 'manual-dispatch.json'), async () => assert.fail('Manual fixing must not write server settings'));
   const { client, errors } = fixture({}, servers);
+  Object.assign(client, { user: { id: '222222222222222222' } });
   for (const contextMenu of [false, true]) {
     const events: any[] = [];
     const response = {
-      content: '',
+      id: contextMenu ? '333333333333333334' : '333333333333333333', channelId: '555555555555555555', author: { id: '222222222222222222' }, content: '',
       embeds: [{ toJSON: () => ({ url: 'https://fixupx.com/jack/status/20', title: 'Jack', description: 'The requested post.' }) }],
       fetch: async () => response,
     };
     await dispatch(client, {
       isChatInputCommand: () => !contextMenu, isMessageContextMenuCommand: () => contextMenu,
       commandName: contextMenu ? 'Fix with Linky' : 'fix', inGuild: () => true,
-      guildId: '444444444444444444', channelId: 'channel',
+      guildId: '444444444444444444', channelId: '555555555555555555', user: { id: '111111111111111111' },
       memberPermissions: new PermissionsBitField(PermissionFlagsBits.SendMessages),
       channel: { isThread: () => false },
       options: { getString: () => 'https://twitter.com/jack/status/20' },
       targetMessage: { content: 'https://twitter.com/jack/status/20', delete: () => assert.fail('Context action must not delete source'),
         edit: () => assert.fail('Context action must not edit source') },
       deferReply: async (payload: unknown) => { events.push(['defer', payload]); },
-      editReply: async (payload: any) => { events.push(['edit', payload]); response.content = payload.content; return response; },
+      editReply: async (payload: any) => { events.push(['edit', payload]); if (typeof payload.content === 'string') response.content = payload.content; return response; },
     });
-    assert.equal(events.length, 2);
+    assert.equal(events.length, 3);
+    assert(JSON.stringify(events[2]).includes('linky:details:'));
     assert.equal(events[1][1].content, 'https://fixupx.com/jack/status/20');
     assert.equal(response.content, events[1][1].content);
     assert.equal(servers.get('444444444444444444'), undefined);

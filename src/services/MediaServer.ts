@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
-import type { MediaAssetStore } from './MediaAssetStore';
+import { mediaExtension, type MediaAssetStore } from './MediaAssetStore';
 import { REGIONAL_CLAIM_PATH } from './RegionalProtocol';
 
 const MAX_ACTIVE_MEDIA = 8, MAX_ACTIVE_CLAIMS = 10, TIMEOUT_MS = 20_000, MAX_BODY = 4096;
@@ -97,20 +97,21 @@ export function createMediaServer({ store, claim, timeoutMs = TIMEOUT_MS, openFi
         const body = await claimBody(request, AbortSignal.any([controller.signal, AbortSignal.timeout(2000)]));
         return finish(claim(body, signature) ? 204 : 403);
       }
-      const id = /^\/media\/([a-f0-9]{32})\.mp4$/.exec(request.url ?? '')?.[1];
+      const matched = /^\/media\/([a-f0-9]{32})\.(mp4|jpg|png)$/.exec(request.url ?? '');
+      const id = matched?.[1];
       if (!id) return finish(404);
       if (request.method !== 'GET' && request.method !== 'HEAD') return finish(405, { Allow: 'GET, HEAD' });
       if (request.headers['transfer-encoding'] || request.headers['content-length'] && request.headers['content-length'] !== '0')
         return finish(413, { Connection: 'close' });
       const asset = await bounded(store.get(id), controller.signal);
       controller.signal.throwIfAborted();
-      if (!asset) return finish(404);
+      if (!asset || matched?.[2] !== mediaExtension(asset.mimeType)) return finish(404);
       const etag = `"${asset.sha256}"`;
       const range = request.headers.range && (!request.headers['if-range'] || request.headers['if-range'] === etag)
         ? mediaRange(request.headers.range, asset.size) : undefined;
       if (range === null) return finish(416, { 'Content-Range': `bytes */${asset.size}` });
       const start = range?.start ?? 0, end = range?.end ?? asset.size - 1;
-      const headers = { ...baseHeaders, 'Content-Type': 'video/mp4', 'Content-Length': String(end - start + 1),
+      const headers = { ...baseHeaders, 'Content-Type': asset.mimeType ?? 'video/mp4', 'Content-Length': String(end - start + 1),
         'Content-Disposition': 'inline', 'Accept-Ranges': 'bytes', ETag: etag,
         ...(range ? { 'Content-Range': `bytes ${start}-${end}/${asset.size}` } : {}) };
       if (request.method === 'HEAD') return finish(range ? 206 : 200, headers);

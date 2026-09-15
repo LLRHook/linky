@@ -2,6 +2,8 @@
 
 Research date: September 15, 2026. Implementation reviewed: `6f1c192`, including the Erome preview-dimension fix in [PR #30](https://github.com/LLRHook/linky/pull/30). This is a proposal, not an implementation or a new production benchmark.
 
+The resulting implementation and current limits are documented in [Delivery reliability](delivery-reliability.md). The research below preserves the original baseline and recommendations; its source-line references describe that earlier revision.
+
 The highest-value work is to improve reliable completion, reuse prepared media, and prevent expensive video jobs from delaying other requests. Linky already has original-quality media delivery, regional range downloads, duplicate-request coalescing, provider fallbacks, private setup, and owner-only removal. Reimplementing those features would add little.
 
 ## Evidence and limits

@@ -6,7 +6,11 @@ import { join } from 'node:path';
 import { Collection, MessageFlags, MessageFlagsBitField, MessageType, PermissionsBitField,
   type APIEmbed, type APIMessageTopLevelComponent, type Attachment, type Message, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
-import { inspectPreviews, type ExpectedPreview } from '../src/services/PreviewRecovery';
+import { expectedPreviews, inspectPreviews, type ExpectedPreview } from '../src/services/PreviewRecovery';
+import { ProviderHealth } from '../src/services/ProviderHealth';
+import { getProviderCandidates } from '../src/services/SocialProviders';
+import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
+import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { TweetTranslation } from '../src/services/TweetTranslation';
@@ -139,8 +143,9 @@ test('missing or unrelated previews preserve the original and leave only an owne
     assert.equal(notice.deleted, false);
     assert.match(String(notice.options.content), /original is still here/i);
     assert.deepEqual(notice.options.reply, { messageReference: SOURCE, failIfNotExists: true });
-    assert.match(JSON.stringify(notice.options.components), /linky:retry/);
-    assert.match(JSON.stringify(notice.options.components), /linky:remove/);
+    assert.doesNotMatch(JSON.stringify(notice.options.components), /linky:(retry|remove)/);
+    assert.match(JSON.stringify(notice.message.components), /linky:retry/);
+    assert.match(JSON.stringify(notice.message.components), /linky:remove/);
     assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
       replacementId: notice.message.id, authorId: AUTHOR, mode: 'reply' }]);
     assert.equal(f.expectedChecks.length, 2, 'try each catalogued X provider once');
@@ -169,6 +174,53 @@ test('automatic X fallback edits one output and verifies it before saving owners
   assert.deepEqual(replacement.options.allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
   assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
     replacementId: replacement.message.id, authorId: AUTHOR, mode: 'replace' }]);
+});
+
+test('automatic deadlines stop retries and source deletion, but preserve an already committed replacement', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const phase of ['preview-missing', 'preview-confirmed', 'ownership', 'source-recheck', 'delete', 'controls'] as const) {
+    const f = delivery(), outcomes: DeliveryOutcome[] = [];
+    const diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
+      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    const expire = () => t.mock.timers.tick(120_000);
+    f.state.duringPreview = async () => { if (phase.startsWith('preview-')) expire(); };
+    if (phase === 'preview-missing') f.state.render = () => [];
+    f.state.remember = async () => { if (phase === 'ownership') expire(); return true; };
+    const fetch = f.source.fetch.bind(f.source), remove = f.source.delete.bind(f.source);
+    let sourceFetches = 0;
+    t.mock.method(f.source, 'fetch', async () => {
+      const result = await fetch(true);
+      if (++sourceFetches === 2 && phase === 'source-recheck') expire();
+      return result;
+    });
+    t.mock.method(f.source, 'delete', async () => { const result = await remove(); if (phase === 'delete') expire(); return result; });
+    f.state.duringEdit = async edit => { if (phase === 'controls' && edit.components) expire(); };
+    await f.create({ diagnostics })(f.source);
+    assert.equal(f.expectedChecks.length, 1, `${phase}: do not start another provider attempt after expiration`);
+    const committed = phase === 'delete' || phase === 'controls';
+    assert.equal(f.state.originalDeleted, committed, phase);
+    assert.equal(f.sent[0].deleted, !committed, `${phase}: retain the sole remaining copy once deletion was sent`);
+    assert.deepEqual(outcomes, ['timeout'], phase);
+  }
+});
+
+test('health-based provider routing preserves identical URLs inside spoilers, code and suppressed links', async () => {
+  const health = new ProviderHealth();
+  for (const id of ['21', '22', '23']) {
+    const source = `https://x.com/jack/status/${id}`;
+    health.recordRecovery(getProviderCandidates(source).map((candidate, index) => {
+      const expected = expectedPreviews(source, candidate.url);
+      return { expected, result: inspectPreviews(index ? [{ ...xPreview, url: candidate.url }] : [], expected) };
+    }));
+  }
+  const hidden = `||${PRIMARY_X}|| <${PRIMARY_X}> \`${PRIMARY_X}\``;
+  const f = delivery(`${ORIGINAL_X}\n${hidden}`);
+  f.state.render = () => [{ ...xPreview, url: ALTERNATE_X }];
+  await f.create({ providerHealth: health })(f.source);
+  assert.equal(f.sent.length, 1);
+  assert.ok(f.sent[0].message.content.includes(ALTERNATE_X), 'The visible URL should use the proven alternate');
+  assert.ok(f.sent[0].message.content.includes(hidden), 'Hidden URL bytes and formatting must be preserved');
+  assert.equal(f.state.originalDeleted, true);
 });
 
 test('automatic Instagram recovery verifies OGInstagram on the same replacement before deleting the original', async () => {
@@ -208,7 +260,8 @@ test('failed Instagram providers preserve the source and leave only an owned ret
     assert(f.sent[0].deleted);
     assert.equal(f.sent[1].deleted, false);
     assert.deepEqual(f.sent[1].options.reply, { messageReference: SOURCE, failIfNotExists: true });
-    assert.match(JSON.stringify(f.sent[1].options.components), /linky:retry/);
+    assert.doesNotMatch(JSON.stringify(f.sent[1].options.components), /linky:(retry|remove)/);
+    assert.match(JSON.stringify(f.sent[1].message.components), /linky:retry/);
     assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
       replacementId: f.sent[1].message.id, authorId: AUTHOR, mode: 'reply' }]);
   }

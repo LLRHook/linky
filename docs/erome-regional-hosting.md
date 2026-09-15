@@ -10,7 +10,7 @@ An original must be at most 24 MiB, five minutes and 60 fps, with H.264/yuv420p 
 
 Discord's reported preview dimensions can differ from the source by one pixel. Verification accepts that rounding in either orientation while requiring the exact hosted file URL, an MP4 type and a proxy URL. Larger dimension mismatches still fail verification. This tolerance changes only the metadata check; it does not resize or re-encode the stored original.
 
-The bot resolves the first video from the album and uses a HEAD request to establish its size and strong ETag. It divides the exact size into ten consecutive ranges using `ceil(size / 10)` bytes per part, shortening the last part to the end of the file. At the 24 MiB source limit, each part is about 2.4 MiB. The independent 4 MiB part cap remains in place.
+The bot resolves the selected video from the album (the first video for the initial preview) and uses a HEAD request to establish its size and strong ETag. It divides the exact size into ten consecutive ranges using `ceil(size / 10)` bytes per part, shortening the last part to the end of the file. At the 24 MiB source limit, each part is about 2.4 MiB. The independent 4 MiB part cap remains in place.
 
 | Part | Fetch location | Worker route |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ Album lookup has a ten-second deadline. The source HEAD has two seconds, each ra
 
 Hostinger assembles all ten parts and inspects the complete original before publishing it to the store. Only then does the bot post a URL such as `https://media.linkybot.dev/media/<32-hex-id>.mp4`. Public requests can read registered files or seek within them; they cannot select an origin URL or trigger a download. Responses are marked `no-store` and `noindex, nofollow`.
 
-Larger or incompatible files, failed regional preparation, a full store and mixed-platform messages use the existing attachment publisher. Its input limit is 64 MiB and five minutes; it remuxes or encodes to the destination's upload allowance. The same channel policy, retained original album and owner-only **Remove** controls apply to both paths. An uncertain Discord POST is reconciled once, without an automatic second submission. See [Erome previews](erome-previews.md) for the shared delivery rules and attachment limits.
+Larger or incompatible files, failed regional preparation, a full store and mixed-platform messages use the existing attachment publisher. Its input limit is 64 MiB and five minutes; it remuxes or encodes to the destination's upload allowance. The same channel policy, retained original album and owner-only **Remove** controls apply to both paths. Hosted galleries also support selected JPEG/PNG items through a separate bounded image transport; the signed regional MP4 protocol is unchanged. [Delivery reliability](delivery-reliability.md) describes persistent source-validated reuse, fair scheduling, private diagnostics and album controls. An uncertain Discord POST is reconciled once, without an automatic second submission. See [Erome previews](erome-previews.md) for the shared delivery rules and attachment limits.
 
 ## Persistent storage and ownership
 

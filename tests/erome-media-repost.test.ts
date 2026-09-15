@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Client, Collection, ComponentType, Events, MessageFlags, MessageFlagsBitField, MessageType,
   PermissionsBitField, type Message, type MessageCreateOptions, type APIMessageTopLevelComponent } from 'discord.js';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
@@ -80,6 +81,30 @@ test('automatic original video captures early metadata, binds ownership and keep
   assert.equal(f.client.listenerCount(Events.Raw), 0);
 });
 
+test('a slow automatic original uses one progress reply and converts that message into its gallery', async () => {
+  const f = fixture(), edits: unknown[] = [], edit = f.replacement.edit;
+  f.replacement.edit = async payload => {
+    edits.push(payload);
+    const result = await edit(payload);
+    const components = f.replacement.components.map(component => component.toJSON()).map(component =>
+      component.type === ComponentType.MediaGallery ? { ...component, items: component.items.map(item => ({ ...item,
+        media: { ...item.media, content_type: 'video/mp4', proxy_url: 'https://proxy.example/video', width: 1280, height: 720 } })) }
+        : component);
+    f.client.emit(Events.Raw, { t: 'MESSAGE_UPDATE', d: { id: f.replacement.id, channel_id: channelId,
+      author: { id: bot }, components } });
+    return result;
+  };
+  await f.run({ prepareEromeMedia: async () => { await delay(1600); return media; } });
+  assert.deepEqual(f.errors, []);
+  assert.equal(f.sends.length, 1);
+  assert.match(String(f.sends[0].content), /Preparing your Erome preview/);
+  assert.equal(f.sends[0].reply?.messageReference, f.source.id);
+  assert(edits.some(payload => (payload as { flags?: number }).flags === MessageFlags.IsComponentsV2 &&
+    (payload as { content?: unknown }).content === null));
+  assert(f.replacement.components.some(component => component.toJSON().type === ComponentType.MediaGallery));
+  assert(!f.events.includes('delete original'));
+});
+
 test('failed media binding deletes only the new preview and releases its storage', async () => {
   const f = fixture(); await f.run({ bindEromeMedia: async () => false });
   assert.deepEqual(f.events, ['prepare', 'send', 'delete preview', 'release']);
@@ -131,10 +156,14 @@ test('scope changes or failed final controls roll back the original video after 
   }
 });
 
-test('mixed URLs and unavailable regional media retain the existing fallback', async () => {
+test('mixed URLs and unavailable regional media try attachment fallback then save an owner-bound retry notice', async () => {
   const mixed = fixture(); mixed.source.content += ' https://x.com/user/status/1'; await mixed.run();
-  assert.deepEqual(mixed.events, ['legacy']);
+  assert.deepEqual(mixed.events, ['legacy', 'send', 'ownership', 'controls']);
+  assert(!mixed.events.includes('delete original'));
+  assert(JSON.stringify(mixed.replacement.components).includes('linky:retry'));
   const unavailable = fixture();
   await unavailable.run({ prepareEromeMedia: async () => { throw Error('Worker unavailable'); } });
-  assert.deepEqual(unavailable.events, ['legacy']);
+  assert.deepEqual(unavailable.events, ['legacy', 'send', 'ownership', 'controls']);
+  assert(!unavailable.events.includes('delete original'));
+  assert.match(String(unavailable.sends[0].content), /could not be prepared/);
 });

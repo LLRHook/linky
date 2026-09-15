@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { EromeCleanupError } from './EromeWorkScheduler';
 
 export const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
 export const MAX_ATTACHMENT_BYTES = 19 * 1024 * 1024;
@@ -18,7 +19,7 @@ export type VideoInput = Buffer | {
   size?: number;
   cancel?: () => void | Promise<void>;
 };
-export type VideoOptions = { maxBytes?: number; onEncoding?: () => void };
+export type VideoOptions = { maxBytes?: number; onEncoding?: () => void; signal?: AbortSignal };
 type ProcessOptions = { cwd: string; timeout: number; env: NodeJS.ProcessEnv; signal?: AbortSignal };
 type Run = (program: string, args: readonly string[], options: ProcessOptions) => Promise<string>;
 type StreamRun = (program: string, args: readonly string[], options: ProcessOptions,
@@ -29,8 +30,12 @@ export function normalizeAttachmentLimit(value = MAX_ATTACHMENT_BYTES): number |
   return Number.isSafeInteger(value) && value >= 1024 * 1024 ? Math.min(value, MAX_OUTPUT_BYTES) : null;
 }
 const run: Run = (program, args, options) => new Promise((resolve, reject) => {
-  execFile(program, [...args], { ...options, maxBuffer: 128 * 1024, killSignal: 'SIGKILL', windowsHide: true },
-    (error, stdout) => error ? reject(error) : resolve(stdout));
+  let closed = false, result: { error: Error | null; stdout: string } | undefined;
+  const finish = () => { if (closed && result) { if (result.error) reject(result.error); else resolve(result.stdout); } };
+  const child = execFile(program, [...args], { ...options, maxBuffer: 128 * 1024, killSignal: 'SIGKILL', windowsHide: true },
+    (error, stdout) => { result = { error, stdout }; finish(); });
+  // execFile's AbortError callback can precede process exit. Scratch cannot be reused until close.
+  child.once('close', () => { closed = true; finish(); });
 });
 
 const runStream: StreamRun = async (program, args, options, input, cancel) => {
@@ -57,6 +62,9 @@ const runStream: StreamRun = async (program, args, options, input, cancel) => {
   });
   const pumped = pipeline(source, child.stdin).catch(error => { stop(error); throw error; });
   const timer = setTimeout(() => stop(new Error('Video process timed out')), options.timeout);
+  const abort = () => stop(new Error('Video process cancelled'));
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) abort();
   try {
     const [, output] = await Promise.all([pumped, completed]);
     return output;
@@ -65,6 +73,7 @@ const runStream: StreamRun = async (program, args, options, input, cancel) => {
     throw error;
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener('abort', abort);
     await Promise.allSettled([pumped, completed]);
   }
 };
@@ -135,6 +144,57 @@ function probeArguments(path: string, strictStreams = false): string[] {
 }
 
 export type OriginalVideoMetadata = { width: number; height: number; duration: number; fps: number };
+export type OriginalImageMetadata = { width: number; height: number };
+
+function staticPng(input: Buffer): boolean {
+  if (!input.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return false;
+  let offset = 8, hasData = false;
+  while (offset + 12 <= input.length) {
+    const length = input.readUInt32BE(offset), type = input.toString('latin1', offset + 4, offset + 8);
+    if (length > input.length - offset - 12 || !/^[A-Za-z]{2}[A-Z][A-Za-z]$/.test(type) || type === 'acTL' ||
+        (offset === 8 ? type !== 'IHDR' || length !== 13 : type === 'IHDR')) return false;
+    offset += length + 12;
+    if (type === 'IEND') return length === 0 && hasData && offset === input.length;
+    if (type === 'IDAT') hasData = true;
+  }
+  return false;
+}
+
+/** Decode one bounded JPEG/PNG to validate it, while retaining the exact original bytes for delivery. */
+export function createOriginalImageInspector({ execute = run }: { execute?: Run } = {}) {
+  return async (input: Buffer, mimeType: 'image/jpeg' | 'image/png', { signal }: { signal?: AbortSignal } = {}): Promise<OriginalImageMetadata | null> => {
+    if (!Buffer.isBuffer(input) || input.length < 12 || input.length > 8 * 1024 * 1024 || signal?.aborted) return null;
+    const png = mimeType === 'image/png';
+    if (png ? !staticPng(input)
+      : input[0] !== 255 || input[1] !== 216 || input[input.length - 2] !== 255 || input[input.length - 1] !== 217) return null;
+    const deadline = signal ? AbortSignal.any([signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000);
+    let directory: string | undefined;
+    try {
+      directory = await mkdtemp(join(tmpdir(), 'linky-original-image-'));
+      const path = join(directory, png ? 'input.png' : 'input.jpg');
+      await writeFile(path, input, { flag: 'wx', mode: 0o600, signal: deadline });
+      const limits = ['-v', 'error', '-max_alloc', '134217728', '-protocol_whitelist', 'file,pipe',
+        '-format_whitelist', 'image2,jpeg_pipe,png_pipe', '-threads', '1'];
+      const options = { cwd: directory, timeout: 5_000, env: processEnvironment(), signal: deadline };
+      const probe = JSON.parse(await execute('ffprobe', [...limits, '-show_entries',
+        'stream=codec_type,codec_name,width,height', '-of', 'json', path], options)) as { streams?: {
+          codec_type?: string; codec_name?: string; width?: number; height?: number;
+        }[] };
+      const image = probe.streams?.[0], width = image?.width ?? 0, height = image?.height ?? 0;
+      if (probe.streams?.length !== 1 || image?.codec_type !== 'video' || image.codec_name !== (png ? 'png' : 'mjpeg') ||
+          !Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2 || width > 8192 || height > 8192 ||
+          width * height > 33_554_432) return null;
+      await execute('ffmpeg', ['-nostdin', ...limits, '-xerror', '-i', path, '-map', '0:v:0', '-frames:v', '1', '-f', 'null', '-'], options);
+      deadline.throwIfAborted();
+      return { width, height };
+    } catch { return null; }
+    finally {
+      if (directory && dirname(resolve(directory)) === resolve(tmpdir()) && basename(directory).startsWith('linky-original-image-')) {
+        await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 }).catch(() => { throw new EromeCleanupError(); });
+      }
+    }
+  };
+}
 
 /** Inspect complete source bytes without changing them; the caller establishes download integrity. */
 export function createOriginalVideoInspector({ execute = run }: { execute?: Run } = {}):
@@ -151,15 +211,9 @@ export function createOriginalVideoInspector({ execute = run }: { execute?: Run 
       await writeFile(source, input, { mode: 0o600, flag: 'wx', signal: controller.signal });
       controller.signal.throwIfAborted();
       timer = setTimeout(cancel, ORIGINAL_PROBE_TIMEOUT_MS);
-      const output = await new Promise<string>((resolve, reject) => {
-        const abort = () => reject(new Error('Original video inspection cancelled'));
-        controller.signal.addEventListener('abort', abort, { once: true });
-        Promise.resolve().then(() => {
-          controller.signal.throwIfAborted();
-          return execute('ffprobe', probeArguments(source, true), {
-            cwd: directory!, timeout: ORIGINAL_PROBE_TIMEOUT_MS, env: processEnvironment(), signal: controller.signal,
-          });
-        }).then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', abort));
+      controller.signal.throwIfAborted();
+      const output = await execute('ffprobe', probeArguments(source, true), {
+        cwd: directory, timeout: ORIGINAL_PROBE_TIMEOUT_MS, env: processEnvironment(), signal: controller.signal,
       });
       controller.signal.throwIfAborted();
       if (Buffer.byteLength(output) > 128 * 1024) return null;
@@ -173,7 +227,7 @@ export function createOriginalVideoInspector({ execute = run }: { execute?: Run 
       signal?.removeEventListener('abort', cancel);
       controller.abort();
       if (directory && dirname(resolve(directory)) === resolve(tmpdir()) && basename(directory).startsWith('linky-original-video-')) {
-        await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
+        await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 }).catch(() => { throw new EromeCleanupError(); });
       }
     }
   };
@@ -250,7 +304,7 @@ export function createVideoAttachment({ execute = run, executeStream = runStream
   return async (input, options = {}) => {
     const maxBytes = normalizeAttachmentLimit(options.maxBytes);
     const suppliedSize = Buffer.isBuffer(input) ? input.length : input.size;
-    const invalid = maxBytes === null || (suppliedSize !== undefined &&
+    const invalid = options.signal?.aborted || maxBytes === null || (suppliedSize !== undefined &&
       (!Number.isSafeInteger(suppliedSize) || suppliedSize <= 0 || suppliedSize > MAX_VIDEO_BYTES));
     let iterator: AsyncIterator<Uint8Array> | undefined;
     const aborted = new AbortController();
@@ -263,7 +317,8 @@ export function createVideoAttachment({ execute = run, executeStream = runStream
         try { void Promise.resolve(iterator?.return?.()).catch(() => {}); } catch { /* A failed producer is already being abandoned. */ }
       }
     };
-    if (busy || invalid) { cancel(); return null; }
+    options.signal?.addEventListener('abort', cancel, { once: true });
+    if (busy || invalid) { cancel(); options.signal?.removeEventListener('abort', cancel); return null; }
     busy = true;
     let directory: string | undefined, file: Awaited<ReturnType<typeof open>> | undefined;
     try {
@@ -271,7 +326,7 @@ export function createVideoAttachment({ execute = run, executeStream = runStream
       const source = join(directory, 'input.mp4'), output = join(directory, 'preview.mp4');
       const env = processEnvironment();
       const probe = async (path: string) => metadata(await execute('ffprobe', probeArguments(path),
-        { cwd: directory!, timeout: 15_000, env }));
+        { cwd: directory!, timeout: 15_000, env, signal: aborted.signal }));
       let total = 0, complete = Buffer.isBuffer(input), streaming = false;
       let pendingChunk: Uint8Array | undefined;
       const initial: Uint8Array[] = [];
@@ -335,7 +390,7 @@ export function createVideoAttachment({ execute = run, executeStream = runStream
       const before = inspected;
       if (!before) return null;
       let copy = copyable(before) && suppliedSize !== undefined && suppliedSize <= maxBytes;
-      const processOptions = { cwd: directory, timeout: ENCODE_TIMEOUT_MS, env };
+      const processOptions = { cwd: directory, timeout: ENCODE_TIMEOUT_MS, env, signal: aborted.signal };
       try { void Promise.resolve(options.onEncoding?.()).catch(() => {}); } catch { /* Status callbacks cannot interrupt preparation. */ }
       if (streaming) {
         async function* chunks() {
@@ -364,10 +419,11 @@ export function createVideoAttachment({ execute = run, executeStream = runStream
     } catch { return null; }
     finally {
       cancel();
+      options.signal?.removeEventListener('abort', cancel);
       try {
         await file?.close();
         if (directory && dirname(resolve(directory)) === resolve(tmpdir()) && basename(directory).startsWith('linky-video-')) {
-          await rm(directory, { recursive: true, force: true });
+          await rm(directory, { recursive: true, force: true }).catch(() => { throw new EromeCleanupError(); });
         }
       }
       finally { busy = false; }

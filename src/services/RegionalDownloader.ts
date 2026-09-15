@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { cancelRegionalResponse, regionalAbortable, requestErome } from './RegionalHttp';
 import {
   isCanonicalEromeAlbum, isEromeMediaUrl, isStrongEtag, MAX_REGIONAL_BYTES, MAX_REGIONAL_JOB_BYTES,
@@ -8,12 +9,27 @@ import {
 } from './RegionalProtocol';
 
 const HEAD_TIMEOUT_MS = 2_000, DOWNLOAD_TIMEOUT_MS = 10_000, MAX_HEADER_BYTES = 8192;
+export type RegionalSourceInspection = Readonly<{ bytes: number; etag: string }>;
+export type RegionalInput = { source: string; album: string };
+export type RegionalObservation = {
+  kind: 'head' | 'part' | 'complete' | 'admission';
+  outcome: 'ok' | 'failed' | 'cancelled' | 'rejected';
+  elapsedMs: number; bytes: number; status?: number;
+  part?: number; region?: typeof REGIONAL_REGIONS[number];
+  headersMs?: number; firstByteMs?: number; upstreamHeadersMs?: number;
+  reason?: 'busy' | 'cooldown' | 'closed' | 'invalid' | 'metadata' | 'headers' | 'body' | 'transport' | 'deadline' | 'cancelled';
+};
+export type RegionalObserver = (event: RegionalObservation) => void;
 export type RegionalDownloaderOptions = {
   key: string; workerBaseUrl: string; requestOrigin?: typeof requestErome; fetch?: typeof fetch;
-  clock?: () => number; startupGraceMs?: number;
+  clock?: () => number; monotonic?: () => number; startupGraceMs?: number; observe?: RegionalObserver;
 };
 export type RegionalDownloader = {
-  download(input: { source: string; album: string }, signal?: AbortSignal): Promise<Buffer | null>;
+  download(input: RegionalInput, signal?: AbortSignal): Promise<Buffer | null>;
+  inspectSource(input: RegionalInput, signal?: AbortSignal, observe?: RegionalObserver): Promise<RegionalSourceInspection | null>;
+  downloadValidated(input: RegionalInput, signal?: AbortSignal, inspection?: RegionalSourceInspection,
+    observe?: RegionalObserver): Promise<{ bytes: Buffer; etag: string } | null>;
+  waitUntilReady(signal?: AbortSignal): Promise<boolean>;
   claim(raw: string, signature: string): boolean;
   close(): void;
 };
@@ -41,7 +57,8 @@ function validHeaders(response: Response, mime: string): boolean {
     response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === mime;
 }
 
-async function readPart(response: Response, range: RegionalRange, output: Buffer, signal: AbortSignal): Promise<void> {
+async function readPart(response: Response, range: RegionalRange, output: Buffer, signal: AbortSignal,
+  receivedBytes: (bytes: number) => void): Promise<void> {
   if (!response.body) throw Error('regional_body');
   const reader = response.body.getReader();
   let received = 0, complete = false;
@@ -54,6 +71,7 @@ async function readPart(response: Response, range: RegionalRange, output: Buffer
         throw Error('regional_body');
       output.set(next.value, range.start + received);
       received += next.value.length;
+      receivedBytes(next.value.length);
     }
     if (received !== range.length) throw Error('regional_body');
     complete = true;
@@ -65,7 +83,8 @@ async function readPart(response: Response, range: RegionalRange, output: Buffer
 
 /** One admitted source and nine single-use remote claims; no caller can choose a worker destination. */
 export function createRegionalDownloader({ key, workerBaseUrl, requestOrigin = requestErome, fetch: fetchWorker = fetch,
-  clock = Date.now, startupGraceMs = REGIONAL_DEADLINE_MS }: RegionalDownloaderOptions): RegionalDownloader {
+  clock = Date.now, monotonic = () => performance.now(), startupGraceMs = REGIONAL_DEADLINE_MS,
+  observe }: RegionalDownloaderOptions): RegionalDownloader {
   let base: URL;
   try { base = new URL(workerBaseUrl); } catch { throw Error('regional_configuration'); }
   if (!validRegionalKey(key) || base.protocol !== 'https:' || base.username || base.password || base.port ||
@@ -73,12 +92,84 @@ export function createRegionalDownloader({ key, workerBaseUrl, requestOrigin = r
     !/^https:\/\/[^/?#:@]+\/?$/.test(workerBaseUrl) ||
     !Number.isSafeInteger(startupGraceMs) || startupGraceMs < 0 || startupGraceMs > REGIONAL_DEADLINE_MS)
     throw Error('regional_configuration');
-  let closed = false, busy = false, activeController: AbortController | undefined;
+  let closed = false, busy = false, activeController: AbortController | undefined, inspectionController: AbortController | undefined;
   let admitAfter = clock() + startupGraceMs, workerMayRunUntil = 0;
   const active = new Map<string, { raw: string; claimed: boolean }>();
+  const inspections = new WeakMap<RegionalSourceInspection, RegionalInput & { expiresAt: number }>();
+  const readiness = new Set<() => void>();
   const entryKey = (job: RegionalJob) => `${job.id}:${job.part}`;
+  const elapsed = (start: number) => Math.round(Math.max(0, monotonic() - start) * 1000) / 1000;
+  const notifyReady = () => { for (const check of [...readiness]) check(); };
+  function emit(event: RegionalObservation, callback?: RegionalObserver): void {
+    for (const observer of new Set([observe, callback])) {
+      try { void Promise.resolve(observer?.(event)).catch(() => undefined); } catch { /* Metrics cannot affect transfers. */ }
+    }
+  }
+  function failure(error: unknown): NonNullable<RegionalObservation['reason']> {
+    const name = error instanceof Error ? error.message : '';
+    return name === 'regional_metadata' ? 'metadata' : name === 'regional_headers' ? 'headers'
+      : name === 'regional_body' ? 'body' : name === 'regional_aborted' ? 'cancelled' : 'transport';
+  }
+  async function inspect(input: RegionalInput, signal: AbortSignal, callback?: RegionalObserver): Promise<RegionalSourceInspection> {
+    const started = monotonic(), deadline = requestDeadline(signal, HEAD_TIMEOUT_MS);
+    let response: Response | undefined, size = 0, accepted = false, reason: RegionalObservation['reason'];
+    try {
+      response = await regionalAbortable<Response>(Promise.resolve().then(() => {
+        deadline.signal.throwIfAborted();
+        return requestOrigin(input.source, { method: 'HEAD', album: input.album, signal: deadline.signal });
+      }), deadline.signal, cancelRegionalResponse);
+      deadline.signal.throwIfAborted();
+      const length = response.headers.get('content-length'), etag = response.headers.get('etag');
+      if (response.status !== 200 || !validHeaders(response, 'video/mp4') || response.headers.has('content-range') ||
+        !length || !/^[1-9]\d{0,8}$/.test(length) || Number(length) > MAX_REGIONAL_BYTES || !isStrongEtag(etag))
+        throw Error('regional_metadata');
+      size = Number(length); accepted = true;
+      return Object.freeze({ bytes: size, etag });
+    } catch (error) {
+      reason = deadline.signal.aborted ? (signal.aborted ? 'cancelled' : 'deadline') : failure(error); throw error;
+    } finally {
+      if (response) cancelRegionalResponse(response);
+      emit({ kind: 'head', outcome: accepted ? 'ok' : reason === 'cancelled' ? 'cancelled' : 'failed',
+        elapsedMs: elapsed(started), bytes: size, ...(response ? { status: response.status } : {}), ...(reason ? { reason } : {}) }, callback);
+      deadline.close();
+    }
+  }
 
-  return {
+  const downloader: RegionalDownloader = {
+    waitUntilReady(signal) {
+      if (closed || signal?.aborted || readiness.size >= 8) return Promise.resolve(false);
+      return new Promise<boolean>(resolve => {
+        let timer: ReturnType<typeof setTimeout> | undefined, settled = false;
+        const finish = (ready: boolean) => {
+          if (settled) return; settled = true;
+          clearTimeout(timer); clearTimeout(deadline); readiness.delete(check); signal?.removeEventListener('abort', check); resolve(ready);
+        };
+        const check = () => {
+          if (settled) return;
+          clearTimeout(timer);
+          if (closed || signal?.aborted) { finish(false); return; }
+          if (!busy && !inspectionController) {
+            const remaining = admitAfter - clock();
+            if (remaining <= 0) { finish(true); return; }
+            timer = setTimeout(check, remaining);
+          }
+        };
+        const deadline = setTimeout(() => finish(false), DOWNLOAD_TIMEOUT_MS + REGIONAL_DEADLINE_MS);
+        readiness.add(check); signal?.addEventListener('abort', check, { once: true }); check();
+      });
+    },
+    async inspectSource(input, signal, callback) {
+      if (closed || busy || inspectionController || signal?.aborted || !isEromeMediaUrl(input.source) || !isCanonicalEromeAlbum(input.album)) return null;
+      const controller = new AbortController(), abort = () => controller.abort();
+      inspectionController = controller; signal?.addEventListener('abort', abort, { once: true });
+      try {
+        const result = await inspect(input, controller.signal, callback);
+        controller.signal.throwIfAborted();
+        inspections.set(result, { ...input, expiresAt: clock() + HEAD_TIMEOUT_MS });
+        return result;
+      } catch { return null; }
+      finally { controller.abort(); signal?.removeEventListener('abort', abort); inspectionController = undefined; notifyReady(); }
+    },
     claim(raw, signature) {
       if (closed || activeController?.signal.aborted || typeof raw !== 'string' ||
         Buffer.byteLength(raw) > MAX_REGIONAL_JOB_BYTES || !verifyRegionalClaim(raw, signature, key)) return false;
@@ -90,32 +181,29 @@ export function createRegionalDownloader({ key, workerBaseUrl, requestOrigin = r
       workerMayRunUntil = Math.max(workerMayRunUntil, now + REGIONAL_DEADLINE_MS);
       return true;
     },
-    close() { closed = true; active.clear(); activeController?.abort(); },
-    async download({ source, album }, signal) {
-      if (closed || busy || signal?.aborted || clock() < admitAfter ||
-        !isEromeMediaUrl(source) || !isCanonicalEromeAlbum(album)) return null;
+    close() { closed = true; active.clear(); activeController?.abort(); inspectionController?.abort(); notifyReady(); },
+    async download(input, signal) { return (await downloader.downloadValidated(input, signal))?.bytes ?? null; },
+    async downloadValidated({ source, album }, signal, inspection, callback) {
+      const started = monotonic();
+      const rejected = closed ? 'closed' : busy || inspectionController ? 'busy' : signal?.aborted ? 'cancelled'
+        : clock() < admitAfter ? 'cooldown' : !isEromeMediaUrl(source) || !isCanonicalEromeAlbum(album) ? 'invalid' : undefined;
+      if (rejected) { emit({ kind: 'admission', outcome: 'rejected', reason: rejected, elapsedMs: 0, bytes: 0 }, callback); return null; }
       busy = true;
       const controller = new AbortController();
       activeController = controller;
       const abort = () => controller.abort();
       signal?.addEventListener('abort', abort, { once: true });
-      const timer = setTimeout(abort, DOWNLOAD_TIMEOUT_MS);
-      let dispatchedAt: number | undefined, succeeded = false;
+      let expired = false;
+      const timer = setTimeout(() => { expired = true; abort(); }, DOWNLOAD_TIMEOUT_MS);
+      let dispatchedAt: number | undefined, succeeded = false, received = 0, stoppedReason: RegionalObservation['reason'];
       try {
-        const headDeadline = requestDeadline(controller.signal, HEAD_TIMEOUT_MS);
-        let head: Response | undefined, bytes: number, etag: string;
-        try {
-          head = await regionalAbortable<Response>(Promise.resolve().then(() => requestOrigin(source,
-            { method: 'HEAD', album, signal: headDeadline.signal })), headDeadline.signal, cancelRegionalResponse);
-          const length = head.headers.get('content-length'), validator = head.headers.get('etag');
-          if (head.status !== 200 || !validHeaders(head, 'video/mp4') || head.headers.has('content-range') ||
-            !length || !/^[1-9]\d{0,8}$/.test(length) || Number(length) > MAX_REGIONAL_BYTES || !isStrongEtag(validator))
-            throw Error('regional_metadata');
-          bytes = Number(length); etag = validator;
-        } finally {
-          if (head) cancelRegionalResponse(head);
-          headDeadline.close();
+        if (inspection) {
+          const proof = inspections.get(inspection); inspections.delete(inspection);
+          if (!proof || proof.source !== source || proof.album !== album) throw Error('regional_metadata');
+          if (proof.expiresAt <= clock()) inspection = undefined;
         }
+        const metadata = inspection ?? await inspect({ source, album }, controller.signal, callback);
+        const { bytes, etag } = metadata;
         controller.signal.throwIfAborted();
         const ranges = REGIONAL_REGIONS.map((_, part) => regionalRange(bytes, part));
         if (ranges.some(range => range === null)) return null;
@@ -125,9 +213,11 @@ export function createRegionalDownloader({ key, workerBaseUrl, requestOrigin = r
           issuedAt, expiresAt: issuedAt + REGIONAL_DEADLINE_MS }));
         for (const job of jobs) active.set(entryKey(job), { raw: serializeRegionalJob(job), claimed: false });
         dispatchedAt = issuedAt;
-        await Promise.all(ranges.map(async (range, part) => {
+        const transfers = ranges.map(async (range, part) => {
           const deadline = requestDeadline(controller.signal, REGIONAL_DEADLINE_MS);
-          let response: Response | undefined;
+          const partStarted = monotonic();
+          let response: Response | undefined, headersMs: number | undefined, firstByteMs: number | undefined;
+          let upstreamHeadersMs: number | undefined, partBytes = 0, complete = false, partReason: RegionalObservation['reason'];
           try {
             const job = jobs[part], remote = part < REGIONAL_ROUTES.length;
             response = await regionalAbortable<Response>(Promise.resolve().then(() => {
@@ -138,6 +228,7 @@ export function createRegionalDownloader({ key, workerBaseUrl, requestOrigin = r
                 headers: { 'content-type': 'application/json', 'accept-encoding': 'identity',
                   [REGIONAL_SIGNATURE_HEADER]: signRegionalJob(raw, route, key) }, body: raw, signal: deadline.signal });
             }), deadline.signal, cancelRegionalResponse);
+            headersMs = elapsed(partStarted);
             const headers = response.headers;
             if (!validHeaders(response, remote ? 'application/octet-stream' : 'video/mp4') ||
               headers.get('content-length') !== String(range!.length)) throw Error('regional_headers');
@@ -151,26 +242,48 @@ export function createRegionalDownloader({ key, workerBaseUrl, requestOrigin = r
                 headers.get('x-linky-streaming') !== 'true' || !milliseconds ||
                 !/^\d+(?:\.\d+)?$/.test(milliseconds) || Number(milliseconds) > REGIONAL_DEADLINE_MS)
                 throw Error('regional_headers');
+              upstreamHeadersMs = Number(milliseconds);
             } else if (response.status !== 206 || headers.get('etag') !== etag ||
               headers.get('content-range') !== `bytes ${range!.start}-${range!.end}/${bytes}`) throw Error('regional_headers');
-            await readPart(response, range!, output, deadline.signal);
-          } catch (error) { controller.abort(); throw error; }
+            await readPart(response, range!, output, deadline.signal, size => {
+              firstByteMs ??= elapsed(partStarted); partBytes += size; received += size;
+            });
+            complete = true;
+          } catch (error) {
+            partReason = deadline.signal.aborted ? (controller.signal.aborted ? (expired ? 'deadline' : 'cancelled') : 'deadline') : failure(error);
+            stoppedReason ??= partReason; controller.abort(); throw error;
+          }
           finally {
             if (response) cancelRegionalResponse(response);
+            emit({ kind: 'part', part, region: REGIONAL_REGIONS[part], outcome: complete ? 'ok' : partReason === 'cancelled' ? 'cancelled' : 'failed',
+              elapsedMs: elapsed(partStarted), bytes: partBytes, ...(response ? { status: response.status } : {}),
+              ...(headersMs === undefined ? {} : { headersMs }), ...(firstByteMs === undefined ? {} : { firstByteMs }),
+              ...(upstreamHeadersMs === undefined ? {} : { upstreamHeadersMs }), ...(partReason ? { reason: partReason } : {}) }, callback);
             deadline.close();
           }
-        }));
+        });
+        const results = await Promise.allSettled(transfers);
+        const failed = results.find(result => result.status === 'rejected');
+        if (failed?.status === 'rejected') throw failed.reason;
         controller.signal.throwIfAborted();
         succeeded = true;
-        return output;
-      } catch { return null; }
+        return { bytes: output, etag };
+      } catch (error) {
+        stoppedReason ??= expired ? 'deadline' : signal?.aborted || closed ? 'cancelled'
+          : failure(error) === 'cancelled' ? 'deadline' : failure(error);
+        return null;
+      }
       finally {
         // A disconnected worker can finish its bounded request even after this collector has failed.
         if (!succeeded && dispatchedAt !== undefined)
           admitAfter = Math.max(admitAfter, dispatchedAt + REGIONAL_DEADLINE_MS, workerMayRunUntil);
         controller.abort(); clearTimeout(timer); signal?.removeEventListener('abort', abort);
         active.clear(); activeController = undefined; workerMayRunUntil = 0; busy = false;
+        emit({ kind: 'complete', outcome: succeeded ? 'ok' : stoppedReason === 'cancelled' ? 'cancelled' : 'failed', elapsedMs: elapsed(started),
+          bytes: received, ...(stoppedReason ? { reason: stoppedReason } : {}) }, callback);
+        notifyReady();
       }
     },
   };
+  return downloader;
 }
