@@ -143,10 +143,12 @@ function argumentsFor(source: string, output: string, before: Metadata, maxBytes
     const audioBitrate = before.audioCodec ? (availableBitrate >= 256_000 ? 128_000 : 64_000) : 0;
     const videoBitrate = Math.min(4_000_000, availableBitrate - audioBitrate);
     if (videoBitrate < 64_000) throw new Error('Video cannot fit its attachment allowance');
-    const scale = 'scale=w=min(1280\\,iw):h=min(720\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2';
+    const scale = "scale=w='min(iw,if(gte(iw,ih),1920,1080))':h='min(ih,if(gte(iw,ih),1080,1920))':" +
+      'force_original_aspect_ratio=decrease:force_divisible_by=2';
     const cap = Math.max(before.fps, before.cadence) > 30 ?
       ",select='isnan(prev_selected_t)+gt(floor(t*30+0.000001),floor(prev_selected_t*30+0.000001))'" : '';
-    shared.push('-vf', scale + cap, '-fps_mode', 'vfr', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+    const preset = before.width * before.height > 1280 * 720 ? 'superfast' : 'veryfast';
+    shared.push('-vf', scale + cap, '-fps_mode', 'vfr', '-c:v', 'libx264', '-preset', preset, '-pix_fmt', 'yuv420p',
       '-b:v', String(videoBitrate), '-maxrate', String(videoBitrate), '-bufsize', String(videoBitrate * 2),
       '-c:a', 'aac', '-b:a', String(audioBitrate || 128_000), '-ac', '2', '-threads', '2');
   }
@@ -165,10 +167,13 @@ function validOutput(before: Metadata, after: Metadata | null, copy: boolean): b
   if (!after) return false;
   const noAddedFrames = before.frames !== undefined && after.frames !== undefined ? after.frames <= before.frames :
     after.fps * after.duration <= before.fps * before.duration + 1;
+  // Compare edges so a source's display rotation can swap width and height without permitting upscaling.
+  const noUpscaling = Math.max(after.width, after.height) <= Math.max(before.width, before.height) &&
+    Math.min(after.width, after.height) <= Math.min(before.width, before.height);
   return Boolean(after && copyable(after) && after.duration >= before.duration - 0.25 && after.duration <= before.duration + 1 &&
     (Boolean(before.audioCodec) === Boolean(after.audioCodec)) &&
     noAddedFrames && (copy ? sameSource({ ...before, duration: after.duration, fps: after.fps }, after) :
-      after.width <= 1280 && after.height <= 720 && after.fps <= 30 + 1 / after.duration));
+      noUpscaling && after.fps <= 30 + 1 / after.duration));
 }
 
 /** Prepare one bounded video at a time. Network reads stay in the caller; FFmpeg can read only files and its input pipe. */
