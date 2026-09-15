@@ -25,7 +25,7 @@ function interaction(link: string | null = null, permissions = plain | Permissio
     guildId: SERVER as string | null, channelId: CHANNEL,
     memberPermissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild),
     guild: { members: { me: { id: 'bot' } } },
-    channel: { isThread: () => false, parentId: null as string | null, isSendable: () => true,
+    channel: { isThread: () => false, parentId: null as string | null, nsfw: false, parent: null as { nsfw: boolean } | null, isSendable: () => true,
       permissionsFor: () => new PermissionsBitField(permissions),
       send: async () => assert.fail('Diagnostics must not send a channel message') },
     options: { getString: () => link },
@@ -134,4 +134,51 @@ test('preview-only YouTube and provider failures remain private read-only diagno
   await execute(failed.command, config, servers, async () => { throw new Error('unavailable'); });
   assert.match(failed.events[1].payload.content, /Provider status is unavailable/);
   assert.equal(servers.get(SERVER), undefined);
+});
+
+test('Erome diagnostics distinguish the restricted default from admin permission in ordinary channels', async () => {
+  for (const eromeChannels of [undefined, 'all', 'age-restricted'] as const) {
+    const servers = new ServerSettings(file());
+    await servers.set(SERVER, true);
+    if (eromeChannels) await servers.update(SERVER, { eromeChannels });
+    const f = interaction('https://www.erome.com/a/Synthetic01', plain | PermissionFlagsBits.AttachFiles);
+    await execute(f.command, { ...config, rewritePlatforms: ['erome'] }, servers,
+      async () => assert.fail('Erome diagnostics must not fetch media or provider observations'));
+    const content = f.events[1].payload.content;
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+    assert.deepEqual(f.events[1].payload.allowedMentions, { parse: [] });
+    assert.match(content, /recognized Erome URL/);
+    assert.match(content, /Enabled in this channel/);
+    assert.match(content, eromeChannels === 'all' ? /server admin permits Erome in all enabled channels/i : /age-restricted server channel/);
+    assert.match(content, /No message was posted or removed/);
+    assert(content.length <= 2000);
+  }
+});
+
+test('Erome diagnostics recognize an age-restricted parent and report missing attachment permission', async () => {
+  const servers = new ServerSettings(file()), f = interaction('https://www.erome.com/a/Synthetic01');
+  f.input.channel.isThread = () => true;
+  f.input.channel.parent = { nsfw: true };
+  await execute(f.command, { ...config, rewritePlatforms: ['erome'] }, servers, async () => assert.fail('No provider request'));
+  assert.match(f.events[1].payload.content, /channel meets the server/);
+  assert.match(f.events[1].payload.content, /Missing Erome permission: Attach Files/);
+});
+
+test('all-channel Erome diagnostics keep server, channel and platform enablement independent', async () => {
+  for (const restriction of ['server', 'channel', 'platform', 'operator']) {
+    const servers = new ServerSettings(file());
+    await servers.set(SERVER, restriction !== 'server');
+    await servers.update(SERVER, { eromeChannels: 'all', ...(restriction === 'channel' ? { channelIds: [] } : {}),
+      ...(restriction === 'platform' ? { platforms: { erome: false } } : {}) });
+    const f = interaction('https://www.erome.com/a/Synthetic01');
+    await execute(f.command, { ...config, rewritePlatforms: restriction === 'operator' ? [] : ['erome'] }, servers,
+      async () => assert.fail('Erome diagnostics must not contact providers'));
+    const content = f.events[1].payload.content;
+    assert.match(content, /Erome channels: All enabled channels/);
+    if (restriction === 'server') assert.match(content, /Disabled throughout this server/);
+    if (restriction === 'channel') assert.match(content, /Disabled in this channel by the selected channel restriction/);
+    if (restriction === 'platform') assert.match(content, /platform is disabled in this server/);
+    if (restriction === 'operator') assert.match(content, /platform is unavailable from the bot operator/);
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+  }
 });

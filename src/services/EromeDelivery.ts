@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { AttachmentBuilder, Message } from 'discord.js';
 import { parseEromeUrl } from './Erome';
 import { mapLinks, visibleLink } from './LinkTokens';
+import type { ServerPreferences } from './ServerSettings';
 
 export type EromePreparer = (source: string) => Promise<{ file: AttachmentBuilder; videoCount: number } | null>;
 
@@ -15,11 +16,13 @@ export function findEromeLinks(content: string): string[] {
   return [...links];
 }
 
-/** Threads inherit their parent's age restriction; DMs and unknown channels fail closed. */
-export function isAgeRestricted(channel: { isThread(): boolean; nsfw?: boolean; parent?: unknown } | null): boolean {
+/** Callers require a server; threads use their parent and unknown channels are not eligible. */
+export function canPreviewErome(channel: { isThread(): boolean; nsfw?: boolean; parent?: unknown } | null,
+  preference: ServerPreferences['eromeChannels'] = 'age-restricted'): boolean {
   if (!channel) return false;
   const target = channel.isThread() ? channel.parent : channel;
-  return Boolean(target && typeof target === 'object' && 'nsfw' in target && target.nsfw === true);
+  return Boolean(target && typeof target === 'object' && 'nsfw' in target &&
+    (target.nsfw === true || preference === 'all' && target.nsfw === false));
 }
 
 export function eromeNotice(videoCount: number): string {

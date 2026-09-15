@@ -8,7 +8,8 @@ import { parseYouTubeUrl } from '../services/YouTube';
 import { originalPostUrl } from '../services/SocialLinkService';
 import { expectedPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
 import { parseEromeUrl } from '../services/Erome';
-import { eromeNotice, findEromeLinks, isAgeRestricted, verifyEromeAttachment, type EromePreparer } from '../services/EromeDelivery';
+import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from '../services/EromeDelivery';
+import type { ServerPreferences } from '../services/ServerSettings';
 
 const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall];
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
@@ -43,21 +44,24 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
 }
 
 export async function execute(interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
-  config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment }: {
+  config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment, serverPreferences }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     prepareErome?: EromePreparer;
     verifyErome?: typeof verifyEromeAttachment;
+    serverPreferences?: (guildId: string) => ServerPreferences;
   } = {}): Promise<void> {
   const content = interaction.isChatInputCommand() ? interaction.options.getString('link', true) : interaction.targetMessage.content;
-  if (findEromeLinks(content).length && (!interaction.inGuild() || !isAgeRestricted(interaction.channel))) {
-    await interaction.reply({ content: 'Use Erome previews in an age-restricted server channel or a thread in one.',
+  const eromeAllowed = () => interaction.inGuild() && canPreviewErome(interaction.channel,
+    interaction.guildId ? serverPreferences?.(interaction.guildId)?.eromeChannels : undefined);
+  if (findEromeLinks(content).length && !eromeAllowed()) {
+    await interaction.reply({ content: 'Erome requires a server channel allowed by its settings. Use an age-restricted channel, or ask a server admin to set /settings erome_channels:all.',
       flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
     return;
   }
   const links = manualLinks(content, config);
   if (!links.length) {
-    await interaction.reply({ content: 'No supported post link found. Choose an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, a Twitch clip, or an Erome album in an age-restricted channel. Links inside <angle brackets>, spoilers or code are skipped.',
+    await interaction.reply({ content: 'No supported post link found. Choose an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, a Twitch clip, or an Erome album in an allowed server channel. Links inside <angle brackets>, spoilers or code are skipped.',
       flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
     return;
   }
@@ -74,7 +78,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     .setLabel(index ? `Original post ${index + 1}` : 'Original post').setURL(link.source));
   buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Remove').setCustomId('linky:remove-manual'));
   const erome = eromeSource && prepareErome ? await prepareErome(eromeSource).catch(() => null) : null;
-  if (eromeSource && (!erome || !isAgeRestricted(interaction.channel))) {
+  if (eromeSource && (!erome || !eromeAllowed())) {
     await interaction.editReply({ content: 'The Erome video could not be prepared. The album is unchanged. Limits: 64 MiB input and 5 minutes; unavailable, protected or busy media is skipped.',
       components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)], allowedMentions: { parse: [] } });
     return;

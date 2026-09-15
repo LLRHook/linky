@@ -27,7 +27,7 @@ import { expectedPreviews, nextProviderContent, waitForPreviews, type PreviewRes
 import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
 import { findReplyContext, formatReplyExcerpt, type ReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
-import { eromeNotice, findEromeLinks, isAgeRestricted, verifyEromeAttachment, type EromePreparer } from './EromeDelivery';
+import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from './EromeDelivery';
 
 const MAX_CONTENT_LENGTH = 2_000;
 const INSTAGRAM_PREVIEW_NOTICE = '\n-# Instagram preview could not be verified; the original post is still here.';
@@ -291,7 +291,7 @@ export function createLinkRepostHandler(
     const preferences = serverPreferences?.(message.guildId) ?? {};
     const preferenceVersion = JSON.stringify(preferences);
     const eromeSources = findEromeLinks(message.content);
-    const enabled = () => (!eromeSources.length || isAgeRestricted(message.channel)) && evaluateScope({
+    const enabled = () => (!eromeSources.length || canPreviewErome(message.channel, preferences.eromeChannels)) && evaluateScope({
       guildId: message.guildId, channelId: message.channelId,
       threadParentId: message.channel.isThread() ? message.channel.parentId : undefined,
       serverEnabled: serverEnabled?.(message.guildId), preferences,

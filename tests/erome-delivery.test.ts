@@ -73,7 +73,7 @@ function manual(content = ALBUM, context = false) {
   const edits: InteractionEditReplyOptions[] = [], deferrals: unknown[] = [];
   const response = { id: SOURCE, content: '', fetch: async () => response };
   const input = {
-    isChatInputCommand: () => !context, inGuild: () => true, channel: ageChannel(),
+    isChatInputCommand: () => !context, inGuild: () => true, guildId: GUILD, channel: ageChannel(),
     memberPermissions: new PermissionsBitField(PermissionsBitField.All),
     appPermissions: new PermissionsBitField(PermissionsBitField.All),
     options: { getString: () => content },
@@ -106,6 +106,48 @@ test('automatic Erome gating rejects ordinary channels, unmarked thread parents 
     assert.deepEqual(f.outputs, [], restriction);
     assert.equal(f.state.originalDeleted, false);
   }
+});
+
+test('automatic Erome allows ordinary channels and threads when the server chooses all', async () => {
+  for (const thread of [false, true]) {
+    const f = automatic();
+    f.state.preferences.eromeChannels = 'all';
+    f.channel.nsfw = false;
+    f.channel.isThread = () => thread;
+    await f.run();
+    assert.deepEqual(f.calls, [ALBUM]);
+    assert.equal(f.outputs.length, 1);
+    assert.equal(f.outputs[0].options.files?.length, 1);
+    assert.equal(f.state.originalDeleted, false);
+  }
+});
+
+test('all-channel Erome policy does not override scope, platforms, DMs or unknown parents', async () => {
+  for (const restriction of ['server', 'channel', 'platform', 'dm', 'parent']) {
+    const f = automatic();
+    f.state.preferences.eromeChannels = 'all';
+    f.channel.nsfw = false;
+    if (restriction === 'server') f.state.enabled = false;
+    if (restriction === 'channel') f.state.preferences.channelIds = [];
+    if (restriction === 'platform') f.state.preferences.platforms = { erome: false };
+    if (restriction === 'dm') f.source.inGuild = () => false;
+    if (restriction === 'parent') { f.channel.isThread = () => true; f.channel.parent = null; }
+    await f.run();
+    assert.deepEqual(f.calls, [], restriction);
+    assert.deepEqual(f.outputs, [], restriction);
+  }
+});
+
+test('automatic Erome respects a revoked ordinary-channel policy before publishing', async () => {
+  const f = automatic();
+  f.state.preferences.eromeChannels = 'all';
+  f.channel.nsfw = false;
+  await f.run({ prepareErome: async () => {
+    f.state.preferences = { ...f.state.preferences, eromeChannels: 'age-restricted' };
+    return prepared();
+  } });
+  assert.deepEqual(f.outputs, []);
+  assert.equal(f.state.originalDeleted, false);
 });
 
 test('automatic Erome replies preserve the complete source in both modes and inherit thread age restriction', async () => {
@@ -223,6 +265,44 @@ test('manual Erome gating rejects normal channels, unsafe thread parents and DMs
       assert.equal(f.replies[0].flags, MessageFlags.Ephemeral);
     }
   }
+});
+
+test('manual Erome uses the current server policy for both slash and message actions', async () => {
+  for (const context of [false, true]) {
+    for (const thread of [false, true]) {
+      const f = manual(ALBUM, context);
+      f.input.channel.nsfw = false;
+      f.input.channel.isThread = () => thread;
+      await f.run({ serverPreferences: id => id === GUILD ? { eromeChannels: 'all' } : {} });
+      assert.deepEqual(f.calls, [ALBUM]);
+      assert.equal(f.edits[0].files?.length, 1);
+      assert.equal(f.input.targetMessage.content, ALBUM);
+    }
+  }
+});
+
+test('manual ordinary-channel permission is not inherited from another server and never enables DMs', async () => {
+  for (const restriction of ['other-server', 'dm']) {
+    const f = manual();
+    f.input.channel.nsfw = false;
+    if (restriction === 'dm') f.input.inGuild = () => false;
+    await f.run({ serverPreferences: id => restriction === 'dm' || id !== GUILD ? { eromeChannels: 'all' } : {} });
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.edits, []);
+    assert.equal(f.replies[0].flags, MessageFlags.Ephemeral);
+  }
+});
+
+test('manual Erome rechecks a revoked server policy after preparation', async () => {
+  const f = manual();
+  f.input.channel.nsfw = false;
+  let preference: ServerPreferences['eromeChannels'] = 'all';
+  await f.run({ serverPreferences: () => ({ eromeChannels: preference }), prepareErome: async () => {
+    preference = 'age-restricted';
+    return prepared();
+  } });
+  assert(f.edits.every(edit => !edit.files?.length));
+  assert.match(f.response.content, /could not be prepared/);
 });
 
 test('manual Erome slash and message actions upload only the first album and preserve the source', async () => {
