@@ -63,3 +63,13 @@ Use the trial's actual timestamp. `--platform`, `--path` and `--cache hit|miss|u
 The script can read the container's existing file without installing code or exposing its environment: `docker exec -i linky node --input-type=module - --file /app/data/delivery-diagnostics.json < ops/delivery-report.mjs`. Add the same filters and checks after the file argument. This reads only; it neither starts a trial nor posts messages.
 
 Statistics describe the selected local sample. A small sample's nearest-rank p95 can be its maximum; it is not a representative production percentile. Stage summaries total same-named spans per completed attempt, while stage outcome counts count individual spans. Different stages can overlap. A `confirmed` result records the delivery check for that path, such as matching media metadata or delivered translated text. It does not prove playback; check the intended Discord client separately.
+
+## Release validation on September 15, 2026
+
+Bot revision `bd174c537f50b6a4ef76326e1c943b3464e6ed46` passed 944 TypeScript tests, 41 workflow/report tests and 24 deployment checks. Its production container passed seven tests with real FFmpeg, including generated still JPEG/PNG images, animation rejection and unchanged original media. Both Node 22 and 24 passed CI; dependency and image checks found no fixable vulnerabilities. Unfixed distribution advisories remain documented in the runtime security audit.
+
+A controlled Discord trial between 20:20 and 20:27 UTC produced three confirmed Erome deliveries and one confirmed X preview. The first original-video request completed in 8.7 seconds, including 4.7 seconds downloading and 2.5 seconds awaiting Discord metadata. A repeated request and another after a bot restart each completed in about 1.4 seconds, reused the same validated asset and performed no new media download or encoding. The operator report required those four outcomes and found no pending, interrupted or unconfirmed attempts in that sample.
+
+The original video played in Discord's Chrome client at 1280×720 with a 160.097-second duration. Playback advanced beyond seven seconds without a media error. Details displayed a requester-only response. Owner removal deleted one controlled preview while the other previews sharing its asset remained available. This proves those individual paths, not a general latency percentile or playback guarantee across devices.
+
+The supplied public albums contained one item. Multi-item loading, image-only albums, permission changes, cancellation and rollback were tested with synthetic album/Discord fixtures and generated media; a public multi-item image album was not part of this live trial.
