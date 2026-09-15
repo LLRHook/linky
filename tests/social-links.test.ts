@@ -256,8 +256,8 @@ test('platform names select which hosts are rewritten', () => {
 });
 
 test('platform configuration defaults to every platform and rejects unknown names', () => {
-  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch']);
-  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch']);
+  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome']);
+  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome']);
   assert.deepEqual(parseRewritePlatforms(' tiktok , x '), ['tiktok', 'x']);
   assert.deepEqual(parseRewritePlatforms('x,x'), ['x']);
   for (const invalid of ['twitter', 'x,', ',x', 'x,,tiktok', 'X', 'all']) {

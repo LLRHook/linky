@@ -34,7 +34,7 @@ With **Manage Server** permission, run `/settings` without options to see the ef
 
 Each platform has a `/settings` switch, such as `/settings instagram:false`. `translate_tweets` controls English tweet translation; `translate_instagram` separately controls Instagram captions when the operator has configured a translation key. `youtube_display` selects **preview**, **counts**, or **counts-and-comment**. Preview-only leaves native YouTube messages untouched and makes no API calls; counts skips comment requests. Existing servers retain Replace mode and counts plus comment until an admin changes them. A server cannot enable an operator-disabled feature.
 
-Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brackets>`, code or spoilers are also left alone. Reposts include **Original post** links. Only the original author or a moderator with Manage Messages can use **Remove** or **Retry preview**; manual previews can be removed by their requester or a moderator. Replies follow edits and deletions of their source while their ownership record is retained (up to 30 days).
+Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brackets>`, code or spoilers are also left alone. Reposts include **Original post** links. Only the original sharer can use **Remove** on an automatic preview; only the requester can remove a manual preview. This also applies to moderators and administrators using the button. Discord's native moderation remains available. **Retry preview** permits the original author or a moderator with current Manage Messages permission. Replies follow edits and deletions of their source while their ownership record is retained (up to 30 days).
 
 ## Supported links
 
@@ -47,8 +47,11 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | Bluesky | `bskx.app`, with `fxbsky.app` recovery | Public `/profile/actor/post/id` URLs |
 | Reddit | `vxreddit.com` | Public post URLs; profile and community index pages stay unchanged |
 | Twitch clips | `fxtwitch.seria.moe` | Clip URLs, including channel `/clip/` links; streams and VODs stay unchanged |
+| Erome | MP4 attachment prepared by Linky | First video from an HTTPS `/a/album-id` link, only in age-restricted server channels or their threads; the original album is always kept |
 
 Supported links must use HTTPS and point to posts. Tracking query strings are removed; valid YouTube start timestamps and surrounding text are retained. Automatic fixing starts with new messages from people; editing an unrelated old message does not start a repost. Bots and webhooks are ignored.
+
+Erome needs media delivery because its video CDN can reject Discord's direct fetch. In an enabled age-restricted channel, Linky replies with the first video from the first album in the message. `/fix` and **Fix with Linky** support the same path; DMs and ordinary channels are excluded. `/settings erome:false` disables automatic Erome previews. The original stays because an album may include more videos or images. Input is limited to 64 MiB and five minutes; FFmpeg prepares an H.264/AAC MP4 at up to 720p and 9 MiB. Only one preparation runs at a time. Busy, unavailable, protected, oversized or failed videos leave the album untouched. Image-only albums are not handled, and playback still depends on Discord. Attach Files permission is required.
 
 When English translation is enabled, translated tweet text replaces the original with a small source-language label. Photos, playable videos and quoted posts retain their media. Long translations continue across cards or include a text attachment. Unsupported posts and failed translations keep the native preview. Preview availability and translation quality depend on the listed services and FxEmbed.
 
@@ -83,7 +86,7 @@ setup and limitations are in [Discord coding requests](docs/discord-prompt.md).
 
 ### Run your own bot
 
-Requires Node.js 22+ and npm, or Docker Compose on Linux. Create an application in the [Discord developer portal](https://discord.com/developers/applications), enable **Message Content Intent**, and put its bot token in `.env`. Enable both **Guild Install** and **User Install** in Installation settings. User installation needs only `applications.commands`; guild installation also needs `bot` and the permissions listed above. The invite links in this README add the hosted Linky, not your self-hosted instance.
+Requires Node.js 22+ and npm, or Docker Compose on Linux. Erome also requires `ffmpeg` and `ffprobe` on PATH; the Docker image includes Debian's maintained FFmpeg package. Create an application in the [Discord developer portal](https://discord.com/developers/applications), enable **Message Content Intent**, and put its bot token in `.env`. Enable both **Guild Install** and **User Install** in Installation settings. User installation needs only `applications.commands`; guild installation also needs `bot` and the permissions listed above. The invite links in this README add the hosted Linky, not your self-hosted instance.
 
 ```bash
 git clone https://github.com/LLRHook/linky.git
@@ -102,7 +105,7 @@ Linky registers its commands automatically at startup. Open `/setup` to enable y
 | `LINK_CHANNEL_IDS` | Optional comma-separated exact channel IDs to enable initially |
 | `LINK_SERVER_IDS` | Optional comma-separated server IDs to enable initially, including accessible threads |
 | `LINK_SETTINGS_PATH` | Saved enablement and preferences; default `data/servers.json` |
-| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube,bluesky,reddit,twitch`; empty enables available platforms, with automatic YouTube statistics requiring its API key |
+| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube,bluesky,reddit,twitch,erome`; empty enables available platforms, with automatic YouTube statistics requiring its API key and Erome limited to age-restricted server channels |
 | `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
 | `TRANSLATE_INSTAGRAM` | `true` enables English Instagram captions when the translation key is available; default `false` |
 | `GOOGLE_TRANSLATE_API_KEY` | Optional dedicated Cloud Translation Basic v2 key; independent of the YouTube key |
@@ -123,6 +126,8 @@ Google currently includes the first **500,000 characters/month** for standard tr
 Instagram caption lookup sends the public post shortcode to Instagram7. Translation sends caption text to Google, without the surrounding Discord message or Discord account/server IDs. Results use bounded five-minute memory caches. The usage journal stores only a date and character count; it contains no captions. English captions posted to Discord follow Discord's message retention. Update the hosted privacy notice before enabling this optional data flow.
 
 `data/reposts.json` stores source/repost/author/channel/server IDs, posting mode and pending cleanup IDs. It contains no chat text. Ownership lasts up to 30 days, with a 10,000-record cap; pending cleanup is retained for retry. Recent provider observations are process-local and contain no message content or server IDs.
+
+Erome processing requests the selected album and its first video from Erome, without sending Discord message text or account/server IDs. The input and converted MP4 use a private temporary directory during conversion and are deleted afterward, including on failure. Docker keeps `/tmp` in a bounded memory-backed mount, cleared when the container stops. Node-only installations should provide equivalent temporary storage and crash cleanup. The uploaded preview remains on Discord until removed. Linky does not keep a media archive or log album/CDN URLs. See [Erome implementation and limits](docs/erome-previews.md).
 
 For production:
 

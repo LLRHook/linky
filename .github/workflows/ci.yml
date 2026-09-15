@@ -69,3 +69,11 @@ jobs:
             assert.equal(fs.readFileSync(file, "utf8"), "writable");
             fs.unlinkSync(file);
           '
+
+      - name: Verify actual video conversion without network access
+        run: >-
+          docker run --rm --network none
+          --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+          --env LINKY_VIDEO_RUNTIME_TEST=true
+          --mount type=bind,src="${{ github.workspace }}/tests/video-runtime.test.mjs",dst=/tmp/video-runtime.test.mjs,readonly
+          linky:ci node --test /tmp/video-runtime.test.mjs

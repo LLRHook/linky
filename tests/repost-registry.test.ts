@@ -79,7 +79,7 @@ test('unauthorized, forged and cross-channel buttons never fetch or delete a tar
   const unauthorized = f.interaction(MOD);
   assert.equal(await registry.handleRemove(unauthorized.value), true);
   assert.match(unauthorized.responses[0].content!, /original author/);
-  assert.deepEqual(f.permissionChecks, [MOD]);
+  assert.deepEqual(f.permissionChecks, []);
   for (const change of [
     (i: RepostInteraction) => { i.channelId = snowflake(-10_000, 6); },
     (i: RepostInteraction) => { i.guildId = snowflake(-10_000, 7); },
@@ -113,13 +113,32 @@ test('author removal persists intent before deleting related data and bot output
   assert.match(request.responses[0].content!, /Removed/);
 });
 
-test('moderator permissions are checked fresh on every action and fetched ownership cannot be forged', async t => {
+test('Remove rejects other members even with Manage Messages in both repost modes', async t => {
+  for (const mode of ['reply', 'replace'] as const) {
+    const f = await fixture(t), registry = f.manager();
+    const record = { ...f.record, mode };
+    await registry.remember(record);
+    f.allowModerator(true);
+    const request = f.interaction(MOD);
+    assert.equal(await registry.handleRemove(request.value), true);
+    assert.deepEqual(f.deleted, []);
+    assert.match(request.responses[0].content!, /Only the original author can remove/);
+    assert.equal(request.value.deferred, true);
+    assert.deepEqual(f.permissionChecks, []);
+    assert.deepEqual(f.fetched, []);
+    assert.deepEqual(f.related, []);
+    assert.deepEqual(await f.saved(), { records: [record], remove: [], refresh: [] });
+  }
+});
+
+test('Retry still checks moderator permissions fresh and fetched ownership cannot be forged', async t => {
   const f = await fixture(t), registry = f.manager();
   await registry.remember(f.record);
+  const request = f.interaction(MOD); request.value.customId = 'linky:retry';
   f.allowModerator(true);
-  assert.deepEqual(await registry.authorize(f.interaction(MOD).value), f.record);
+  assert.deepEqual(await registry.authorize(request.value), f.record);
   f.allowModerator(false);
-  assert.equal(await registry.authorize(f.interaction(MOD).value), null);
+  assert.equal(await registry.authorize(request.value), null);
   assert.deepEqual(f.permissionChecks, [MOD, MOD]);
   f.replacement.author.id = AUTHOR;
   assert.equal(await registry.authorize(f.interaction().value), null);

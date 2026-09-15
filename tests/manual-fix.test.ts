@@ -308,18 +308,17 @@ test('manual removal allows the authenticated requester in a guild or private co
   }
 });
 
-test('manual removal permits a current channel moderator but not an unrelated member', async () => {
-  const moderator = button();
-  moderator.input.user.id = OTHER;
-  moderator.input.memberPermissions = new PermissionsBitField(PermissionFlagsBits.ManageMessages);
-  await removeManual(moderator.interaction);
-  assert.deepEqual(moderator.events.map(event => event.name), ['defer', 'delete']);
-  const member = button();
-  member.input.user.id = OTHER;
-  member.input.memberPermissions = new PermissionsBitField(PermissionFlagsBits.ManageGuild);
-  await removeManual(member.interaction);
-  assert.equal(member.events.length, 1);
-  assert.equal(member.events[0].payload.flags, MessageFlags.Ephemeral);
+test('manual removal rejects everyone except the requester, including moderators and administrators', async () => {
+  for (const permissions of [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.Administrator, PermissionFlagsBits.ManageGuild, 0n]) {
+    const f = button();
+    f.input.user.id = OTHER;
+    f.input.memberPermissions = new PermissionsBitField(permissions);
+    await removeManual(f.interaction);
+    assert.deepEqual(f.events.map(event => event.name), ['reply']);
+    assert.match(f.events[0].payload.content, /Only the person who requested this preview can remove it/);
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+    assert.deepEqual(f.events[0].payload.allowedMentions, { parse: [] });
+  }
 });
 
 test('manual removal rejects forged bot/webhook/ownership metadata and DM moderator claims', async () => {
