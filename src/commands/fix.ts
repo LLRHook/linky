@@ -8,11 +8,17 @@ import { parseYouTubeUrl } from '../services/YouTube';
 import { originalPostUrl } from '../services/SocialLinkService';
 import { expectedPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
 import { parseEromeUrl } from '../services/Erome';
-import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from '../services/EromeDelivery';
+import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer, type EromeProgress, type EromeStage } from '../services/EromeDelivery';
 import type { ServerPreferences } from '../services/ServerSettings';
 
 const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall];
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
+const eromeProgress: Record<EromeStage, string> = {
+  queued: 'Your video is queued. Linky is preparing another video first.',
+  downloading: 'Downloading the first video from the album...',
+  preparing: 'Preparing the video for Discord...',
+  cached: 'Using a recent preview. Uploading it to Discord...',
+};
 export const data = new SlashCommandBuilder().setName('fix').setDescription('Make a link preview on request, without enabling automatic fixing.')
   .setIntegrationTypes(...installs).setContexts(...contexts)
   .addStringOption(option => option.setName('link').setDescription('A supported social post, clip or Erome album URL.').setRequired(true).setMaxLength(1500));
@@ -77,7 +83,18 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
   const buttons = links.map((link, index) => new ButtonBuilder().setStyle(ButtonStyle.Link)
     .setLabel(index ? `Original post ${index + 1}` : 'Original post').setURL(link.source));
   buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Remove').setCustomId('linky:remove-manual'));
-  const erome = eromeSource && prepareErome ? await prepareErome(eromeSource).catch(() => null) : null;
+  let progress = Promise.resolve(), acceptingProgress = true;
+  const onStage: EromeProgress = stage => {
+    if (!acceptingProgress) return;
+    progress = progress.then(async () => {
+      await interaction.editReply({ content: eromeProgress[stage], allowedMentions: { parse: [] } });
+    }).catch(() => {});
+    return progress;
+  };
+  const erome = eromeSource && prepareErome ? await prepareErome(eromeSource, onStage).catch(() => null) : null;
+  acceptingProgress = false;
+  // Discord REST bounds each request; drain accepted edits so none can overwrite the final reply.
+  await progress;
   if (eromeSource && (!erome || !eromeAllowed())) {
     await interaction.editReply({ content: 'The Erome video could not be prepared. The album is unchanged. Limits: 64 MiB input and 5 minutes; unavailable, protected or busy media is skipped.',
       components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)], allowedMentions: { parse: [] } });

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { test, type TestContext } from 'node:test';
+import { beforeEach, test, type TestContext } from 'node:test';
 import { createEromePreparer, parseEromeUrl } from '../src/services/Erome';
 import { MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES } from '../src/services/VideoAttachment';
 
-const source = 'https://www.erome.com/a/Test_123';
+let source = 'https://www.erome.com/a/Test_123', sequence = 0;
+beforeEach(() => { source = `https://www.erome.com/a/Test_${++sequence}`; });
 const video = 'https://v54.erome.com/1/Test_123/video.mp4';
 const page = (html = `<video><source src="${video}" type="video/mp4"></video>`) =>
   new Response(html, { headers: { 'content-type': 'text/html; charset=UTF-8' } });
@@ -67,8 +68,8 @@ function progressingDownload(t: TestContext, chunks: number) {
 }
 
 test('Erome accepts complete public album links and canonicalizes only the host and tracking suffix', () => {
-  for (const raw of [source, `${source}/?tracking=1#video`, 'https://EROME.com/a/Test_123']) {
-    assert.deepEqual(parseEromeUrl(raw), { id: 'Test_123', url: source });
+  for (const raw of [source, `${source}/?tracking=1#video`, source.replace('www.erome.com', 'EROME.com')]) {
+    assert.deepEqual(parseEromeUrl(raw), { id: source.split('/').at(-1), url: source });
   }
   for (const raw of ['http://erome.com/a/Test', 'https://erome.com/profile', 'https://erome.com/a/',
     'https://erome.com/a/' + 'a'.repeat(65), 'https://erome.com:443/a/Test', 'https://user@erome.com/a/Test',
@@ -200,18 +201,19 @@ test('Erome returns null for failed conversions and releases its lock after exce
 });
 
 function heldPreparation(name: string, events: string[], fail = false) {
+  const album = `${source}_${name}`;
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const prepare = createEromePreparer({ fetch: async url => {
-    events.push(`${name}:${String(url) === source ? 'album' : 'video'}`);
-    return String(url) === source ? page() : media();
+    events.push(`${name}:${parseEromeUrl(String(url)) ? 'album' : 'video'}`);
+    return parseEromeUrl(String(url)) ? page() : media();
   }, convert: async () => {
     events.push(`${name}:convert`);
     await gate;
     if (fail) throw new Error('Synthetic conversion failure');
     return Buffer.from(name);
   } });
-  return { prepare, release };
+  return { prepare, release, album };
 }
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -219,9 +221,9 @@ const turn = () => new Promise<void>(resolve => setImmediate(resolve));
 test('Erome queues an overlapping request across preparer instances and fetches only after the active one releases', async () => {
   const events: string[] = [];
   const first = heldPreparation('first', events), second = heldPreparation('second', events);
-  const active = first.prepare(source);
+  const active = first.prepare(first.album);
   await turn();
-  const waiting = second.prepare(source);
+  const waiting = second.prepare(second.album);
   try {
     await turn();
     assert.deepEqual(events, ['first:album', 'first:video', 'first:convert']);
@@ -238,11 +240,11 @@ test('Erome queues an overlapping request across preparer instances and fetches 
 
 test('Erome admits at most two FIFO waiters and rejects excess or invalid requests without fetching', async () => {
   const events: string[] = [], entries = ['first', 'second', 'third', 'excess'].map(name => heldPreparation(name, events));
-  const pending = entries.slice(0, 3).map(entry => entry.prepare(source));
+  const pending = entries.slice(0, 3).map(entry => entry.prepare(entry.album));
   try {
     await turn();
     assert.deepEqual(events, ['first:album', 'first:video', 'first:convert']);
-    assert.equal(await entries[3].prepare(source), null);
+    assert.equal(await entries[3].prepare(entries[3].album), null);
     assert.equal(await entries[3].prepare('https://example.test/invalid'), null);
     for (let index = 0; index < 3; index++) {
       assert.deepEqual(events.filter(event => event.endsWith(':album')), ['first', 'second', 'third'].slice(0, index + 1).map(name => `${name}:album`));
@@ -257,7 +259,7 @@ test('Erome admits at most two FIFO waiters and rejects excess or invalid reques
 test('an expired Erome waiter is removed at five minutes and never fetches or prevents a later admission', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const events: string[] = [], first = heldPreparation('first', events), expired = heldPreparation('expired', events), later = heldPreparation('later', events);
-  const active = first.prepare(source), waiting = expired.prepare(source);
+  const active = first.prepare(first.album), waiting = expired.prepare(expired.album);
   const pending = [active, waiting];
   let settled = false;
   void waiting.then(() => { settled = true; });
@@ -269,7 +271,7 @@ test('an expired Erome waiter is removed at five minutes and never fetches or pr
     assert.equal(settled, false);
     t.mock.timers.tick(1);
     assert.equal(await waiting, null);
-    const next = later.prepare(source);
+    const next = later.prepare(later.album);
     pending.push(next);
     first.release();
     assert.ok(await active);
@@ -287,7 +289,7 @@ test('an expired Erome waiter is removed at five minutes and never fetches or pr
 test('Erome drains queued requests after active conversion failure and clears admitted wait deadlines', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const events: string[] = [], failed = heldPreparation('failed', events, true), second = heldPreparation('second', events), third = heldPreparation('third', events);
-  const first = failed.prepare(source), waiting = second.prepare(source);
+  const first = failed.prepare(failed.album), waiting = second.prepare(second.album);
   const pending = [first, waiting];
   try {
     await turn();
@@ -295,7 +297,7 @@ test('Erome drains queued requests after active conversion failure and clears ad
     assert.equal(await first, null);
     await turn();
     t.mock.timers.tick(300_000);
-    const next = third.prepare(source);
+    const next = third.prepare(third.album);
     pending.push(next);
     await turn();
     assert.deepEqual(events.filter(event => event.endsWith(':album')), ['failed:album', 'second:album']);
@@ -309,4 +311,123 @@ test('Erome drains queued requests after active conversion failure and clears ad
     await Promise.allSettled(pending);
     t.mock.timers.reset();
   }
+});
+
+test('Erome shares concurrent canonical-album preparation across instances and returns independent attachments', async () => {
+  const events: string[] = [], first = heldPreparation('shared', events);
+  const other = createEromePreparer({ fetch: async () => { assert.fail('The same album must not be fetched twice'); } });
+  const active = first.prepare(first.album);
+  await turn();
+  const joined = other(first.album.replace('www.erome.com', 'erome.com') + '/?tracking=1#video');
+  first.release();
+  const [a, b] = await Promise.all([active, joined]);
+  assert.ok(a && b, 'Both callers should receive the shared successful preparation');
+  assert.deepEqual(events, ['shared:album', 'shared:video', 'shared:convert']);
+  assert.notEqual(a.file, b.file);
+  assert.notEqual(a.file.attachment, b.file.attachment);
+  a.file.setName('changed.mp4');
+  (a.file.attachment as Buffer).fill(0);
+  assert.equal(b.file.name, 'linky-video.mp4');
+  assert.equal((b.file.attachment as Buffer).toString(), 'shared');
+});
+
+test('Erome reuses a successful recent album across instances without fetching and without sharing mutable attachments', async () => {
+  let fetches = 0;
+  const prepare = createEromePreparer({ fetch: async url => {
+    fetches++;
+    return parseEromeUrl(String(url)) ? page() : media();
+  }, convert: async () => Buffer.from('cached output') });
+  const first = await prepare(source);
+  assert.ok(first);
+  first.file.setName('changed.mp4');
+  (first.file.attachment as Buffer).fill(0);
+  const stages: string[] = [];
+  const second = await createEromePreparer({ fetch: async () => { assert.fail('A recent album should reuse its prepared video'); } })(
+    source.replace('www.erome.com', 'erome.com') + '?tracking=1', stage => { stages.push(stage); });
+  assert.ok(second);
+  assert.equal(second.file.name, 'linky-video.mp4');
+  assert.equal((second.file.attachment as Buffer).toString(), 'cached output');
+  assert.equal(fetches, 2);
+  assert.deepEqual(stages, ['cached']);
+});
+
+test('Erome evicts cached bytes at five minutes even without another request and cache hits do not extend retention', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let fetches = 0;
+  const prepare = createEromePreparer({ fetch: async url => {
+    fetches++;
+    return parseEromeUrl(String(url)) ? page() : media();
+  }, convert: async () => Buffer.from('cached output') });
+  try {
+    assert.ok(await prepare(source));
+    t.mock.timers.tick(299_999);
+    assert.ok(await prepare(source));
+    assert.equal(fetches, 2);
+    t.mock.timers.tick(1);
+    // Rewind the clock: a lazy expiry check alone would incorrectly reuse the retained bytes.
+    t.mock.timers.setTime(0);
+    assert.ok(await prepare(source));
+    assert.equal(fetches, 4, 'The eviction timer must remove bytes without a cache lookup');
+    t.mock.timers.tick(300_000);
+  } finally { t.mock.timers.reset(); }
+});
+
+test('Erome retains at most two 9 MiB outputs and evicts the least recently used album', async () => {
+  const fetched: string[] = [];
+  const prepare = createEromePreparer({ fetch: async url => {
+    if (parseEromeUrl(String(url))) { fetched.push(String(url)); return page(); }
+    return media();
+  }, convert: async () => Buffer.alloc(MAX_ATTACHMENT_BYTES) });
+  const a = `${source}_a`, b = `${source}_b`, c = `${source}_c`;
+  for (const url of [a, b, a, c, a]) assert.ok(await prepare(url));
+  assert.deepEqual(fetched, [a, b, c]);
+  assert.ok(await prepare(b));
+  assert.deepEqual(fetched, [a, b, c, b], 'A third 9 MiB output must evict one of the two retained outputs');
+});
+
+test('Erome caps one shared album at eight consumers without consuming the unique-album queue', async () => {
+  const events: string[] = [], first = heldPreparation('shared', events), other = heldPreparation('other', events);
+  const active = first.prepare(first.album);
+  await turn();
+  const pending = [active, ...Array.from({ length: 7 }, () => other.prepare(first.album))];
+  const queued = other.prepare(other.album);
+  try {
+    assert.equal(await other.prepare(first.album), null, 'The ninth consumer must be rejected');
+    assert.equal(await other.prepare(first.album + '\n'), null, 'Invalid URLs must not reach a shared job');
+    assert.deepEqual(events, ['shared:album', 'shared:video', 'shared:convert']);
+    first.release();
+    assert((await Promise.all(pending)).every(Boolean));
+    await turn();
+    other.release();
+    assert.ok(await queued);
+    assert.deepEqual(events.filter(event => event.endsWith(':album')), ['shared:album', 'other:album']);
+  } finally { first.release(); other.release(); await Promise.allSettled([...pending, queued]); }
+});
+
+test('Erome does not cache a failed shared preparation and admits a fresh retry', async () => {
+  const events: string[] = [], failed = heldPreparation('failed', events, true), retry = heldPreparation('retry', events);
+  const first = failed.prepare(failed.album), joined = retry.prepare(failed.album);
+  failed.release();
+  assert.deepEqual(await Promise.all([first, joined]), [null, null]);
+  retry.release();
+  assert.ok(await retry.prepare(failed.album));
+  assert.deepEqual(events.filter(event => event.endsWith(':album')), ['failed:album', 'retry:album']);
+});
+
+test('Erome reports queue and preparation stages without waiting for or failing on observers', async () => {
+  const events: string[] = [], stages: string[] = [], first = heldPreparation('first', events), second = heldPreparation('second', events);
+  const active = first.prepare(first.album, () => new Promise<void>(() => {}));
+  const queued = second.prepare(second.album, stage => { stages.push(stage); throw new Error('Deleted progress reply'); });
+  try {
+    await turn();
+    assert.deepEqual(stages, ['queued']);
+    first.release();
+    assert.ok(await active, 'A stalled observer must not block shared preparation');
+    await turn();
+    assert.deepEqual(stages, ['queued', 'downloading', 'preparing']);
+    second.release();
+    assert.ok(await queued);
+    assert.ok(await second.prepare(second.album, async () => { throw new Error('Async progress failure'); }));
+    await turn();
+  } finally { first.release(); second.release(); await Promise.allSettled([active, queued]); }
 });
