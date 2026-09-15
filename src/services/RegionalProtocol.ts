@@ -1,7 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-export const REGIONAL_REGIONS = ['iad1', 'fra1', 'lhr1', 'cle1', 'sfo1', 'local'] as const;
-export const REGIONAL_ROUTES = ['/api/iad', '/api/fra', '/api/lhr', '/api/cle', '/api/sfo'] as const;
+export const REGIONAL_PROTOCOL_VERSION = 3;
+export const REGIONAL_REGIONS = ['iad1', 'fra1', 'lhr1', 'cle1', 'sfo1', 'cdg1', 'dub1', 'pdx1', 'yul1', 'local'] as const;
+export const REGIONAL_ROUTES = ['/api/iad', '/api/fra', '/api/lhr', '/api/cle', '/api/sfo', '/api/cdg', '/api/dub', '/api/pdx', '/api/yul'] as const;
 export const REGIONAL_CLAIM_PATH = '/internal/regional/claim';
 export const REGIONAL_SIGNATURE_HEADER = 'x-linky-signature';
 export const MAX_REGIONAL_BYTES = 24 * 1024 * 1024;
@@ -12,7 +13,7 @@ export const REGIONAL_CLOCK_SKEW_MS = 5_000;
 export const MAX_REGIONAL_JOB_BYTES = 4096;
 
 export type RegionalJob = {
-  v: 1; id: string; part: number; source: string; album: string; etag: string;
+  v: typeof REGIONAL_PROTOCOL_VERSION; id: string; part: number; source: string; album: string; etag: string;
   bytes: number; issuedAt: number; expiresAt: number;
 };
 export type RegionalRange = { start: number; end: number; length: number };
@@ -50,7 +51,7 @@ export function parseRegionalJob(raw: string, now = Date.now()): RegionalJob | n
   try { job = JSON.parse(raw) as RegionalJob; } catch { return null; }
   if (!job || typeof job !== 'object' || Array.isArray(job) ||
       Object.keys(job).sort().join(',') !== 'album,bytes,etag,expiresAt,id,issuedAt,part,source,v' ||
-      job.v !== 1 || typeof job.id !== 'string' || !/^[a-f0-9]{32}$/.test(job.id) ||
+      job.v !== REGIONAL_PROTOCOL_VERSION || typeof job.id !== 'string' || !/^[a-f0-9]{32}$/.test(job.id) ||
       !isEromeMediaUrl(job.source) || !isCanonicalEromeAlbum(job.album) || !isStrongEtag(job.etag) ||
       !regionalRange(job.bytes, job.part) || !Number.isSafeInteger(job.issuedAt) || !Number.isSafeInteger(job.expiresAt) ||
       job.issuedAt < now - REGIONAL_JOB_TTL_MS || job.issuedAt > now + REGIONAL_CLOCK_SKEW_MS ||
@@ -65,7 +66,7 @@ export function validRegionalKey(key: unknown): key is string {
 
 function mac(raw: string, route: string, key: string, purpose: 'job' | 'claim'): string {
   if (!validRegionalKey(key)) throw new Error('regional_configuration');
-  return createHmac('sha256', key).update(`linky-regional-${purpose}-v1\nPOST\n${route}\n`).update(raw).digest('hex');
+  return createHmac('sha256', key).update(`linky-regional-${purpose}-v${REGIONAL_PROTOCOL_VERSION}\nPOST\n${route}\n`).update(raw).digest('hex');
 }
 
 export function signRegionalJob(raw: string, route: string, key: string): string {

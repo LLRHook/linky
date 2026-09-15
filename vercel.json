@@ -8,6 +8,10 @@
     "api/fra.ts": { "regions": ["fra1"], "maxDuration": 10 },
     "api/lhr.ts": { "regions": ["lhr1"], "maxDuration": 10 },
     "api/cle.ts": { "regions": ["cle1"], "maxDuration": 10 },
-    "api/sfo.ts": { "regions": ["sfo1"], "maxDuration": 10 }
+    "api/sfo.ts": { "regions": ["sfo1"], "maxDuration": 10 },
+    "api/cdg.ts": { "regions": ["cdg1"], "maxDuration": 10 },
+    "api/dub.ts": { "regions": ["dub1"], "maxDuration": 10 },
+    "api/pdx.ts": { "regions": ["pdx1"], "maxDuration": 10 },
+    "api/yul.ts": { "regions": ["yul1"], "maxDuration": 10 }
   }
 }
