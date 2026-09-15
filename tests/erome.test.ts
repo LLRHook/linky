@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test, type TestContext } from 'node:test';
-import { createEromePreparer, parseEromeUrl } from '../src/services/Erome';
+import { createEromePreparer as createStreamingEromePreparer, parseEromeUrl } from '../src/services/Erome';
 import { MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES } from '../src/services/VideoAttachment';
 
 let source = 'https://www.erome.com/a/Test_123', sequence = 0;
@@ -9,6 +9,19 @@ const video = 'https://v54.erome.com/1/Test_123/video.mp4';
 const page = (html = `<video><source src="${video}" type="video/mp4"></video>`) =>
   new Response(html, { headers: { 'content-type': 'text/html; charset=UTF-8' } });
 const media = () => new Response('synthetic video input', { headers: { 'content-type': 'video/mp4' } });
+
+// Most fixtures inspect the completed download. Streaming-specific cases use the real seam below.
+function createEromePreparer({ convert, ...options }: {
+  fetch?: typeof fetch; convert?: (input: Buffer) => Promise<Buffer | null>;
+} = {}) {
+  return createStreamingEromePreparer({ ...options, ...(convert ? { convert: async (input, settings) => {
+    const chunks: Uint8Array[] = [];
+    if (Buffer.isBuffer(input)) chunks.push(input);
+    else for await (const chunk of input.stream) chunks.push(chunk);
+    settings?.onEncoding?.();
+    return convert(Buffer.concat(chunks));
+  } } : {}) });
+}
 
 /** Exercise the fetch signal with a progressing stream, advancing only synthetic time. */
 function progressingDownload(t: TestContext, chunks: number) {
@@ -372,7 +385,7 @@ test('Erome evicts cached bytes at five minutes even without another request and
   } finally { t.mock.timers.reset(); }
 });
 
-test('Erome retains at most two 9 MiB outputs and evicts the least recently used album', async () => {
+test('Erome retains at most two outputs and evicts the least recently used album', async () => {
   const fetched: string[] = [];
   const prepare = createEromePreparer({ fetch: async url => {
     if (parseEromeUrl(String(url))) { fetched.push(String(url)); return page(); }
@@ -382,7 +395,7 @@ test('Erome retains at most two 9 MiB outputs and evicts the least recently used
   for (const url of [a, b, a, c, a]) assert.ok(await prepare(url));
   assert.deepEqual(fetched, [a, b, c]);
   assert.ok(await prepare(b));
-  assert.deepEqual(fetched, [a, b, c, b], 'A third 9 MiB output must evict one of the two retained outputs');
+  assert.deepEqual(fetched, [a, b, c, b], 'A third output must evict one of the two retained outputs');
 });
 
 test('Erome caps one shared album at eight consumers without consuming the unique-album queue', async () => {
@@ -430,4 +443,69 @@ test('Erome reports queue and preparation stages without waiting for or failing 
     assert.ok(await second.prepare(second.album, async () => { throw new Error('Async progress failure'); }));
     await turn();
   } finally { first.release(); second.release(); await Promise.allSettled([active, queued]); }
+});
+
+test('Erome keeps output allowances separate when sharing and caching the same album', async () => {
+  let conversions = 0;
+  const prepare = createEromePreparer({ fetch: async url => parseEromeUrl(String(url)) ? page() : media(),
+    convert: async () => Buffer.alloc(++conversions === 1 ? 3 * 1024 * 1024 : 1024 * 1024) });
+  const large = await prepare(source, undefined, { maxBytes: 4 * 1024 * 1024 });
+  const small = await prepare(source, undefined, { maxBytes: 2 * 1024 * 1024 });
+  assert.ok(large && small);
+  assert.equal((small.file.attachment as Buffer).length, 1024 * 1024,
+    'A large caller’s cached result must not be reused for a smaller allowance');
+  assert.equal(conversions, 2);
+  assert.ok(await prepare(source, undefined, { maxBytes: 4 * 1024 * 1024 }));
+  assert.equal(conversions, 2);
+});
+
+test('Erome passes a bounded stream to conversion before the media response finishes', async () => {
+  let fetches = 0, complete = false, total = 0;
+  const stages: string[] = [];
+  const prepare = createStreamingEromePreparer({ fetch: async () => ++fetches === 1 ? page() :
+    new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (++total <= 4) controller.enqueue(Uint8Array.of(total));
+        else { complete = true; controller.close(); }
+      },
+    }), { headers: { 'content-type': 'video/mp4', 'content-length': '4' } }),
+  convert: async (input, options) => {
+    assert.equal(complete, false, 'Conversion must start before the entire download is buffered');
+    assert(!Buffer.isBuffer(input));
+    assert.equal(input.size, 4);
+    assert.equal(options?.maxBytes, 2 * 1024 * 1024);
+    const bytes: number[] = [];
+    for await (const chunk of input.stream) {
+      bytes.push(...chunk);
+      if (bytes.length === 1) options.onEncoding?.();
+    }
+    assert.deepEqual(bytes, [1, 2, 3, 4]);
+    return Buffer.from('prepared');
+  } });
+  assert.ok(await prepare(source, stage => { stages.push(stage); }, { maxBytes: 2 * 1024 * 1024 }));
+  assert.deepEqual(stages, ['downloading', 'preparing']);
+});
+
+test('Erome cancels unused media and rejects an output when conversion does not consume the complete source', async () => {
+  let fetches = 0, cancelled = false;
+  const prepare = createStreamingEromePreparer({ fetch: async () => ++fetches === 1 ? page() :
+    new Response(new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(Uint8Array.of(1)); },
+      cancel() { cancelled = true; } }), { headers: { 'content-type': 'video/mp4' } }),
+  convert: async () => Buffer.from('not a complete video') });
+  assert.equal(await prepare(source), null);
+  assert.equal(cancelled, true);
+});
+
+test('Erome rejects incomplete declared lengths and invalid output allowances without caching', async () => {
+  let fetches = 0;
+  const prepare = createEromePreparer({ fetch: async () => ++fetches % 2 ? page() :
+    new Response('short', { headers: { 'content-type': 'video/mp4', 'content-length': '100' } }),
+  convert: async () => assert.fail('Incomplete download must not reach buffered conversion') });
+  for (const maxBytes of [0, -1, NaN, Infinity, 1.5]) {
+    assert.equal(await prepare(source, undefined, { maxBytes }), null);
+  }
+  assert.equal(fetches, 0);
+  assert.equal(await prepare(source), null);
+  assert.equal(await prepare(source), null);
+  assert.equal(fetches, 4);
 });

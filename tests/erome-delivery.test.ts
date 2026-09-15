@@ -13,6 +13,7 @@ import type { ServerPreferences } from '../src/services/ServerSettings';
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '1700000000000000005';
 const ALBUM = 'https://www.erome.com/a/Synthetic01', SECOND = 'https://www.erome.com/a/Synthetic02';
+const MiB = 1024 * 1024;
 const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['erome', 'x'],
   translateTweets: false, settingsPath: 'unused' };
 const prepared = () => ({ file: new AttachmentBuilder(Buffer.from('synthetic MP4 test fixture'), { name: 'linky-video.mp4' }), videoCount: 2 });
@@ -50,7 +51,7 @@ function automatic(content = ALBUM) {
   };
   const source = {
     id: SOURCE, guildId: GUILD, channelId: CHANNEL, author: { id: AUTHOR, bot: false }, content,
-    guild: { members: { me: { id: BOT } } }, channel, inGuild: () => true,
+    guild: { members: { me: { id: BOT } }, premiumTier: 0 as number | undefined }, channel, inGuild: () => true,
     partial: false, webhookId: null, type: MessageType.Default, poll: null, pinned: false, hasThread: false,
     stickers: new Collection(), components: [], messageSnapshots: new Collection(),
     attachments: new Collection<string, Attachment>(), flags: new MessageFlagsBitField(), editedTimestamp: null,
@@ -76,6 +77,7 @@ function manual(content = ALBUM, context = false) {
     isChatInputCommand: () => !context, inGuild: () => true, guildId: GUILD, channel: ageChannel(),
     memberPermissions: new PermissionsBitField(PermissionsBitField.All),
     appPermissions: new PermissionsBitField(PermissionsBitField.All),
+    attachmentSizeLimit: undefined as number | undefined,
     options: { getString: () => content },
     targetMessage: { content, author: { id: AUTHOR },
       delete: () => assert.fail('Manual previews must preserve their source'),
@@ -193,6 +195,89 @@ test('manual Erome requires Attach Files before preparing or sending video', asy
   assert.deepEqual(f.deferrals, []);
   assert.match(f.replies[0].content ?? '', /Attach Files/);
   assert.equal(f.replies[0].flags, MessageFlags.Ephemeral);
+});
+
+test('manual Erome passes Discord interaction upload limits to preparation as output budgets', async () => {
+  for (const context of [false, true]) {
+    for (const [upload, output] of [[10, 9], [20, 19], [50, 49], [100, 63], [undefined, 19]] as const) {
+      const f = manual(ALBUM, context), budgets: unknown[] = [];
+      f.input.attachmentSizeLimit = upload === undefined ? undefined : upload * MiB;
+      await f.run({ prepareErome: async (_source, _stage, options) => { budgets.push(options?.maxBytes); return prepared(); } });
+      assert.deepEqual(budgets, [output * MiB]);
+      assert.equal(f.edits[0].files?.length, 1);
+      assert.equal(f.input.targetMessage.content, ALBUM);
+    }
+  }
+});
+
+test('automatic Erome passes gateway boost tier budgets and accepts a bounded video beyond the old copy limit', async () => {
+  for (const [tier, output] of [[0, 19], [1, 19], [2, 49], [3, 63], [undefined, 19]] as const) {
+    const f = automatic(), budgets: unknown[] = [];
+    f.source.guild.premiumTier = tier;
+    await f.run({ prepareErome: async (_source, _stage, options) => {
+      budgets.push(options?.maxBytes);
+      return { ...prepared(), file: new AttachmentBuilder(Buffer.alloc(output * MiB), { name: 'linky-video.mp4' }) };
+    } });
+    assert.deepEqual(budgets, [output * MiB]);
+    assert.equal(f.outputs.length, 1);
+    assert.equal(f.outputs[0].options.files?.length, 1);
+    assert.equal(f.state.originalDeleted, false);
+    assert.equal(f.records[0].authorId, AUTHOR);
+  }
+});
+
+test('manual Erome rejects invalid or unusably small explicit upload limits before preparation', async () => {
+  for (const limit of [null, NaN, Infinity, -1, 0, 1, 2 * MiB - 1, '10485760']) {
+    const f = manual();
+    f.input.attachmentSizeLimit = limit as number;
+    await f.run();
+    assert.deepEqual(f.calls, [], String(limit));
+    assert.deepEqual(f.deferrals, []);
+    assert.deepEqual(f.edits, []);
+    assert.equal(f.replies[0].flags, MessageFlags.Ephemeral);
+    assert.match(f.replies[0].content ?? '', /upload limit/);
+    assert.equal(f.input.targetMessage.content, ALBUM);
+  }
+});
+
+test('manual Erome never uploads an oversized, empty or remote prepared attachment', async () => {
+  const files = [new AttachmentBuilder(Buffer.alloc(9 * MiB + 1)), new AttachmentBuilder(Buffer.alloc(0)),
+    new AttachmentBuilder('https://example.test/unbounded.mp4')];
+  for (const file of files) {
+    const f = manual();
+    f.input.attachmentSizeLimit = 10 * MiB;
+    await f.run({ prepareErome: async () => ({ ...prepared(), file }) });
+    assert(f.edits.every(edit => !edit.files?.length));
+    assert.match(f.response.content, /could not be prepared/);
+    assert.equal(f.input.targetMessage.content, ALBUM);
+    assert.match(JSON.stringify(f.edits[0].components), /linky:remove-manual/);
+  }
+});
+
+test('automatic Erome never uploads a file beyond the requested budget, an empty file or a remote attachment', async () => {
+  for (const file of [new AttachmentBuilder(Buffer.alloc(19 * MiB + 1)), new AttachmentBuilder(Buffer.alloc(0)),
+    new AttachmentBuilder('https://example.test/unbounded.mp4')]) {
+    const f = automatic();
+    await f.run({ prepareErome: async () => ({ ...prepared(), file }) });
+    assert.deepEqual(f.outputs, []);
+    assert.deepEqual(f.records, []);
+    assert.equal(f.state.originalDeleted, false);
+  }
+});
+
+test('automatic Erome rechecks server upload allowance after preparation and later metadata work', async () => {
+  for (const change of ['prepare', 'translate']) {
+    const f = automatic(change === 'translate' ? `${ALBUM} https://x.com/jack/status/20` : ALBUM);
+    f.source.guild.premiumTier = 2;
+    await f.run({ prepareErome: async () => {
+      if (change === 'prepare') f.source.guild.premiumTier = 0;
+      return { ...prepared(), file: new AttachmentBuilder(Buffer.alloc(20 * MiB), { name: 'linky-video.mp4' }) };
+    }, translateTweet: async () => { f.source.guild.premiumTier = 0; return null; } });
+    assert.equal(f.source.guild.premiumTier, 0);
+    assert.deepEqual(f.outputs, [], change);
+    assert.deepEqual(f.records, [], change);
+    assert.equal(f.state.originalDeleted, false);
+  }
 });
 
 test('automatic Erome stops uploads when scope, preferences, age restriction or source changes during preparation', async () => {
