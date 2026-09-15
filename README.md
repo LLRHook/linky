@@ -47,11 +47,13 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | Bluesky | `bskx.app`, with `fxbsky.app` recovery | Public `/profile/actor/post/id` URLs |
 | Reddit | `vxreddit.com` | Public post URLs; profile and community index pages stay unchanged |
 | Twitch clips | `fxtwitch.seria.moe` | Clip URLs, including channel `/clip/` links; streams and VODs stay unchanged |
-| Erome | MP4 attachment prepared by Linky | First video from an HTTPS `/a/album-id` link, only in age-restricted server channels or their threads; the original album is always kept |
+| Erome | MP4 attachment prepared by Linky | First video from an HTTPS `/a/album-id` link; defaults to age-restricted server channels, with an admin setting for ordinary channels; the original album is always kept |
 
 Supported links must use HTTPS and point to posts. Tracking query strings are removed; valid YouTube start timestamps and surrounding text are retained. Automatic fixing starts with new messages from people; editing an unrelated old message does not start a repost. Bots and webhooks are ignored.
 
-Erome needs media delivery because its video CDN can reject Discord's direct fetch. In an enabled age-restricted channel, Linky replies with the first video from the first album in the message. `/fix` and **Fix with Linky** support the same path; DMs and ordinary channels are excluded. `/settings erome:false` disables automatic Erome previews. The original stays because an album may include more videos or images. Input is limited to 64 MiB and five minutes; FFmpeg prepares an H.264/AAC MP4 at up to 720p and 9 MiB. Downloads have a two-minute deadline before conversion, so previews can take more than a minute to appear. Only one preparation runs at a time. Busy, unavailable, protected, oversized or failed videos leave the album untouched. Image-only albums are not handled, and playback still depends on Discord. Attach Files permission is required.
+Erome needs media delivery because its video CDN can reject Discord's direct fetch. Linky replies with the first video from the first album in the message. By default, Erome requires an age-restricted server channel or a thread in one. An admin with Manage Server permission can allow ordinary channels using `/settings erome_channels:all`; select `age-restricted` to restore the default. The same channel policy applies to `/fix` and **Fix with Linky**. DMs are excluded. The setting does not enable Linky in new channels or turn Erome on when disabled; `/setup` controls automatic channel scope and `/settings erome:false` disables automatic Erome previews. Linky does not scan the video's content.
+
+The original stays because an album may include more videos or images. Input is limited to 64 MiB and five minutes; FFmpeg prepares an H.264/AAC MP4 at up to 720p and 9 MiB. Downloads have a two-minute deadline before conversion, so previews can take more than a minute to appear. Only one preparation runs at a time. Busy, unavailable, protected, oversized or failed videos leave the album untouched. Image-only albums are not handled, and playback still depends on Discord. Attach Files permission is required.
 
 When English translation is enabled, translated tweet text replaces the original with a small source-language label. Photos, playable videos and quoted posts retain their media. Long translations continue across cards or include a text attachment. Unsupported posts and failed translations keep the native preview. Preview availability and translation quality depend on the listed services and FxEmbed.
 
@@ -105,7 +107,7 @@ Linky registers its commands automatically at startup. Open `/setup` to enable y
 | `LINK_CHANNEL_IDS` | Optional comma-separated exact channel IDs to enable initially |
 | `LINK_SERVER_IDS` | Optional comma-separated server IDs to enable initially, including accessible threads |
 | `LINK_SETTINGS_PATH` | Saved enablement and preferences; default `data/servers.json` |
-| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube,bluesky,reddit,twitch,erome`; empty enables available platforms, with automatic YouTube statistics requiring its API key and Erome limited to age-restricted server channels |
+| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube,bluesky,reddit,twitch,erome`; empty enables available platforms, with automatic YouTube statistics requiring its API key and Erome following the server's channel policy |
 | `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
 | `TRANSLATE_INSTAGRAM` | `true` enables English Instagram captions when the translation key is available; default `false` |
 | `GOOGLE_TRANSLATE_API_KEY` | Optional dedicated Cloud Translation Basic v2 key; independent of the YouTube key |

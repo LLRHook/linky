@@ -1,6 +1,8 @@
 # Erome video previews
 
-Linky prepares the first MP4 video from the first Erome album in a message and uploads it as a reply. It always keeps the original album. The same preparation is used by `/fix` and **Fix with Linky**. Automatic processing requires the existing server/channel scope and the Erome platform switch; all Erome processing requires an age-restricted server channel or a thread whose parent is age-restricted.
+Linky prepares the first MP4 video from the first Erome album in a message and uploads it as a reply. It always keeps the original album. The same preparation is used by `/fix` and **Fix with Linky**. Automatic processing requires the existing server/channel scope and the Erome platform switch.
+
+The server preference `eromeChannels` defaults to `age-restricted`: Erome requires an age-restricted channel or a thread whose parent is age-restricted. Admins with Manage Server permission can select `/settings erome_channels:all` to allow ordinary server channels and their threads. This does not change automatic channel enablement, platform switches or permissions. DMs and unknown channels remain excluded. Manual previews use the same saved server policy, even for a personally installed command. The policy is checked again after preparation, so a revoked permission prevents an upload in an ordinary channel. Linky does not classify video content.
 
 ## Why an ordinary rewrite fails
 
@@ -16,14 +18,16 @@ No maintained rewrite provider was verified. An independently written extractor 
 - One preparation at a time; busy requests fail open instead of forming an unbounded queue.
 - Local conversion has fixed arguments, file-only input protocols, process timeouts and private temporary files removed in `finally`.
 - Discord must return matching attachment name, size, MP4 content type and video dimensions before an automatic output is accepted. This verifies video metadata, not every client's playback.
-- Disabled scope, changed messages, changed age restrictions, missing Attach Files, unavailable/protected media, conversion failure and missing attachment metadata preserve the original.
+- Disabled scope, changed messages, revoked channel eligibility, missing Attach Files, unavailable/protected media, conversion failure and missing attachment metadata preserve the original.
 - Albums with multiple videos show a first-video notice. Image-only albums are not handled.
 
 ## Validation
 
 Tests use synthetic HTML, bytes, media metadata and Discord interactions. They cover URL validation, redirected/oversized/failed upstream responses, processing bounds, cleanup, channel restrictions, original preservation and ownership. Runtime validation uses a generated non-sensitive test clip; no adult media is used as a test fixture or posted to a test server.
 
-A Hostinger reproduction of the album reported in GAMBA found that the 32 MB music video downloaded successfully in about 51 seconds. The original 30-second video deadline rejected it before conversion. Regression tests now cover a progressing transfer beyond 30 seconds and cancellation at the two-minute deadline. Channel age restriction is checked independently before any media request.
+A Hostinger reproduction of the album reported in GAMBA found that the 32 MB music video downloaded successfully in about 51 seconds. The original 30-second video deadline rejected it before conversion. Regression tests now cover a progressing transfer beyond 30 seconds and cancellation at the two-minute deadline. Channel eligibility is checked independently before any media request.
+
+Channel-policy tests cover default behavior, explicit ordinary-channel permission, threads, separate server settings, persistence, non-admin rejection, unchanged channel/platform scope and revocation during preparation. Before rolling back to a version without this setting, remove the `eromeChannels` key from saved server preferences while the bot is stopped: older releases deliberately reject unknown preference keys.
 
 ## Primary technical sources
 

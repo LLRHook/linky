@@ -108,10 +108,12 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         else if (interaction.commandName === 'setup') await setup(interaction, servers, settings);
         else if (interaction.commandName === 'settings') await preferences(interaction, settings, servers);
         else if (interaction.commandName === 'diagnose') await diagnose(interaction, settings, servers, async link => health.describe(link));
-        else if (interaction.commandName === 'fix') await fix(interaction, settings, { prepareErome, observePreview: (expected, result) => health.record(expected, result) });
+        else if (interaction.commandName === 'fix') await fix(interaction, settings, { prepareErome,
+          serverPreferences: id => servers.getPreferences(id), observePreview: (expected, result) => health.record(expected, result) });
         else if (interaction.commandName === 'prompt') await prompt(interaction, prompts);
       } else if (interaction.isMessageContextMenuCommand()) {
-        if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { prepareErome, observePreview: (expected, result) => health.record(expected, result) });
+        if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { prepareErome,
+          serverPreferences: id => servers.getPreferences(id), observePreview: (expected, result) => health.record(expected, result) });
       } else if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
         if (interaction.isButton() && await promptStatus(interaction, prompts)) return;
         if (interaction.isButton() && await replyToYouTubeControl(interaction, {
