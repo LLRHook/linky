@@ -95,6 +95,26 @@ test('video conversion cleans up and unlocks when ffprobe or ffmpeg fails or tim
   }
 });
 
+test('encoding accepts native landscape, portrait and rotated resolutions but rejects upscaling or outputs above 1080p', async () => {
+  for (const [width, height, outputWidth, outputHeight, accepted] of [
+    [1920, 1080, 1920, 1080, true], [1080, 1920, 1080, 1920, true],
+    [720, 1280, 720, 1280, true], [640, 360, 640, 360, true],
+    [1920, 1080, 1080, 1920, true], [3840, 2160, 1920, 1080, true],
+    [3840, 2160, 2560, 1440, false], [640, 360, 1280, 720, false],
+    [720, 1280, 1080, 1920, false],
+  ] as const) {
+    let probes = 0;
+    const result = await createVideoAttachment({ execute: async (program, args) => {
+      if (program === 'ffprobe') return ++probes === 1 ?
+        info(30, width, height, { codec_name: 'hevc' }) : info(30, outputWidth, outputHeight);
+      assert.equal(args.includes('copy'), false);
+      assert.equal(args[args.indexOf('-preset') + 1], width * height > 1280 * 720 ? 'superfast' : 'veryfast');
+      await writeFile(args.at(-1)!, 'complete encoded video'); return '';
+    } })(Buffer.from('source'));
+    assert.equal(Boolean(result), accepted, `${width}x${height} to ${outputWidth}x${outputHeight}`);
+  }
+});
+
 test('only one transcode can run across converter instances', async () => {
   let release!: (text: string) => void, probes = 0;
   const convert = createVideoAttachment({ execute: async (program, args) => {
