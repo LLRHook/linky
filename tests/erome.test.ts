@@ -199,12 +199,114 @@ test('Erome returns null for failed conversions and releases its lock after exce
     convert: async () => Buffer.from('ok') })(source));
 });
 
-test('Erome declines concurrent requests across preparer instances instead of queueing', async () => {
-  let release!: (response: Response) => void, calls = 0;
-  const prepare = createEromePreparer({ fetch: async () => ++calls === 1 ?
-    new Promise<Response>(resolve => { release = resolve; }) : media(), convert: async () => Buffer.from('ok') });
-  const pending = prepare(source);
-  assert.equal(await createEromePreparer({ fetch: async () => { assert.fail('busy request fetched'); } })(source), null);
-  release(page());
-  assert.ok(await pending);
+function heldPreparation(name: string, events: string[], fail = false) {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const prepare = createEromePreparer({ fetch: async url => {
+    events.push(`${name}:${String(url) === source ? 'album' : 'video'}`);
+    return String(url) === source ? page() : media();
+  }, convert: async () => {
+    events.push(`${name}:convert`);
+    await gate;
+    if (fail) throw new Error('Synthetic conversion failure');
+    return Buffer.from(name);
+  } });
+  return { prepare, release };
+}
+
+const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+
+test('Erome queues an overlapping request across preparer instances and fetches only after the active one releases', async () => {
+  const events: string[] = [];
+  const first = heldPreparation('first', events), second = heldPreparation('second', events);
+  const active = first.prepare(source);
+  await turn();
+  const waiting = second.prepare(source);
+  try {
+    await turn();
+    assert.deepEqual(events, ['first:album', 'first:video', 'first:convert']);
+    first.release();
+    assert.ok(await active);
+    await turn();
+    second.release();
+    const result = await waiting;
+    assert.ok(result, 'A concurrent request must receive a preview after the active request finishes');
+    assert.equal((result.file.attachment as Buffer).toString(), 'second');
+    assert.deepEqual(events, ['first:album', 'first:video', 'first:convert', 'second:album', 'second:video', 'second:convert']);
+  } finally { first.release(); second.release(); await Promise.allSettled([active, waiting]); }
+});
+
+test('Erome admits at most two FIFO waiters and rejects excess or invalid requests without fetching', async () => {
+  const events: string[] = [], entries = ['first', 'second', 'third', 'excess'].map(name => heldPreparation(name, events));
+  const pending = entries.slice(0, 3).map(entry => entry.prepare(source));
+  try {
+    await turn();
+    assert.deepEqual(events, ['first:album', 'first:video', 'first:convert']);
+    assert.equal(await entries[3].prepare(source), null);
+    assert.equal(await entries[3].prepare('https://example.test/invalid'), null);
+    for (let index = 0; index < 3; index++) {
+      assert.deepEqual(events.filter(event => event.endsWith(':album')), ['first', 'second', 'third'].slice(0, index + 1).map(name => `${name}:album`));
+      entries[index].release();
+      assert.ok(await pending[index]);
+      await turn();
+    }
+    assert(!events.some(event => event.startsWith('excess:')));
+  } finally { entries.forEach(entry => entry.release()); await Promise.allSettled(pending); }
+});
+
+test('an expired Erome waiter is removed at five minutes and never fetches or prevents a later admission', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const events: string[] = [], first = heldPreparation('first', events), expired = heldPreparation('expired', events), later = heldPreparation('later', events);
+  const active = first.prepare(source), waiting = expired.prepare(source);
+  const pending = [active, waiting];
+  let settled = false;
+  void waiting.then(() => { settled = true; });
+  try {
+    await turn();
+    assert.equal(settled, false, 'The waiter must remain queued before its deadline');
+    t.mock.timers.tick(299_999);
+    await turn();
+    assert.equal(settled, false);
+    t.mock.timers.tick(1);
+    assert.equal(await waiting, null);
+    const next = later.prepare(source);
+    pending.push(next);
+    first.release();
+    assert.ok(await active);
+    await turn();
+    later.release();
+    assert.ok(await next);
+    assert.deepEqual(events.filter(event => event.endsWith(':album')), ['first:album', 'later:album']);
+  } finally {
+    first.release(); expired.release(); later.release();
+    await Promise.allSettled(pending);
+    t.mock.timers.reset();
+  }
+});
+
+test('Erome drains queued requests after active conversion failure and clears admitted wait deadlines', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const events: string[] = [], failed = heldPreparation('failed', events, true), second = heldPreparation('second', events), third = heldPreparation('third', events);
+  const first = failed.prepare(source), waiting = second.prepare(source);
+  const pending = [first, waiting];
+  try {
+    await turn();
+    failed.release();
+    assert.equal(await first, null);
+    await turn();
+    t.mock.timers.tick(300_000);
+    const next = third.prepare(source);
+    pending.push(next);
+    await turn();
+    assert.deepEqual(events.filter(event => event.endsWith(':album')), ['failed:album', 'second:album']);
+    second.release();
+    assert.ok(await waiting, 'An admitted request must not expire at its former queue deadline');
+    await turn();
+    third.release();
+    assert.ok(await next);
+  } finally {
+    failed.release(); second.release(); third.release();
+    await Promise.allSettled(pending);
+    t.mock.timers.reset();
+  }
 });

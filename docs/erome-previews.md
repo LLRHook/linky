@@ -15,7 +15,7 @@ No maintained rewrite provider was verified. An independently written extractor 
 - Exact HTTPS `erome.com` or `www.erome.com` album links only; profiles, nested URLs, ports and credentials are rejected.
 - One bounded HTML fetch and one bounded video fetch; no image, search or related-album requests. Album lookup has a 10-second deadline; video download has a two-minute deadline, followed by bounded local conversion. A preview can take more than a minute to appear.
 - Up to 64 MiB input and five minutes; output is at most 9 MiB, H.264/AAC, up to 720p.
-- One preparation at a time; busy requests fail open instead of forming an unbounded queue.
+- One preparation at a time across servers and manual commands. Up to two requests wait in arrival order, each for at most five minutes. Queued requests do not fetch or retain video bytes until their turn. A full queue or expired wait leaves the original untouched.
 - Local conversion has fixed arguments, file-only input protocols, process timeouts and private temporary files removed in `finally`.
 - Discord must return matching attachment name, size, MP4 content type and video dimensions before an automatic output is accepted. This verifies video metadata, not every client's playback.
 - Disabled scope, changed messages, revoked channel eligibility, missing Attach Files, unavailable/protected media, conversion failure and missing attachment metadata preserve the original.
@@ -26,6 +26,8 @@ No maintained rewrite provider was verified. An independently written extractor 
 Tests use synthetic HTML, bytes, media metadata and Discord interactions. They cover URL validation, redirected/oversized/failed upstream responses, processing bounds, cleanup, channel restrictions, original preservation and ownership. Runtime validation uses a generated non-sensitive test clip; no adult media is used as a test fixture or posted to a test server.
 
 A Hostinger reproduction of the album reported in GAMBA found that the 32 MB music video downloaded successfully in about 51 seconds. The original 30-second video deadline rejected it before conversion. Regression tests now cover a progressing transfer beyond 30 seconds and cancellation at the two-minute deadline. Channel eligibility is checked independently before any media request.
+
+A later live test reproduced a second failure: an automatic preview in GAMBA occupied the preparer while a manual preview in kruski klowns was rejected immediately. The bounded queue lets overlapping requests wait instead. Tests cover ordering across preparer instances, capacity, expired waits and recovery after a failed job.
 
 Channel-policy tests cover default behavior, explicit ordinary-channel permission, threads, separate server settings, persistence, non-admin rejection, unchanged channel/platform scope and revocation during preparation. Before rolling back to a version without this setting, remove the `eromeChannels` key from saved server preferences while the bot is stopped: older releases deliberately reject unknown preference keys.
 
