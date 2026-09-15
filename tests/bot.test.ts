@@ -117,6 +117,31 @@ test('unknown commands do not trigger replies', async () => {
   assert.deepEqual(await command(client, 'unknown'), []);
 });
 
+test('/prompt dispatch reports unavailable coding privately when the operator has not enabled it', async () => {
+  const { client, errors } = fixture();
+  const replies: InteractionReplyOptions[] = [];
+  await dispatch(client, { isChatInputCommand: () => true, commandName: 'prompt', guildId: 'configured-server',
+    memberPermissions: new PermissionsBitField(PermissionFlagsBits.Administrator),
+    reply: async (payload: InteractionReplyOptions) => { replies.push(payload); } });
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].flags, MessageFlags.Ephemeral);
+  assert.deepEqual(replies[0].allowedMentions, { parse: [] });
+  assert.match(replies[0].content!, /Coding requests are not available/);
+  assert.deepEqual(errors, []);
+});
+
+test('coding status buttons are dispatched and cannot bypass current administrator permissions', async () => {
+  const { client, errors } = fixture();
+  const replies: InteractionReplyOptions[] = [];
+  await dispatch(client, { isButton: () => true, customId: 'prompt-status:1491242185331576884',
+    guildId: 'configured-server', memberPermissions: new PermissionsBitField(),
+    reply: async (payload: InteractionReplyOptions) => { replies.push(payload); } });
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].content!, /Administrator permission/);
+  assert.deepEqual(replies[0].allowedMentions, { parse: [] });
+  assert.deepEqual(errors, []);
+});
+
 test('non-command interactions do not trigger replies or dispatch errors', async () => {
   const { client, errors } = fixture();
   await dispatch(client, {
@@ -144,7 +169,7 @@ test('registration installs the public slash commands and message context action
     put: async (route, options) => { calls.push([route, options]); return []; },
   });
   assert.deepEqual(calls, [Routes.oauth2CurrentApplication(), [Routes.applicationCommands('application-id'), { body: commandDefinitions }]]);
-  assert.deepEqual(commandDefinitions.map(command => command.name), ['help', 'setup', 'settings', 'diagnose', 'fix', 'Fix with Linky']);
+  assert.deepEqual(commandDefinitions.map(command => command.name), ['help', 'setup', 'settings', 'diagnose', 'fix', 'prompt', 'Fix with Linky']);
   assert.equal(data.toJSON().name, 'help');
 });
 

@@ -7,6 +7,7 @@ import { execute as setup } from './commands/setup';
 import { execute as preferences } from './commands/settings';
 import { execute as diagnose } from './commands/diagnose';
 import { execute as fix, removeManual } from './commands/fix';
+import { execute as prompt, handleStatus as promptStatus } from './commands/prompt';
 import { handleSetupComponent } from './commands/setupPanel';
 import { commandDefinitions } from './commands/register';
 import { ServerSettings } from './services/ServerSettings';
@@ -21,6 +22,7 @@ import { RepostRegistry } from './services/RepostRegistry';
 import { PreviewHealth } from './services/PreviewRecovery';
 import { replyToYouTubeControl } from './services/YouTubeInteractions';
 import { evaluateScope } from './services/ServerScope';
+import { PromptService } from './services/PromptService';
 
 export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
   servers = new ServerSettings(settings.settingsPath)): Client {
@@ -33,6 +35,11 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   });
   let youtubeStats: YouTubeStats | undefined;
   let registry: RepostRegistry | undefined;
+  let prompts: PromptService | undefined;
+  if (settings.prompt) {
+    try { prompts = new PromptService(settings.prompt, join(dirname(settings.settingsPath), 'prompt-jobs.json')); }
+    catch { log.warn('Coding requests are unavailable because their job history could not be loaded'); }
+  }
   const lookupYouTube = settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined;
   let translateInstagram: ReturnType<typeof createInstagramLookup> | undefined;
   if (settings.translateInstagram && settings.captionApiKey) {
@@ -99,9 +106,11 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         else if (interaction.commandName === 'settings') await preferences(interaction, settings, servers);
         else if (interaction.commandName === 'diagnose') await diagnose(interaction, settings, servers, async link => health.describe(link));
         else if (interaction.commandName === 'fix') await fix(interaction, settings, { observePreview: (expected, result) => health.record(expected, result) });
+        else if (interaction.commandName === 'prompt') await prompt(interaction, prompts);
       } else if (interaction.isMessageContextMenuCommand()) {
         if (interaction.commandName === 'Fix with Linky') await fix(interaction, settings, { observePreview: (expected, result) => health.record(expected, result) });
       } else if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
+        if (interaction.isButton() && await promptStatus(interaction, prompts)) return;
         if (interaction.isButton() && await replyToYouTubeControl(interaction, {
           stats: youtubeStats, lookup: lookupYouTube,
           enabled: (guildId, channelId, action) => {
