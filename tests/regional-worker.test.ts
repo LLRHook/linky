@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   MAX_REGIONAL_BYTES, MAX_REGIONAL_PART_BYTES, parseRegionalJob, REGIONAL_CLAIM_PATH,
-  REGIONAL_ROUTES, REGIONAL_SIGNATURE_HEADER, regionalRange, serializeRegionalJob,
-  signRegionalClaim, signRegionalJob, verifyRegionalClaim, verifyRegionalJob, type RegionalJob,
+  REGIONAL_PROTOCOL_VERSION, REGIONAL_REGIONS, REGIONAL_ROUTES, REGIONAL_SIGNATURE_HEADER, regionalRange, serializeRegionalJob,
+  signRegionalClaim, signRegionalJob, verifyRegionalClaim, verifyRegionalJob, type RegionalJob, type RegionalRange,
 } from '../src/services/RegionalProtocol';
 import { createRegionalWorker, type RegionalWorkerDependencies } from '../src/services/RegionalWorker';
 
@@ -12,9 +13,9 @@ const key = 'test-key-only-00000000000000000000000000000000';
 const now = 1_800_000_000_000;
 const endpoint = `https://media.example.com${REGIONAL_CLAIM_PATH}`;
 const job: RegionalJob = {
-  v: 1, id: '0123456789abcdef0123456789abcdef', part: 0,
+  v: REGIONAL_PROTOCOL_VERSION, id: '0123456789abcdef0123456789abcdef', part: 0,
   source: 'https://v63.erome.com/7242/Album123/video_720p.mp4',
-  album: 'https://www.erome.com/a/Album123', etag: '"strong-etag"', bytes: 24,
+  album: 'https://www.erome.com/a/Album123', etag: '"strong-etag"', bytes: 40,
   issuedAt: now, expiresAt: now + 30_000,
 };
 
@@ -27,7 +28,7 @@ function invocation(value = job, body = serializeRegionalJob(value)): Request {
 
 function source(body: ReadableStream<Uint8Array> | Uint8Array = new Uint8Array([1, 2, 3, 4]), overrides: Record<string, string> = {}): Response {
   return new Response(body, { status: 206, headers: {
-    'content-type': 'video/mp4', 'content-length': '4', 'content-range': 'bytes 0-3/24', etag: job.etag, ...overrides,
+    'content-type': 'video/mp4', 'content-length': '4', 'content-range': 'bytes 0-3/40', etag: job.etag, ...overrides,
   } });
 }
 
@@ -40,8 +41,15 @@ function worker(overrides: RegionalWorkerDependencies = {}): (request: Request) 
 }
 
 test('protocol derives disjoint bounded parts, including empty tail parts', () => {
-  for (const size of [1, 5, 6, 7, 25_026_293, MAX_REGIONAL_BYTES]) {
-    const ranges = Array.from({ length: 6 }, (_, part) => regionalRange(size, part)).filter(value => value !== null);
+  assert.equal(REGIONAL_PROTOCOL_VERSION, 3);
+  assert.deepEqual(REGIONAL_REGIONS, ['iad1', 'fra1', 'lhr1', 'cle1', 'sfo1', 'cdg1', 'dub1', 'pdx1', 'yul1', 'local']);
+  assert.deepEqual(REGIONAL_ROUTES, ['/api/iad', '/api/fra', '/api/lhr', '/api/cle', '/api/sfo', '/api/cdg', '/api/dub', '/api/pdx', '/api/yul']);
+  assert.equal(MAX_REGIONAL_BYTES, 24 * 1024 * 1024);
+  assert.equal(MAX_REGIONAL_PART_BYTES, 4 * 1024 * 1024);
+  assert.equal(regionalRange(MAX_REGIONAL_BYTES, 0)?.length, 2_516_583);
+  assert.equal(regionalRange(MAX_REGIONAL_BYTES, 9)?.length, 2_516_577);
+  for (const size of [1, 5, 6, 7, 8, 9, 10, 11, 25_026_293, MAX_REGIONAL_BYTES]) {
+    const ranges: RegionalRange[] = REGIONAL_REGIONS.map((_, part) => regionalRange(size, part)).filter(value => value !== null);
     assert.equal(ranges[0].start, 0);
     assert.equal(ranges.at(-1)!.end, size - 1);
     assert.equal(ranges.reduce((sum, value) => sum + value.length, 0), size);
@@ -59,13 +67,36 @@ test('protocol rejects extras, weak validators, noncanonical URLs/JSON and expir
     { ...job, extra: true }, { ...job, etag: 'W/"weak"' }, { ...job, etag: '"a\r\nb"' },
     { ...job, source: job.source + '?next=private' }, { ...job, source: job.source.replace('v63.', 'v63.erome.com@') },
     { ...job, album: job.album + '/' }, { ...job, source: job.source.replace('https:', 'http:') },
-    { ...job, bytes: MAX_REGIONAL_BYTES + 1 }, { ...job, id: 'ABC' }, { ...job, part: 6 },
+    { ...job, bytes: MAX_REGIONAL_BYTES + 1 }, { ...job, id: 'ABC' }, { ...job, part: 10 }, { ...job, v: 1 }, { ...job, v: 2 },
     { ...job, expiresAt: now }, { ...job, expiresAt: now + 30_001 },
     { ...job, issuedAt: now + 5001, expiresAt: now + 6000 }, { ...job, bytes: 1, part: 1 },
   ];
   for (const value of invalid) assert.equal(parseRegionalJob(JSON.stringify(value), now), null);
   assert.equal(parseRegionalJob(' ' + serializeRegionalJob(job), now), null);
-  assert.equal(parseRegionalJob(serializeRegionalJob(job).replace('"v":1', '"v":1,"v":1'), now), null);
+  assert.equal(parseRegionalJob(serializeRegionalJob(job).replace('"v":3', '"v":3,"v":3'), now), null);
+});
+
+test('version-one and version-two jobs and MACs are rejected before any claim or source request', async () => {
+  let claims = 0, sources = 0;
+  const handler = worker({ claimFetch: async () => { claims++; return new Response(null, { status: 204 }); },
+    origin: async () => { sources++; return source(); } });
+  for (const version of [1, 2]) {
+    const legacy = JSON.stringify({ ...job, v: version });
+    const oldSignature = (raw: string, purpose: 'job' | 'claim', route: string) => createHmac('sha256', key)
+      .update(`linky-regional-${purpose}-v${version}\nPOST\n${route}\n`).update(raw).digest('hex');
+    for (const [raw, signature, status] of [
+      [legacy, oldSignature(legacy, 'job', REGIONAL_ROUTES[0]), 401],
+      [legacy, signRegionalJob(legacy, REGIONAL_ROUTES[0], key), 400],
+      [serializeRegionalJob(job), oldSignature(serializeRegionalJob(job), 'job', REGIONAL_ROUTES[0]), 401],
+    ] as const) {
+      const request = invocation(job, raw);
+      request.headers.set(REGIONAL_SIGNATURE_HEADER, signature);
+      assert.equal((await handler(request)).status, status);
+    }
+    assert.equal(verifyRegionalClaim(legacy, oldSignature(legacy, 'claim', REGIONAL_CLAIM_PATH), key), false);
+  }
+  assert.equal(claims, 0);
+  assert.equal(sources, 0);
 });
 
 test('MACs bind raw bytes, route and job/claim purpose', () => {

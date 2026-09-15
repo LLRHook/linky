@@ -5,7 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import type { MediaAssetStore } from './MediaAssetStore';
 import { REGIONAL_CLAIM_PATH } from './RegionalProtocol';
 
-const MAX_ACTIVE = 8, TIMEOUT_MS = 20_000, MAX_BODY = 4096;
+const MAX_ACTIVE_MEDIA = 8, MAX_ACTIVE_CLAIMS = 10, TIMEOUT_MS = 20_000, MAX_BODY = 4096;
 const baseHeaders = { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow',
   'X-Content-Type-Options': 'nosniff' };
 
@@ -71,23 +71,26 @@ export function createMediaServer({ store, claim, timeoutMs = TIMEOUT_MS, openFi
   openFile?: typeof open;
 }) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > TIMEOUT_MS) throw Error('Invalid media deadline');
-  let active = 0;
+  let activeMedia = 0, activeClaims = 0;
   const server = createServer({ maxHeaderSize: 8192 }, async (request, response) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const finish = (status: number, headers = {}) => {
       response.writeHead(status, { ...baseHeaders, 'Content-Length': '0', ...headers }); response.end();
     };
-    let counted = false, file: Awaited<ReturnType<typeof open>> | undefined;
+    let counted: 'media' | 'claim' | undefined, file: Awaited<ReturnType<typeof open>> | undefined;
     response.once('close', () => { if (!response.writableFinished) controller.abort(); });
     try {
       if (request.url === '/healthz') {
         const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress ?? '');
         return finish(local && !request.headers.forwarded && !request.headers['x-forwarded-for'] ? 200 : 404);
       }
-      if (active >= MAX_ACTIVE) return finish(429, { 'Retry-After': '1' });
-      active++; counted = true;
-      if (request.url === REGIONAL_CLAIM_PATH) {
+      const isClaim = request.url === REGIONAL_CLAIM_PATH;
+      if (isClaim ? activeClaims >= MAX_ACTIVE_CLAIMS : activeMedia >= MAX_ACTIVE_MEDIA)
+        return finish(429, { 'Retry-After': '1' });
+      if (isClaim) { activeClaims++; counted = 'claim'; }
+      else { activeMedia++; counted = 'media'; }
+      if (isClaim) {
         if (request.method !== 'POST') return finish(405, { Allow: 'POST' });
         const signature = request.headers['x-linky-signature'];
         if (typeof signature !== 'string' || !/^[a-f0-9]{64}$/.test(signature)) return finish(403);
@@ -126,7 +129,8 @@ export function createMediaServer({ store, claim, timeoutMs = TIMEOUT_MS, openFi
     } finally {
       if (file) await bounded(file.close(), controller.signal).catch(() => {});
       clearTimeout(timer);
-      if (counted) active--;
+      if (counted === 'claim') activeClaims--;
+      else if (counted === 'media') activeMedia--;
     }
   });
   server.requestTimeout = timeoutMs;

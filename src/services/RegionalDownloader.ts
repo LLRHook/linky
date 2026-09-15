@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { cancelRegionalResponse, regionalAbortable, requestErome } from './RegionalHttp';
 import {
   isCanonicalEromeAlbum, isEromeMediaUrl, isStrongEtag, MAX_REGIONAL_BYTES, MAX_REGIONAL_JOB_BYTES,
-  parseRegionalJob, REGIONAL_DEADLINE_MS, REGIONAL_REGIONS, REGIONAL_ROUTES, REGIONAL_SIGNATURE_HEADER,
+  parseRegionalJob, REGIONAL_DEADLINE_MS, REGIONAL_PROTOCOL_VERSION, REGIONAL_REGIONS, REGIONAL_ROUTES, REGIONAL_SIGNATURE_HEADER,
   regionalRange, serializeRegionalJob, signRegionalJob, validRegionalKey, verifyRegionalClaim,
   type RegionalJob, type RegionalRange,
 } from './RegionalProtocol';
@@ -63,7 +63,7 @@ async function readPart(response: Response, range: RegionalRange, output: Buffer
   }
 }
 
-/** One admitted source and five single-use remote claims; no caller can choose a worker destination. */
+/** One admitted source and nine single-use remote claims; no caller can choose a worker destination. */
 export function createRegionalDownloader({ key, workerBaseUrl, requestOrigin = requestErome, fetch: fetchWorker = fetch,
   clock = Date.now, startupGraceMs = REGIONAL_DEADLINE_MS }: RegionalDownloaderOptions): RegionalDownloader {
   let base: URL;
@@ -121,7 +121,7 @@ export function createRegionalDownloader({ key, workerBaseUrl, requestOrigin = r
         if (ranges.some(range => range === null)) return null;
         const output = Buffer.alloc(bytes);
         const id = randomBytes(16).toString('hex'), issuedAt = clock();
-        const jobs = REGIONAL_ROUTES.map((_, part): RegionalJob => ({ v: 1, id, part, source, album, etag, bytes,
+        const jobs = REGIONAL_ROUTES.map((_, part): RegionalJob => ({ v: REGIONAL_PROTOCOL_VERSION, id, part, source, album, etag, bytes,
           issuedAt, expiresAt: issuedAt + REGIONAL_DEADLINE_MS }));
         for (const job of jobs) active.set(entryKey(job), { raw: serializeRegionalJob(job), claimed: false });
         dispatchedAt = issuedAt;

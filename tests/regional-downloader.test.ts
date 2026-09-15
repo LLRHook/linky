@@ -13,7 +13,7 @@ const key = 'regional-test-key-with-at-least-32-characters';
 const workerBaseUrl = 'https://workers.example.com';
 const input = { source: 'https://v63.erome.com/7242/9f9EJu3q/eMbG5fMA_720p.mp4', album: 'https://www.erome.com/a/9f9EJu3q' };
 const etag = '"unchanged-object"';
-const bytes = Buffer.from(Array.from({ length: 61 }, (_, i) => i));
+const bytes = Buffer.from(Array.from({ length: 67 }, (_, i) => i));
 
 function headResponse(length = bytes.length, headers: Record<string, string> = {}, status = 200) {
   return new Response(null, { status, headers: { 'content-type': 'video/mp4', 'content-length': String(length), etag, ...headers } });
@@ -45,7 +45,7 @@ function harness(options: {
       signals.push(request.signal);
       if (request.method === 'HEAD') { heads++; return options.head?.() ?? headResponse(source.length); }
       starts.push('local');
-      const range = regionalRange(source.length, 5)!;
+      const range = regionalRange(source.length, REGIONAL_REGIONS.length - 1)!;
       assert.deepEqual(request.range, range); assert.equal(request.etag, etag);
       const response = new Response(source.subarray(range.start, range.end + 1), { status: 206, headers: {
         'content-type': 'video/mp4', 'content-length': String(range.length), etag,
@@ -66,7 +66,7 @@ function harness(options: {
   return { downloader, starts, raws, signals, heads: () => heads, advance: (ms: number) => { now += ms; } };
 }
 
-test('all six requests start together and assemble exact bytes after authenticated one-use claims', async () => {
+test('all ten requests start together and assemble exact bytes after authenticated one-use claims', async () => {
   let release!: () => void;
   const ready = new Promise<void>(resolve => { release = resolve; });
   const fixture = harness({ worker: async job => { await ready; return workerResponse(job); },
@@ -78,7 +78,7 @@ test('all six requests start together and assemble exact bytes after authenticat
   const firstId = (JSON.parse(fixture.raws[0]) as RegionalJob).id;
   assert.match(firstId, /^[a-f0-9]{32}$/);
   assert.deepEqual(await fixture.downloader.download(input), bytes);
-  assert.notEqual((JSON.parse(fixture.raws[5]) as RegionalJob).id, firstId);
+  assert.notEqual((JSON.parse(fixture.raws[REGIONAL_ROUTES.length]) as RegionalJob).id, firstId);
   fixture.downloader.close();
 });
 
@@ -109,7 +109,7 @@ test('downloader and actual worker handlers agree on claims, metadata and comple
     },
   });
   assert.deepEqual(await downloader.download(input), bytes);
-  assert.equal(rangeReads, 6); assert.equal(claims, 5); downloader.close();
+  assert.equal(rangeReads, 10); assert.equal(claims, 9); downloader.close();
 });
 
 test('claims require the exact active body, separate HMAC, unexpired remote part, and synchronous one-use marking', async () => {
@@ -121,13 +121,17 @@ test('claims require the exact active body, separate HMAC, unexpired remote part
       assert.equal(fixture.downloader.claim(raw, signRegionalJob(raw, REGIONAL_ROUTES[0], key)), false);
       const changed = serializeRegionalJob({ ...job, source: 'https://v63.erome.com/different.mp4' });
       assert.equal(fixture.downloader.claim(changed, signRegionalClaim(changed, key)), false);
-      const local = serializeRegionalJob({ ...job, part: 5 });
+      const local = serializeRegionalJob({ ...job, part: REGIONAL_REGIONS.length - 1 });
       assert.equal(fixture.downloader.claim(local, signRegionalClaim(local, key)), false);
+      for (const version of [1, 2]) {
+        const legacy = JSON.stringify({ ...job, v: version });
+        assert.equal(fixture.downloader.claim(legacy, signRegionalClaim(legacy, key)), false);
+      }
       fixture.advance(8_000);
       assert.equal(fixture.downloader.claim(raw, signRegionalClaim(raw, key)), false);
       fixture.advance(-8_000);
       // Every remote body is registered before the first POST reaches its transport.
-      for (let part = 0; part < 5; part++) {
+      for (let part = 0; part < REGIONAL_ROUTES.length; part++) {
         const registered = serializeRegionalJob({ ...job, part });
         assert.equal(fixture.downloader.claim(registered, signRegionalClaim(registered, key)), true);
         assert.equal(fixture.downloader.claim(registered, signRegionalClaim(registered, key)), false);
@@ -169,25 +173,25 @@ test('startup grace, busy admission, closed state and invalid source destination
 
 test('HEAD requires bounded identity MP4 bytes and a strong validator; empty parts never dispatch', async () => {
   const invalid = [
-    () => headResponse(0), () => headResponse(MAX_REGIONAL_BYTES + 1), () => headResponse(61, {}, 206),
-    () => headResponse(61, { etag: 'W/"weak"' }), () => headResponse(61, { etag: '' }),
-    () => headResponse(61, { 'content-length': '61, 61' }), () => headResponse(61, { 'content-type': 'text/html' }),
-    () => headResponse(61, { 'content-encoding': 'gzip' }), () => headResponse(61, { 'set-cookie': 'x=y' }),
-    () => headResponse(61, { 'x-large': 'x'.repeat(8192) }),
-    ...[1, 5, 7, 10].map(length => () => headResponse(length)),
+    () => headResponse(0), () => headResponse(MAX_REGIONAL_BYTES + 1), () => headResponse(67, {}, 206),
+    () => headResponse(67, { etag: 'W/"weak"' }), () => headResponse(67, { etag: '' }),
+    () => headResponse(67, { 'content-length': '67, 67' }), () => headResponse(67, { 'content-type': 'text/html' }),
+    () => headResponse(67, { 'content-encoding': 'gzip' }), () => headResponse(67, { 'set-cookie': 'x=y' }),
+    () => headResponse(67, { 'x-large': 'x'.repeat(8192) }),
+    ...[1, 5, 6, 7, 8, 9, 11, 14, 61].map(length => () => headResponse(length)),
   ];
   for (const head of invalid) {
     const fixture = harness({ head });
     assert.equal(await fixture.downloader.download(input), null); assert.equal(fixture.starts.length, 0);
     fixture.downloader.close();
   }
-  const minimum = harness({ source: Buffer.from('123456') });
-  assert.deepEqual(await minimum.downloader.download(input), Buffer.from('123456')); minimum.downloader.close();
+  const minimum = harness({ source: Buffer.from('1234567890') });
+  assert.deepEqual(await minimum.downloader.download(input), Buffer.from('1234567890')); minimum.downloader.close();
 });
 
 test('unclaimed workers and changed or missing remote identity headers abort every peer', async () => {
   const changes: Record<string, string>[] = [
-    { 'x-linky-source-etag': '"changed"' }, { 'x-linky-id': 'f'.repeat(32) }, { 'x-linky-part': '5' },
+    { 'x-linky-source-etag': '"changed"' }, { 'x-linky-id': 'f'.repeat(32) }, { 'x-linky-part': '9' },
     { 'x-linky-region': 'wrong' }, { 'x-linky-range-start': '1' }, { 'x-linky-range-end': '99' },
     { 'x-linky-source-bytes': '99' }, { 'x-linky-streaming': 'false' }, { 'x-linky-headers-ms': '' },
     { 'x-linky-headers-ms': '8001' }, { 'content-length': '99' }, { 'content-type': 'text/html' },
@@ -207,9 +211,9 @@ test('local GET rejects ignored Range, changed ETag, wrong Content-Range and inc
     const fixture = harness({ local: response => {
       const headers = new Headers(response.headers);
       if (scenario === 'etag') headers.set('etag', '"changed"');
-      if (scenario === 'range') headers.set('content-range', 'bytes 0-5/61');
+      if (scenario === 'range') headers.set('content-range', 'bytes 0-5/67');
       void response.body?.cancel();
-      return new Response(scenario === 'incomplete' ? 'x' : bytes.subarray(55), {
+      return new Response(scenario === 'incomplete' ? 'x' : bytes.subarray(regionalRange(bytes.length, REGIONAL_REGIONS.length - 1)!.start), {
         status: scenario === 'ignored' ? 200 : 206, headers,
       });
     } });
@@ -245,12 +249,12 @@ test('caller cancellation returns promptly and disposes every transport response
   ))));
   const fixture = harness({ worker: delayed, local: response => { void response.body?.cancel(); return delayed(); } });
   const controller = new AbortController(), pending = fixture.downloader.download(input, controller.signal);
-  while (releases.length < 6) await new Promise(resolve => setImmediate(resolve));
+  while (releases.length < REGIONAL_REGIONS.length) await new Promise(resolve => setImmediate(resolve));
   controller.abort(); assert.equal(await pending, null);
   assert.ok(fixture.signals.every(signal => signal.aborted));
   for (const release of releases) release();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(cancelled, 6); fixture.downloader.close();
+  assert.equal(cancelled, 10); fixture.downloader.close();
 });
 
 test('failure cooldown covers a late claimed worker, beyond the original dispatch deadline', async () => {
@@ -281,14 +285,14 @@ test('HEAD and every dispatched worker have independent bounded deadlines even i
   const parts = harness({ worker: () => new Promise<Response>(() => {}),
     local: response => { void response.body?.cancel(); return new Promise<Response>(() => {}); } });
   const pendingParts = parts.downloader.download(input);
-  while (parts.starts.length < 6) await new Promise(resolve => setImmediate(resolve));
+  while (parts.starts.length < REGIONAL_REGIONS.length) await new Promise(resolve => setImmediate(resolve));
   context.mock.timers.tick(8_000);
   assert.equal(await pendingParts, null); assert.ok(parts.signals.every(signal => signal.aborted));
   parts.downloader.close();
 
   let waitingForEof = false, cancelled = 0;
   const noEof = harness({ worker: job => job.part ? workerResponse(job) : workerResponse(job, bytes, {},
-    new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes.subarray(0, 11)); },
+    new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes.subarray(0, regionalRange(bytes.length, 0)!.length)); },
       pull() { waitingForEof = true; }, cancel() { cancelled++; } })),
   });
   const pendingEof = noEof.downloader.download(input);

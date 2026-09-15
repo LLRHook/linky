@@ -2,13 +2,13 @@
 
 This optional path keeps eligible original MP4 bytes and posts a Discord media gallery after the complete file has been downloaded, inspected and saved. The default remains `EROME_MEDIA_ENABLED=false`, which uses the existing attachment path.
 
-As of September 15, 2026, the dedicated Vercel project `linky-media-workers` is deployed for candidate validation. The generic production path still needs a live test before activation in the hosted bot. The earlier experiment results below do not establish a ten-second production guarantee.
+As of September 15, 2026, the dedicated Vercel project `linky-media-workers` has hosted candidate validation with six and eight fetch locations. The current ten-location revision uses protocol version 3 and needs its own live validation before activation in the hosted bot. The measured results below do not establish a ten-second production guarantee.
 
 ## Delivery and limits
 
 An original must be at most 24 MiB, five minutes and 60 fps, with H.264/yuv420p video and AAC audio when present. The accepted video profiles are Constrained Baseline, Baseline, Main and High. Inspection accepts one video stream and at most one audio stream, with no attached pictures or other streams. Both average and nominal frame rates must fit the limit. Native dimensions must fit 1920×1080 or 1080×1920; a 720p source stays 720p. This path does not transcode or upscale.
 
-The bot resolves the first video from the album and uses a HEAD request to establish its size and strong ETag. It divides the exact size into six consecutive ranges using `ceil(size / 6)` bytes per part, shortening the last part to the end of the file. Each part is at most 4 MiB.
+The bot resolves the first video from the album and uses a HEAD request to establish its size and strong ETag. It divides the exact size into ten consecutive ranges using `ceil(size / 10)` bytes per part, shortening the last part to the end of the file. At the 24 MiB source limit, each part is about 2.4 MiB. The independent 4 MiB part cap remains in place.
 
 | Part | Fetch location | Worker route |
 | --- | --- | --- |
@@ -17,13 +17,17 @@ The bot resolves the first video from the album and uses a HEAD request to estab
 | 2 | Vercel London, `lhr1` | `/api/lhr` |
 | 3 | Vercel Cleveland, `cle1` | `/api/cle` |
 | 4 | Vercel San Francisco, `sfo1` | `/api/sfo` |
-| 5 | The Hostinger bot process | Local source request |
+| 5 | Vercel Paris, `cdg1` | `/api/cdg` |
+| 6 | Vercel Dublin, `dub1` | `/api/dub` |
+| 7 | Vercel Portland, `pdx1` | `/api/pdx` |
+| 8 | Vercel Montreal, `yul1` | `/api/yul` |
+| 9 | The Hostinger bot process | Local source request |
 
 Each worker receives an HMAC-signed job bound to its route, source, range, validator and expiry. Before fetching, it must obtain a one-use claim from the currently active bot job. A replay or a job absent from that process is rejected. Workers verify their actual runtime region. They accept only the allowed Erome source hosts, require public IPv4 DNS answers and pin the chosen address for HTTPS. Redirects, cookies, compressed responses, changed validators, wrong ranges and incomplete bodies are rejected.
 
 Album lookup has a ten-second deadline. The source HEAD has two seconds, each range has eight seconds, and the collector has ten seconds including HEAD. Each Vercel function is configured for a maximum duration of ten seconds, with an eight-second application deadline. One collector runs at a time; startup and uncertain failures leave an eight-second admission gap, extended when a later claim may still be running. Inspection has a two-second process deadline. Queueing, local disk operations and Discord delivery add time beyond the source transfer.
 
-Hostinger assembles all six parts and inspects the complete original before publishing it to the store. Only then does the bot post a URL such as `https://media.linkybot.dev/media/<32-hex-id>.mp4`. Public requests can read registered files or seek within them; they cannot select an origin URL or trigger a download. Responses are marked `no-store` and `noindex, nofollow`.
+Hostinger assembles all ten parts and inspects the complete original before publishing it to the store. Only then does the bot post a URL such as `https://media.linkybot.dev/media/<32-hex-id>.mp4`. Public requests can read registered files or seek within them; they cannot select an origin URL or trigger a download. Responses are marked `no-store` and `noindex, nofollow`.
 
 Larger or incompatible files, failed regional preparation, a full store and mixed-platform messages use the existing attachment publisher. Its input limit is 64 MiB and five minutes; it remuxes or encodes to the destination's upload allowance. The same channel policy, retained original album and owner-only **Remove** controls apply to both paths. An uncertain Discord POST is reconciled once, without an automatic second submission. See [Erome previews](erome-previews.md) for the shared delivery rules and attachment limits.
 
@@ -52,7 +56,9 @@ The bot's settings are documented in [`.env.example`](../.env.example):
 | `EROME_MEDIA_PATH` | `data/media` with the supplied Compose volume |
 | `EROME_MEDIA_PORT` | `8092` with the supplied Compose and proxy configuration |
 
-Configure the dedicated `linky-media-workers` Vercel project from this repository's root. [`vercel.json`](../vercel.json) pins the five functions to their regions; [`tsconfig.worker.json`](../tsconfig.worker.json) checks their shared protocol and transport code. Use the Node.js 22/24 versions covered by the repository checks. The deployed worker routes must be reachable by the bot without an interactive login; the handlers enforce the HMAC and live-claim checks before source access.
+Configure the dedicated `linky-media-workers` Vercel project from this repository's root. [`vercel.json`](../vercel.json) pins the nine functions to their regions; [`tsconfig.worker.json`](../tsconfig.worker.json) checks their shared protocol and transport code. Use the Node.js 22/24 versions covered by the repository checks. The deployed worker routes must be reachable by the bot without an interactive login; the handlers enforce the HMAC and live-claim checks before source access.
+
+Deploy matching bot and worker revisions. Protocol version 3 fixes the ten-part topology in both the job payload and the job/claim HMAC domains. Version-one and version-two jobs and signatures from the former six- and eight-part topologies are rejected before source access. A mixed deployment fails regional preparation and uses attachment fallback.
 
 The worker environment needs these two values:
 
@@ -93,12 +99,12 @@ media.linkybot.dev {
 }
 ```
 
-Preserve the original path, request body and `X-Linky-Signature` header on the claim route. The media application validates the complete path and supports GET, HEAD and one byte range per request. It admits at most eight active requests, with a 20-second deadline. `/healthz` stays local and is not routed through the public site. The proxy forwards to the host's loopback address. [Caddy reverse proxy documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy).
+Preserve the original path, request body and `X-Linky-Signature` header on the claim route. The media application validates the complete path and supports GET, HEAD and one byte range per request. It admits at most eight active media requests, with a 20-second deadline, and ten independent claim requests, each bounded to 4,096 bytes and two seconds. Existing playback therefore does not consume the slots needed by the nine worker claims. `/healthz` stays local and is not routed through the public site. The proxy forwards to the host's loopback address. [Caddy reverse proxy documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy).
 
 ## Activation and checks
 
 1. Review the bot and worker revision, then run `npm test`, `npm run build`, `npm run check:workers` and the existing deployment checks. Provision the persistent directory, matching secrets, DNS and HTTPS configuration.
-2. Deploy the reviewed worker revision to `linky-media-workers` and use its stable HTTPS origin in `EROME_WORKER_BASE_URL`. Verify that all five routes use the regions in the table. Confirm that unsigned jobs and invalid claims are rejected without source requests.
+2. Deploy the reviewed worker revision to `linky-media-workers` and use its stable HTTPS origin in `EROME_WORKER_BASE_URL`. Verify that all nine routes use the regions in the table. Confirm that unsigned jobs, version-one and version-two jobs, and invalid claims are rejected without source requests.
 3. Deploy the matching bot revision, set `EROME_MEDIA_ENABLED=true` and restart the single bot process. Check listener health from inside the container: `docker compose exec -T linky node -e "fetch('http://127.0.0.1:8092/healthz').then(r => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))"`.
 4. Run an authorized live check through the actual automatic and manual Discord flows. Start with an empty media cache and include generic album lookup, inspection and disk publication in the measurement. Verify the returned video's metadata, visible playback and seeking separately. Check that the original remains, another user cannot use **Remove**, and the owner's removal releases the final asset reference.
 5. Restart the bot with a retained bound asset and verify that its URL still supports GET, HEAD and seeks. Check attachment fallback for incompatible or oversized originals and for a regional failure. Record the tested commit, source properties and observed timings before changing the status below.
@@ -120,4 +126,26 @@ The first three runs posted an experimental gallery while preparation was still 
 
 The retained setup-workspace records are `linky-six-region-instrumented-discord-result.json`, `linky-six-region-repeat1-discord-result.json`, `linky-six-region-repeat2-discord-result.json` and `linky-six-region-after-ready-discord-result.json`. The [earlier research report](erome-fast-embed-research.md) records the preceding attachment, single-host range and placement experiments; its final decision predates these six-location results.
 
-The generic production live test is pending and must supersede these experiments for production claims. No ten-second guarantee is established for other sources, native 1080p files, worker cold starts, queueing, persistent storage or Discord playback.
+The generic candidate was then tested with six fetch locations on September 15, 2026. These cold runs included album lookup, original-file inspection and durable publication before the Discord reply. They used the same 25,026,293-byte, 1280×720 original with a container duration of 160.121 seconds. Both preserved the exact complete file, with SHA-256 `722463420f013fce39b7afb6f733fce9614390f63c5e5da318601da60cb3e836`.
+
+| Generic candidate run | Valid Discord video metadata |
+| --- | ---: |
+| First cold run | 9.494 s |
+| Cold repeat | 11.717 s |
+
+Both timings started before the original Discord source POST. In the repeat, collection took 7.788 seconds and the reply was created at 9.083 seconds; Discord supplied verified video metadata at 11.717 seconds. The repeat therefore exceeded ten seconds even though the complete file was ready and the reply existed earlier.
+
+The first gallery played to its natural end in Chrome's Discord client at 1280×720, with `currentTime` and `duration` both 160.097007 seconds, `ended=true` and `error=null`. Playback continued across a candidate-service restart. Separate checks after that restart returned HTTP 200 for the retained asset's HEAD, HTTP 206 for a byte range, and the same SHA-256 for the complete file. The setup-workspace records are `linky-regional-generic-trial-2.jsonl` and `linky-regional-generic-trial-3.jsonl`.
+
+Two further runs tested eight locations with protocol v2 and an empty media cache, using the same generic preparation path and source. Both retained the exact 25,026,293-byte original and the SHA-256 above. The complete file was downloaded, inspected and saved before each gallery was posted. Admission probes had called all seven workers before the first source trial, so these measurements do not establish cold-compute performance.
+
+| Eight-location candidate run | Source collection | Gallery creation event | Valid video metadata |
+| --- | ---: | ---: | ---: |
+| First empty-cache run | 5.593 s | 6.452 s | 7.777 s |
+| Empty-cache repeat | 5.534 s | 6.718 s | 10.237 s |
+
+Source collection is the elapsed duration of the collector operation. Gallery creation and metadata are monotonic times from before the original Discord source POST. The metadata event followed the gallery's creation event by 1.325 seconds in the first run and 3.519 seconds in the repeat. The repeat exceeded ten seconds despite similar source collection times. Neither run required an uncertain-POST reconciliation or retry.
+
+The setup-workspace records are `linky-regional-v2-trial-1.jsonl` and `linky-regional-v2-trial-2.jsonl`; the latter also retains the first run's log. These records verify Discord video metadata and full-file integrity. A separate Chrome Discord check then played the first gallery to its natural end at 1280×720, with `currentTime` and `duration` both 160.097007 seconds, `ended=true` and `error=null`. Playback continued across a candidate-service restart.
+
+The six- and eight-location results describe candidate revisions. Validation of the ten-location protocol-v3 revision and hosted-bot activation are pending. No ten-second guarantee is established for other sources, native 1080p files, worker cold starts, queueing, persistent storage or Discord playback.

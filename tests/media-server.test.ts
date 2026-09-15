@@ -5,6 +5,8 @@ import { mkdtemp, open, rm, writeFile, type FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { test } from 'node:test';
+import { request } from 'node:http';
+import { PassThrough } from 'node:stream';
 import { createMediaServer, mediaRange } from '../src/services/MediaServer';
 import { REGIONAL_CLAIM_PATH } from '../src/services/RegionalProtocol';
 
@@ -115,5 +117,117 @@ test('a file handle returned after the request deadline is closed without servin
     await handle.close();
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     assert.equal(dirname(directory), tmpdir()); await rm(directory, { recursive: true });
+  }
+});
+
+const admissionId = 'a'.repeat(32);
+const claimHeaders = { 'x-linky-signature': 'a'.repeat(64), 'Content-Type': 'application/json' };
+async function listen(server: ReturnType<typeof createMediaServer>): Promise<string> {
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const address = server.address(); assert(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}`;
+}
+async function waitFor(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, 'HTTP requests did not reach the expected state');
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+function heldClaim(base: string) {
+  let completed!: (status: number) => void;
+  const result = new Promise<number>(resolve => { completed = resolve; });
+  const outgoing = request(base + REGIONAL_CLAIM_PATH, { method: 'POST', agent: false,
+    headers: { ...claimHeaders, 'Content-Length': '2' } }, response => {
+    response.resume(); response.once('end', () => completed(response.statusCode!));
+  });
+  outgoing.once('error', () => completed(0));
+  outgoing.write('{');
+  return { result, complete() { outgoing.end('}'); }, abort() { outgoing.destroy(); } };
+}
+
+test('two held playback streams leave admission available for nine concurrent bounded claims', async () => {
+  let requests = 0, claims = 0, closedFiles = 0;
+  const streams: PassThrough[] = [];
+  const server = createMediaServer({
+    store: { get: async () => ({ id: admissionId, path: 'private-fixture', size: 1024, sha256: 'b'.repeat(64) }) },
+    claim: body => { claims++; return body === '{}'; },
+    openFile: async () => ({ stat: async () => ({ isFile: () => true, size: 1024 }),
+      createReadStream: () => { const stream = new PassThrough(); streams.push(stream); stream.write('x'); return stream; },
+      close: async () => { closedFiles++; },
+    }) as unknown as FileHandle,
+  });
+  server.on('request', incoming => { if (incoming.url === REGIONAL_CLAIM_PATH) requests++; });
+  const base = await listen(server), playback: Response[] = [], pending: ReturnType<typeof heldClaim>[] = [];
+  try {
+    playback.push(...await Promise.all([fetch(`${base}/media/${admissionId}.mp4`), fetch(`${base}/media/${admissionId}.mp4`)]));
+    assert.ok(playback.every(response => response.status === 200)); assert.equal(streams.length, 2);
+    pending.push(...Array.from({ length: 9 }, () => heldClaim(base)));
+    await waitFor(() => requests === 9);
+    assert.equal(claims, 0, 'Every claim is held before its bounded body is complete');
+    for (const claim of pending) claim.complete();
+    assert.deepEqual(await Promise.all(pending.map(claim => claim.result)), Array(9).fill(204));
+    assert.equal(claims, 9); assert.equal(closedFiles, 0, 'Playback remains active while all claims finish');
+  } finally {
+    for (const claim of pending) claim.abort();
+    await Promise.all(playback.map(response => response.body?.cancel()));
+    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    for (const stream of streams) stream.destroy();
+  }
+  await waitFor(() => closedFiles === 2);
+});
+
+test('media rejects its ninth request and claims their eleventh, then both release independently after abort', async () => {
+  let claimRequests = 0, mediaReads = 0, holdMedia = true;
+  const server = createMediaServer({ store: { get: async () => {
+    mediaReads++;
+    return holdMedia ? new Promise(() => {}) : { id: admissionId, path: 'unused-head', size: 4, sha256: 'b'.repeat(64) };
+  } }, claim: body => body === '{}' });
+  server.on('request', incoming => { if (incoming.url === REGIONAL_CLAIM_PATH) claimRequests++; });
+  const base = await listen(server), claims = Array.from({ length: 10 }, () => heldClaim(base));
+  const controllers = Array.from({ length: 8 }, () => new AbortController());
+  const media = controllers.map(controller => fetch(`${base}/media/${admissionId}.mp4`, { method: 'HEAD', signal: controller.signal })
+    .then(response => response.status, () => 0));
+  try {
+    await waitFor(() => claimRequests === 10 && mediaReads === 8);
+    const claimOverflow = await fetch(base + REGIONAL_CLAIM_PATH, { method: 'POST', headers: claimHeaders, body: '{}' });
+    const mediaOverflow = await fetch(`${base}/media/${admissionId}.mp4`, { method: 'HEAD' });
+    assert.equal(claimOverflow.status, 429); assert.equal(claimOverflow.headers.get('retry-after'), '1');
+    assert.equal(mediaOverflow.status, 429); assert.equal(mediaReads, 8);
+    assert.equal((await fetch(base + '/healthz')).status, 200);
+    assert.equal((await fetch(base + '/anything')).status, 429);
+
+    for (const claim of claims) claim.abort();
+    await Promise.all(claims.map(claim => claim.result));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await fetch(base + REGIONAL_CLAIM_PATH, { method: 'POST', headers: claimHeaders, body: '{}' })).status, 204);
+    assert.equal((await fetch(`${base}/media/${admissionId}.mp4`, { method: 'HEAD' })).status, 429);
+    for (const controller of controllers) controller.abort();
+    await Promise.all(media); await new Promise(resolve => setImmediate(resolve));
+    holdMedia = false;
+    assert.equal((await fetch(`${base}/media/${admissionId}.mp4`, { method: 'HEAD' })).status, 200);
+    assert.equal((await fetch(base + '/anything')).status, 404);
+  } finally {
+    for (const claim of claims) claim.abort();
+    for (const controller of controllers) controller.abort();
+    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('timed-out incomplete claim bodies release all ten claim slots without invoking admission', async () => {
+  let admitted = 0;
+  const server = createMediaServer({ timeoutMs: 200, store: { get: async () => null },
+    claim: body => { admitted++; return body === '{}'; } });
+  const base = await listen(server), pending = Array.from({ length: 10 }, () => heldClaim(base));
+  try {
+    assert.deepEqual(await Promise.all(pending.map(claim => claim.result)), Array(10).fill(0));
+    assert.equal(admitted, 0);
+    const completed = await Promise.all(Array.from({ length: 10 }, async () =>
+      (await fetch(base + REGIONAL_CLAIM_PATH, { method: 'POST', headers: claimHeaders, body: '{}' })).status));
+    assert.deepEqual(completed, Array(10).fill(204)); assert.equal(admitted, 10);
+    assert.equal((await fetch(base + '/anything')).status, 404);
+  } finally {
+    for (const claim of pending) claim.abort();
+    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
