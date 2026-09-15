@@ -48,6 +48,11 @@ export function eromeMediaComponents(media: EromeMedia, content: string,
 }
 
 type MediaMessage = { id?: unknown; channel_id?: unknown; author?: { id?: unknown }; components?: unknown };
+// Discord can round a displayed dimension by one pixel (for example, 480×852 to 479×852).
+function matchesDimension(actual: unknown, expected: number): boolean {
+  return typeof actual === 'number' && Number.isSafeInteger(actual) && actual >= 2 && Math.abs(actual - expected) <= 1;
+}
+
 function matchesMedia(value: MediaMessage, media: EromeMedia): boolean {
   if (!Array.isArray(value.components)) return false;
   return value.components.some(component => component?.type === ComponentType.MediaGallery &&
@@ -56,8 +61,8 @@ function matchesMedia(value: MediaMessage, media: EromeMedia): boolean {
     } }) => {
       const video = item?.media, expected = media.metadata;
       return video?.url === media.url && video.content_type === 'video/mp4' && Boolean(video.proxy_url) &&
-        (video.width === expected.width && video.height === expected.height ||
-          video.width === expected.height && video.height === expected.width);
+        (matchesDimension(video.width, expected.width) && matchesDimension(video.height, expected.height) ||
+          matchesDimension(video.width, expected.height) && matchesDimension(video.height, expected.width));
     }));
 }
 

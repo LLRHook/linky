@@ -8,6 +8,8 @@ Enable regional hosting only after deploying matching bot and worker revisions, 
 
 An original must be at most 24 MiB, five minutes and 60 fps, with H.264/yuv420p video and AAC audio when present. The accepted video profiles are Constrained Baseline, Baseline, Main and High. Inspection accepts one video stream and at most one audio stream, with no attached pictures or other streams. Both average and nominal frame rates must fit the limit. Native dimensions must fit 1920×1080 or 1080×1920; a 720p source stays 720p. This path does not transcode or upscale.
 
+Discord's reported preview dimensions can differ from the source by one pixel. Verification accepts that rounding in either orientation while requiring the exact hosted file URL, an MP4 type and a proxy URL. Larger dimension mismatches still fail verification. This tolerance changes only the metadata check; it does not resize or re-encode the stored original.
+
 The bot resolves the first video from the album and uses a HEAD request to establish its size and strong ETag. It divides the exact size into ten consecutive ranges using `ceil(size / 10)` bytes per part, shortening the last part to the end of the file. At the 24 MiB source limit, each part is about 2.4 MiB. The independent 4 MiB part cap remains in place.
 
 | Part | Fetch location | Worker route |

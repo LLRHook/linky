@@ -65,7 +65,9 @@ test('Gateway verification requires exact channel, target ID, author, gallery UR
   const cases = [packet([gallery()], { channel_id: 'wrong' }), packet([gallery()], { id: 'wrong' }),
     packet([gallery()], { author: { id: 'wrong' } }), packet([gallery({ url: media.url + '?other=1' })]),
     packet([gallery({ content_type: 'image/png' })]), packet([gallery({ proxy_url: '' })]),
-    packet([gallery({ width: 640, height: 360 })]), packet([{ ...gallery(), type: ComponentType.TextDisplay }]),
+    ...[{ width: 640, height: 360 }, { width: 1278 }, { height: 722 }, { width: 1279.5 },
+      { width: '1280' }, { height: null }, { width: 0 }, { height: -1 }, { width: NaN }]
+      .map(fields => packet([gallery(fields)])), packet([{ ...gallery(), type: ComponentType.TextDisplay }]),
     { ...packet([gallery()]), t: 'OTHER_EVENT' }];
   for (const value of cases) {
     const bot = client(), watcher = watchEromeMedia(bot, channelId, media);
@@ -80,6 +82,19 @@ test('Gateway verification requires exact channel, target ID, author, gallery UR
   const pending = watcher.verify(message());
   bot.emit(Events.Raw, packet([gallery({ width: 720, height: 1280 })], { author: undefined }));
   assert.equal(await pending, true); watcher.close();
+});
+
+test('Gateway and REST accept one-pixel rounding in either orientation', async () => {
+  for (const dimensions of [{ width: 1279, height: 720 }, { width: 1280, height: 721 },
+    { width: 721, height: 1279 }, { width: 720, height: 1281 }]) {
+    const bot = client(), watcher = watchEromeMedia(bot, channelId, media);
+    bot.emit(Events.Raw, packet([gallery(dimensions)]));
+    assert.equal(await watcher.verify(message()), true);
+    watcher.close();
+    const restWatcher = watchEromeMedia(client(), channelId, media);
+    assert.equal(await restWatcher.verify(message([gallery(dimensions)])), true);
+    restWatcher.close();
+  }
 });
 
 test('REST inspection and fallback require the same bot, channel and message identity', async context => {
