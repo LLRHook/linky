@@ -72,6 +72,7 @@ main() {
   }
   if [[ "$deployed_revision" == "$revision" ]] && bot_ready; then
     printf 'Already deployed %s; Discord connection verified.\n' "$revision"
+    printf 'LINKY_DEPLOYED_SHA=%s\n' "$revision"
     return 0
   fi
   umask 077
@@ -99,6 +100,7 @@ main() {
   fi
   printf '%s\n' "$revision" > "$repo_dir/.git/linky-deployed-revision"
   printf 'Deployed %s; Discord connection verified.\n' "$revision"
+  printf 'LINKY_DEPLOYED_SHA=%s\n' "$revision"
 }
 
 # Parse every function before main updates this checkout.

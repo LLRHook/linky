@@ -1,0 +1,152 @@
+name: Discord feature request
+run-name: Linky prompt ${{ inputs.job_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Discord interaction ID (one run per request)
+        required: true
+        type: string
+      request:
+        description: Public feature request from an approved server administrator
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: linky-feature-requests
+  cancel-in-progress: false
+
+env:
+  BASE_SHA: ${{ github.sha }}
+  JOB_ID: ${{ inputs.job_id }}
+  FEATURE_REQUEST: ${{ inputs.request }}
+
+jobs:
+  implement:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1 && vars.PROMPT_WORKER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Validate request and prepare trusted instructions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PROMPT_FILE: ${{ runner.temp }}/feature-prompt.txt
+          OPENAI_CONFIGURED: ${{ secrets.LINKY_OPENAI_API_KEY != '' }}
+          PUBLISH_CONFIGURED: ${{ secrets.PROMPT_PUBLISH_TOKEN != '' }}
+        run: node ops/prompt-workflow.mjs prepare
+      - name: Install baseline dependencies before coding
+        run: npm ci --ignore-scripts
+      - name: Implement with Astra Ultra
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e
+        with:
+          openai-api-key: ${{ secrets.LINKY_OPENAI_API_KEY }}
+          model: gpt-6-astra
+          effort: ultra
+          codex-version: 0.154.0
+          safety-strategy: drop-sudo
+          permission-profile: ':workspace'
+          prompt-file: ${{ runner.temp }}/feature-prompt.txt
+          output-file: ${{ runner.temp }}/implementation.txt
+      - name: Export candidate without publishing credentials
+        run: node ops/prompt-candidate.mjs export "$BASE_SHA" > "$RUNNER_TEMP/candidate.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate
+          path: ${{ runner.temp }}/candidate.json
+          retention-days: 7
+          if-no-files-found: error
+
+  review:
+    needs: implement
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Validate patch with baseline controls and bind review
+        env:
+          PROMPT_FILE: ${{ runner.temp }}/review-prompt.txt
+          REVIEW_BINDING: ${{ runner.temp }}/review-binding.json
+        run: node ops/prompt-workflow.mjs review "$RUNNER_TEMP/candidate/candidate.json"
+      - name: Independent Astra Ultra review
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e
+        with:
+          openai-api-key: ${{ secrets.LINKY_OPENAI_API_KEY }}
+          model: gpt-6-astra
+          effort: ultra
+          codex-version: 0.154.0
+          safety-strategy: drop-sudo
+          permission-profile: ':read-only'
+          prompt-file: ${{ runner.temp }}/review-prompt.txt
+          output-file: ${{ runner.temp }}/review.json
+          output-schema: >-
+            {"type":"object","properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"reason":{"type":"string"}},"required":["verdict","reason"],"additionalProperties":false}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: review
+          path: |
+            ${{ runner.temp }}/review.json
+            ${{ runner.temp }}/review-binding.json
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: [implement, review]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: review
+          path: ${{ runner.temp }}/review
+      - name: Publish approved patch, wait for checks, merge, and verify deployment
+        env:
+          PROMPT_PUBLISH_TOKEN: ${{ secrets.PROMPT_PUBLISH_TOKEN }}
+        run: >-
+          node ops/prompt-workflow.mjs publish
+          "$RUNNER_TEMP/candidate/candidate.json"
+          "$RUNNER_TEMP/review/review.json"
+          "$RUNNER_TEMP/review/review-binding.json"
+
+  outcome:
+    needs: [implement, review, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require a completed deployment, including when intake is disabled
+        env:
+          PUBLISHED: ${{ needs.publish.result }}
+        run: test "$PUBLISHED" = success

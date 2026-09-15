@@ -19,9 +19,12 @@ function readChannels(overrides: NodeJS.ProcessEnv, field = 'channelIds') {
   delete env['TRANSLATE_TWEETS'];
   delete env['TRANSLATE_INSTAGRAM'];
   delete env['GOOGLE_TRANSLATE_API_KEY'];
+  delete env['PROMPT_ENABLED'];
+  delete env['PROMPT_GITHUB_TOKEN'];
+  delete env['PROMPT_GUILD_IDS'];
   const result = spawnSync(process.execPath, [
     '--require', require.resolve('tsx/cjs'), '-e',
-    'process.stdout.write(JSON.stringify(require(process.argv[1]).config[process.argv[2]]))',
+    'process.stdout.write(JSON.stringify(require(process.argv[1]).config[process.argv[2]] ?? null))',
     path.resolve(__dirname, '../src/config.ts'), field,
   ], {
     cwd: emptyDirectory,
@@ -35,6 +38,18 @@ test('LINK_CHANNEL_IDS configures one channel', () => {
   const result = readChannels({ LINK_CHANNEL_IDS: SECOND });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), [SECOND]);
+});
+
+test('coding requires explicit enablement, its own credential and a separate server allowlist', () => {
+  for (const overrides of [{}, { PROMPT_ENABLED: 'true' }, { PROMPT_GITHUB_TOKEN: 'private-test' },
+    { PROMPT_ENABLED: 'false', PROMPT_GITHUB_TOKEN: 'private-test' }]) {
+    assert.equal(JSON.parse(readChannels(overrides, 'prompt').stdout), null);
+  }
+  const enabled = { PROMPT_ENABLED: 'true', PROMPT_GITHUB_TOKEN: ' private-test ', PROMPT_GUILD_IDS: `${FIRST},${FIRST}`,
+    LINK_SERVER_IDS: SECOND };
+  assert.deepEqual(JSON.parse(readChannels(enabled, 'prompt').stdout), { token: 'private-test', guildIds: [FIRST] });
+  assert.deepEqual(JSON.parse(readChannels({ ...enabled, PROMPT_GUILD_IDS: '' }, 'prompt').stdout).guildIds, []);
+  assert.notEqual(readChannels({ ...enabled, PROMPT_GUILD_IDS: '*' }, 'prompt').status, 0);
 });
 
 test('an explicitly empty LINK_CHANNEL_IDS leaves the channel allowlist empty', () => {
