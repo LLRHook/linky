@@ -5,7 +5,7 @@ import type { Config } from '../config';
 import { mapLinks, visibleLink } from '../services/LinkTokens';
 import { getProviderCandidates, parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
-import { originalPostUrl } from '../services/SocialLinkService';
+import { originalPostUrl } from '../services/RepostPresentation';
 import { expectedPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
 import { parseEromeUrl } from '../services/Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer, type EromeProgress, type EromeStage } from '../services/EromeDelivery';

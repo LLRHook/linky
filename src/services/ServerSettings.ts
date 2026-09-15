@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
-import { REWRITE_PLATFORMS, type RewritePlatform } from './SocialLinkService';
+import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
 
 export interface ServerPreferences {
   mode?: 'replace' | 'reply';

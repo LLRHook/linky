@@ -13,6 +13,8 @@ const protectedSource = new Set([
   'src/config.ts',
   'src/commands/prompt.ts',
   'src/commands/register.ts',
+  'src/services/linkconfiguration.ts',
+  'src/services/boundedjson.ts',
   'src/services/promptservice.ts',
 ]);
 

@@ -1,8 +1,8 @@
 # YouTube layout: one message
 
-Researched September 11, 2026. The user selected the single-message player and controls after reviewing the tradeoff below. A live Discord REST probe confirmed that a legacy action row preserves the native YouTube video embed.
+Historical design research from September 11, 2026. The selected single-message layout is now shipped; use the [README](../README.md) for current behavior. The user selected the single-message player and controls after reviewing the tradeoff below. A live Discord REST probe confirmed that a legacy action row preserves the native YouTube video embed.
 
-The current screenshot feels fragmented because it repeats Linky's author header, a red embed border, and a YouTube heading. The player and its metadata should read as one object. Posting the companion message immediately might group its author header, but that leaves two cards and depends on client grouping.
+The earlier screenshot felt fragmented because it repeats Linky's author header, a red embed border, and a YouTube heading. The player and its metadata should read as one object. Posting the companion message immediately might group its author header, but that leaves two cards and depends on client grouping.
 
 ## What Discord supports
 

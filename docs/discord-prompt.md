@@ -68,7 +68,7 @@ checks/deployment 45 minutes. Subagents share their parent job's deadline.
 
 The candidate is limited to 30 files and 200,000 bytes of UTF-8 content. It may
 change application TypeScript, add test files, and update feature documentation.
-It cannot edit existing tests, dependencies, startup/wiring, command registration, configuration,
+It cannot edit existing tests, dependencies, startup/wiring, command registration, configuration or its shared parser/response reader,
 deployment files, workflows, or the coding controller. Requests needing these
 changes require ordinary maintainer work. Path checks supplement the independent
 review; passing tests alone does not establish that a feature is secure or correct.

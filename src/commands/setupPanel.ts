@@ -5,7 +5,7 @@ import {
 } from 'discord.js';
 import type { Config } from '../config';
 import type { ServerSettings } from '../services/ServerSettings';
-import { REWRITE_PLATFORMS } from '../services/SocialLinkService';
+import { REWRITE_PLATFORMS } from '../services/LinkConfiguration';
 import { evaluateScope } from '../services/ServerScope';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
 
