@@ -2,7 +2,7 @@
 
 This optional path keeps eligible original MP4 bytes and posts a Discord media gallery after the complete file has been downloaded, inspected and saved. The default remains `EROME_MEDIA_ENABLED=false`, which uses the existing attachment path.
 
-As of September 15, 2026, the dedicated Vercel project `linky-media-workers` has hosted candidate validation with six and eight fetch locations. The current ten-location revision uses protocol version 3 and needs its own live validation before activation in the hosted bot. The measured results below do not establish a ten-second production guarantee.
+Enable regional hosting only after deploying matching bot and worker revisions, provisioning persistent storage and HTTPS, and completing the activation checks below. The dedicated worker project uses the ten-location protocol version 3. The measured results describe the tested source and conditions; they do not establish a ten-second production guarantee.
 
 ## Delivery and limits
 
@@ -107,7 +107,7 @@ Preserve the original path, request body and `X-Linky-Signature` header on the c
 2. Deploy the reviewed worker revision to `linky-media-workers` and use its stable HTTPS origin in `EROME_WORKER_BASE_URL`. Verify that all nine routes use the regions in the table. Confirm that unsigned jobs, version-one and version-two jobs, and invalid claims are rejected without source requests.
 3. Deploy the matching bot revision, set `EROME_MEDIA_ENABLED=true` and restart the single bot process. Check listener health from inside the container: `docker compose exec -T linky node -e "fetch('http://127.0.0.1:8092/healthz').then(r => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))"`.
 4. Run an authorized live check through the actual automatic and manual Discord flows. Start with an empty media cache and include generic album lookup, inspection and disk publication in the measurement. Verify the returned video's metadata, visible playback and seeking separately. Check that the original remains, another user cannot use **Remove**, and the owner's removal releases the final asset reference.
-5. Restart the bot with a retained bound asset and verify that its URL still supports GET, HEAD and seeks. Check attachment fallback for incompatible or oversized originals and for a regional failure. Record the tested commit, source properties and observed timings before changing the status below.
+5. Restart the bot with a retained bound asset and verify that its URL still supports GET, HEAD and seeks. Check attachment fallback for incompatible or oversized originals and for a regional failure. Record the tested commit, source properties and observed timings with the deployment checks.
 
 Turning `EROME_MEDIA_ENABLED` off restores preparation through the attachment path after restart, but also takes existing hosted gallery URLs offline. Keep the data volume if restoring those URLs later. Rotating the shared key requires updating both bot and workers; mismatched deployments fail their claims.
 
@@ -148,4 +148,15 @@ Source collection is the elapsed duration of the collector operation. Gallery cr
 
 The setup-workspace records are `linky-regional-v2-trial-1.jsonl` and `linky-regional-v2-trial-2.jsonl`; the latter also retains the first run's log. These records verify Discord video metadata and full-file integrity. A separate Chrome Discord check then played the first gallery to its natural end at 1280×720, with `currentTime` and `duration` both 160.097007 seconds, `ended=true` and `error=null`. Playback continued across a candidate-service restart.
 
-The six- and eight-location results describe candidate revisions. Validation of the ten-location protocol-v3 revision and hosted-bot activation are pending. No ten-second guarantee is established for other sources, native 1080p files, worker cold starts, queueing, persistent storage or Discord playback.
+The ten-location protocol-v3 candidate was then tested twice with the same source. Both runs began after a candidate-service restart with an empty runtime media cache. The first made no separate per-worker admission probes before the source trial; the workers' cold-compute state was not verified.
+
+| Ten-location candidate run | Source collection | Complete preparation | Gallery creation event | Valid video metadata |
+| --- | ---: | ---: | ---: | ---: |
+| First empty-cache run | 4.888 s | 5.341 s | 6.530 s | 7.832 s |
+| Empty-cache repeat | 4.572 s | 4.976 s | 5.719 s | 7.294 s |
+
+Complete preparation includes album resolution, source collection, original-file inspection and durable publication. It is an elapsed operation duration; gallery creation and metadata remain monotonic times from before the original Discord source POST. Both runs preserved the exact 25,026,293-byte original, its SHA-256 above, 1280×720 resolution and 160.121-second container duration. Both bound the gallery to the saved asset and verified metadata without an uncertain-POST reconciliation or retry.
+
+The records are `linky-regional-v3-trial-1.jsonl` and `linky-regional-v3-trial-2.jsonl` in the setup workspace. Their run IDs are `db4afb36bff0` and `dcf7ad72ef43`; the second file also retains the first run's log. These records establish complete-file integrity and Discord video metadata for the ten-location candidate. UI playback is a separate check, as recorded for earlier galleries above.
+
+The candidate results do not establish hosted-bot activation or a ten-second guarantee for other sources, native 1080p files, worker cold starts, queueing, persistent storage or Discord playback. Operators should repeat the activation checks for their deployed revision and environment.
