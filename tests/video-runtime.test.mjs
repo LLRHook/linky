@@ -30,8 +30,8 @@ test('production FFmpeg prepares a complete, playable MP4 from a generated test 
     { encoding: 'utf8', timeout: 15_000, windowsHide: true }));
     const video = metadata.streams.find(stream => stream.codec_type === 'video');
     assert.equal(video.codec_name, 'h264');
-    assert.equal(video.width, 1280);
-    assert.equal(video.height, 720);
+    assert.equal(video.width, 1920);
+    assert.equal(video.height, 1080);
     assert.equal(metadata.streams.find(stream => stream.codec_type === 'audio').codec_name, 'aac');
     assert(Number(metadata.format.duration) >= 19.9 && Number(metadata.format.duration) <= 20.1);
 
@@ -58,6 +58,51 @@ test('production FFmpeg prepares a complete, playable MP4 from a generated test 
     assert.deepEqual(streamedMetadata, metadata, 'streaming must preserve the complete output and codecs');
     execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-xerror', '-i', output, '-f', 'null', '-'],
       { timeout: 30_000, windowsHide: true, stdio: 'pipe' });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('production FFmpeg keeps native portrait and rotated dimensions without upscaling smaller sources', {
+  skip: process.env.LINKY_VIDEO_RUNTIME_TEST !== 'true', timeout: 90_000,
+}, async () => {
+  const require = createRequire(join(process.cwd(), 'package.json'));
+  const { createVideoAttachment } = require('./dist/services/VideoAttachment.js');
+  const directory = mkdtempSync(join(tmpdir(), 'linky-runtime-test-'));
+  const ffmpeg = args => execFileSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-y', ...args],
+    { timeout: 30_000, windowsHide: true, stdio: 'pipe' });
+  const hasDisplayRotation = execFileSync('ffmpeg', ['-hide_banner', '-h', 'long'],
+    { encoding: 'utf8', windowsHide: true }).includes('-display_rotation');
+  try {
+    for (const [width, height, rotation, expectedWidth, expectedHeight] of [
+      [1080, 1920, 0, 1080, 1920], [720, 1280, 0, 720, 1280], [640, 360, 0, 640, 360],
+      [1920, 1080, 90, 1080, 1920], [2560, 1440, 0, 1920, 1080],
+    ]) {
+      let input = join(directory, 'input.mp4');
+      const output = join(directory, 'output.mp4');
+      ffmpeg(['-f', 'lavfi', '-i', `testsrc2=size=${width}x${height}:rate=12`, '-t', '1',
+        '-c:v', 'mpeg4', '-q:v', '4', '-threads', '2', input]);
+      if (rotation) {
+        const rotated = join(directory, 'rotated.mp4');
+        // Support the local FFmpeg's display_rotation option and production's legacy rotate tag.
+        ffmpeg(hasDisplayRotation ? ['-display_rotation', String(rotation), '-i', input, '-c', 'copy', rotated] :
+          ['-i', input, '-c', 'copy', '-metadata:s:v:0', `rotate=${rotation}`, rotated]);
+        input = rotated;
+        const source = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
+          '-show_entries', 'stream_side_data=rotation', '-of', 'json', input],
+        { encoding: 'utf8', windowsHide: true })).streams[0];
+        assert.equal(source.side_data_list?.[0]?.rotation, rotation, 'fixture must carry display rotation');
+      }
+      const prepared = await createVideoAttachment()(readFileSync(input));
+      assert(prepared?.length, `${width}x${height}, rotation ${rotation} must encode`);
+      writeFileSync(output, prepared);
+      const video = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height,nb_frames,duration', '-of', 'json', output],
+      { encoding: 'utf8', timeout: 15_000, windowsHide: true })).streams[0];
+      assert.equal(video.width, expectedWidth, `${width}x${height}, rotation ${rotation}: width`);
+      assert.equal(video.height, expectedHeight, `${width}x${height}, rotation ${rotation}: height`);
+      assert.equal(Number(video.nb_frames), 12);
+      assert(Math.abs(Number(video.duration) - 1) < 0.01);
+      ffmpeg(['-xerror', '-i', output, '-f', 'null', '-']);
+    }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
