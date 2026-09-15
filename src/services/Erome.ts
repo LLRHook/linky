@@ -68,7 +68,7 @@ export function createEromePreparer({ fetch: request = fetch, convert = createVi
       if (/Please wait a few moments|cf-challenge|Just a moment/i.test(text)) return null;
       const videos = videoSources(text);
       if (!videos.length) return null;
-      const media = await request(videos[0], { redirect: 'error', signal: AbortSignal.timeout(30_000),
+      const media = await request(videos[0], { redirect: 'error', signal: AbortSignal.timeout(120_000),
         headers: { Accept: 'video/mp4', Referer: source.url, 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
       if (!/^video\/mp4(?:;|$)/i.test(media.headers.get('content-type') ?? '')) {
         await media.body?.cancel(); return null;

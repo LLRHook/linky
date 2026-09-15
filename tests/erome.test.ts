@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { createEromePreparer, parseEromeUrl } from '../src/services/Erome';
 import { MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES } from '../src/services/VideoAttachment';
 
@@ -8,6 +8,63 @@ const video = 'https://v54.erome.com/1/Test_123/video.mp4';
 const page = (html = `<video><source src="${video}" type="video/mp4"></video>`) =>
   new Response(html, { headers: { 'content-type': 'text/html; charset=UTF-8' } });
 const media = () => new Response('synthetic video input', { headers: { 'content-type': 'video/mp4' } });
+
+/** Exercise the fetch signal with a progressing stream, advancing only synthetic time. */
+function progressingDownload(t: TestContext, chunks: number) {
+  const originalTimeout = AbortSignal.timeout;
+  const deadlines: { at: number; controller: AbortController }[] = [];
+  const state = { elapsed: 0, abortedAt: 0, completed: false, listeners: 0 };
+  let dispose = () => {};
+  t.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    const controller = new AbortController();
+    deadlines.push({ at: state.elapsed + milliseconds, controller });
+    return controller.signal;
+  });
+  let requests = 0;
+  const request: typeof fetch = async (_url, options) => {
+    if (++requests === 1) return page();
+    const signal = options?.signal;
+    assert.ok(signal, 'The video request must supply its own deadline signal');
+    let sent = 0;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        const abort = () => {
+          state.abortedAt = state.elapsed;
+          dispose();
+          controller.error(signal.reason);
+        };
+        dispose = () => { signal.removeEventListener('abort', abort); state.listeners = 0; };
+        signal.addEventListener('abort', abort, { once: true });
+        state.listeners = 1;
+      },
+      pull(controller) {
+        if (sent === chunks) {
+          state.completed = true;
+          dispose();
+          controller.close();
+          return;
+        }
+        const nextChunk = state.elapsed + 20_000;
+        for (const deadline of [...deadlines].sort((a, b) => a.at - b.at)) {
+          if (deadline.at <= nextChunk && !deadline.controller.signal.aborted) {
+            state.elapsed = deadline.at;
+            deadline.controller.abort(new DOMException('Synthetic download deadline', 'TimeoutError'));
+            if (signal.aborted) return;
+          }
+        }
+        state.elapsed = nextChunk;
+        if (!signal.aborted) controller.enqueue(Uint8Array.of(++sent));
+      },
+      cancel() { dispose(); },
+    }), { headers: { 'content-type': 'video/mp4', 'content-length': String(chunks) } });
+  };
+  return { request, state, restore() {
+    dispose();
+    deadlines.length = 0;
+    t.mock.restoreAll();
+    assert.equal(AbortSignal.timeout, originalTimeout);
+  } };
+}
 
 test('Erome accepts complete public album links and canonicalizes only the host and tracking suffix', () => {
   for (const raw of [source, `${source}/?tracking=1#video`, 'https://EROME.com/a/Test_123']) {
@@ -106,6 +163,28 @@ test('Erome enforces the streamed media byte bound even without Content-Length',
     new Response(stream, { headers: { 'content-type': 'video/mp4' } }),
   convert: async () => { assert.fail('oversized stream converted'); } })(source), null);
   assert.equal(cancelled, true);
+});
+
+test('Erome accepts a progressing video download that takes 60 seconds', async t => {
+  const download = progressingDownload(t, 3);
+  const converted: Buffer[] = [];
+  try {
+    const result = await createEromePreparer({ fetch: download.request,
+      convert: async input => { converted.push(input); return Buffer.from('synthetic output'); } })(source);
+    assert.ok(result, 'A complete 60-second download must reach conversion');
+    assert.deepEqual(converted, [Buffer.from([1, 2, 3])]);
+    assert.deepEqual(download.state, { elapsed: 60_000, abortedAt: 0, completed: true, listeners: 0 });
+  } finally { download.restore(); }
+});
+
+test('Erome stops a still-progressing video download at its 120-second absolute deadline', async t => {
+  const download = progressingDownload(t, 12);
+  try {
+    const result = await createEromePreparer({ fetch: download.request,
+      convert: async () => { assert.fail('An incomplete timed-out video must not be converted'); } })(source);
+    assert.equal(result, null);
+    assert.deepEqual(download.state, { elapsed: 120_000, abortedAt: 120_000, completed: false, listeners: 0 });
+  } finally { download.restore(); }
 });
 
 test('Erome returns null for failed conversions and releases its lock after exceptions', async () => {
