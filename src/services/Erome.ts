@@ -2,7 +2,32 @@ import { AttachmentBuilder } from 'discord.js';
 import { createVideoAttachment, MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES } from './VideoAttachment';
 
 const MAX_HTML_BYTES = 1024 * 1024;
+const MAX_WAITING = 2, WAIT_TIMEOUT_MS = 300_000;
 let busy = false;
+const waiting: { resolve(accepted: boolean): void; expiresAt: number; timer: ReturnType<typeof setTimeout> }[] = [];
+
+function enter(): Promise<boolean> {
+  if (!busy) { busy = true; return Promise.resolve(true); }
+  if (waiting.length >= MAX_WAITING) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const entry = { resolve, expiresAt: Date.now() + WAIT_TIMEOUT_MS, timer: setTimeout(() => {
+      const index = waiting.indexOf(entry);
+      if (index >= 0) { waiting.splice(index, 1); resolve(false); }
+    }, WAIT_TIMEOUT_MS) };
+    waiting.push(entry);
+  });
+}
+
+function leave(): void {
+  while (waiting.length) {
+    const next = waiting.shift()!;
+    clearTimeout(next.timer);
+    const accepted = next.expiresAt > Date.now();
+    next.resolve(accepted);
+    if (accepted) return;
+  }
+  busy = false;
+}
 
 /** Only complete public album URLs are accepted; profiles, redirects and nested URLs are not followed. */
 export function parseEromeUrl(raw: string): { id: string; url: string } | null {
@@ -54,8 +79,7 @@ export function createEromePreparer({ fetch: request = fetch, convert = createVi
 } = {}): (source: string) => Promise<{ file: AttachmentBuilder; videoCount: number } | null> {
   return async raw => {
     const source = parseEromeUrl(raw);
-    if (!source || busy) return null;
-    busy = true;
+    if (!source || !await enter()) return null;
     try {
       const response = await request(source.url, { redirect: 'error', signal: AbortSignal.timeout(10_000),
         headers: { Accept: 'text/html', 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
@@ -79,6 +103,6 @@ export function createEromePreparer({ fetch: request = fetch, convert = createVi
         description: videos.length > 1 ? `First video of ${videos.length} in the linked album.` : 'Video from the linked album.' }),
       videoCount: videos.length } : null;
     } catch { return null; }
-    finally { busy = false; }
+    finally { leave(); }
   };
 }
