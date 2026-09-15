@@ -7,8 +7,10 @@ import { pipeline } from 'node:stream/promises';
 
 export const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
 export const MAX_ATTACHMENT_BYTES = 19 * 1024 * 1024;
+export const MAX_ORIGINAL_VIDEO_BYTES = 24 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 63 * 1024 * 1024, MAX_HEADER_BYTES = 1024 * 1024;
 const MAX_DURATION = 300, ENCODE_TIMEOUT_MS = 150_000;
+const MAX_COPY_FPS = 60, ORIGINAL_PROBE_TIMEOUT_MS = 2_000;
 let busy = false;
 
 export type VideoInput = Buffer | {
@@ -17,7 +19,7 @@ export type VideoInput = Buffer | {
   cancel?: () => void | Promise<void>;
 };
 export type VideoOptions = { maxBytes?: number; onEncoding?: () => void };
-type ProcessOptions = { cwd: string; timeout: number; env: NodeJS.ProcessEnv };
+type ProcessOptions = { cwd: string; timeout: number; env: NodeJS.ProcessEnv; signal?: AbortSignal };
 type Run = (program: string, args: readonly string[], options: ProcessOptions) => Promise<string>;
 type StreamRun = (program: string, args: readonly string[], options: ProcessOptions,
   input: AsyncIterable<Uint8Array>, cancel: () => void) => Promise<string>;
@@ -78,12 +80,17 @@ function frameRate(value: unknown): number {
   return numerator / denominator;
 }
 
-function metadata(text: string): Metadata | null {
+function metadata(text: string, strictStreams = false): Metadata | null {
   const value = JSON.parse(text) as { format?: { duration?: string }; streams?: {
     codec_type?: string; codec_name?: string; profile?: string; pix_fmt?: string; width?: number; height?: number;
     duration?: string; avg_frame_rate?: string; r_frame_rate?: string; nb_frames?: string;
+    disposition?: { attached_pic?: number };
   }[] } | null;
   if (!value || !Array.isArray(value.streams)) return null;
+  if (strictStreams && (value.streams.filter(stream => stream.codec_type === 'video').length !== 1 ||
+    value.streams.filter(stream => stream.codec_type === 'audio').length > 1 ||
+    value.streams.some(stream => !['video', 'audio'].includes(stream.codec_type ?? '') ||
+      stream.disposition?.attached_pic !== 0 || stream.codec_name === ''))) return null;
   const video = value.streams.find(stream => stream.codec_type === 'video');
   const audio = value.streams.find(stream => stream.codec_type === 'audio');
   const durations = [value.format?.duration, ...value.streams.map(stream => stream.duration)]
@@ -108,8 +115,68 @@ function metadata(text: string): Metadata | null {
 function copyable(value: Metadata): boolean {
   return value.codec === 'h264' && value.pixelFormat === 'yuv420p' &&
     /^(?:Constrained Baseline|Baseline|Main|High)$/.test(value.profile) &&
-    (!value.audioCodec || value.audioCodec === 'aac') && value.fps <= 60 &&
+    (!value.audioCodec || value.audioCodec === 'aac') && value.fps <= MAX_COPY_FPS &&
     Math.max(value.width, value.height) <= 1920 && Math.min(value.width, value.height) <= 1080;
+}
+
+function processEnvironment(): NodeJS.ProcessEnv {
+  return { PATH: process.env.PATH, LANG: 'C', LC_ALL: 'C',
+    ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot } : {}) };
+}
+
+function probeArguments(path: string, strictStreams = false): string[] {
+  return [
+    '-v', 'error', '-max_alloc', '134217728', '-protocol_whitelist', 'file', '-format_whitelist', 'mov',
+    '-enable_drefs', '0', '-use_absolute_path', '0', '-threads', '2',
+    '-show_entries', 'format=duration:stream=codec_type,codec_name,profile,pix_fmt,width,height,duration,avg_frame_rate,r_frame_rate,nb_frames' +
+      (strictStreams ? ':stream_disposition=attached_pic' : ''),
+    '-of', 'json', path,
+  ];
+}
+
+export type OriginalVideoMetadata = { width: number; height: number; duration: number; fps: number };
+
+/** Inspect complete source bytes without changing them; the caller establishes download integrity. */
+export function createOriginalVideoInspector({ execute = run }: { execute?: Run } = {}):
+  (input: Buffer, options?: { signal?: AbortSignal }) => Promise<OriginalVideoMetadata | null> {
+  return async (input, { signal } = {}) => {
+    if (!Buffer.isBuffer(input) || !input.length || input.length > MAX_ORIGINAL_VIDEO_BYTES || signal?.aborted) return null;
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    let directory: string | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      directory = await mkdtemp(join(tmpdir(), 'linky-original-video-'));
+      const source = join(directory, 'input.mp4');
+      await writeFile(source, input, { mode: 0o600, flag: 'wx', signal: controller.signal });
+      controller.signal.throwIfAborted();
+      timer = setTimeout(cancel, ORIGINAL_PROBE_TIMEOUT_MS);
+      const output = await new Promise<string>((resolve, reject) => {
+        const abort = () => reject(new Error('Original video inspection cancelled'));
+        controller.signal.addEventListener('abort', abort, { once: true });
+        Promise.resolve().then(() => {
+          controller.signal.throwIfAborted();
+          return execute('ffprobe', probeArguments(source, true), {
+            cwd: directory!, timeout: ORIGINAL_PROBE_TIMEOUT_MS, env: processEnvironment(), signal: controller.signal,
+          });
+        }).then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', abort));
+      });
+      controller.signal.throwIfAborted();
+      if (Buffer.byteLength(output) > 128 * 1024) return null;
+      const inspected = metadata(output, true);
+      if (!inspected || !copyable(inspected) || inspected.cadence > MAX_COPY_FPS) return null;
+      const { width, height, duration, fps } = inspected;
+      return { width, height, duration, fps };
+    } catch { return null; }
+    finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+      controller.abort();
+      if (directory && dirname(resolve(directory)) === resolve(tmpdir()) && basename(directory).startsWith('linky-original-video-')) {
+        await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
+      }
+    }
+  };
 }
 
 /** Only an entire moov box before any mdat makes a bounded prefix eligible for pipe input. */
@@ -202,14 +269,9 @@ export function createVideoAttachment({ execute = run, executeStream = runStream
     try {
       directory = await mkdtemp(join(tmpdir(), 'linky-video-'));
       const source = join(directory, 'input.mp4'), output = join(directory, 'preview.mp4');
-      const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: 'C', LC_ALL: 'C',
-        ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot } : {}) };
-      const probe = async (path: string) => metadata(await execute('ffprobe', [
-        '-v', 'error', '-max_alloc', '134217728', '-protocol_whitelist', 'file', '-format_whitelist', 'mov',
-        '-enable_drefs', '0', '-use_absolute_path', '0', '-threads', '2',
-        '-show_entries', 'format=duration:stream=codec_type,codec_name,profile,pix_fmt,width,height,duration,avg_frame_rate,r_frame_rate,nb_frames',
-        '-of', 'json', path,
-      ], { cwd: directory!, timeout: 15_000, env }));
+      const env = processEnvironment();
+      const probe = async (path: string) => metadata(await execute('ffprobe', probeArguments(path),
+        { cwd: directory!, timeout: 15_000, env }));
       let total = 0, complete = Buffer.isBuffer(input), streaming = false;
       let pendingChunk: Uint8Array | undefined;
       const initial: Uint8Array[] = [];

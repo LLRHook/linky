@@ -61,6 +61,7 @@ interface Options {
   /** Fetch the member and channel permissions fresh; never use cached interaction permissions. */
   canManageMessages(record: RepostRecord, userId: string): Promise<boolean>;
   removeRelated?: (record: RepostRecord) => Promise<void>;
+  afterReplacementRemoved?: (record: RepostRecord) => Promise<void>;
   regenerate?: Regenerate;
   now?: () => number;
   write?: (path: string, value: string) => Promise<void>;
@@ -294,6 +295,8 @@ export class RepostRegistry {
       catch { this.report(); return false; }
       try { if (message) await message.delete(); }
       catch (error) { if (!missing(error)) { this.report(); return false; } }
+      try { await this.options.afterReplacementRemoved?.({ ...record }); }
+      catch { this.report(); return false; }
       await this.change(next => {
         next.remove = next.remove.filter(value => value !== id);
         if (!next.refresh.includes(id)) this.drop(next, id);

@@ -104,6 +104,33 @@ async function boundedBody(response: Response, limit: number): Promise<Buffer | 
   } finally { reader.releaseLock(); }
 }
 
+/** Resolve only video source elements from one public album, with the same bounds for both delivery paths. */
+export async function resolveEromeAlbum(raw: string, request: typeof fetch = fetch): Promise<{
+  album: string; source: string; videoCount: number;
+} | null> {
+  const album = parseEromeUrl(raw);
+  if (!album) return null;
+  try {
+    const response = await request(album.url, { redirect: 'error', signal: AbortSignal.timeout(10_000),
+      headers: { Accept: 'text/html', 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
+    if (!/^text\/html(?:;|$)/i.test(response.headers.get('content-type') ?? '')) {
+      await response.body?.cancel(); return null;
+    }
+    const html = await boundedBody(response, MAX_HTML_BYTES);
+    if (!html) return null;
+    const text = html.toString('utf8');
+    if (/Please wait a few moments|cf-challenge|Just a moment/i.test(text)) return null;
+    const videos = videoSources(text);
+    return videos.length ? { album: album.url, source: videos[0], videoCount: videos.length } : null;
+  } catch { return null; }
+}
+
+/** Share the existing preparation limit across attachment and original-media delivery. */
+export async function withEromePreparation<T>(work: () => Promise<T>): Promise<T | null> {
+  if (!await enter()) return null;
+  try { return await work(); } finally { leave(); }
+}
+
 /** Prepare the first distinct video, without cookies, redirects, persistent media or an unbounded work queue. */
 export function createEromePreparer({ fetch: request = fetch, convert = createVideoAttachment() }: {
   fetch?: typeof fetch; convert?: (input: VideoInput, options?: VideoOptions) => Promise<Buffer | null>;
@@ -112,19 +139,10 @@ export function createEromePreparer({ fetch: request = fetch, convert = createVi
     if (!await enter()) return null;
     try {
       progress('downloading');
-      const response = await request(url, { redirect: 'error', signal: AbortSignal.timeout(10_000),
-        headers: { Accept: 'text/html', 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
-      if (!/^text\/html(?:;|$)/i.test(response.headers.get('content-type') ?? '')) {
-        await response.body?.cancel(); return null;
-      }
-      const html = await boundedBody(response, MAX_HTML_BYTES);
-      if (!html) return null;
-      const text = html.toString('utf8');
-      if (/Please wait a few moments|cf-challenge|Just a moment/i.test(text)) return null;
-      const videos = videoSources(text);
-      if (!videos.length) return null;
+      const resolved = await resolveEromeAlbum(url, request);
+      if (!resolved) return null;
       const abort = new AbortController();
-      const media = await request(videos[0], { redirect: 'error', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120_000)]),
+      const media = await request(resolved.source, { redirect: 'error', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120_000)]),
         headers: { Accept: 'video/mp4', Referer: url, 'User-Agent': 'Linky/1.0 (+https://linkybot.dev)' } });
       const length = media.headers.get('content-length');
       const size = length === null ? undefined : Number(length);
@@ -150,7 +168,7 @@ export function createEromePreparer({ fetch: request = fetch, convert = createVi
       })();
       try {
         const output = await convert({ stream, size, cancel }, { maxBytes, onEncoding: () => progress('preparing') });
-        return complete && output?.length && output.length <= maxBytes ? { bytes: output, videoCount: videos.length } : null;
+        return complete && output?.length && output.length <= maxBytes ? { bytes: output, videoCount: resolved.videoCount } : null;
       } finally {
         if (!complete) cancel();
         reader.releaseLock();
