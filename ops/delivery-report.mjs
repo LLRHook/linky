@@ -117,7 +117,7 @@ function createDeliveryReport(rows, options = {}) {
       minimumCompleted: { required: minimum, observed: done.length, met: done.length >= minimum }, requirements, rejected },
     notes: ['Descriptive statistics of this selected local sample, not representative production percentiles. Small-sample p95 may equal the maximum.',
       'p95 uses nearest rank. Stage durations sum same-named spans per completed attempt; different stages can overlap.',
-      'Confirmed means Discord supplied matching preview metadata. Playback needs a separate client check.'] };
+      'Confirmed records the delivery check for that path, such as preview metadata or delivered text. Playback needs a separate client check.'] };
 }
 
 function argumentsFor(args) {
