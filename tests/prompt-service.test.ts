@@ -150,3 +150,59 @@ test('latest status can recover a lost Discord response without resubmitting, an
   assert.equal(f.calls.length, calls);
   assert.equal(f.calls.filter(call => call.init.method === 'POST').length, 1);
 });
+
+function streamedResponse(payload: unknown, declaredBytes?: number, status = 200) {
+  const bytes = Buffer.from(JSON.stringify(payload));
+  let consumed = 0, cancelled = false;
+  const response = new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (consumed === bytes.length) { controller.close(); return; }
+      const end = Math.min(consumed + 16_384, bytes.length);
+      controller.enqueue(bytes.subarray(consumed, end)); consumed = end;
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 }), {
+    status, headers: declaredBytes === undefined ? {} : { 'content-length': String(declaredBytes) },
+  });
+  return { response, consumed: () => consumed, cancelled: () => cancelled, size: bytes.length };
+}
+
+for (const endpoint of ['workflow-list', 'run', 'pulls']) for (const declared of [true, false]) {
+  test(`oversized ${declared ? 'declared' : 'chunked'} ${endpoint} metadata preserves confirmed prompt progress`, async () => {
+    const limit = 4 * 1024 * 1024;
+    const unused = declared ? 'small body with an oversized header' : 'x'.repeat(limit * 2);
+    const payload = endpoint === 'workflow-list' ? { workflow_runs: [run()], unused }
+      : endpoint === 'run' ? { ...run('completed', 'success'), unused } : [{ number: 42, unused }];
+    const body = streamedResponse(payload, declared ? 1024 * 1024 * 1024 : undefined);
+    const f = fixture(url => {
+      if (url.endsWith('/dispatches')) return new Response(null, { status: 204 });
+      if (url.endsWith('/actions/runs/123')) return endpoint === 'run' ? body.response : Response.json(run());
+      if (url.includes('/pulls?')) return endpoint === 'pulls' ? body.response : Response.json([]);
+      return endpoint === 'workflow-list' ? body.response : Response.json({ workflow_runs: [run()] });
+    });
+    await f.service.submit(input);
+    if (endpoint === 'run') {
+      assert.equal((await f.service.status(id, guildId)).state, 'running');
+      f.advance(10_001);
+    }
+    const result = await f.service.status(id, guildId);
+    assert.equal(result.state, endpoint === 'workflow-list' ? 'queued' : 'running');
+    assert.equal(result.prUrl, undefined);
+    assert.equal(body.cancelled(), true);
+    if (declared) assert.equal(body.consumed(), 0);
+    else assert(body.consumed() <= limit + 16_384 && body.consumed() < body.size);
+    assert.equal(f.calls.filter(call => call.init.method === 'POST').length, 1, 'a failed status read must never dispatch again');
+  });
+}
+
+test('dispatch and status HTTP errors cancel unread bodies without exposing or changing confirmed state', async () => {
+  const dispatch = streamedResponse({ private: 'unneeded dispatch error' }, undefined, 502);
+  const status = streamedResponse({ private: 'unneeded status error' }, undefined, 503);
+  const f = fixture(url => url.endsWith('/dispatches') ? dispatch.response : status.response);
+  assert.equal((await f.service.submit(input)).state, 'uncertain');
+  assert.equal((await f.service.status(id, guildId)).state, 'uncertain');
+  for (const body of [dispatch, status]) {
+    assert.equal(body.consumed(), 0);
+    assert.equal(body.cancelled(), true);
+  }
+});

@@ -5,7 +5,7 @@ import {
 import type { Config } from '../config';
 import type { ServerSettings } from '../services/ServerSettings';
 import { describeScope, evaluateScope } from '../services/ServerScope';
-import type { RewritePlatform } from '../services/SocialLinkService';
+import type { RewritePlatform } from '../services/LinkConfiguration';
 import { parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';

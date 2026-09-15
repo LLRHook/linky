@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, MessageFlags, PermissionFlagsBits, InteractionContextType, ApplicationIntegrationType, type ChatInputCommandInteraction } from 'discord.js';
 import type { Config } from '../config';
 import type { ServerPreferences, ServerSettings } from '../services/ServerSettings';
-import { REWRITE_PLATFORMS } from '../services/SocialLinkService';
+import { REWRITE_PLATFORMS } from '../services/LinkConfiguration';
 import { describeScope, evaluateScope } from '../services/ServerScope';
 
 export const PLATFORM_NAMES = { x: 'X', instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube',

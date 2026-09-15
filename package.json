@@ -1,7 +1,7 @@
 {
   "name": "linky",
   "version": "1.0.0",
-  "description": "Linky fixes Discord social link previews and translates non-English tweets.",
+  "description": "Linky fixes Discord social previews, preserves playable media and translates tweet text and Instagram captions.",
   "main": "dist/index.js",
   "author": "Victor Ivanov <victor.n.ivanov@gmail.com>",
   "license": "MIT",
