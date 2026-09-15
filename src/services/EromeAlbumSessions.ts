@@ -189,8 +189,8 @@ export class EromeAlbumSessions {
         const control = this.control({ ...session, loaded });
         const details = await this.options.details?.(context.trace?.id, session.messageId).catch(() => []) ?? [];
         const controls = next.map(component => component.type === ComponentType.TextDisplay
-          ? { ...component, content: component.content.replace(/\n-# \d+ of \d+\+? items · Original media\. Album kept\.$/,
-            `\n-# ${loaded.length} of ${session.fingerprints.length}${session.truncated ? '+' : ''} items · Original media. Album kept.`) }
+          ? { ...component, content: component.content.replace(/\n-# \d+ of \d+\+? items · Original media\. Full album: Original post\.$/,
+            `\n-# ${loaded.length} of ${session.fingerprints.length}${session.truncated ? '+' : ''} items · Original media. Full album: Original post.`) }
           : component).filter(component => component.type !== ComponentType.ActionRow ||
           !component.components.some(button => 'custom_id' in button && (button.custom_id === `${PREFIX}${session.id}` ||
             details.length && button.custom_id.startsWith('linky:details:'))));

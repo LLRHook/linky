@@ -134,6 +134,9 @@ test('append binds before editing and preserves every prior item and existing co
   assert.ok(customIds(f.components()).includes('linky:remove'));
   assert.equal(f.bound.has(mediaAt(1).id), true);
   assert.deepEqual(f.cancelled, ['reservation-1']);
+  const caption = f.components().find(component => component.type === ComponentType.TextDisplay);
+  assert.ok(caption && caption.type === ComponentType.TextDisplay);
+  assert.equal(caption.content, 'Original album caption.\n-# 2 of 3 items · Original media. Full album: Original post.');
 });
 
 test('concurrent clicks prepare one item and tell the second requester to wait privately', async t => {

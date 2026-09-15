@@ -123,6 +123,29 @@ test('manual slash sessions need no original-message fetch but context actions k
   assert.deepEqual(f.reads, ['channel', 'member']);
 });
 
+test('automatic Replace album sessions survive original deletion but still require current scope and permissions', async () => {
+  const replaced: AlbumOwner = { ...owner, sourceMessageId: undefined };
+  const f = fixture();
+  f.deleteSource();
+  assert.equal(await f.allowed(replaced, f.interaction), true);
+  assert.deepEqual(f.reads, ['channel', 'member'], 'The committed replacement owns the session; its original was deliberately deleted');
+  for (const revoke of [
+    (current: ReturnType<typeof fixture>) => current.setEnabled(false),
+    (current: ReturnType<typeof fixture>) => current.setPreferences({ eromeChannels: 'all', channelIds: [] }),
+    (current: ReturnType<typeof fixture>) => current.setPreferences({ eromeChannels: 'all', platforms: { erome: false } }),
+    (current: ReturnType<typeof fixture>) => current.setPreferences({ eromeChannels: 'age-restricted' }),
+    (current: ReturnType<typeof fixture>) => { current.options.settings.rewritePlatforms = []; },
+    (current: ReturnType<typeof fixture>) => current.setRequester(P.ViewChannel),
+    (current: ReturnType<typeof fixture>) => current.setBot(P.ViewChannel, P.SendMessages, P.EmbedLinks),
+  ]) {
+    const current = fixture();
+    current.deleteSource();
+    current.afterMember(async () => revoke(current));
+    assert.equal(await current.allowed(replaced, current.interaction), false);
+    assert.ok(!current.reads.includes('source'));
+  }
+});
+
 test('cancellation and policy or requester revocation during awaited reads cannot return an old permission decision', async () => {
   for (const point of ['afterChannel', 'afterMember', 'afterSource'] as const) {
     for (const change of [
