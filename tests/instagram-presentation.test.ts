@@ -57,19 +57,18 @@ test('deduplicated captions preserve other platforms and escape caption formatti
   assert.ok(result.content.includes('<https://example.com/extra>'));
 });
 
-test('long captions retain their complete text in an attachment and respect message limits', async () => {
-  const post = { ...caption, text: 'A complete English caption. '.repeat(180) };
-  const result = await addInstagramCaptions<CaptionPresentation>(source, { content: fixed }, async () => post, 1000);
-  assert.ok(result.content.length <= 1000);
+test('long captions are short excerpts even when the full caption fits Discord', async () => {
+  const post = { ...caption, text: 'A complete English caption.\n\n'.repeat(35) + 'END OF CAPTION' };
+  const result = await addInstagramCaptions<CaptionPresentation>(source, { content: fixed }, async () => post, 1900);
+  const excerpt = result.content.match(/\*\*\n([^\n]+)\n-#/)?.[1];
+  assert.ok(excerpt && excerpt.length <= 300 && excerpt.endsWith('…'));
+  assert.ok(!result.content.includes('END OF CAPTION'));
   assert.ok(result.content.startsWith(gallery));
-  assert.equal(result.translationFiles?.length, 1);
-  const attachment = result.translationFiles![0].attachment as Buffer;
-  assert.ok(attachment.toString().includes(post.text));
-  assert.ok(result.content.includes('Full English Instagram caption attached.'));
+  assert.equal(result.translationFiles, undefined);
   assert.ok(result.content.includes('Translated from Estonian'));
 });
 
-test('a long caption URL stays intact in the attachment with a visible source-language label', async () => {
+test('a caption URL crossing the cut is omitted without creating a partial link or attachment', async () => {
   const url = 'https://example.com/' + 'a'.repeat(1400);
   const post = { ...caption, text: `See ${url}` };
   const result = await addInstagramCaptions<CaptionPresentation>(source, { content: fixed }, async () => post, 1000);
@@ -77,5 +76,33 @@ test('a long caption URL stays intact in the attachment with a visible source-la
   assert.ok(result.content.includes('Translated from Estonian'));
   assert.equal(result.content.includes('https://example.com'), false);
   assert.equal((result.content.match(/</g) ?? []).length, (result.content.match(/>/g) ?? []).length);
-  assert.ok((result.translationFiles![0].attachment as Buffer).toString().includes(url));
+  assert.ok(result.content.includes('See…'));
+  assert.equal(result.translationFiles, undefined);
+});
+
+test('caption truncation keeps emoji clusters intact', async () => {
+  const post = { ...caption, text: 'A'.repeat(280) + '👨‍👩‍👧‍👦'.repeat(30) };
+  const result = await addInstagramCaptions(source, { content: fixed }, async () => post, 1900);
+  const excerpt = result.content.match(/\*\*\n([^\n]+)\n-#/)![1];
+  assert.ok(excerpt.length <= 300 && excerpt.endsWith('…'));
+  assert.match(excerpt, /^A{280}(?:👨‍👩‍👧‍👦)+…$/);
+});
+
+test('multiple captions share a tight message budget and all retain their labels and media', async () => {
+  const posts = ['One', 'Two', 'Three'].map(shortcode => ({ ...caption, shortcode,
+    sourceUrl: `https://www.instagram.com/p/${shortcode}/`, mediaOnlyUrl: `https://g.instagram7.com/p/${shortcode}/`,
+    text: 'A long caption. '.repeat(80) }));
+  const original = posts.map(post => post.sourceUrl).join('\n');
+  const content = original.replaceAll('www.instagram.com', 'www.instagram7.com');
+  const result = await addInstagramCaptions(original, { content }, async url => posts.find(post => post.sourceUrl === url)!, 510);
+  assert.ok(result.content.length <= 510);
+  assert.deepEqual(result.instagramSources, posts.map(post => post.sourceUrl));
+  assert.equal(result.content.split('Translated from Estonian').length, 4);
+  for (const post of posts) assert.ok(result.content.includes(post.mediaOnlyUrl));
+  assert.equal((result.content.match(/…/g) ?? []).length, 3);
+});
+
+test('insufficient room for the author and language label preserves the normal preview', async () => {
+  const presentation = { content: fixed };
+  assert.equal(await addInstagramCaptions(source, presentation, async () => caption, 90), presentation);
 });
