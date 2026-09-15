@@ -5,7 +5,7 @@ import { REWRITE_PLATFORMS } from '../services/SocialLinkService';
 import { describeScope, evaluateScope } from '../services/ServerScope';
 
 export const PLATFORM_NAMES = { x: 'X', instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube',
-  bluesky: 'Bluesky', reddit: 'Reddit', twitch: 'Twitch clips' };
+  bluesky: 'Bluesky', reddit: 'Reddit', twitch: 'Twitch clips', erome: 'Erome (age-restricted channels)' };
 
 export function effectivePreferences(config: Config, preferences: ServerPreferences) {
   const platforms = config.rewritePlatforms.filter(platform => preferences.platforms?.[platform] !== false);
@@ -34,6 +34,7 @@ export const data = new SlashCommandBuilder()
   .addBooleanOption(option => option.setName('bluesky').setDescription('Fix Bluesky post previews in this server.'))
   .addBooleanOption(option => option.setName('reddit').setDescription('Fix Reddit post previews in this server.'))
   .addBooleanOption(option => option.setName('twitch').setDescription('Fix Twitch clip previews in this server.'))
+  .addBooleanOption(option => option.setName('erome').setDescription('Preview the first Erome video in age-restricted channels; keep the album.'))
   .addBooleanOption(option => option.setName('translate_tweets').setDescription('Translate non-English tweets when enabled by the bot operator.'))
   .addBooleanOption(option => option.setName('translate_instagram').setDescription('Translate non-English Instagram captions when enabled by the bot operator.'))
   .addStringOption(option => option.setName('youtube_display').setDescription('Choose the extra details shown with YouTube previews.')

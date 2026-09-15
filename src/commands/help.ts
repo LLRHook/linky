@@ -30,6 +30,7 @@ export async function execute(interaction: ChatInputCommandInteraction, settings
         ? 'Post a supported link and I will reply with a cleaned link or available preview, keeping your original message.'
         : 'Post a supported link and I will repost it with a cleaned link or available preview and credit you. The original is removed only after the replacement succeeds.',
       'Automatic fixing checks for a useful preview before removing an original. Video playback can still depend on Discord and the provider.',
+      'Erome previews the first video as an MP4 reply in age-restricted server channels, always keeping the album. Limits: 64 MiB input and five minutes. Only the original sharer or manual requester can use Remove.',
       preferences.translateTweets ? 'Non-English tweets are shown in English with a small source-language label when translation is available.' : 'X translation is currently disabled.',
       preferences.translateInstagram ? 'Non-English Instagram captions are shown in English with a small source-language label when translation and media are available.' : 'Instagram caption translation is currently disabled.',
       'I stay silent when joining a server.',

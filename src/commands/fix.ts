@@ -7,25 +7,32 @@ import { getProviderCandidates, parseSocialUrl } from '../services/SocialProvide
 import { parseYouTubeUrl } from '../services/YouTube';
 import { originalPostUrl } from '../services/SocialLinkService';
 import { expectedPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
+import { parseEromeUrl } from '../services/Erome';
+import { eromeNotice, findEromeLinks, isAgeRestricted, verifyEromeAttachment, type EromePreparer } from '../services/EromeDelivery';
 
 const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall];
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
 export const data = new SlashCommandBuilder().setName('fix').setDescription('Make a link preview on request, without enabling automatic fixing.')
   .setIntegrationTypes(...installs).setContexts(...contexts)
-  .addStringOption(option => option.setName('link').setDescription('An Instagram, TikTok, X, YouTube, Bluesky, Reddit post or Twitch clip URL.').setRequired(true).setMaxLength(1500));
+  .addStringOption(option => option.setName('link').setDescription('A supported social post, clip or Erome album URL.').setRequired(true).setMaxLength(1500));
 export const contextData = new ContextMenuCommandBuilder().setName('Fix with Linky').setType(ApplicationCommandType.Message)
   .setIntegrationTypes(...installs).setContexts(...contexts);
 
 /** Only URL tokens supplied by this explicit interaction are used; nothing is fetched from chat history. */
 export function manualLinks(content: string, config: Pick<Config, 'rewritePlatforms'>): { source: string; fixed: string }[] {
   const links = new Map<string, { source: string; fixed: string }>();
+  let eromeAdded = false;
   mapLinks(content, (url, position) => {
     if (!visibleLink(content, position)) return url;
     const social = parseSocialUrl(url);
     const youtube = parseYouTubeUrl(url);
+    const erome = parseEromeUrl(url);
     if (social && config.rewritePlatforms.includes(social.platform)) {
       const fixed = getProviderCandidates(social)[0]?.url;
       if (fixed) links.set(social.sourceUrl, { source: originalPostUrl(social.sourceUrl), fixed: originalPostUrl(fixed) });
+    } else if (erome && config.rewritePlatforms.includes('erome') && !eromeAdded) {
+      links.set(erome.url, { source: erome.url, fixed: `<${erome.url}>` });
+      eromeAdded = true;
     } else if (youtube) {
       // Native video links do not need an API key, statistics, or a cleanup journal.
       links.set(youtube.url, { source: youtube.url, fixed: youtube.url });
@@ -36,14 +43,27 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
 }
 
 export async function execute(interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
-  config: Config, { verifyPreview = waitForPreviews, observePreview }: {
+  config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
+    prepareErome?: EromePreparer;
+    verifyErome?: typeof verifyEromeAttachment;
   } = {}): Promise<void> {
   const content = interaction.isChatInputCommand() ? interaction.options.getString('link', true) : interaction.targetMessage.content;
+  if (findEromeLinks(content).length && (!interaction.inGuild() || !isAgeRestricted(interaction.channel))) {
+    await interaction.reply({ content: 'Use Erome previews in an age-restricted server channel or a thread in one.',
+      flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+    return;
+  }
   const links = manualLinks(content, config);
   if (!links.length) {
-    await interaction.reply({ content: 'No supported post link found. Choose an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, or a Twitch clip. Links inside <angle brackets>, spoilers or code are skipped.',
+    await interaction.reply({ content: 'No supported post link found. Choose an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, a Twitch clip, or an Erome album in an age-restricted channel. Links inside <angle brackets>, spoilers or code are skipped.',
+      flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+    return;
+  }
+  const eromeSource = links.find(link => parseEromeUrl(link.source))?.source;
+  if (eromeSource && !interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles)) {
+    await interaction.reply({ content: 'Linky needs Attach Files permission to post an Erome video preview.',
       flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
     return;
   }
@@ -53,13 +73,26 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
   const buttons = links.map((link, index) => new ButtonBuilder().setStyle(ButtonStyle.Link)
     .setLabel(index ? `Original post ${index + 1}` : 'Original post').setURL(link.source));
   buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Remove').setCustomId('linky:remove-manual'));
+  const erome = eromeSource && prepareErome ? await prepareErome(eromeSource).catch(() => null) : null;
+  if (eromeSource && (!erome || !isAgeRestricted(interaction.channel))) {
+    await interaction.editReply({ content: 'The Erome video could not be prepared. The album is unchanged. Limits: 64 MiB input and 5 minutes; unavailable, protected or busy media is skipped.',
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)], allowedMentions: { parse: [] } });
+    return;
+  }
   let rendered = links.map(link => link.fixed).join('\n');
+  if (erome) rendered += eromeNotice(erome.videoCount);
   let message = await interaction.editReply({ content: rendered,
+    ...(erome ? { files: [erome.file] } : {}),
     components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)], allowedMentions: { parse: [] } });
   const original = links.map(link => link.source).join('\n');
   const attempted = new Set<string>();
   let expected = expectedPreviews(original, rendered);
-  let preview = await verifyPreview(message, expected);
+  const eromeVerified = erome ? await verifyErome(message, erome.file) : false;
+  const verify = async (): Promise<PreviewResult> => {
+    const result = expected.length ? await verifyPreview(message, expected) : { ok: eromeVerified, missing: [], videoMetadata: false };
+    return { ...result, ok: result.ok && (!erome || eromeVerified), videoMetadata: result.videoMetadata || eromeVerified };
+  };
+  let preview = await verify();
   observePreview?.(expected, preview);
   for (let attempt = 0; !preview.ok && attempt < 2; attempt++) {
     const recovered = nextProviderContent(rendered, preview.missing, attempted);
@@ -67,10 +100,11 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     rendered = recovered;
     message = await interaction.editReply({ content: rendered, embeds: [], allowedMentions: { parse: [] } });
     expected = expectedPreviews(original, rendered);
-    preview = await verifyPreview(message, expected);
+    preview = await verify();
     observePreview?.(expected, preview);
   }
-  if (!preview.ok) await interaction.editReply({ content: rendered + '\n-# A useful preview could not be confirmed. The original post link is available below.', allowedMentions: { parse: [] } });
+  if (!preview.ok) await interaction.editReply({ content: rendered + '\n-# A useful preview could not be confirmed. The original post link is available below.',
+    ...(erome && !eromeVerified ? { attachments: [] } : {}), allowedMentions: { parse: [] } });
 }
 
 export async function removeManual(interaction: ButtonInteraction): Promise<boolean> {
@@ -78,10 +112,9 @@ export async function removeManual(interaction: ButtonInteraction): Promise<bool
   const message = interaction.message;
   // Discord supplies this metadata; a custom ID or display name is never authority.
   const owner = message.interactionMetadata?.user.id;
-  const moderator = interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages);
   if (message.author.id !== interaction.client.user.id || message.webhookId !== interaction.applicationId ||
-      !owner || (interaction.user.id !== owner && !moderator)) {
-    await interaction.reply({ content: 'Only the person who requested this preview or a channel moderator can remove it.',
+      !owner || interaction.user.id !== owner) {
+    await interaction.reply({ content: 'Only the person who requested this preview can remove it.',
       flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
     return true;
   }
