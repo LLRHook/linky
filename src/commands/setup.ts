@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, MessageFlags, PermissionFlagsBits, InteractionContextType, ApplicationIntegrationType, type ChatInputCommandInteraction } from 'discord.js';
 import type { ServerSettings } from '../services/ServerSettings';
 import type { Config } from '../config';
-import { REWRITE_PLATFORMS } from '../services/SocialLinkService';
+import { REWRITE_PLATFORMS } from '../services/LinkConfiguration';
 import { buildSetupPanel } from './setupPanel';
 
 export const data = new SlashCommandBuilder()

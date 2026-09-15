@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { mkdir, open, rename, unlink } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
+import { atomicWrite } from './AtomicWrite';
 import type { APIActionRowComponent, APIComponentInMessageActionRow, APIEmbed, APIMessageTopLevelComponent, MessageEditOptions } from 'discord.js';
 import { controlsForYouTube, mergeYouTubeControls, removeYouTubeControls } from './YouTubeControls';
 
@@ -32,21 +31,6 @@ interface Options {
   now?: () => number;
   write?: (path: string, content: string) => Promise<void>;
   onError?: (error: Error) => void;
-}
-
-async function atomicWrite(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    const file = await open(temporary, 'wx', 0o600);
-    try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
-    await rename(temporary, path);
-    // Persist the rename on hosts that support opening directories (the bot runs on Linux).
-    if (process.platform !== 'win32') {
-      const directory = await open(dirname(path), 'r');
-      try { await directory.sync(); } finally { await directory.close(); }
-    }
-  } finally { await unlink(temporary).catch(() => {}); }
 }
 
 function missing(error: unknown): boolean {

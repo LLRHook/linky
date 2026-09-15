@@ -23,6 +23,13 @@ test('validates source edits, deletions, new tests and documentation', () => {
   assert.throws(() => validateCandidate({ files: [] }), /no changes/);
 });
 
+test('protects shared configuration parsing from coding candidates in either case', () => {
+  for (const file of ['src/services/LinkConfiguration.ts', 'src/services/LINKCONFIGURATION.ts',
+    'src/services/BoundedJson.ts', 'src/services/BOUNDEDJSON.ts']) {
+    assert.throws(() => validateCandidate(candidate(file), baseline), /protected path/);
+  }
+});
+
 test('rejects malformed envelopes, entries and content types', () => {
   for (const input of [null, [], {}, { files: {} }, { files: [], extra: true }, { files: Array(1) },
     { files: [null] }, { files: [['src/example.ts', 'text']] },

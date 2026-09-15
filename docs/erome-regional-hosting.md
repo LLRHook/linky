@@ -1,6 +1,6 @@
 # Regional hosting for Erome originals
 
-This optional path keeps eligible original MP4 bytes and posts a Discord media gallery after the complete file has been downloaded, inspected and saved. The default remains `EROME_MEDIA_ENABLED=false`, which uses the existing attachment path.
+This optional path keeps eligible original MP4 bytes and posts a Discord media gallery after the complete file has been downloaded, inspected and saved. Self-hosted instances default to `EROME_MEDIA_ENABLED=false`, which uses the attachment path. Hosted Linky has regional delivery enabled; the running Hostinger revision was verified as `6f1c192` on September 15, 2026.
 
 Enable regional hosting only after deploying matching bot and worker revisions, provisioning persistent storage and HTTPS, and completing the activation checks below. The dedicated worker project uses the ten-location protocol version 3. The measured results describe the tested source and conditions; they do not establish a ten-second production guarantee.
 
@@ -113,7 +113,7 @@ Preserve the original path, request body and `X-Linky-Signature` header on the c
 
 Turning `EROME_MEDIA_ENABLED` off restores preparation through the attachment path after restart, but also takes existing hosted gallery URLs offline. Keep the data volume if restoring those URLs later. Rotating the shared key requires updating both bot and workers; mismatched deployments fail their claims.
 
-## Measured results and pending validation
+## Historical measurements and validation scope
 
 Earlier experiments tested an already resolved 25,026,293-byte, 1280×720 source. They began with an empty media cache and measured monotonic time from before the original Discord POST until a gateway event contained matching video dimensions, `video/mp4` type and proxy metadata.
 
@@ -162,3 +162,7 @@ Complete preparation includes album resolution, source collection, original-file
 The records are `linky-regional-v3-trial-1.jsonl` and `linky-regional-v3-trial-2.jsonl` in the setup workspace. Their run IDs are `db4afb36bff0` and `dcf7ad72ef43`; the second file also retains the first run's log. These records establish complete-file integrity and Discord video metadata for the ten-location candidate. UI playback is a separate check, as recorded for earlier galleries above.
 
 The candidate results do not establish hosted-bot activation or a ten-second guarantee for other sources, native 1080p files, worker cold starts, queueing, persistent storage or Discord playback. Operators should repeat the activation checks for their deployed revision and environment.
+
+## Hosted verification on September 15, 2026
+
+[PR #30](https://github.com/LLRHook/linky/pull/30) shipped the one-pixel metadata tolerance without changing source bytes. After deployment, an existing user-owned GAMBA post successfully retried, and a fresh ordinary link automatically produced a video gallery. The 480×852 source played through its full 33.526 seconds in the checked Chrome Discord client with no player error, while Discord reported 479×852 preview metadata. That observation validates this source and client; it is not a fleet-wide latency or playback guarantee. The earlier experiments above retain their original conditions.

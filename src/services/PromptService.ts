@@ -1,10 +1,13 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { readBoundedJson } from './BoundedJson';
 
 const REPOSITORY = 'LLRHook/linky';
 const WORKFLOW = 'discord-prompt.yml';
 const API = `https://api.github.com/repos/${REPOSITORY}`;
 const DAY = 86_400_000;
+// The workflow listing contains up to 100 full run objects.
+const MAX_GITHUB_RESPONSE_BYTES = 4 * 1024 * 1024;
 const ACTIVE = new Set(['queued', 'running', 'uncertain']);
 const STATES = new Set(['queued', 'running', 'succeeded', 'failed', 'uncertain']);
 
@@ -93,6 +96,7 @@ export class PromptService {
         });
         if (response.status === 204) job.state = 'queued';
         else if (response.status >= 400 && response.status < 500) job.state = 'failed';
+        void response.body?.cancel().catch(() => {});
       } catch { /* A timeout does not prove the request was rejected. Reconcile through status. */ }
       this.save();
       return this.view(job);
@@ -121,25 +125,29 @@ export class PromptService {
 
   private request(path: string, init: RequestInit = {}): Promise<Response> {
     return this.fetcher(`${API}${path}`, {
-      ...init, redirect: 'error', signal: AbortSignal.timeout(10_000),
+      ...init, redirect: 'error', signal: init.signal ?? AbortSignal.timeout(10_000),
       headers: { Authorization: `Bearer ${this.options.token}`, Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' },
     });
+  }
+
+  private async json<T>(path: string): Promise<T | null> {
+    const signal = AbortSignal.timeout(10_000);
+    const response = await this.request(path, { signal });
+    if (!response.ok) { void response.body?.cancel().catch(() => {}); return null; }
+    return await readBoundedJson(response, MAX_GITHUB_RESPONSE_BYTES, signal) as T;
   }
 
   private async refresh(job: Job): Promise<void> {
     if (!ACTIVE.has(job.state) || this.now() - (this.checkedAt.get(job.id) ?? 0) < 10_000) return;
     this.checkedAt.set(job.id, this.now());
     try {
-      let run: Run | undefined;
+      let run: Run | null | undefined;
       if (job.runId) {
-        const response = await this.request(`/actions/runs/${job.runId}`);
-        if (!response.ok) return;
-        run = await response.json() as Run;
+        run = await this.json<Run>(`/actions/runs/${job.runId}`);
       } else {
-        const response = await this.request(`/actions/workflows/${WORKFLOW}/runs?event=workflow_dispatch&branch=main&per_page=100`);
-        if (!response.ok) return;
-        const body = await response.json() as { workflow_runs: Run[] };
+        const body = await this.json<{ workflow_runs: Run[] }>(`/actions/workflows/${WORKFLOW}/runs?event=workflow_dispatch&branch=main&per_page=100`);
+        if (!body) return;
         run = body.workflow_runs.find(entry => entry.display_title === `Linky prompt ${job.id}`);
       }
       if (!run || run.event !== 'workflow_dispatch' || run.head_branch !== 'main' ||
@@ -147,12 +155,9 @@ export class PromptService {
       job.runId = run.id;
       job.runUrl = `https://github.com/${REPOSITORY}/actions/runs/${run.id}`;
       job.state = run.status === 'completed' ? (run.conclusion === 'success' ? 'succeeded' : 'failed') : 'running';
-      const response = await this.request(`/pulls?state=all&head=LLRHook:prompt/${job.id}&base=main`);
-      if (response.ok) {
-        const pulls = await response.json() as { number: number }[];
-        if (pulls[0] && Number.isSafeInteger(pulls[0].number) && pulls[0].number > 0) {
-          job.prUrl = `https://github.com/${REPOSITORY}/pull/${pulls[0].number}`;
-        }
+      const pulls = await this.json<{ number: number }[]>(`/pulls?state=all&head=LLRHook:prompt/${job.id}&base=main`);
+      if (pulls?.[0] && Number.isSafeInteger(pulls[0].number) && pulls[0].number > 0) {
+        job.prUrl = `https://github.com/${REPOSITORY}/pull/${pulls[0].number}`;
       }
       this.save();
     } catch { /* Keep the last known state if GitHub is temporarily unavailable. */ }

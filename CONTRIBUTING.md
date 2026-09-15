@@ -1,12 +1,14 @@
 # Contributing to Linky
 
-Use Node.js 22+ and `npm ci`. Tests need no Discord token. For a local bot, copy `.env.example` to `.env`, set its token, then run `npm run dev`. Commands register automatically at startup. Enable a test server with `/setup enabled:True` or configure a test channel as described in the [README](README.md).
+Use Node.js 22+ and `npm ci`. Tests need no Discord token. For a local bot, copy `.env.example` to `.env`, set its token, then run `npm run dev`. Commands register automatically at startup. Open `/setup` and use the private panel to enable a test server and select its channels, as described in the [README](README.md).
 
 Before opening a PR, run:
 
 ```bash
 npm test
 npm run build
+npm run check:workers
+npm audit --audit-level=low
 bash tests/deploy.test.sh
 ```
 
@@ -25,5 +27,7 @@ Verify missing, delayed, unrelated and provider-error embeds before source delet
 Use current public Bluesky, Reddit and Twitch clip examples for new-provider checks. Profiles, indexes, lookalike hosts and unsupported share forms must stay unchanged. A successful HTTP status alone is not a usable preview. Record first-party provider sources and the actual metadata observed, including failures.
 
 Test `/fix` and **Apps → Fix with Linky** in guild and user installation contexts. They must never alter the source or enable passive DM processing. Reject forged Remove/Retry actions; test source edits/deletes and manually deleted bot output across registry restarts. Registry records contain ownership IDs and cleanup intent, never message content. Keep legacy settings readable and document rollback compatibility.
+
+The security baseline and exact scanner commands are in [SECURITY_AUDIT.md](SECURITY_AUDIT.md). CI scans the complete Git history with Gitleaks and checks npm advisories. Test-only secret-scan suppressions must identify the exact synthetic fixture; never suppress a whole credential rule. Dependency and base-image updates arrive through Dependabot and still require the normal checks.
 
 For bugs, include expected and actual behavior, a reproducible public link where possible, sanitized logs and any Discord error code. Report security issues privately to `victor.n.ivanov@gmail.com`.

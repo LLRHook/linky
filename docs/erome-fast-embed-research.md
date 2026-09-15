@@ -1,8 +1,8 @@
 # Erome preview latency findings
 
-Research and live experiments completed September 15, 2026. The ten-second cold-preview goal remains unmet. The reported source is 720p, and the owner chose to preserve its resolution rather than upscale it.
+Historical experiments from September 15, 2026, before the ten-location regional implementation shipped. The later [regional hosting guide](erome-regional-hosting.md) describes the active implementation and subsequent measurements. In the experiments below, the ten-second cold-preview target was not met. The reported source is 720p, and the owner chose to preserve its resolution rather than upscale it.
 
-Discord displayed a native 1080p fixture from a local Hostinger file, but both Media Gallery and Open Graph delivery failed on the uncached Erome source. In those tests Discord requested the whole file and stopped near ten seconds, while the source needed roughly 38 seconds to arrive. Parallel ranges, HTTP/2 and three Vercel regions did not improve the transfer rate. Keep the working attachment path; the measurements below explain why the proposed relay was not integrated.
+Discord displayed a native 1080p fixture from a local Hostinger file, but both Media Gallery and Open Graph delivery failed on the uncached Erome source. In those tests Discord requested the whole file and stopped near ten seconds, while the source needed roughly 38 seconds to arrive. Parallel ranges, HTTP/2 and three Vercel regions did not improve the transfer rate. The measurements below explain why this earlier relay candidate was not integrated. Later regional work superseded that decision; attachment fallback remains available.
 
 ## What the exact album provides
 
