@@ -1,4 +1,5 @@
 import { parseSocialUrl } from './SocialProviders';
+import { readBoundedJson } from './BoundedJson';
 
 export interface TweetTranslation {
   text: string;
@@ -128,11 +129,12 @@ export async function fetchTweetTranslation(
 ): Promise<TweetTranslation | null> {
   if (!/^\d{1,20}$/.test(statusId)) return null;
   try {
+    const signal = AbortSignal.timeout(5_000);
     const response = await fetchJson(`https://api.fxtwitter.com/2/status/${statusId}?lang=en`, {
-      signal: AbortSignal.timeout(5_000),
+      signal, redirect: 'error',
     });
-    if (!response.ok) return null;
-    const json = record(await response.json());
+    if (!response.ok) { void response.body?.cancel().catch(() => {}); return null; }
+    const json = record(await readBoundedJson(response, 1024 * 1024, signal));
     const result = json.code === 200 ? parseStatus(json.status, statusId) : null;
     for (let post = result; post; post = post.quote ?? null) {
       if (post.language !== 'English') return result;

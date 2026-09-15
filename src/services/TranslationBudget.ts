@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { mkdir, open, rename, unlink } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
+import { atomicWrite } from './AtomicWrite';
 
 interface Options {
   dailyLimit?: number;
@@ -12,20 +11,6 @@ interface BudgetRecord { day: string; characters: number }
 const calendar = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit',
 });
-
-async function atomicWrite(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    const file = await open(temporary, 'wx', 0o600);
-    try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
-    await rename(temporary, path);
-    if (process.platform !== 'win32') {
-      const directory = await open(dirname(path), 'r');
-      try { await directory.sync(); } finally { await directory.close(); }
-    }
-  } finally { await unlink(temporary).catch(() => {}); }
-}
 
 function parseRecord(value: unknown): BudgetRecord {
   const entry = value as Partial<BudgetRecord> | null;

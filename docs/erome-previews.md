@@ -23,7 +23,7 @@ Only exact HTTPS `erome.com` or `www.erome.com` album links are accepted; profil
 - The dedicated store holds at most 10 GiB and 4,096 files, with at most 64 message references per asset. Referenced files survive restarts and are not evicted to admit another video. Unknown files or unsafe storage block new admissions. Removing the final bound preview releases its asset; unbound publishes expire after 15 minutes, with bounded cleanup during startup, operations and a timer.
 - Recent successful originals can be reused by album for five minutes, with at most two cached asset references and eight consumers per shared job. The complete bytes remain in the persistent store. Larger, incompatible, unavailable or rejected regional preparations use the attachment path. Mixed-platform messages also use the existing attachment publisher.
 
-The feature defaults off. See [regional hosting and live-test status](erome-regional-hosting.md) for configuration and the limits of the experimental timings.
+Regional hosting defaults off for self-hosting and is enabled on hosted Linky. See [regional hosting and live-test status](erome-regional-hosting.md) for configuration and the scope of the recorded measurements.
 
 ### Attachment fallback
 

@@ -20,11 +20,11 @@ Those observations concern these posts at the time of testing. A successful meta
 
 ## Activation checks
 
-1. Complete the billing, dedicated key and quota setup in the [README](../README.md#self-host). Keep Instagram translation disabled until the key is restricted and the daily Cloud quota is set. Preserve the usage journal across restarts. Publish the caption-processing privacy notice before enabling hosted translation.
+1. Complete the billing, dedicated key and quota setup in the [self-hosting guide](self-hosting.md). Keep Instagram translation disabled until the key is restricted and the daily Cloud quota is set. Preserve the usage journal across restarts. Publish the caption-processing privacy notice before enabling hosted translation.
 2. With the real API, check a mixed English/Estonian caption, an English-only caption and paragraphs with hard wraps, handles, URLs and hashtags. Confirm all foreign prose is translated and tokens remain intact. API failure, unknown language and an exhausted budget must leave normal preview handling available.
 3. In an authorized Discord test channel, check a healthy image, Reel and video posted through `/p/`. Confirm the source-language label, no duplicate original caption, intact image/player and actual playback. Native video metadata alone is insufficient proof of playback.
 4. Check a post with broken upstream media. Its original must remain, with one English-caption output and working Original post/Remove controls. Edit or delete the source and verify the tracked output follows it.
 5. Disable `/settings translate_instagram`, disable Instagram, and change source text while lookup is pending. No stale translated output should remain. Test Replace and Reply modes without broadening server/channel scope.
 6. Confirm long captions have a complete attachment and a visible language label, including a URL longer than the message preview. Confirm caption URLs never create extra embeds or override the gallery preview expectation.
 
-The feature defaults off. Complete the real API and Discord checks above before enabling it on the hosted bot; provider-gallery checks alone do not establish translation accuracy.
+Self-hosted instances default to translation off. Hosted Linky has caption translation enabled as of September 15, 2026; each server can disable it in `/settings`. Repeat the API and Discord checks above after changes to this integration. Provider-gallery checks alone do not establish translation accuracy.

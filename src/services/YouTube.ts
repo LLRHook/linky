@@ -1,3 +1,4 @@
+import { readBoundedJson } from './BoundedJson';
 import { mapLinks, visibleLink } from './LinkTokens';
 import type { APIEmbed, APIEmbedField } from 'discord.js';
 
@@ -90,9 +91,7 @@ export function createYouTubeLookup(apiKey: string, options: LookupOptions = {})
         const response = await fetchJson(`https://www.googleapis.com/youtube/v3/${comment ? 'commentThreads' : 'videos'}?${new URLSearchParams(parameters)}`, {
           headers: { 'X-Goog-Api-Key': apiKey }, signal: controller.signal, redirect: 'error',
         });
-        const text = await response.text();
-        if (text.length > 128_000) throw new Error('Oversized YouTube response');
-        const body = record(JSON.parse(text));
+        const body = record(await readBoundedJson(response, 128_000, controller.signal));
         if (!response.ok) {
           const errors = record(body.error).errors;
           const quota = Array.isArray(errors) && errors.some(error =>

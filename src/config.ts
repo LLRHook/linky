@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { dirname, join } from 'node:path';
-import { parseDiscordIds, parseRewritePlatforms, type RewritePlatform } from './services/SocialLinkService';
+import { parseDiscordIds, parseRewritePlatforms, type RewritePlatform } from './services/LinkConfiguration';
 import type { EromeMediaSettings } from './services/EromeMediaRuntime';
 
 export interface Config {

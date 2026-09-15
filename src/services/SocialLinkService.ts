@@ -8,9 +8,6 @@ import {
   MessageFlags,
   MessageType,
   PermissionFlagsBits,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
 } from 'discord.js';
 import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
@@ -25,36 +22,23 @@ import { evaluateScope } from './ServerScope';
 import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
 import { expectedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
 import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
-import { findReplyContext, formatReplyExcerpt, type ReplyContext } from './ReplyContext';
+import { findReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from './EromeDelivery';
 import { fitsAttachmentBudget, guildAttachmentBudget } from './AttachmentLimits';
 import { eromeMediaComponents, onlyEromeLinks, watchEromeMedia, sendEromeMedia, messageHasEromeMedia,
   type EromeMediaPreparer, type EromeMediaBinding } from './EromeMedia';
+import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
+import { formatLinkRepost, repostControls } from './RepostPresentation';
+
+export { REWRITE_PLATFORMS, parseRewritePlatforms, parseDiscordIds, type RewritePlatform } from './LinkConfiguration';
+export { originalPostUrl, formatLinkRepost, repostControls } from './RepostPresentation';
 
 const MAX_CONTENT_LENGTH = 2_000;
 const INSTAGRAM_PREVIEW_NOTICE = '\n-# Instagram preview could not be verified; the original post is still here.';
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 const RECENT_MESSAGE_LIMIT = 1_000;
-const DISCORD_ID = /^[1-9]\d{16,19}$/;
-
-export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome'] as const;
-export type RewritePlatform = typeof REWRITE_PLATFORMS[number];
-
-/** Reject an unknown name instead of silently leaving that platform unrewritten. */
-export function parseRewritePlatforms(value: string | undefined): readonly RewritePlatform[] {
-  if (!value?.trim()) return REWRITE_PLATFORMS;
-  const platforms = new Set<RewritePlatform>();
-  for (const entry of value.split(',')) {
-    const name = entry.trim();
-    if (!(REWRITE_PLATFORMS as readonly string[]).includes(name)) {
-      throw new Error(`REWRITE_PLATFORMS must be a comma-separated subset of ${REWRITE_PLATFORMS.join(', ')}, with no empty entries.`);
-    }
-    platforms.add(name as RewritePlatform);
-  }
-  return [...platforms];
-}
 
 /** Rewrite supported post URLs, retaining surrounding text and fragments. */
 export function rewriteSocialLinks(content: string, platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS): string {
@@ -68,48 +52,6 @@ export function rewriteSocialLinks(content: string, platforms: readonly RewriteP
 
 export function bypassLinky(content: string): boolean {
   return /(?:^|\s)!nolinky(?=\s|$)/i.test(content);
-}
-
-export function originalPostUrl(source: string): string {
-  const url = new URL(source);
-  url.hash = '';
-  return url.href;
-}
-
-export function repostControls(original: string, { retry = false, remove = true } = {}) {
-  const urls = new Set<string>();
-  mapLinks(original, (url, position) => {
-    if (visibleLink(original, position)) {
-      const source = parseSocialUrl(url)?.sourceUrl ?? parseYouTubeUrl(url)?.url ?? parseEromeUrl(url)?.url;
-      if (source) urls.add(originalPostUrl(source));
-    }
-    return url;
-  });
-  const buttons = [...urls].slice(0, retry ? 3 : 4).map((url, index) => new ButtonBuilder()
-    .setStyle(ButtonStyle.Link).setLabel(index ? `Original post ${index + 1}` : 'Original post').setURL(url));
-  if (retry) buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Retry preview').setCustomId('linky:retry'));
-  if (remove) buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Remove').setCustomId('linky:remove'));
-  return buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)] : [];
-}
-
-/** Quote plain leading context without pulling apart existing Markdown or URLs. */
-export function formatLinkRepost(content: string, authorId: string, reply?: ReplyContext): string {
-  const attribution = reply ? reply.authorId ? ` (reply to <@${reply.authorId}>)` : ' (reply)' : '';
-  const credit = `> **Shared by <@${authorId}>**${attribution}${reply ? '\n' + formatReplyExcerpt(reply.excerpt) : ''}`;
-  const fallback = `${credit}\n${content}`;
-  // Start at the first URL, even if it is unrelated to X. Never extract a nested URL.
-  const firstUrl = /[a-z][a-z\d+.-]*:\/\//i.exec(content);
-  if (!firstUrl || firstUrl.index === 0) return fallback;
-  const prefix = content.slice(0, firstUrl.index);
-  // Replace one ordinary separator with the layout's line break. Preserve more
-  // complex whitespace by leaving the entire body unchanged beneath the credit.
-  if (!/[ \n]$/.test(prefix)) return fallback;
-  const context = prefix.slice(0, -1);
-  const lines = context.split('\n');
-  if (/[\\`*_~|<>\[\](){}#]/.test(context) || lines.some((line) =>
-    !line || /^\s|\s$/.test(line) || /^(?:[-+]|\d+[.)])\s/.test(line)
-  )) return fallback;
-  return `${credit}\n${lines.map((line) => `> ${line}`).join('\n')}\n${content.slice(firstUrl.index)}`;
 }
 
 /** Build one compact card, or captions alongside native video/mixed-link previews. */
@@ -185,16 +127,6 @@ async function translateRepost(
 
 function isSpoiler(attachment: Attachment): boolean {
   return attachment.spoiler || attachment.flags.has(AttachmentFlags.IsSpoiler);
-}
-
-/** Reject malformed scope instead of accidentally processing unrelated channels or servers. */
-export function parseDiscordIds(value: string | undefined, label = 'Channel IDs'): string[] {
-  if (!value?.trim()) return [];
-  const ids = value.split(',').map(entry => entry.trim());
-  if (ids.some(id => !DISCORD_ID.test(id))) {
-    throw new Error(`${label} must be comma-separated Discord IDs (17-20 digits), with no empty entries.`);
-  }
-  return [...new Set(ids)];
 }
 
 /** Discord.js URL uploads do not check HTTP status, so download and verify first. */

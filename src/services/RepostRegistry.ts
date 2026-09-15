@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { mkdir, open, rename, unlink } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
+import { atomicWrite } from './AtomicWrite';
 import { MessageFlags, type InteractionDeferReplyOptions, type InteractionEditReplyOptions, type InteractionReplyOptions } from 'discord.js';
 
 export const REMOVE_REPOST_CUSTOM_ID = 'linky:remove';
@@ -83,20 +82,6 @@ function validRecord(value: unknown): value is RepostRecord {
   return Object.keys(record).length === FIELDS.length && Object.keys(record).every(key => FIELDS.includes(key)) &&
     FIELDS.slice(0, 5).every(key => typeof record[key] === 'string' && ID.test(record[key])) &&
     record.sourceId !== record.replacementId && (record.mode === 'reply' || record.mode === 'replace');
-}
-
-async function atomicWrite(path: string, value: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    const file = await open(temporary, 'wx', 0o600);
-    try { await file.writeFile(value); await file.sync(); } finally { await file.close(); }
-    await rename(temporary, path);
-    if (process.platform !== 'win32') {
-      const directory = await open(dirname(path), 'r');
-      try { await directory.sync(); } finally { await directory.close(); }
-    }
-  } finally { await unlink(temporary).catch(() => {}); }
 }
 
 function changed(before: SourceMessage, after: SourceMessage, record: RepostRecord): boolean {
