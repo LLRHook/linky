@@ -1,7 +1,6 @@
-import { AttachmentBuilder, escapeMarkdown, type APIEmbed } from 'discord.js';
+import { escapeMarkdown, type AttachmentBuilder, type APIEmbed } from 'discord.js';
 import { parseInstagramUrl, type InstagramTranslation } from './InstagramTranslation';
 import { mapLinks, visibleLink } from './LinkTokens';
-import { splitDescription } from './TweetPresentation';
 
 export interface CaptionPresentation {
   content: string;
@@ -10,6 +9,8 @@ export interface CaptionPresentation {
 }
 
 const languages = new Intl.DisplayNames(['en'], { type: 'language' });
+const characters = new Intl.Segmenter('en', { granularity: 'grapheme' });
+const CAPTION_LIMIT = 300;
 
 function label(post: InstagramTranslation): string {
   return `Translated from ${post.languages.map(code => languages.of(code) ?? code).join(', ')}`;
@@ -19,6 +20,21 @@ function label(post: InstagramTranslation): string {
 function literal(text: string): string {
   return text.split(/(https?:\/\/[^\s<>`]+)/gi).map((part, index) => index % 2
     ? `<${part}>` : escapeMarkdown(part)).join('');
+}
+
+/** One short paragraph, without splitting emoji, Markdown escapes or caption URLs. */
+function excerpt(text: string, budget: number): string {
+  const compact = text.replace(/\s+/g, ' ').trim(), limit = Math.min(CAPTION_LIMIT, budget);
+  const full = literal(compact);
+  if (full.length <= limit) return full;
+  const urls = [...compact.matchAll(/https?:\/\/[^\s<>`]+/gi)];
+  const boundaries = [...characters.segment(compact)].map(part => part.index).filter(index => index < limit);
+  for (const end of boundaries.reverse()) {
+    const crossing = urls.find(url => url.index < end && url.index + url[0].length > end);
+    const prefix = literal(compact.slice(0, crossing?.index ?? end).trimEnd());
+    if (prefix.length < limit) return `${prefix}…`;
+  }
+  return '…';
 }
 
 /** Preserve the native media, replacing its provider caption with English message text. */
@@ -55,25 +71,16 @@ export async function addInstagramCaptions<T extends CaptionPresentation>(
   });
   if (!included.size) return presentation;
   const values = [...included.values()];
-  const captions = values.map(post => `**[@${post.username}](<https://www.instagram.com/${post.username}/>)**\n` +
-    `${literal(post.text)}\n-# ${label(post)}`).join('\n\n');
+  const frames = values.map(post => ({
+    heading: `**[@${post.username}](<https://www.instagram.com/${post.username}/>)**\n`,
+    footer: `\n-# ${label(post)}`,
+  }));
+  const budget = Math.floor((contentLimit - media.length - 2 - (values.length - 1) * 2 -
+    frames.reduce((length, frame) => length + frame.heading.length + frame.footer.length, 0)) / values.length);
+  if (budget < 1) return presentation;
+  const captions = values.map((post, index) =>
+    `${frames[index].heading}${excerpt(post.text, budget)}${frames[index].footer}`).join('\n\n');
   const metadata = { instagramSources: values.map(post => post.sourceUrl),
     instagramVideos: values.filter(post => post.mediaTypes.includes('GraphVideo')).map(post => post.sourceUrl) };
-  const content = `${media}\n\n${captions}`;
-  if (content.length <= contentLimit) return { ...presentation, content, ...metadata };
-  const sourceLanguages = [...new Set(values.flatMap(post => post.languages))];
-  const note = `\n-# ${label({ ...values[0], languages: sourceLanguages })}. Full English Instagram caption attached.`;
-  const budget = contentLimit - media.length - note.length - 3;
-  if (budget < 100 || (presentation.translationFiles?.length ?? 0) >= 10) return presentation;
-  // URLs can exceed the entire preview budget. Preserve them in the attachment,
-  // keeping the shortened message free of partial links and unlabeled translations.
-  const excerpt = `**@${values[0].username}**\n` + literal(values[0].text.replace(/https?:\/\/[^\s<>`]+/gi, '[link in attachment]'));
-  const preview = splitDescription(excerpt, Math.min(budget, 700))?.[0];
-  if (!preview) return presentation;
-  const fullText = values.map(post => `@${post.username}\n${post.sourceUrl}\n${label(post)}\n\n${post.text}`).join('\n\n');
-  const file = new AttachmentBuilder(Buffer.from(fullText), {
-    name: 'instagram-translation.txt', description: 'Full English Instagram captions and source-language labels.',
-  });
-  return { ...presentation, content: `${media}\n\n${preview}…${note}`,
-    translationFiles: [...presentation.translationFiles ?? [], file], ...metadata };
+  return { ...presentation, content: `${media}\n\n${captions}`, ...metadata };
 }
