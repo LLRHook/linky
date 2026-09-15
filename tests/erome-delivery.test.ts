@@ -61,8 +61,9 @@ function automatic(content = ALBUM) {
     reference: null, deletable: true, fetch: async () => source as unknown as Message,
     delete: async () => { state.originalDeleted = true; },
   };
-  const run = (options: AutoOptions = {}) => createLinkRepostHandler([], { info() {}, warn() {}, error() {} },
-    async () => assert.fail('Source attachment downloads are forbidden for album replies'), {
+  const run = (options: AutoOptions = {}, copyAttachment: Parameters<typeof createLinkRepostHandler>[2] =
+    async () => assert.fail('Unexpected source attachment download')) => createLinkRepostHandler([], { info() {}, warn() {}, error() {} },
+    copyAttachment, {
       serverEnabled: () => state.enabled, serverPreferences: () => state.preferences,
       prepareErome: async url => { calls.push(url); return prepared(); },
       verifyErome: async () => true,
@@ -123,7 +124,7 @@ test('automatic Erome allows ordinary channels and threads when the server choos
     assert.deepEqual(f.calls, [ALBUM]);
     assert.equal(f.outputs.length, 1);
     assert.equal(f.outputs[0].options.files?.length, 1);
-    assert.equal(f.state.originalDeleted, false);
+    assert.equal(f.state.originalDeleted, true);
   }
 });
 
@@ -155,7 +156,7 @@ test('automatic Erome respects a revoked ordinary-channel policy before publishi
   assert.equal(f.state.originalDeleted, false);
 });
 
-test('automatic Erome replies preserve the complete source in both modes and inherit thread age restriction', async () => {
+test('automatic Erome respects posting mode, preserves every album URL and inherits thread age restriction', async () => {
   for (const mode of ['reply', 'replace'] as const) {
     for (const thread of [false, true]) {
       const content = `${ALBUM}?tracking=1 ${ALBUM} ${SECOND}`;
@@ -168,14 +169,40 @@ test('automatic Erome replies preserve the complete source in both modes and inh
       assert.deepEqual(f.calls, [ALBUM], 'prepare only the first distinct album');
       assert.equal(f.outputs.length, 1);
       assert.equal(f.outputs[0].options.files?.length, 1);
-      assert.deepEqual(f.outputs[0].options.reply, { messageReference: SOURCE, failIfNotExists: true });
+      assert.deepEqual(f.outputs[0].options.reply, mode === 'reply' ? { messageReference: SOURCE, failIfNotExists: true } : undefined);
       assert.match(f.outputs[0].options.content!, /First of 2 videos/);
       assert.equal(f.outputs[0].deleted, false);
       assert.equal(f.source.content, content);
-      assert.equal(f.state.originalDeleted, false);
+      assert.equal(f.state.originalDeleted, mode === 'replace');
+      assert(f.outputs[0].options.content!.includes(ALBUM) && f.outputs[0].options.content!.includes(SECOND));
       assert.deepEqual(f.records, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
-        replacementId: String(BigInt(SOURCE) + 1n), authorId: AUTHOR, mode: 'reply' }]);
+        replacementId: String(BigInt(SOURCE) + 1n), authorId: AUTHOR, mode }]);
       assert.match(JSON.stringify(f.outputs[0].edits.at(-1)), /linky:remove/);
+    }
+  }
+});
+
+test('Replace copies source attachments through the attachment path; failed copies keep the original', async () => {
+  for (const fail of [false, true]) {
+    const f = automatic();
+    const attachment = { id: 'source-file', name: 'photo.png', size: 3, description: 'A photo',
+      spoiler: false, flags: { has: () => false } } as unknown as Attachment;
+    f.source.attachments.set(attachment.id, attachment);
+    await f.run({
+      prepareEromeMedia: async () => assert.fail('Hosted V2 must not discard source attachments'),
+      bindEromeMedia: async () => true, releaseEromeMedia: async () => {},
+    }, async source => {
+      assert.equal(source, attachment);
+      if (fail) throw Error('Attachment unavailable');
+      return new AttachmentBuilder(Buffer.from([1, 2, 3]), { name: source.name, description: source.description! });
+    });
+    assert.equal(f.state.originalDeleted, !fail);
+    assert.equal(f.outputs.length, fail ? 0 : 1);
+    if (!fail) {
+      assert.equal(f.outputs[0].options.files?.length, 2);
+      const copied = f.outputs[0].options.files![0] as AttachmentBuilder;
+      assert.deepEqual(copied.attachment, Buffer.from([1, 2, 3]));
+      assert.equal(copied.name, 'photo.png');
     }
   }
 });
@@ -224,7 +251,7 @@ test('automatic Erome passes gateway boost tier budgets and accepts a bounded vi
     assert.deepEqual(budgets, [output * MiB]);
     assert.equal(f.outputs.length, 1);
     assert.equal(f.outputs[0].options.files?.length, 1);
-    assert.equal(f.state.originalDeleted, false);
+    assert.equal(f.state.originalDeleted, true);
     assert.equal(f.records[0].authorId, AUTHOR);
   }
 });
