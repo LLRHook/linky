@@ -9,7 +9,8 @@ const owner: AlbumOwner = { requesterId: '100000000000000001', channelId: '10000
   guildId: '100000000000000003', messageId: '100000000000000004', sourceMessageId: '100000000000000005',
   source: 'https://www.erome.com/a/SyntheticAlbum', mode: 'automatic' };
 const botId = '100000000000000006', parentId = '100000000000000007';
-function fixture() {
+const otherMemberId = '100000000000000008';
+function fixture(actorId = owner.requesterId) {
   let preferences: ServerPreferences = { eromeChannels: 'all' };
   let enabled: boolean | undefined = true;
   let requesterPermissions = new PermissionsBitField([P.ViewChannel, P.SendMessages]);
@@ -19,7 +20,8 @@ function fixture() {
   let afterMember: (() => Promise<void>) | undefined;
   let afterSource: (() => Promise<void>) | undefined;
   const reads: string[] = [];
-  const requester = { id: owner.requesterId, communicationDisabledUntilTimestamp: null as number | null };
+  const memberReads: string[] = [];
+  const requester = { id: actorId, communicationDisabledUntilTimestamp: null as number | null };
   const source = { id: owner.sourceMessageId!, channelId: owner.channelId, content: owner.source,
     author: { id: owner.requesterId, bot: false }, webhookId: null as string | null,
     flags: { has: (flag: unknown) => flag === MessageFlags.SuppressEmbeds && suppressed } };
@@ -27,14 +29,17 @@ function fixture() {
     isThread: () => thread,
     permissionsFor: (member: { id: string }) => member.id === botId ? botPermissions : requesterPermissions };
   const guild = { id: owner.guildId, channels: { fetch: async () => { reads.push('channel'); await afterChannel?.(); return channel; } },
-    members: { me: { id: botId }, fetch: async () => { reads.push('member'); await afterMember?.(); return requester; } } };
-  const interaction = { user: { id: owner.requesterId }, guild, guildId: owner.guildId, channelId: owner.channelId } as unknown as ButtonInteraction;
+    members: { me: { id: botId }, fetch: async (options: { user: string; force: boolean }) => {
+      assert.equal(options.force, true); memberReads.push(options.user);
+      reads.push('member'); await afterMember?.(); return requester;
+    } } };
+  const interaction = { user: { id: actorId }, guild, guildId: owner.guildId, channelId: owner.channelId } as unknown as ButtonInteraction;
   const controller = new AbortController();
   const options: EromeAlbumPolicyOptions = { settings: { rewritePlatforms: ['erome'], channelIds: [], serverIds: [] },
     servers: { get: () => enabled, getPreferences: () => preferences }, signal: controller.signal,
     fetchMessage: async () => { reads.push('source'); await afterSource?.(); return sourceDeleted ? null : source as never; } };
   const allowed = createEromeAlbumPolicy(options);
-  return { allowed, options, interaction, requester, source, channel, controller, reads,
+  return { allowed, options, interaction, requester, source, channel, controller, reads, memberReads,
     setPreferences: (value: ServerPreferences) => { preferences = value; },
     setEnabled: (value: boolean | undefined) => { enabled = value; },
     setRequester: (...flags: bigint[]) => { requesterPermissions = new PermissionsBitField(flags); },
@@ -45,7 +50,7 @@ function fixture() {
     afterSource: (hook: typeof afterSource) => { afterSource = hook; } };
 }
 
-test('album policy requires exact interaction identity and current requester and bot permissions', async () => {
+test('album policy requires exact location and freshly fetched actor and bot permissions', async () => {
   const f = fixture();
   assert.equal(await f.allowed(owner, f.interaction), true);
   for (const changes of [{ guildId: null }, { channelId: 'wrong' }, { user: { id: 'wrong' } }, { guild: null }]) {
@@ -58,6 +63,41 @@ test('album policy requires exact interaction identity and current requester and
   f.setRequester(P.ViewChannel, P.SendMessages);
   f.setBot(P.ViewChannel, P.SendMessages, P.EmbedLinks);
   assert.equal(await f.allowed(owner, f.interaction), false);
+});
+
+test('other channel members can load items without becoming the owner of the automatic source', async () => {
+  const f = fixture(otherMemberId);
+  assert.equal(await f.allowed(owner, f.interaction), true);
+  assert.deepEqual(f.memberReads, [otherMemberId], 'Permission checks fetch the clicker rather than the original sharer');
+  assert.equal(f.source.author.id, owner.requesterId);
+  assert.notEqual(f.requester.id, owner.requesterId);
+  f.source.author.id = otherMemberId;
+  assert.equal(await f.allowed(owner, f.interaction), false, 'A different actor cannot replace the source ownership check');
+});
+
+test('shared album actions deny the clicker when View, Send or timeout permissions disallow posting', async () => {
+  for (const permissions of [[P.ViewChannel], [P.SendMessages], []]) {
+    const f = fixture(otherMemberId); f.setRequester(...permissions);
+    assert.equal(await f.allowed(owner, f.interaction), false);
+    assert.deepEqual(f.memberReads, [otherMemberId]);
+  }
+  const timedOut = fixture(otherMemberId);
+  timedOut.requester.communicationDisabledUntilTimestamp = Date.now() + 60_000;
+  assert.equal(await timedOut.allowed(owner, timedOut.interaction), false);
+  timedOut.requester.communicationDisabledUntilTimestamp = null;
+  assert.equal(await timedOut.allowed(owner, timedOut.interaction), true);
+  timedOut.afterSource(async () => { timedOut.setRequester(P.ViewChannel); });
+  assert.equal(await timedOut.allowed(owner, timedOut.interaction), false, 'Revoked actor permissions are rechecked after source lookup');
+});
+
+test('shared manual and Replace sessions preserve source-independent controls and current server restrictions', async () => {
+  const f = fixture(otherMemberId);
+  f.deleteSource();
+  assert.equal(await f.allowed({ ...owner, sourceMessageId: undefined }, f.interaction), true);
+  assert.equal(await f.allowed({ ...owner, mode: 'manual', sourceMessageId: undefined }, f.interaction), true);
+  f.setPreferences({ eromeChannels: 'age-restricted' });
+  assert.equal(await f.allowed({ ...owner, sourceMessageId: undefined }, f.interaction), false);
+  assert.equal(await f.allowed({ ...owner, mode: 'manual', sourceMessageId: undefined }, f.interaction), false);
 });
 
 test('threads require SendMessagesInThreads and inherit their parent channel scope and age policy', async () => {

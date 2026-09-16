@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, afterEach, test } from 'node:test';
+import { after, afterEach, test, type TestContext } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -54,6 +54,104 @@ async function command(client: Client, name: string, channelId = 'configured-cha
   });
   return replies;
 }
+
+async function retryFixture(t: TestContext) {
+  const caseDirectory = mkdtempSync(join(directory, 'shared-retry-'));
+  const settingsPath = join(caseDirectory, 'servers.json'), journalPath = join(caseDirectory, 'reposts.json');
+  const botId = '1491240385031311470', authorId = '777777777777777777', memberId = '666666666666666666';
+  const guildId = '987654321098765432', channelId = '123456789012345678';
+  const now = BigInt(Date.now() - 1_420_070_400_000) << 22n;
+  const record = { guildId, channelId, sourceId: String(now + 1n), replacementId: String(now + 2n), authorId, mode: 'reply' as const };
+  writeFileSync(journalPath, JSON.stringify({ records: [record], remove: [], refresh: [] }));
+  const f = fixture({ settingsPath, channelIds: [channelId], rewritePlatforms: ['x'], translateTweets: false }, new ServerSettings(settingsPath));
+  Object.assign(f.client, { user: { id: botId } });
+  const reads: string[] = [];
+  const state = { permissions: new PermissionsBitField([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]),
+    timeout: null as number | null, thread: false, wrongMember: false, failMember: false, failChannel: false };
+  const source = { id: record.sourceId, guildId, channelId, author: { id: authorId }, content: 'https://x.com/test/status/20', editedTimestamp: null };
+  const replacement = { id: record.replacementId, guildId, channelId, author: { id: botId },
+    delete: async () => assert.fail('The authorization fixture must not delete its preview') };
+  const channel = { id: channelId, guildId, isThread: () => state.thread,
+    permissionsFor: () => state.permissions,
+    messages: { fetch: async (options: { message: string }) => options.message === source.id ? source : replacement } };
+  const guild = { id: guildId,
+    members: { fetch: async (options: { user: string; force: boolean }) => {
+      assert.equal(options.force, true); reads.push(`member:${options.user}`);
+      if (state.failMember) throw Error('Member no longer exists');
+      return { id: state.wrongMember ? botId : options.user, communicationDisabledUntilTimestamp: state.timeout };
+    } },
+    channels: { fetch: async (id: string, options: { force: boolean }) => {
+      assert.equal(id, channelId); assert.equal(options.force, true); reads.push('channel');
+      if (state.failChannel) throw Error('Channel unavailable');
+      return channel;
+    } } };
+  t.mock.method(f.client.guilds, 'fetch', async (id: string) => { assert.equal(id, guildId); return guild as unknown as Guild; });
+  t.mock.method(f.client.channels, 'fetch', async (id: string) => { assert.equal(id, channelId); return channel as never; });
+  for (const listener of f.client.listeners(Events.ClientReady)) await listener({
+    application: { commands: { set: async () => {} } }, user: { id: botId, tag: 'Linky' },
+    guilds: { cache: new Map() },
+  } as unknown as Client<true>);
+  const click = async (actor = memberId) => {
+    const replies: string[] = [];
+    const input = { isButton: () => true, customId: 'linky:retry', guildId, channelId,
+      user: { id: actor }, message: replacement, deferred: false,
+      // Cached administrator privileges must not bypass the fresh channel/member check.
+      memberPermissions: new PermissionsBitField(PermissionFlagsBits.Administrator),
+      deferReply: async (value: { flags?: number }) => { assert.equal(value.flags, MessageFlags.Ephemeral); input.deferred = true; },
+      editReply: async (value: { content: string }) => { replies.push(value.content); },
+      reply: async (value: { content: string }) => { replies.push(value.content); },
+    };
+    await dispatch(f.client, input);
+    return replies;
+  };
+  return { ...f, record, state, guild, channel, reads, click, authorId, memberId };
+}
+
+test('Retry accepts ordinary channel members using fresh access, thread-send and timeout checks', async t => {
+  const attempts: string[] = [];
+  t.mock.method(RepostRegistry.prototype, 'retry', async (record: { authorId: string }) => { attempts.push(record.authorId); return false; });
+  const cases: [string, boolean, (f: Awaited<ReturnType<typeof retryFixture>>) => void][] = [
+    ['ordinary member', true, () => {}],
+    ['missing View', false, f => { f.state.permissions = new PermissionsBitField(PermissionFlagsBits.SendMessages); }],
+    ['missing Send', false, f => { f.state.permissions = new PermissionsBitField(PermissionFlagsBits.ViewChannel); }],
+    ['active timeout', false, f => { f.state.timeout = Date.now() + 60_000; f.state.permissions = new PermissionsBitField(PermissionFlagsBits.Administrator); }],
+    ['expired timeout', true, f => { f.state.timeout = Date.now() - 1; }],
+    ['thread without thread-send', false, f => { f.state.thread = true; }],
+    ['thread member', true, f => { f.state.thread = true; f.state.permissions = new PermissionsBitField([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessagesInThreads]); }],
+    ['missing member', false, f => { f.state.failMember = true; }],
+    ['unavailable channel', false, f => { f.state.failChannel = true; }],
+    ['wrong member', false, f => { f.state.wrongMember = true; }],
+    ['wrong guild', false, f => { f.guild.id = '111111111111111111'; }],
+    ['wrong channel', false, f => { f.channel.id = '111111111111111111'; }],
+    ['cross-guild channel', false, f => { f.channel.guildId = '111111111111111111'; }],
+  ];
+  for (const [name, allowed, change] of cases) {
+    const f = await retryFixture(t); change(f);
+    const count = attempts.length;
+    const replies = await f.click();
+    assert.equal(attempts.length - count, Number(allowed), name);
+    if (allowed) assert.equal(attempts.at(-1), f.authorId, 'Retry preserves the original Remove owner');
+    else assert.match(replies.at(-1)!, /view and send|Could not verify/, name);
+    assert.deepEqual(f.errors, [], name);
+  }
+});
+
+test('Retry rechecks a revoked author and shares its cooldown across eligible members', async t => {
+  let attempts = 0;
+  t.mock.method(RepostRegistry.prototype, 'retry', async () => { attempts++; return false; });
+  const f = await retryFixture(t);
+  f.state.permissions = new PermissionsBitField(PermissionFlagsBits.ViewChannel);
+  assert.match((await f.click(f.authorId)).at(-1)!, /view and send/);
+  assert.equal(attempts, 0);
+  f.state.permissions.add(PermissionFlagsBits.SendMessages);
+  await f.click();
+  assert.equal(attempts, 1);
+  assert.match((await f.click(f.authorId)).at(-1)!, /Wait 30 seconds/);
+  assert.equal(attempts, 1);
+  assert.deepEqual(f.reads.filter(read => read.startsWith('member:')), [
+    `member:${f.authorId}`, `member:${f.memberId}`, `member:${f.authorId}`,
+  ]);
+});
 
 test('link bot requests message access without privileged member access', () => {
   const { client } = fixture();
@@ -120,7 +218,7 @@ test('configured media startup failure retains cleanup until a successful bot re
   const record = { guildId, channelId, sourceId: String(snowflake + 1n), replacementId: String(snowflake + 2n),
     authorId, mode: 'reply' as const };
   const saved = new RepostRegistry({ path: journalPath, botUserId: botId,
-    fetchMessage: async () => assert.fail('Saving ownership must not fetch Discord'), canManageMessages: async () => false });
+    fetchMessage: async () => assert.fail('Saving ownership must not fetch Discord'), canRetry: async () => false });
   assert.equal(await saved.remember(record), true); saved.stop();
   const journal = () => JSON.parse(readFileSync(journalPath, 'utf8')) as {
     records: typeof record[]; remove: string[]; refresh: string[];
@@ -342,7 +440,7 @@ test('startup restores repost ownership and fetches reply excerpts across bot re
     authorId: parentAuthorId, mode: 'replace' as const };
   const saved = new RepostRegistry({ path: join(caseDirectory, 'reposts.json'), botUserId: botId,
     fetchMessage: async () => assert.fail('Saving ownership must not fetch Discord messages'),
-    canManageMessages: async () => false });
+    canRetry: async () => false });
   assert.equal(await saved.remember(parent), true);
   saved.stop();
 

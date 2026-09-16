@@ -34,7 +34,7 @@ async function fixture(t: TestContext) {
   const manager = (overrides: Partial<Options> = {}) => {
     const instance = new RepostRegistry({ path, botUserId: BOT, now: () => time,
       fetchMessage: async (channel, id) => { assert.equal(channel, CHANNEL); fetched.push(id); return messages.get(id) ?? null; },
-      canManageMessages: async (entry, id) => { assert.equal(entry.channelId, CHANNEL); permissionChecks.push(id); return allowed; },
+      canRetry: async (entry, id) => { assert.equal(entry.channelId, CHANNEL); permissionChecks.push(id); return allowed; },
       removeRelated: async entry => { related.push(entry.replacementId); if (relatedFailure) throw new Error('card cleanup failed'); },
       onError: error => errors.push(error), ...overrides,
     });
@@ -53,7 +53,7 @@ async function fixture(t: TestContext) {
   };
   t.after(async () => { managers.forEach(m => m.stop()); await rm(directory, { recursive: true, force: true }); });
   return { path, source, replacement, record, messages, fetched, deleted, related, errors, permissionChecks, message, manager, interaction,
-    advance: (ms: number) => { time += ms; }, allowModerator: (value: boolean) => { allowed = value; },
+    advance: (ms: number) => { time += ms; }, allowRetry: (value: boolean) => { allowed = value; },
     failDelete: (value?: unknown) => { failure = value; }, failRelated: (value: boolean) => { relatedFailure = value; },
     saved: async () => JSON.parse(await readFile(path, 'utf8')),
   };
@@ -118,7 +118,7 @@ test('Remove rejects other members even with Manage Messages in both repost mode
     const f = await fixture(t), registry = f.manager();
     const record = { ...f.record, mode };
     await registry.remember(record);
-    f.allowModerator(true);
+    f.allowRetry(true);
     const request = f.interaction(MOD);
     assert.equal(await registry.handleRemove(request.value), true);
     assert.deepEqual(f.deleted, []);
@@ -153,18 +153,43 @@ test('hosted media cleanup runs after confirmed deletion and survives a failed c
   assert(f.messages.has(f.source.id));
 });
 
-test('Retry still checks moderator permissions fresh and fetched ownership cannot be forged', async t => {
+test('Retry checks current channel eligibility for every actor, including the original author', async t => {
   const f = await fixture(t), registry = f.manager();
   await registry.remember(f.record);
-  const request = f.interaction(MOD); request.value.customId = 'linky:retry';
-  f.allowModerator(true);
-  assert.deepEqual(await registry.authorize(request.value), f.record);
-  f.allowModerator(false);
-  assert.equal(await registry.authorize(request.value), null);
-  assert.deepEqual(f.permissionChecks, [MOD, MOD]);
+  for (const actor of [AUTHOR, MOD]) {
+    const request = f.interaction(actor); request.value.customId = 'linky:retry';
+    f.allowRetry(true);
+    assert.deepEqual(await registry.authorize(request.value), f.record);
+    f.allowRetry(false);
+    assert.equal(await registry.authorize(request.value), null);
+    assert.match(request.responses.at(-1)!.content!, /view and send/);
+  }
+  assert.deepEqual(f.permissionChecks, [AUTHOR, AUTHOR, MOD, MOD]);
   f.replacement.author.id = AUTHOR;
   assert.equal(await registry.authorize(f.interaction().value), null);
   assert.deepEqual(f.deleted, []);
+});
+
+test('shared Retry rejects forged locations and forged fetched ownership', async t => {
+  const f = await fixture(t), registry = f.manager();
+  await registry.remember(f.record);
+  f.allowRetry(true);
+  for (const patch of [
+    { guildId: null }, { channelId: snowflake(-10_000, 6) },
+    { message: { id: f.source.id, author: { id: BOT } } },
+    { message: { id: f.replacement.id, author: { id: AUTHOR } } },
+  ]) {
+    const request = f.interaction(MOD);
+    Object.assign(request.value, { customId: 'linky:retry', ...patch });
+    assert.equal(await registry.authorize(request.value), null);
+  }
+  assert.deepEqual(f.permissionChecks, []);
+  assert.deepEqual(f.fetched, []);
+  f.replacement.author.id = AUTHOR;
+  const request = f.interaction(MOD); request.value.customId = 'linky:retry';
+  assert.equal(await registry.authorize(request.value), null);
+  assert.deepEqual(f.deleted, []);
+  assert.deepEqual(await f.saved(), { records: [f.record], remove: [], refresh: [] });
 });
 
 test('authorized failures remain durable and retry related cleanup after restart', async t => {
@@ -215,11 +240,13 @@ test('authorized retry persists cleanup and refresh before removing related card
     assert(f.messages.has(record.replacementId));
   } });
   await registry.remember(f.record);
-  const request = f.interaction(); request.value.customId = 'linky:retry';
+  f.allowRetry(true);
+  const request = f.interaction(MOD); request.value.customId = 'linky:retry';
   const authorized = await registry.authorize(request.value);
   assert(authorized);
   assert.equal(await registry.retry(authorized, async source => {
     assert.equal(source.id, f.source.id);
+    assert.equal(source.author.id, AUTHOR, 'Regeneration receives the original author, not the Retry actor');
     assert.deepEqual(f.deleted, [f.replacement.id]);
     assert.deepEqual((await f.saved()).refresh, [f.replacement.id]);
     const next = f.message(snowflake(1_000), BOT);
@@ -227,6 +254,7 @@ test('authorized retry persists cleanup and refresh before removing related card
   }), true);
   assert(f.messages.has(f.source.id));
   assert.equal(registry.findBySource(f.source.id)?.replacementId, snowflake(1_000));
+  assert.equal(registry.findBySource(f.source.id)?.authorId, AUTHOR, 'A retry never transfers Remove ownership to the member who clicked');
 });
 
 test('failed retry cleanup and regeneration survive restart without deleting the source', async t => {

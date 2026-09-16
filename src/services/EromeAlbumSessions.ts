@@ -44,7 +44,7 @@ export class EromeAlbumSessions {
     unbind: (assetId: string, messageId: string) => Promise<void>;
     cancelReservation: (reservation: string) => Promise<void>;
     allowed: (owner: AlbumOwner, interaction: ButtonInteraction) => Promise<boolean>;
-    context?: (owner: AlbumOwner) => DeliveryContext;
+    context?: (owner: AlbumOwner, actorId: string) => DeliveryContext;
     details?: (traceId: string | undefined, messageId: string) => Promise<APIMessageTopLevelComponent[]>;
     verify?: (message: Message, media: EromeMedia) => Promise<boolean>;
     clock?: () => number;
@@ -95,10 +95,6 @@ export class EromeAlbumSessions {
       await reply('This album control has expired. Use Fix with Linky on the original album to start again.');
       return true;
     }
-    if (interaction.user.id !== session.requesterId) {
-      await reply('Only the person who requested this preview can load more of its album.');
-      return true;
-    }
     if (session.controller) {
       await reply('Another item is already being prepared for this album.');
       return true;
@@ -114,7 +110,7 @@ export class EromeAlbumSessions {
     timer.unref?.();
     const progress = createDeliveryProgress(text => interaction.editReply({ content: text, allowedMentions: { parse: [] } }),
       { delayMs: 500 });
-    const supplied = this.options.context?.(session);
+    const supplied = this.options.context?.(session, interaction.user.id);
     const context: DeliveryContext = { ...supplied, signal: supplied?.signal
       ? AbortSignal.any([supplied.signal, controller.signal]) : controller.signal,
       deadlineAt: Math.min(supplied?.deadlineAt ?? Infinity, performance.now() + 120_000),

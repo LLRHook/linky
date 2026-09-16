@@ -16,21 +16,22 @@ export interface EromeAlbumPolicyOptions {
 /** Recheck public album actions against current channel, member, source and server policy. */
 export function createEromeAlbumPolicy({ settings, servers, fetchMessage, signal }: EromeAlbumPolicyOptions) {
   return async (owner: AlbumOwner, interaction: ButtonInteraction): Promise<boolean> => {
+    const actorId = interaction.user.id;
     const active = () => !signal?.aborted && interaction.guild?.id === owner.guildId &&
-      interaction.guildId === owner.guildId && interaction.channelId === owner.channelId && interaction.user.id === owner.requesterId;
+      interaction.guildId === owner.guildId && interaction.channelId === owner.channelId && interaction.user.id === actorId;
     if (!active() || !settings.rewritePlatforms.includes('erome')) return false;
     try {
       const channel = await interaction.guild!.channels.fetch(owner.channelId, { force: true });
       if (!active() || !channel || channel.id !== owner.channelId || channel.guildId !== owner.guildId) return false;
-      const requester = await interaction.guild!.members.fetch({ user: owner.requesterId, force: true });
+      const actor = await interaction.guild!.members.fetch({ user: actorId, force: true });
       const allowed = () => {
         const preferences = servers.getPreferences(owner.guildId);
         const send = channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
         const member = interaction.guild!.members.me;
-        return active() && settings.rewritePlatforms.includes('erome') && requester.id === owner.requesterId &&
-          (requester.communicationDisabledUntilTimestamp ?? 0) <= Date.now() &&
+        return active() && settings.rewritePlatforms.includes('erome') && actor.id === actorId &&
+          (actor.communicationDisabledUntilTimestamp ?? 0) <= Date.now() &&
           canPreviewErome(channel, preferences.eromeChannels) &&
-          Boolean(channel.permissionsFor(requester)?.has([PermissionFlagsBits.ViewChannel, send])) &&
+          Boolean(channel.permissionsFor(actor)?.has([PermissionFlagsBits.ViewChannel, send])) &&
           Boolean(member && channel.permissionsFor(member)?.has([PermissionFlagsBits.ViewChannel,
             PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles, send])) &&
           (owner.mode === 'manual' || preferences.platforms?.erome !== false && evaluateScope({

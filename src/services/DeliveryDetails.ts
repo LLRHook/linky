@@ -29,7 +29,7 @@ export function formatDeliveryDetails(record: DeliveryRecord): string {
   }
   const seconds = (ms: number) => `${(ms / 1_000).toFixed(1)} s`;
   return [
-    '**Your Linky delivery**',
+    '**Linky delivery**',
     record.outcome ? outcomeLabels[record.outcome] : 'This request is still being prepared.',
     `Platform: ${record.platform}${record.path ? ` · Delivery: ${record.path}` : ''}`,
     ...(record.cache ? [`Cache: ${record.cache === 'hit' ? 'reused a validated local preview' : 'no reusable local preview'}.`] : []),
@@ -39,21 +39,25 @@ export function formatDeliveryDetails(record: DeliveryRecord): string {
       return `${stage}: ${seconds(total.durationMs)}${issues ? ` · ${issues}` : ''}`;
     }),
     'Stage timings can overlap. Discord metadata does not confirm playback on your device.',
-    `-# Attempt ${record.id} · Private history is kept for up to seven days.`,
+    `-# Attempt ${record.id} · Delivery history is kept for up to seven days.`,
   ].join('\n');
 }
 
-/** Always private, read-only and bound to the real output message and original requester. */
+/** Shared server previews expose read-only details; every response is private to its clicker. */
 export async function handleDeliveryDetails(interaction: ButtonInteraction, diagnostics: DeliveryDiagnostics): Promise<boolean> {
   if (!interaction.customId.startsWith(PREFIX)) return false;
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const id = interaction.customId.slice(PREFIX.length);
   let record: DeliveryRecord | undefined;
-  if (ATTEMPT_ID.test(id) && interaction.message.author.id === interaction.client.user.id) {
+  if (ATTEMPT_ID.test(id) && interaction.message.author.id === interaction.client.user.id &&
+      interaction.message.channelId === interaction.channelId &&
+      (!interaction.message.guildId || interaction.message.guildId === interaction.guildId)) {
     record = await diagnostics.lookup(id, { requesterId: interaction.user.id, channelId: interaction.channelId,
-      guildId: interaction.guildId ?? undefined, messageId: interaction.message.id }).catch(() => undefined);
+      guildId: interaction.guildId ?? undefined, messageId: interaction.message.id,
+      sharedMessage: Boolean(interaction.guildId && interaction.message.flags?.has(MessageFlags.Ephemeral) === false),
+    }).catch(() => undefined);
   }
   await interaction.editReply({ content: record ? formatDeliveryDetails(record) :
-    'These private details are unavailable or belong to another requester.', allowedMentions: { parse: [] } });
+    'These delivery details are no longer available for this message.', allowedMentions: { parse: [] } });
   return true;
 }
