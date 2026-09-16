@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { MessageFlags, type ButtonInteraction } from 'discord.js';
+import { MessageFlags, MessageFlagsBitField, type ButtonInteraction } from 'discord.js';
 import { DeliveryDiagnostics, type DeliveryRequest, type DeliveryDiagnosticsOptions } from '../src/services/DeliveryDiagnostics';
 import { deliveryDetailsButton, formatDeliveryDetails, handleDeliveryDetails } from '../src/services/DeliveryDetails';
 
@@ -168,21 +168,31 @@ test('untrusted stage fields and excess overlapping spans are discarded before p
   assert.ok(record?.stages.every(span => span.stage === 'download'));
 });
 
-test('Details is an owner-only private response, bound to the bot output and location', async t => {
+test('any member can open shared Details privately, but private replies and message bindings stay protected', async t => {
   const diagnostics = createDiagnostics({ path: await fixture(t) });
   const trace = diagnostics.begin(request); trace.finish('metadata-unconfirmed');
   assert.equal(await diagnostics.bind(trace.id, messageId), true);
   const botId = '100000000000000005';
   const button = deliveryDetailsButton(trace.id).toJSON();
-  for (const [owner, author, guild, expected] of [
-    [request.requesterId, botId, request.guildId, /metadata was not confirmed/],
-    ['100000000000000009', botId, request.guildId, /unavailable or belong/],
-    [request.requesterId, '100000000000000009', request.guildId, /unavailable or belong/],
-    [request.requesterId, botId, null, /unavailable or belong/],
-  ] as const) {
+  const other = '100000000000000009';
+  const available = /metadata was not confirmed/, unavailable = /no longer available/;
+  for (const { actor = request.requesterId, author = botId, guild = request.guildId,
+    channel = request.channelId, output = messageId, ephemeral = false, expected } of [
+    { expected: available },
+    { actor: other, expected: available },
+    { actor: other, ephemeral: true, expected: unavailable },
+    { ephemeral: true, expected: available },
+    { author: other, expected: unavailable },
+    { guild: null, expected: unavailable },
+    { guild: other, expected: unavailable },
+    { channel: other, expected: unavailable },
+    { output: other, expected: unavailable },
+  ]) {
     const replies: unknown[] = [];
-    const interaction = { customId: 'custom_id' in button ? button.custom_id : '', user: { id: owner },
-      channelId: request.channelId, guildId: guild, message: { id: messageId, author: { id: author } },
+    const interaction = { customId: 'custom_id' in button ? button.custom_id : '', user: { id: actor },
+      channelId: channel, guildId: guild, message: { id: output, author: { id: author },
+        channelId: request.channelId, guildId: request.guildId,
+        flags: new MessageFlagsBitField(ephemeral ? MessageFlags.Ephemeral : 0) },
       client: { user: { id: botId } }, deferReply: async (value: unknown) => { replies.push(value); },
       editReply: async (value: unknown) => { replies.push(value); } } as unknown as ButtonInteraction;
     assert.equal(await handleDeliveryDetails(interaction, diagnostics), true);
@@ -191,6 +201,23 @@ test('Details is an owner-only private response, bound to the bot output and loc
     assert.match(response.content, expected);
     assert.deepEqual(response.allowedMentions, { parse: [] });
   }
+  assert.equal((await diagnostics.lookup(trace.id, reader))?.requesterId, request.requesterId);
+});
+
+test('shared delivery lookup remains bound to its saved server message and cannot expose DM attempts', async t => {
+  const diagnostics = createDiagnostics({ path: await fixture(t) });
+  const trace = diagnostics.begin(request); trace.finish('confirmed');
+  assert.equal(await diagnostics.bind(trace.id, messageId), true);
+  const shared = { ...reader, requesterId: '100000000000000009', sharedMessage: true };
+  assert.equal((await diagnostics.lookup(trace.id, shared))?.outcome, 'confirmed');
+  for (const changed of [{ channelId: '100000000000000008' }, { guildId: undefined },
+    { guildId: '100000000000000008' }, { messageId: '100000000000000008' }, { requesterId: 'invalid' }]) {
+    assert.equal(await diagnostics.lookup(trace.id, { ...shared, ...changed }), undefined);
+  }
+  const dm = diagnostics.begin({ ...request, guildId: undefined, mode: 'manual' });
+  assert.equal(await diagnostics.bind(dm.id, messageId), true);
+  assert.equal(await diagnostics.lookup(dm.id, { ...shared, guildId: undefined }), undefined);
+  assert.ok(await diagnostics.lookup(dm.id, { ...reader, guildId: undefined }));
 });
 
 test('private Details shows finite non-ok stage outcomes with timing and repeat counts', async t => {
