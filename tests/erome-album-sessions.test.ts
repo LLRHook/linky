@@ -5,6 +5,7 @@ import { EromeAlbumSessions, type AlbumOwner } from '../src/services/EromeAlbumS
 import { eromeMediaComponents, type EromeMedia } from '../src/services/EromeMedia';
 
 const botId = '100000000000000001';
+const otherMemberId = '100000000000000009';
 const owner: AlbumOwner = { requesterId: '100000000000000002', channelId: '100000000000000003',
   guildId: '100000000000000004', messageId: '100000000000000005', sourceMessageId: '100000000000000006',
   source: 'https://www.erome.com/a/SyntheticAlbum', mode: 'automatic' };
@@ -84,11 +85,11 @@ function customIds(components: APIMessageTopLevelComponent[]): string[] {
     ? component.components.flatMap(button => 'custom_id' in button ? [button.custom_id] : []) : []);
 }
 
-test('album actions require the exact owner, bot output, channel, guild and message', async t => {
+test('album actions require the exact bot output, channel, guild and message', async t => {
   const f = harness(t);
   const changedMessage = (changes: Record<string, unknown>) => ({ ...f.message, ...changes });
   for (const changes of [
-    { user: { id: '100000000000000009' } }, { message: changedMessage({ author: { id: '100000000000000009' } }) },
+    { message: changedMessage({ author: { id: '100000000000000009' } }) },
     { message: changedMessage({ id: '100000000000000009' }) }, { channelId: '100000000000000009' },
     { guildId: '100000000000000009' }, { guildId: null },
   ]) {
@@ -100,6 +101,38 @@ test('album actions require the exact owner, bot output, channel, guild and mess
   assert.equal(f.prepared.length, 0);
   assert.deepEqual(f.events, []);
   assert.equal(await f.sessions.handle(f.click({ customId: 'linky:remove' }).interaction), false);
+});
+
+test('other members can append with private progress while ownership and Remove remain unchanged', async t => {
+  const contexts: { ownerId: string; actorId: string }[] = [], policyChecks: { ownerId: string; actorId: string }[] = [];
+  const f = harness(t, {
+    context: (session, actorId) => { contexts.push({ ownerId: session.requesterId, actorId }); return {}; },
+    allowed: async (session, interaction) => {
+      policyChecks.push({ ownerId: session.requesterId, actorId: interaction.user.id }); return true;
+    },
+  });
+  const click = f.click({ user: { id: otherMemberId } });
+  assert.equal(await f.sessions.handle(click.interaction), true);
+  assert.equal(click.replies[0].flags, MessageFlags.Ephemeral);
+  assert.match(click.replies.at(-1)?.content ?? '', /Added item 2/);
+  assert.deepEqual(contexts, [{ ownerId: owner.requesterId, actorId: otherMemberId }]);
+  assert.ok(policyChecks.length > 1);
+  assert.ok(policyChecks.every(check => check.ownerId === owner.requesterId && check.actorId === otherMemberId));
+  assert.deepEqual(f.components().find(component => component.type === ComponentType.ActionRow),
+    f.initialComponents.find(component => component.type === ComponentType.ActionRow));
+  assert.equal(gallery(f.components()).items.length, 2);
+  assert.equal(await f.sessions.handle(f.click({ customId: 'linky:remove', user: { id: otherMemberId } }).interaction), false,
+    'Remove still belongs to its separate owner-authorized handler');
+});
+
+test('a denied shared album click cannot prepare media or alter the public gallery', async t => {
+  const f = harness(t, { allowed: async (session, interaction) => {
+    assert.equal(session.requesterId, owner.requesterId); assert.equal(interaction.user.id, otherMemberId); return false;
+  } });
+  const click = f.click({ user: { id: otherMemberId } });
+  await f.sessions.handle(click.interaction);
+  assert.equal(click.replies[0].flags, MessageFlags.Ephemeral);
+  assert.equal(f.prepared.length, 0); assert.deepEqual(f.components(), f.initialComponents);
 });
 
 test('expiry and restart invalidate album actions without touching the published gallery', async t => {
@@ -139,12 +172,12 @@ test('append binds before editing and preserves every prior item and existing co
   assert.equal(caption.content, 'Original album caption.\n-# 2 of 3 items · Original media. Full album: Original post.');
 });
 
-test('concurrent clicks prepare one item and tell the second requester to wait privately', async t => {
+test('concurrent clicks from different members prepare one item and privately tell the second member to wait', async t => {
   let entered!: () => void, release!: (media: EromeMedia) => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   let calls = 0;
   const f = harness(t, { prepare: async () => { calls++; entered(); return new Promise(resolve => { release = resolve; }); } });
-  const first = f.sessions.handle(f.click().interaction);
+  const first = f.sessions.handle(f.click({ user: { id: otherMemberId } }).interaction);
   await started;
   const second = f.click();
   await f.sessions.handle(second.interaction);

@@ -57,8 +57,8 @@ interface Options {
   botUserId: string;
   /** Fetch from Discord, without accepting a message/channel ID from a button payload. */
   fetchMessage(channelId: string, messageId: string): Promise<RepostMessage | null>;
-  /** Fetch the member and channel permissions fresh; never use cached interaction permissions. */
-  canManageMessages(record: RepostRecord, userId: string): Promise<boolean>;
+  /** Check fresh channel access and send permission; never use cached interaction permissions. */
+  canRetry(record: RepostRecord, userId: string): Promise<boolean>;
   removeRelated?: (record: RepostRecord) => Promise<void>;
   afterReplacementRemoved?: (record: RepostRecord) => Promise<void>;
   regenerate?: Regenerate;
@@ -221,7 +221,7 @@ export class RepostRegistry {
     else await interaction.reply({ ...options, flags: MessageFlags.Ephemeral });
   }
 
-  /** Remove is owner-only; Retry also accepts a freshly verified channel moderator. */
+  /** Remove is owner-only; Retry accepts members who can currently view and send in the channel. */
   async authorize(interaction: RepostInteraction): Promise<RepostRecord | null> {
     const record = this.findByReplacement(interaction.message.id);
     if (!record || !['linky:remove', 'linky:retry'].includes(interaction.customId) ||
@@ -236,8 +236,8 @@ export class RepostRegistry {
       return null;
     }
     try {
-      if (interaction.user.id !== record.authorId && !await this.options.canManageMessages(record, interaction.user.id)) {
-        await this.reply(interaction, 'Only the original author or someone with Manage Messages here can do that.');
+      if (interaction.customId === 'linky:retry' && !await this.options.canRetry(record, interaction.user.id)) {
+        await this.reply(interaction, 'You need to be able to view and send messages in this channel to retry this preview.');
         return null;
       }
       const message = await this.options.fetchMessage(record.channelId, record.replacementId);
