@@ -55,7 +55,7 @@ async function fixture(t: TestContext) {
   const options = { path, botUserId: BOT, now: () => NOW,
     fetchMessage: async (_channelId: string, messageId: string): Promise<RepostMessage | null> =>
       messageId === SOURCE ? source() : messages.get(messageId) ?? null,
-    canManageMessages: async () => false, regenerate };
+    canRetry: async () => false, regenerate };
   registry = new RepostRegistry(options);
   const old = await channel.send({ content: `Old output ${LINK}` });
   const record: RepostRecord = { guildId: GUILD, channelId: CHANNEL, authorId: AUTHOR,

@@ -29,7 +29,11 @@ export interface DeliveryRecord extends DeliveryRequest {
   durationMs?: number;
   stages: DeliveryStageRecord[];
 }
-export interface DeliveryReader { requesterId: string; channelId: string; guildId?: string; messageId: string }
+export interface DeliveryReader {
+  requesterId: string; channelId: string; guildId?: string; messageId: string;
+  /** Only set after validating a public server-message interaction. Private replies stay requester-bound. */
+  sharedMessage?: boolean;
+}
 export interface DeliveryDiagnosticsOptions {
   path: string;
   maxAttempts?: number;
@@ -170,8 +174,9 @@ export class DeliveryDiagnostics {
       await this.ready;
       this.prune();
       const record = this.records.get(id);
-      if (!record || this.persistedBindings.get(id) !== reader.messageId || record.messageId !== reader.messageId ||
-        record.requesterId !== reader.requesterId || record.channelId !== reader.channelId || record.guildId !== reader.guildId) return undefined;
+      if (!record || !DISCORD_ID.test(reader.requesterId) || this.persistedBindings.get(id) !== reader.messageId ||
+        record.messageId !== reader.messageId || record.channelId !== reader.channelId || record.guildId !== reader.guildId ||
+        record.requesterId !== reader.requesterId && !(reader.sharedMessage && record.guildId)) return undefined;
       return structuredClone(record);
     })(), undefined);
   }

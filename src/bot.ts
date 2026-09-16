@@ -102,7 +102,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     prepare: mediaOptions.prepareEromeMedia!, bind: mediaOptions.bindEromeMedia!,
     cancelReservation: mediaOptions.cancelMediaReservation!,
     unbind: async (id, messageId) => { await (await mediaReady)?.unbind?.(id, messageId); },
-    context: owner => ({ trace: diagnostics.begin({ requesterId: owner.requesterId, channelId: owner.channelId,
+    context: (owner, actorId) => ({ trace: diagnostics.begin({ requesterId: actorId, channelId: owner.channelId,
       guildId: owner.guildId, mode: owner.mode, platform: 'erome' }) }),
     details: async (id, messageId) => (await bindDeliveryDetails(diagnostics, id, messageId)).map(row => row.toJSON()),
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
@@ -244,11 +244,15 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         removeRelated: record => youtubeStats!.removeForMessage(record.replacementId),
         afterReplacementRemoved: record => releaseEromeMedia(record.replacementId),
         regenerate: source => repost(source as Message, { refresh: true, forceReply: true }),
-        canManageMessages: async (record, userId) => {
+        canRetry: async (record, userId) => {
           const guild = await client.guilds.fetch(record.guildId);
+          if (guild.id !== record.guildId) return false;
           const member = await guild.members.fetch({ user: userId, force: true });
           const channel = await guild.channels.fetch(record.channelId, { force: true });
-          return Boolean(channel?.permissionsFor(member)?.has(PermissionFlagsBits.ManageMessages));
+          if (member.id !== userId || !channel || channel.id !== record.channelId || channel.guildId !== record.guildId ||
+            (member.communicationDisabledUntilTimestamp ?? 0) > Date.now()) return false;
+          const send = channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
+          return Boolean(channel.permissionsFor(member)?.has([PermissionFlagsBits.ViewChannel, send]));
         },
         onError: () => log.warn('Repost ownership cleanup will be retried'),
       });

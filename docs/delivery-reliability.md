@@ -6,9 +6,9 @@ Linky keeps an original message until its replacement is useful and ownership is
 
 Quick requests publish directly. Slower media requests show the current stage, such as checking the album, waiting for a preparation slot, downloading or preparing compatible media. Updates are coalesced and rate-limited; they do not invent a completion percentage or arrival time. An automatic request edits its single progress reply into the result. An explicit `/fix` request updates its existing response.
 
-**Details** opens a private report for the person who requested that preview. It shows the delivery outcome and stage timings. Timings can overlap when downloading and conversion run together, and a request that joins shared work measures from the time it joins. The button is exposed only after its requester, message, channel and server binding is saved. Copying a button or being a server administrator does not grant access to another person's details. `/diagnose` remains a separate Manage Server tool for settings and permissions.
+**Details** on a public server preview opens a private report for anyone who can see and click it. It shows the delivery outcome and stage timings. Timings can overlap when downloading and conversion run together, and a request that joins shared work measures from the time it joins. The button is exposed only after its requester, message, channel and server binding is saved. The exact bot message, channel and server must still match. Details on private replies and DMs stay restricted to their requester. `/diagnose` remains a separate Manage Server tool for settings and permissions.
 
-An unavailable preview keeps its original. Where ownership can be saved, automatic failures offer **Retry preview**; the sharer or a moderator with current Manage Messages permission can retry. **Remove** remains restricted to the original sharer for automatic previews and the requester for manual previews. Discord's native moderation is unchanged.
+An unavailable preview keeps its original. Where ownership can be saved, automatic failures offer **Retry preview**; any channel member with current view/send permission who is not timed out can retry. A shared retry keeps the original attribution and Remove ownership, and the existing per-source cooldown still applies. **Remove** remains restricted to the original sharer for automatic previews and the requester for manual previews. Discord's native moderation is unchanged.
 
 ## Preview detection and provider recovery
 
@@ -30,7 +30,7 @@ See the [controlled scheduling benchmark](../benchmarks/erome-scheduling.md) for
 
 ## Additional album items
 
-An eligible hosted album starts with its first video, or its first supported image when no video exists. **Load next item** prepares one remaining item on demand and appends it to the same gallery. It never downloads the entire album in advance. The requester must still be able to view and send in the channel; Linky rechecks source availability, channel policy and item identity. Another member cannot use the owner's control to publish more media.
+An eligible hosted album starts with its first video, or its first supported image when no video exists. **Load next item** prepares one remaining item on demand and appends it to the same gallery. It never downloads the entire album in advance. The person clicking must still be able to view and send in the channel and must not be timed out; Linky rechecks source availability, channel policy and item identity. Another eligible member can load an item without taking ownership of the preview. Only one item can be prepared for a gallery at a time, regardless of who clicks.
 
 A gallery holds at most ten items and 192 MiB in total. JPEG and PNG images have their own 8 MiB and dimension limits; animated or unsupported image formats are skipped. Expired, changed or unavailable items leave existing items intact. A failed or ambiguous Discord edit retains a file reference when the item might still be visible; removing the message releases its references.
 
@@ -38,7 +38,7 @@ Album controls use at most 512 in-memory sessions, expiring after 24 hours or a 
 
 ## Local retention and operations
 
-`data/delivery-diagnostics.json` holds at most 4,096 attempts, 4 MiB and seven days. It contains finite outcomes, elapsed/stage timings, platform/path labels and the IDs needed to authorize private Details. It contains no message text, captions, URLs, media or credentials. Diagnostics expiry cleanup runs periodically and on access. The reuse index removes expired descriptors during startup, activity and minute-by-minute maintenance. Unfinished attempts restored after restart are marked interrupted, not submitted again. A slow or failed diagnostics write omits Details while the preview continues.
+`data/delivery-diagnostics.json` holds at most 4,096 attempts, 4 MiB and seven days. It contains finite outcomes, elapsed/stage timings, platform/path labels and the IDs needed to bind Details to its message and restrict private replies. It contains no message text, captions, URLs, media or credentials. Diagnostics expiry cleanup runs periodically and on access. The reuse index removes expired descriptors during startup, activity and minute-by-minute maintenance. Unfinished attempts restored after restart are marked interrupted, not submitted again. A slow or failed diagnostics write omits Details while the preview continues.
 
 The reuse index is the private `erome-reuse` sibling of the configured media directory. Never put it inside the strict media directory. Its failures disable reuse without turning an index record into permission to retain or serve media. The optional website analytics collector remains separate and inactive for these local attempt records; this feature does not send them to a new analytics service.
 

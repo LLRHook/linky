@@ -18,7 +18,7 @@ Keep one native YouTube message and add one compact row beneath its player:
 
 `20.7K views · 328 likes · 57 comments`  `Top comment`
 
-Combine the counts into one readable button so the row stays compact. Clicking opens exact recent counts privately. The comment button opens the excerpt, its author, and a YouTube link privately. Use enabled secondary buttons; disabled gray count buttons could recreate the visibility complaint. These controls do not like or comment on YouTube. Reserve unrelated Original post and Remove controls for their owner in a separate row of the same message.
+Combine the counts into one readable button so the row stays compact. Clicking opens exact recent counts privately. The comment button opens the excerpt, its author, and a YouTube link privately. Use enabled secondary buttons; disabled gray count buttons could recreate the visibility complaint. These controls do not like or comment on YouTube. Keep Original post and Remove in a separate row of the same message. Anyone can open Original post; only the original sharer or manual requester can use Remove.
 
 This preserves native playback, removes the companion card and second author header, and makes extra reading optional. The comment is one click away, as described in the proposal the user accepted. If no comment is available, omit that button rather than creating an empty interaction.
 
