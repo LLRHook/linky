@@ -5,3 +5,6 @@
 !tsconfig.json
 !src/
 !src/**
+!ops/
+!ops/delivery-report.mjs
+!ops/delivery-archive-report.mjs

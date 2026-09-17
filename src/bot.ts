@@ -27,11 +27,14 @@ import { createEromePreparer } from './services/Erome';
 import { createEromeMediaRuntime } from './services/EromeMediaRuntime';
 import { createEromeWorkScheduler } from './services/EromeWorkScheduler';
 import { DeliveryDiagnostics } from './services/DeliveryDiagnostics';
+import { DeliveryArchive } from './services/DeliveryArchive';
 import { handleDeliveryDetails } from './services/DeliveryDetails';
 import { PreviewWatcher } from './services/PreviewWatcher';
 import { ProviderHealth } from './services/ProviderHealth';
 import { EromeAlbumSessions } from './services/EromeAlbumSessions';
 import { createEromeAlbumPolicy } from './services/EromeAlbumPolicy';
+import { EROME_UNAVAILABLE, isEromeAvailable } from './services/EromeAvailability';
+import { findEromeLinks } from './services/EromeDelivery';
 import type { EromeMediaPreparer } from './services/EromeMedia';
 import { bindDeliveryDetails } from './services/DeliveryAttempt';
 
@@ -69,7 +72,10 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   const health = new PreviewHealth();
   const providerHealth = new ProviderHealth();
   const previews = new PreviewWatcher(client);
-  const diagnostics = new DeliveryDiagnostics({ path: join(dirname(settings.settingsPath), 'delivery-diagnostics.json') });
+  const archive = new DeliveryArchive({ directory: join(dirname(settings.settingsPath), 'delivery-logs'),
+    retentionDays: settings.deliveryLogRetentionDays,
+    onWarning: code => log.warn({ code }, 'Delivery archive needs attention') });
+  const diagnostics = new DeliveryDiagnostics({ path: join(dirname(settings.settingsPath), 'delivery-diagnostics.json'), archive });
   const scheduler = createEromeWorkScheduler({ observe: event => {
     if (event.kind === 'finished' || event.kind === 'rejected' || event.kind === 'quarantined')
       log.info({ ...event, rssMiB: Math.round(process.memoryUsage().rss / 1024 / 1024) }, 'Media preparation resources');
@@ -116,7 +122,10 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     albums?.close(); previews.close();
     closing = (async () => {
       try {
-        const results = await Promise.allSettled([scheduler.close(), mediaReady.then(media => media?.close()), diagnostics.close()]);
+        const results = await Promise.allSettled([scheduler.close(), mediaReady.then(media => media?.close())]);
+        const historySaved = await diagnostics.close();
+        const archiveSaved = await archive.close();
+        if (!historySaved || !archiveSaved) log.warn('Delivery history shutdown could not be confirmed');
         if (results.some(result => result.status === 'rejected')) log.warn('Some shutdown cleanup could not be confirmed');
       } finally { await destroy(); }
     })();
@@ -128,6 +137,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     serverPreferences: id => servers.getPreferences(id),
     serverIds: settings.serverIds,
     platforms: settings.rewritePlatforms,
+    eromeAvailable: guildId => isEromeAvailable(settings, guildId),
     translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
     translateInstagram,
     lookupYouTube,
@@ -202,6 +212,14 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         if (interaction.customId !== 'linky:retry' || !registry) return;
         const record = await registry.authorize(interaction);
         if (!record) return;
+        if (!isEromeAvailable(settings, record.guildId)) {
+          const source = await fetchMessage(record.channelId, record.sourceId).catch(() => null);
+          if (!source || findEromeLinks(source.content).length) {
+            await interaction.editReply({ content: source ? EROME_UNAVAILABLE :
+              'The original message is unavailable. This preview was kept.', allowedMentions: { parse: [] } });
+            return;
+          }
+        }
         if (retrying.has(record.sourceId) || Date.now() - (retries.get(record.sourceId) ?? 0) < 30_000) {
           await interaction.editReply({ content: 'A retry is already running or just finished. Wait 30 seconds before trying again.' });
           return;

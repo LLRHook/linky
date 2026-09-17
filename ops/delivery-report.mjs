@@ -82,7 +82,7 @@ function statistics(values) {
 }
 const completed = row => row.outcome !== 'pending' && row.outcome !== 'interrupted' && finiteDuration(row.durationMs);
 
-function createDeliveryReport(rows, options = {}) {
+export function createDeliveryReport(rows, options = {}) {
   const selected = rows.filter(row => (options.since === undefined || row.startedAt >= options.since) &&
     (!options.platform || row.platform === options.platform) && (!options.path || row.path === options.path) &&
     (!options.cache || row.cache === options.cache));

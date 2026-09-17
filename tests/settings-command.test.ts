@@ -74,7 +74,7 @@ test('settings with no options displays effective defaults without writing or op
   assert.match(events[1].payload.content, /Disabled in this channel/);
   assert.match(events[1].payload.content, /Mode: Replace/);
   assert.match(events[1].payload.content, /Instagram: On/);
-  assert.match(events[1].payload.content, /Erome channels: Age-restricted channels only/);
+  assert.match(events[1].payload.content, /Erome is unavailable on this bot/);
   assert.equal(servers.get(SERVER), undefined);
   assert.deepEqual(servers.getPreferences(SERVER), {});
 });
@@ -265,21 +265,43 @@ test('help reports Instagram translation independently when X translation is off
 });
 
 test('Erome channel policy defaults to restricted and an admin can change it without enabling any scope or platform', async () => {
+  const eromeConfig: Config = { ...config, rewritePlatforms: [...config.rewritePlatforms, 'erome'] };
   assert.equal(effectivePreferences(config, {}).eromeChannels, 'age-restricted');
   for (const enabled of [undefined, false, true]) {
     const path = file(), servers = new ServerSettings(path);
     if (enabled !== undefined) await servers.set(SERVER, enabled);
     await servers.update(SERVER, { channelIds: [], platforms: { erome: false } });
     const { command, events } = interaction({ erome_channels: 'all' });
-    await execute(command, config, servers);
+    await execute(command, eromeConfig, servers);
     const restored = new ServerSettings(path);
     assert.equal(restored.get(SERVER), enabled);
     assert.deepEqual(restored.getPreferences(SERVER), { channelIds: [], platforms: { erome: false }, eromeChannels: 'all' });
     assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
     assert.match(events[1].payload.content, /Erome channels: All enabled channels/);
-    assert.match(events[1].payload.content, /Erome: Off \(disabled by the bot operator\)/);
+    assert.match(events[1].payload.content, /Erome: Off\./);
     assert.deepEqual(events[1].payload.allowedMentions, { parse: [] });
-    await execute(interaction({ erome_channels: 'age-restricted' }).command, config, restored);
+    await execute(interaction({ erome_channels: 'age-restricted' }).command, eromeConfig, restored);
     assert.equal(new ServerSettings(path).getPreferences(SERVER).eromeChannels, 'age-restricted');
   }
+});
+
+test('settings and help apply operator Erome restrictions per server without advertising an admin override', async () => {
+  const other = '222222222222222222';
+  const restricted: Config = { ...config, rewritePlatforms: [...config.rewritePlatforms, 'erome'], eromeGuildIds: [other] };
+  const servers = new ServerSettings(file());
+  await servers.update(SERVER, { platforms: { erome: true }, eromeChannels: 'all' });
+  const attempt = interaction({ erome: true, erome_channels: 'age-restricted', mode: 'reply' });
+  await execute(attempt.command, restricted, servers);
+  assert.deepEqual(servers.getPreferences(SERVER), { mode: 'reply', platforms: { erome: true }, eromeChannels: 'all' });
+  assert.match(attempt.events[1].payload.content, /Erome: Off \(disabled by the bot operator\)/);
+  assert.match(attempt.events[1].payload.content, /self-host/);
+  assert.doesNotMatch(attempt.events[1].payload.content, /Erome channels:/);
+  for (const guildId of [SERVER, null]) {
+    const f = interaction({}, guildId); await help(f.command, restricted, servers);
+    const content = f.events[0].payload.content;
+    assert.doesNotMatch(content, /Supported platforms:[^\n]*Erome|erome_channels|Automatic Erome/);
+    assert.match(content, /self-host/); assert(content.length <= 2000);
+  }
+  assert.equal(effectivePreferences(restricted, { platforms: { erome: true } }, SERVER).platforms.includes('erome'), false);
+  assert.equal(effectivePreferences(restricted, {}, other).platforms.includes('erome'), true);
 });

@@ -5,9 +5,10 @@ import { canPreviewErome, findEromeLinks } from './EromeDelivery';
 import { evaluateScope } from './ServerScope';
 import type { ServerSettings } from './ServerSettings';
 import { bypassLinky } from './SocialLinkService';
+import { isEromeAvailable } from './EromeAvailability';
 
 export interface EromeAlbumPolicyOptions {
-  settings: Pick<Config, 'rewritePlatforms' | 'channelIds' | 'serverIds'>;
+  settings: Pick<Config, 'rewritePlatforms' | 'channelIds' | 'serverIds' | 'eromeGuildIds'>;
   servers: Pick<ServerSettings, 'get' | 'getPreferences'>;
   fetchMessage: (channelId: string, messageId: string) => Promise<Pick<Message, 'id' | 'channelId' | 'content' | 'author' | 'webhookId' | 'flags'> | null>;
   signal?: AbortSignal;
@@ -19,7 +20,7 @@ export function createEromeAlbumPolicy({ settings, servers, fetchMessage, signal
     const actorId = interaction.user.id;
     const active = () => !signal?.aborted && interaction.guild?.id === owner.guildId &&
       interaction.guildId === owner.guildId && interaction.channelId === owner.channelId && interaction.user.id === actorId;
-    if (!active() || !settings.rewritePlatforms.includes('erome')) return false;
+    if (!active() || !isEromeAvailable(settings, owner.guildId)) return false;
     try {
       const channel = await interaction.guild!.channels.fetch(owner.channelId, { force: true });
       if (!active() || !channel || channel.id !== owner.channelId || channel.guildId !== owner.guildId) return false;
@@ -28,7 +29,7 @@ export function createEromeAlbumPolicy({ settings, servers, fetchMessage, signal
         const preferences = servers.getPreferences(owner.guildId);
         const send = channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
         const member = interaction.guild!.members.me;
-        return active() && settings.rewritePlatforms.includes('erome') && actor.id === actorId &&
+        return active() && isEromeAvailable(settings, owner.guildId) && actor.id === actorId &&
           (actor.communicationDisabledUntilTimestamp ?? 0) <= Date.now() &&
           canPreviewErome(channel, preferences.eromeChannels) &&
           Boolean(channel.permissionsFor(actor)?.has([PermissionFlagsBits.ViewChannel, send])) &&

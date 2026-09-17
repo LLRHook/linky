@@ -1,5 +1,7 @@
 # Regional hosting for Erome originals
 
+**Self-hosted feature.** The public hosted Linky does not prepare Erome previews for public servers. These instructions apply to your own bot, media host and configured workers. Existing supported formats, quotas and channel rules still apply.
+
 This optional path keeps eligible original MP4 bytes and posts a Discord media gallery after the complete file has been downloaded, inspected and saved. Self-hosted instances default to `EROME_MEDIA_ENABLED=false`, which uses the attachment path. Hosted Linky has regional delivery enabled; the running Hostinger revision was verified as `6f1c192` on September 15, 2026.
 
 Enable regional hosting only after deploying matching bot and worker revisions, provisioning persistent storage and HTTPS, and completing the activation checks below. The dedicated worker project uses the ten-location protocol version 3. The measured results describe the tested source and conditions; they do not establish a ten-second production guarantee.

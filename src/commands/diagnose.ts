@@ -11,6 +11,7 @@ import { parseYouTubeUrl } from '../services/YouTube';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
 import { parseEromeUrl } from '../services/Erome';
 import { canPreviewErome } from '../services/EromeDelivery';
+import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailability';
 
 /** Returns known observations; diagnostics do not require an external network probe. */
 export type ProviderDiagnostic = (link: string) => Promise<string>;
@@ -44,7 +45,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const preferences = servers.getPreferences(interaction.guildId);
-  const effective = effectivePreferences(config, preferences);
+  const effective = effectivePreferences(config, preferences, interaction.guildId);
   const channel = interaction.channel;
   const scope = evaluateScope({ guildId: interaction.guildId, channelId: interaction.channelId,
     threadParentId: channel?.isThread() ? channel.parentId : undefined,
@@ -65,7 +66,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     '**Linky diagnostics**', describeScope(scope),
     `Mode: ${effective.mode === 'reply' ? 'Reply (keeps originals)' : 'Replace'}.`,
     `Platforms: ${effective.platforms.map(platform => PLATFORM_NAMES[platform]).join(', ') || 'none'}.`,
-    `Erome channels: ${effective.eromeChannels === 'all' ? 'All enabled channels (chosen by a server admin).' : 'Age-restricted channels only.'}`,
+    isEromeAvailable(config, interaction.guildId)
+      ? `Erome channels: ${effective.eromeChannels === 'all' ? 'All enabled channels (chosen by a server admin).' : 'Age-restricted channels only.'}` : EROME_UNAVAILABLE,
     channel?.isSendable() ? undefined : 'This channel cannot receive Linky messages. For a forum or media post, check inside its thread.',
     missing === undefined ? 'Channel permissions could not be checked. Check Linky’s role and channel overrides.' :
       missing.length ? `Missing channel permissions: ${missing.join(', ')}.` : 'Required permissions for a plain link are present.',
@@ -79,7 +81,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     if (!platform) lines.push('Link format: unsupported. Use an HTTPS post link for a listed platform.');
     else {
       lines.push(`Link format: recognized ${PLATFORM_NAMES[platform]} URL.`);
-      if (!effective.platforms.includes(platform)) lines.push(config.rewritePlatforms.includes(platform)
+      if (!effective.platforms.includes(platform)) lines.push(config.rewritePlatforms.includes(platform) &&
+        (platform !== 'erome' || isEromeAvailable(config, interaction.guildId))
         ? 'This platform is disabled in this server’s preferences.' : 'This platform is unavailable from the bot operator.');
       else if (platform === 'erome') {
         if (permissions && !permissions.has(PermissionFlagsBits.AttachFiles)) lines.push('Missing Erome permission: Attach Files.');

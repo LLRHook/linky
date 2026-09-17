@@ -16,6 +16,7 @@ RUN mkdir -p /app/data && chown node:node /app/data
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/package.json ./
+COPY --chown=node:node ops/delivery-report.mjs ops/delivery-archive-report.mjs ./ops/
 USER node
 ENV NODE_ENV=production
 CMD ["node", "dist/index.js"]

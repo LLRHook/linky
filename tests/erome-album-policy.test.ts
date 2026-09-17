@@ -65,6 +65,22 @@ test('album policy requires exact location and freshly fetched actor and bot per
   assert.equal(await f.allowed(owner, f.interaction), false);
 });
 
+test('operator Erome restrictions block album actions before lookup and cannot be overridden by admins', async () => {
+  for (const guildIds of [[], ['100000000000000099']]) {
+    const f = fixture();
+    f.options.settings.eromeGuildIds = guildIds;
+    f.setPreferences({ eromeChannels: 'all', platforms: { erome: true } });
+    assert.equal(await f.allowed(owner, f.interaction), false);
+    assert.equal(await f.allowed({ ...owner, mode: 'manual' }, f.interaction), false);
+    assert.deepEqual(f.reads, []);
+  }
+  const f = fixture();
+  f.options.settings.eromeGuildIds = [owner.guildId];
+  assert.equal(await f.allowed(owner, f.interaction), true);
+  f.afterSource(async () => { f.options.settings.eromeGuildIds = []; });
+  assert.equal(await f.allowed(owner, f.interaction), false, 'A policy revoked while checking the source must be respected');
+});
+
 test('other channel members can load items without becoming the owner of the automatic source', async () => {
   const f = fixture(otherMemberId);
   assert.equal(await f.allowed(owner, f.interaction), true);

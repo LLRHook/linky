@@ -3,12 +3,14 @@ import type { Config } from '../config';
 import type { ServerPreferences, ServerSettings } from '../services/ServerSettings';
 import { REWRITE_PLATFORMS } from '../services/LinkConfiguration';
 import { describeScope, evaluateScope } from '../services/ServerScope';
+import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailability';
 
 export const PLATFORM_NAMES = { x: 'X', instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube',
   bluesky: 'Bluesky', reddit: 'Reddit', twitch: 'Twitch clips', erome: 'Erome' };
 
-export function effectivePreferences(config: Config, preferences: ServerPreferences) {
-  const platforms = config.rewritePlatforms.filter(platform => preferences.platforms?.[platform] !== false);
+export function effectivePreferences(config: Config, preferences: ServerPreferences, guildId?: string | null) {
+  const platforms = config.rewritePlatforms.filter(platform => preferences.platforms?.[platform] !== false &&
+    (platform !== 'erome' || isEromeAvailable(config, guildId)));
   return {
     mode: preferences.mode ?? 'replace',
     platforms,
@@ -35,7 +37,7 @@ export const data = new SlashCommandBuilder()
   .addBooleanOption(option => option.setName('bluesky').setDescription('Fix Bluesky post previews in this server.'))
   .addBooleanOption(option => option.setName('reddit').setDescription('Fix Reddit post previews in this server.'))
   .addBooleanOption(option => option.setName('twitch').setDescription('Fix Twitch clip previews in this server.'))
-  .addBooleanOption(option => option.setName('erome').setDescription('Automatically preview the first Erome video; keep the album.'))
+  .addBooleanOption(option => option.setName('erome').setDescription('Preview Erome albums when available from the bot operator.'))
   .addStringOption(option => option.setName('erome_channels').setDescription('Choose where this server permits Erome previews.')
     .addChoices({ name: 'Age-restricted channels', value: 'age-restricted' }, { name: 'All enabled channels', value: 'all' }))
   .addBooleanOption(option => option.setName('translate_tweets').setDescription('Translate non-English tweets when enabled by the bot operator.'))
@@ -53,11 +55,12 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     return;
   }
   const patch: ServerPreferences = {};
+  const eromeAvailable = isEromeAvailable(config, interaction.guildId);
   const mode = interaction.options.getString('mode');
   if (mode !== null) patch.mode = mode as ServerPreferences['mode'];
   for (const platform of REWRITE_PLATFORMS) {
     const enabled = interaction.options.getBoolean(platform);
-    if (enabled !== null) (patch.platforms ??= {})[platform] = enabled;
+    if (enabled !== null && (platform !== 'erome' || eromeAvailable || enabled === false)) (patch.platforms ??= {})[platform] = enabled;
   }
   const translateTweets = interaction.options.getBoolean('translate_tweets');
   if (translateTweets !== null) patch.translateTweets = translateTweets;
@@ -66,7 +69,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
   const youtubeDisplay = interaction.options.getString('youtube_display');
   if (youtubeDisplay !== null) patch.youtubeDisplay = youtubeDisplay as ServerPreferences['youtubeDisplay'];
   const eromeChannels = interaction.options.getString('erome_channels');
-  if (eromeChannels !== null) patch.eromeChannels = eromeChannels as ServerPreferences['eromeChannels'];
+  if (eromeChannels !== null && eromeAvailable) patch.eromeChannels = eromeChannels as ServerPreferences['eromeChannels'];
   const changed = Object.keys(patch).length > 0;
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   if (changed) {
@@ -81,7 +84,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     }
   }
   const preferences = servers.getPreferences(interaction.guildId);
-  const effective = effectivePreferences(config, preferences);
+  const effective = effectivePreferences(config, preferences, interaction.guildId);
   const scope = describeScope(evaluateScope({ guildId: interaction.guildId, channelId: interaction.channelId,
     threadParentId: interaction.channel?.isThread() ? interaction.channel.parentId : undefined,
     serverEnabled: servers.get(interaction.guildId), preferences,
@@ -92,8 +95,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
       scope,
       `Mode: ${effective.mode === 'reply' ? 'Reply (keep the original message).' : 'Replace (remove the original only after a replacement is sent).'}`,
       ...REWRITE_PLATFORMS.map(platform => `${PLATFORM_NAMES[platform]}: ${effective.platforms.includes(platform) ? 'On' :
-        !config.rewritePlatforms.includes(platform) ? 'Off (disabled by the bot operator)' : 'Off'}.`),
-      `Erome channels: ${effective.eromeChannels === 'all' ? 'All enabled channels (chosen by a server admin).' : 'Age-restricted channels only.'}`,
+        !config.rewritePlatforms.includes(platform) || platform === 'erome' && !eromeAvailable ? 'Off (disabled by the bot operator)' : 'Off'}.`),
+      eromeAvailable ? `Erome channels: ${effective.eromeChannels === 'all' ? 'All enabled channels (chosen by a server admin).' : 'Age-restricted channels only.'}` : EROME_UNAVAILABLE,
       `English tweet translation: ${effective.translateTweets ? 'On when translation is available' :
         !config.translateTweets ? 'Off (disabled by the bot operator)' :
           !effective.platforms.includes('x') ? 'Off (X link fixing is disabled)' : 'Off'}.`,

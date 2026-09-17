@@ -1,6 +1,12 @@
 # Self-hosting and operations
 
-The hosted bot runs on Hostinger; the public website and regional download workers use Vercel. Server members can use the hosted bot without supplying keys or hosting anything. On September 15, 2026, hosted tweet translation, Instagram caption translation, YouTube metadata and regional Erome delivery were enabled. The optional coding integration was disabled. These operator settings do not bypass an administrator's server/channel choices.
+The public hosted bot runs on Hostinger; the website uses Vercel. It provides X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit and Twitch clip previews, with available tweet and Instagram caption translation and YouTube extras. Members need no keys or hosting. Erome is self-host-only for public users: use your own bot application, server, storage and any media workers. The optional coding integration is disabled on the public bot. Operator settings do not bypass a server administrator's channel choices.
+
+## Hosted and self-hosted features
+
+Self-hosting provides the implemented platforms and configuration controls; it does not make every website embeddable. Erome retains its existing media, channel and preparation limits. Your instance uses your token and resources. The website invite always adds the public hosted bot, so create an invite using your own application ID.
+
+`REWRITE_PLATFORMS` controls the operator platform ceiling. `EROME_GUILD_IDS` can restrict Erome further: omit it for the self-hosted default, set it to `none` to disable Erome everywhere, or supply a comma-separated allowlist of server IDs. Server administrators cannot override that restriction. Published media cleanup and owner removal remain active when new Erome processing is disabled; do not disable the media server just to stop new requests.
 
 ## Optional coding requests
 
@@ -101,6 +107,10 @@ The hosted bot deploys after CI passes for a push to `main`. Deployment accepts 
 Operators use `/root/linky`, configure `LINKY_DEPLOY_HOST`, `LINKY_SSH_KEY` and `LINKY_SSH_KNOWN_HOSTS`, and install `ops/ssh-deploy.sh` as `/usr/local/sbin/linky-deploy` with a restricted SSH key and pinned host key. After the first successful manual deployment, run `git rev-parse HEAD > .git/linky-deployed-revision` to initialize the rollback marker. Connection establishment retries automatically; for a failed deployment, inspect its logs and rerun the failed Deploy job. Disable Deploy in GitHub Actions to pause updates.
 
 [MIT license](../LICENSE).
+
+## Delivery archive and weekly reports
+
+The bot also writes a separate, bounded operator archive alongside its persistent settings. It defaults to 30 days; `DELIVERY_LOG_RETENTION_DAYS` accepts 1–90 days. The 64 MiB storage cap can expire older data sooner. The archive contains only sanitized delivery measurements and random attempt IDs, not Discord identities or message content. Discord Details keeps its own seven-day retention and permissions. See [operator reliability](operator-reliability.md) for reporting, coverage checks and backups.
 
 ## Operational logs
 
