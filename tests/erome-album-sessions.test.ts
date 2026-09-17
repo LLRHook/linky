@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ButtonStyle, ComponentType, MessageFlags, type APIMessageTopLevelComponent, type ButtonInteraction, type Message } from 'discord.js';
+import { ButtonStyle, Collection, ComponentType, MessageFlags, type APIMessageTopLevelComponent, type ButtonInteraction, type Message } from 'discord.js';
 import { EromeAlbumSessions, type AlbumOwner } from '../src/services/EromeAlbumSessions';
 import { eromeMediaComponents, type EromeMedia } from '../src/services/EromeMedia';
 
@@ -24,15 +24,19 @@ function harness(t: { after: (fn: () => void) => void }, overrides: Partial<Opti
   const prepared: Parameters<Options['prepare']>[] = [];
   const bound = new Set<string>();
   const cancelled: string[] = [];
+  const mentionEdits: unknown[] = [];
+  const mentionedUsers = new Collection<string, { id: string }>();
   let edits = 0, fetches = 0;
   let editHook: ((components: APIMessageTopLevelComponent[], index: number) => Promise<void>) | undefined;
   let fetchHook: ((index: number) => Promise<void>) | undefined;
   let components: APIMessageTopLevelComponent[] = [];
   const message = { id: owner.messageId, channelId: owner.channelId, author: { id: botId },
+    mentions: { users: mentionedUsers },
     get components() { return components.map(value => ({ toJSON: () => structuredClone(value) })); },
     fetch: async () => { events.push('fetch'); fetches++; await fetchHook?.(fetches); return message; },
     edit: async (value: { components: APIMessageTopLevelComponent[]; allowedMentions?: unknown }) => {
       events.push('edit'); edits++;
+      mentionEdits.push(structuredClone(value.allowedMentions));
       await editHook?.(value.components, edits);
       components = structuredClone(value.components);
       return message;
@@ -69,7 +73,8 @@ function harness(t: { after: (fn: () => void) => void }, overrides: Partial<Opti
       editReply: async (value: Reply) => { replies.push(value); }, ...changes } as unknown as ButtonInteraction;
     return { interaction, replies };
   }
-  return { sessions, options, click, events, prepared, bound, cancelled, message, initialComponents,
+  return { sessions, options, click, events, prepared, bound, cancelled, message, initialComponents, mentionEdits,
+    setMentions: (ids: string[]) => { mentionedUsers.clear(); for (const id of ids) mentionedUsers.set(id, { id }); },
     components: () => components,
     setComponents: (value: APIMessageTopLevelComponent[]) => { components = value; },
     onEdit: (hook: typeof editHook) => { editHook = hook; }, onFetch: (hook: typeof fetchHook) => { fetchHook = hook; } };
@@ -170,6 +175,43 @@ test('append binds before editing and preserves every prior item and existing co
   const caption = f.components().find(component => component.type === ComponentType.TextDisplay);
   assert.ok(caption && caption.type === ComponentType.TextDisplay);
   assert.equal(caption.content, 'Original album caption.\n-# 2 of 3 items · Original media. Full album: Original post.');
+});
+
+test('album append and control edits preserve only user mentions from the freshly fetched message', async t => {
+  const f = harness(t);
+  f.setMentions([owner.requesterId]);
+  f.onFetch(async index => { if (index === 1) f.setMentions([otherMemberId]); });
+  f.setComponents(f.components().map(component => component.type === ComponentType.TextDisplay
+    ? { ...component, content: `> Shared by <@${owner.requesterId}> (reply to <@${botId}>)\n<@${otherMemberId}>\n${component.content}` }
+    : component));
+  await f.sessions.handle(f.click().interaction);
+  assert.equal(f.mentionEdits.length, 2);
+  for (const mentions of f.mentionEdits) assert.deepEqual(mentions,
+    { parse: [], users: [otherMemberId], roles: [], repliedUser: false });
+});
+
+test('a failed control edit preserves the same recipients when rolling back the album', async t => {
+  const f = harness(t);
+  f.setMentions([otherMemberId]);
+  f.onEdit(async (_components, index) => {
+    if (index === 2) { f.setMentions([]); throw Error('Control edit response lost'); }
+  });
+  await f.sessions.handle(f.click().interaction);
+  assert.equal(f.mentionEdits.length, 3, 'Append, final controls and rollback each preserve the captured recipients');
+  for (const mentions of f.mentionEdits) assert.deepEqual(mentions,
+    { parse: [], users: [otherMemberId], roles: [], repliedUser: false });
+  assert.deepEqual(f.components(), f.initialComponents);
+});
+
+test('quiet galleries keep an empty recipient list despite visible attribution and user tags', async t => {
+  const f = harness(t);
+  f.setComponents(f.components().map(component => component.type === ComponentType.TextDisplay
+    ? { ...component, content: `> Shared by <@${owner.requesterId}>\n<@${otherMemberId}>\n${component.content}` }
+    : component));
+  await f.sessions.handle(f.click().interaction);
+  assert.equal(f.mentionEdits.length, 2);
+  for (const mentions of f.mentionEdits) assert.deepEqual(mentions,
+    { parse: [], users: [], roles: [], repliedUser: false });
 });
 
 test('concurrent clicks from different members prepare one item and privately tell the second member to wait', async t => {

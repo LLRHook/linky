@@ -36,6 +36,7 @@ import type { ProviderHealth, ProviderAttempt } from './ProviderHealth';
 import type { EromeAlbumSessions } from './EromeAlbumSessions';
 import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
 import { formatLinkRepost, repostControls } from './RepostPresentation';
+import { sourceMentionUsers } from './SourceMentions';
 
 export { REWRITE_PLATFORMS, parseRewritePlatforms, parseDiscordIds, type RewritePlatform } from './LinkConfiguration';
 export { originalPostUrl, formatLinkRepost, repostControls } from './RepostPresentation';
@@ -309,6 +310,9 @@ export function createLinkRepostHandler(
       // Discord can mutate this cached message while a metadata lookup is pending.
       const version = sourceVersion(message);
       const nonce = refresh ? randomBytes(12).toString('hex') : message.id;
+      const allowedMentions = { parse: [] as never[], users: !reply && !refresh ? sourceMentionUsers(message) : [],
+        roles: [], repliedUser: false };
+      const progressNonce = allowedMentions.users.length ? randomBytes(12).toString('hex') : nonce;
       let progressAttempted = false;
       progress = createDeliveryProgress(async text => {
         if (!eromeSource || !enabled() || sourceVersion(message) !== version || delivery.context.signal?.aborted) return;
@@ -316,12 +320,12 @@ export function createLinkRepostHandler(
         if (progressMessage) { await progressMessage.edit({ content, allowedMentions: { parse: [] } }); return; }
         if (progressAttempted) return;
         progressAttempted = true;
-        progressMessage = await sendEromeMedia(() => channel.send({ content, nonce, enforceNonce: true,
+        progressMessage = await sendEromeMedia(() => channel.send({ content, nonce: progressNonce, enforceNonce: true,
           allowedMentions: { parse: [], repliedUser: false },
           ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) }), async () => {
           const recent = await channel.messages.fetch({ limit: 25 });
           const matches = recent.filter(candidate => candidate.author.id === message.client.user.id &&
-            (!reply || candidate.reference?.messageId === message.id) && String(candidate.nonce) === nonce);
+            (!reply || candidate.reference?.messageId === message.id) && String(candidate.nonce) === progressNonce);
           return matches.size === 1 ? matches.first()! : null;
         });
       });
@@ -453,7 +457,7 @@ export function createLinkRepostHandler(
       }
       let expected = expectations();
       await progress.stop();
-      if (!enabled()) return;
+      if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       if (delivery.context.signal?.aborted) {
         delivery.finish('timeout');
         await failureNotice('This media preparation reached its time limit. Your original is still here; try again later.');
@@ -469,11 +473,17 @@ export function createLinkRepostHandler(
             repostControls(inputContent, { remove: false }).map(row => row.toJSON())),
         } : { content, ...(embeds ? { embeds } : {}), files,
           components: repostControls(inputContent, { remove: false }) }),
-        allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
+        allowedMentions,
+        ...(message.flags.has(MessageFlags.SuppressNotifications) ? {
+          flags: (originalMedia ? MessageFlags.IsComponentsV2 : 0) | MessageFlags.SuppressNotifications,
+        } : {}),
         ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds as const } : {}),
       };
-      const send = () => progressMessage
-        ? progressMessage.edit({ ...publicationBody, ...(preparedMedia ? { content: null, embeds: [], attachments: [] } : {}) })
+      // Edits do not provide a reliable way to deliver a new mention notification.
+      // A tagged replacement uses a fresh send; its quiet progress message has a separate nonce.
+      const reuseProgress = progressMessage && !allowedMentions.users.length;
+      const send = () => reuseProgress
+        ? progressMessage!.edit({ ...publicationBody, ...(preparedMedia ? { content: null, embeds: [], attachments: [] } : {}) })
         : channel.send({ ...publicationBody, nonce, enforceNonce: true,
           ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) });
       const publishStage = delivery.context.trace?.startStage('publish');
@@ -485,7 +495,7 @@ export function createLinkRepostHandler(
           messageHasEromeMedia(candidate, preparedMedia!.url));
         return matches.size === 1 ? matches.first()! : null;
       }) : await send();
-      progressMessage = undefined;
+      if (reuseProgress) progressMessage = undefined;
       publishStage?.finish();
 
       // Remember successes even when deletion fails. The nonce also guards REST retries.
@@ -549,7 +559,7 @@ export function createLinkRepostHandler(
         expected = expectations();
         previewWatch?.close();
         previewWatch = armPreview?.(channelId, expected, delivery.context);
-        await replacement.edit({ content, embeds: embeds ?? [], allowedMentions: { parse: [] } });
+        await replacement.edit({ content, embeds: embeds ?? [], allowedMentions });
         preview = await verify(expected);
         providerAttempts.push({ expected, result: preview });
         observePreview?.(expected, preview);
@@ -565,7 +575,7 @@ export function createLinkRepostHandler(
         reply = true;
         content += INSTAGRAM_PREVIEW_NOTICE;
         await replacement.edit({ content, embeds: [], flags: MessageFlags.SuppressEmbeds,
-          allowedMentions: { parse: [], repliedUser: false } });
+          allowedMentions });
       }
       if (!preview.ok && !captionFallback) {
         await removeReplacement();
@@ -639,7 +649,7 @@ export function createLinkRepostHandler(
       if (rememberRepost) await replacement.edit({
         components: originalMedia ? eromeMediaComponents(originalMedia, content,
           [...repostControls(inputContent), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
-          : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions: { parse: [] },
+          : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions,
       });
       if (originalMedia && reply) {
         const current = await message.fetch(true);

@@ -119,6 +119,7 @@ export class EromeAlbumSessions {
     context.trace?.setPath('album');
     let media: EromeMedia | null = null, editAttempted = false, committed = false, bound = false, uncertain = false;
     let before: APIMessageTopLevelComponent[] | undefined;
+    const allowedMentions = { parse: [] as never[], users: [] as string[], roles: [] as never[], repliedUser: false };
     const valid = async () => {
       if (context.signal?.aborted || this.sessions.get(session.id) !== session) return false;
       const allowed = await this.options.allowed(session, interaction);
@@ -145,6 +146,9 @@ export class EromeAlbumSessions {
       }
       await progress.stop();
       const current = await interaction.message.fetch(true);
+      // V2 edits rebuild mention metadata. Preserve only Discord's current recipients,
+      // including on rollback; visible attribution must never create new recipients.
+      allowedMentions.users = [...current.mentions.users.keys()].filter(id => /^[1-9]\d{16,19}$/.test(id)).slice(0, 100);
       before = current.components.map(component => component.toJSON());
       const galleries = before.filter(component => component.type === ComponentType.MediaGallery);
       if (galleries.length !== 1 || galleries[0].items.length !== session.loaded.length ||
@@ -167,7 +171,7 @@ export class EromeAlbumSessions {
         let updated: Message;
         // Edits are idempotent, but an ambiguous error is reconciled once before any cleanup.
         editAttempted = true;
-        try { updated = await current.edit({ components: next, allowedMentions: { parse: [] } }); }
+        try { updated = await current.edit({ components: next, allowedMentions }); }
         catch (error) {
           uncertain = true;
           const observed = await current.fetch(true).catch(() => null);
@@ -191,7 +195,7 @@ export class EromeAlbumSessions {
           !component.components.some(button => 'custom_id' in button && (button.custom_id === `${PREFIX}${session.id}` ||
             details.length && button.custom_id.startsWith('linky:details:'))));
         if (!await valid()) throw Error('Album policy changed');
-        try { await updated.edit({ components: [...controls, ...details, ...control ? [control] : []], allowedMentions: { parse: [] } }); }
+        try { await updated.edit({ components: [...controls, ...details, ...control ? [control] : []], allowedMentions }); }
         catch (error) { uncertain = true; throw error; }
         if (!await valid()) throw Error('Album policy changed');
         session.loaded = loaded;
@@ -203,7 +207,7 @@ export class EromeAlbumSessions {
       context.trace?.finish(context.signal?.aborted ? 'timeout' : 'discord-failure');
       if (editAttempted && !committed && before && media) {
         try {
-          await interaction.message.edit({ components: before, allowedMentions: { parse: [] } });
+          await interaction.message.edit({ components: before, allowedMentions });
         } catch {
           uncertain = true;
         }
