@@ -19,6 +19,19 @@ const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewrit
 const plain = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory |
   PermissionFlagsBits.EmbedLinks | PermissionFlagsBits.SendMessages;
 
+test('diagnose identifies operator-blocked Erome without querying providers or suggesting a server override', async () => {
+  const servers = new ServerSettings(file());
+  await servers.update(SERVER, { eromeChannels: 'all', platforms: { erome: true } });
+  const f = interaction('https://www.erome.com/a/Synthetic01');
+  await execute(f.command, { ...config, rewritePlatforms: ['instagram', 'erome'], eromeGuildIds: [] }, servers,
+    async () => assert.fail('Blocked Erome must not query its provider'));
+  const content = f.events.at(-1)!.payload.content;
+  assert.match(content, /Platforms: Instagram\./);
+  assert.match(content, /unavailable from the bot operator/);
+  assert.match(content, /self-host/);
+  assert.doesNotMatch(content, /erome_channels|Erome channels:|server admin permits Erome/);
+});
+
 function interaction(link: string | null = null, permissions = plain | PermissionFlagsBits.ManageMessages) {
   const events: { name: string; payload: any }[] = [];
   const input = {
@@ -174,7 +187,7 @@ test('all-channel Erome diagnostics keep server, channel and platform enablement
     await execute(f.command, { ...config, rewritePlatforms: restriction === 'operator' ? [] : ['erome'] }, servers,
       async () => assert.fail('Erome diagnostics must not contact providers'));
     const content = f.events[1].payload.content;
-    assert.match(content, /Erome channels: All enabled channels/);
+    assert.match(content, restriction === 'operator' ? /Erome is unavailable on this bot/ : /Erome channels: All enabled channels/);
     if (restriction === 'server') assert.match(content, /Disabled throughout this server/);
     if (restriction === 'channel') assert.match(content, /Disabled in this channel by the selected channel restriction/);
     if (restriction === 'platform') assert.match(content, /platform is disabled in this server/);

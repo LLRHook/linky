@@ -8,6 +8,7 @@ import type { ServerSettings } from '../services/ServerSettings';
 import { REWRITE_PLATFORMS } from '../services/LinkConfiguration';
 import { evaluateScope } from '../services/ServerScope';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
+import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailability';
 
 const PREFIX = 'linky:setup:';
 export const SETUP_ACTIONS = {
@@ -25,7 +26,9 @@ export function isSetupComponent(interaction: { customId: string }): boolean {
 
 export function buildSetupPanel(context: PanelContext, config: Config, servers: ServerSettings, notice?: string) {
   const preferences = servers.getPreferences(context.guildId);
-  const effective = effectivePreferences(config, preferences);
+  const effective = effectivePreferences(config, preferences, context.guildId);
+  const eromeAvailable = isEromeAvailable(config, context.guildId);
+  const choices = REWRITE_PLATFORMS.filter(platform => platform !== 'erome' || eromeAvailable);
   const enabled = servers.get(context.guildId);
   const scope = evaluateScope({ ...context, serverEnabled: enabled, preferences,
     operatorChannelIds: config.channelIds, operatorServerIds: config.serverIds });
@@ -34,8 +37,8 @@ export function buildSetupPanel(context: PanelContext, config: Config, servers: 
     .addOptions({ label: 'Replace', value: 'replace', description: 'Replace the original after its new preview is checked.', default: effective.mode === 'replace' },
       { label: 'Reply', value: 'reply', description: 'Keep the original and add a reply.', default: effective.mode === 'reply' });
   const platforms = new StringSelectMenuBuilder().setCustomId(SETUP_ACTIONS.platforms)
-    .setPlaceholder('Select platforms; clear to turn all off').setMinValues(0).setMaxValues(REWRITE_PLATFORMS.length)
-    .addOptions(REWRITE_PLATFORMS.map(platform => ({ label: PLATFORM_NAMES[platform], value: platform,
+    .setPlaceholder('Select platforms; clear to turn all off').setMinValues(0).setMaxValues(choices.length)
+    .addOptions(choices.map(platform => ({ label: PLATFORM_NAMES[platform], value: platform,
       description: config.rewritePlatforms.includes(platform) ? `Fix ${PLATFORM_NAMES[platform]} links.` : 'Unavailable on this bot.',
       default: effective.platforms.includes(platform) })));
   const channelSelect = new ChannelSelectMenuBuilder().setCustomId(SETUP_ACTIONS.channels)
@@ -71,6 +74,7 @@ export function buildSetupPanel(context: PanelContext, config: Config, servers: 
     ))
     .addTextDisplayComponents(text([
       notice && `-# ${notice}`,
+      !eromeAvailable && `-# ${EROME_UNAVAILABLE}`,
       '-# Selections save automatically. They never enable the server.',
       '-# /settings · Translation & YouTube   /diagnose · Channel check',
     ].filter(Boolean).join('\n')));
@@ -104,7 +108,13 @@ export async function handleSetupComponent(interaction: SetupComponent, config: 
   } else if (id === SETUP_ACTIONS.platforms && interaction.isStringSelectMenu() &&
       new Set(interaction.values).size === interaction.values.length &&
       interaction.values.every(value => (REWRITE_PLATFORMS as readonly string[]).includes(value))) {
-    const platforms = Object.fromEntries(REWRITE_PLATFORMS.map(platform => [platform, interaction.values.includes(platform)]));
+    const eromeAvailable = isEromeAvailable(config, interaction.guildId);
+    if (interaction.values.includes('erome') && !eromeAvailable) {
+      await interaction.reply({ content: EROME_UNAVAILABLE, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+      return true;
+    }
+    const platforms = Object.fromEntries(REWRITE_PLATFORMS.filter(platform => platform !== 'erome' || eromeAvailable)
+      .map(platform => [platform, interaction.values.includes(platform)]));
     change = () => servers.update(interaction.guildId!, { platforms });
   } else if (id === SETUP_ACTIONS.channels && interaction.isChannelSelectMenu() &&
       interaction.values.every(value => {

@@ -154,12 +154,29 @@ test('mode and platform menus preserve operator enablement and capabilities', as
   assert.equal(servers.get(SERVER), undefined);
   assert.equal(new ServerSettings(path).getPreferences(SERVER).mode, 'reply');
   assert.deepEqual(servers.getPreferences(SERVER).platforms, { x: false, instagram: true, tiktok: false, youtube: true,
-    bluesky: false, reddit: false, twitch: false, erome: false });
+    bluesky: false, reddit: false, twitch: false });
   const view = panelView(platform.events[1].payload);
   assert.match(view.text, /Active in this channel/);
   const platforms = view.rows[1].components[0];
   assert(platforms.type === ComponentType.StringSelect);
   assert.deepEqual(platforms.options.filter(option => option.default).map(option => option.value), ['instagram']);
+});
+
+test('setup hides operator-blocked Erome and rejects stale attempts to enable it', async () => {
+  const restricted: Config = { ...config, rewritePlatforms: ['instagram', 'erome'], eromeGuildIds: [] };
+  const servers = new ServerSettings(file());
+  const view = panelView(buildSetupPanel({ guildId: SERVER, channelId: CHANNEL }, restricted, servers));
+  const menu = view.rows[1].components[0]; assert(menu.type === ComponentType.StringSelect);
+  assert.equal(menu.options.some(option => option.value === 'erome'), false);
+  assert.match(view.text, /Server settings cannot enable it/);
+  const click = component(SETUP_ACTIONS.platforms, ['erome']);
+  await handleSetupComponent(click.interaction, restricted, servers);
+  assert.equal(click.events[0].payload.flags, MessageFlags.Ephemeral);
+  assert.match(click.events[0].payload.content, /self-host/);
+  assert.deepEqual(servers.getPreferences(SERVER), {});
+  const allowed = panelView(buildSetupPanel({ guildId: SERVER, channelId: CHANNEL }, { ...restricted, eromeGuildIds: [SERVER] }, servers));
+  const choices = allowed.rows[1].components[0]; assert(choices.type === ComponentType.StringSelect);
+  assert.equal(choices.options.some(option => option.value === 'erome'), true);
 });
 
 test('channel selection, clearing and all-channels keep enablement unchanged', async () => {

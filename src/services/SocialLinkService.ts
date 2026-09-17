@@ -206,6 +206,7 @@ export function createLinkRepostHandler(
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
   { platforms = REWRITE_PLATFORMS, translateTweet, translateInstagram, serverIds = [], serverEnabled, serverPreferences,
     lookupYouTube, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
+    eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
     verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost, diagnostics, armPreview, providerHealth, albums, signal }: {
     platforms?: readonly RewritePlatform[];
@@ -217,6 +218,7 @@ export function createLinkRepostHandler(
     lookupYouTube?: (ids: readonly string[], display?: YouTubeDisplay) => Promise<Map<string, YouTubeStatistics>>;
     publishYouTube?: (message: Message, embeds: APIEmbed[]) => Promise<StatsPublication | null>;
     prepareErome?: EromePreparer;
+    eromeAvailable?: (guildId: string) => boolean;
     prepareEromeMedia?: EromeMediaPreparer;
     bindEromeMedia?: EromeMediaBinding;
     releaseEromeMedia?: (messageId: string) => Promise<void>;
@@ -242,16 +244,23 @@ export function createLinkRepostHandler(
     const preferences = serverPreferences?.(message.guildId) ?? {};
     const preferenceVersion = JSON.stringify(preferences);
     const eromeSources = findEromeLinks(message.content);
-    const enabled = () => !signal?.aborted && (!eromeSources.length || canPreviewErome(message.channel, preferences.eromeChannels)) && evaluateScope({
+    const operatorErome = () => platforms.includes('erome') && eromeAvailable(message.guildId);
+    const eromePermitted = operatorErome();
+    const blockedErome = eromeSources.length > 0 && !eromePermitted;
+    const inputContent = blockedErome ? mapLinks(message.content, (url, position) =>
+      visibleLink(message.content, position) && parseEromeUrl(url) ? `<${url}>` : url) : message.content;
+    const enabled = () => !signal?.aborted && (!eromeSources.length || operatorErome() === eromePermitted &&
+      (!eromePermitted || canPreviewErome(message.channel, preferences.eromeChannels))) && evaluateScope({
       guildId: message.guildId, channelId: message.channelId,
       threadParentId: message.channel.isThread() ? message.channel.parentId : undefined,
       serverEnabled: serverEnabled?.(message.guildId), preferences,
       operatorChannelIds: allowedChannelIds, operatorServerIds: serverIds,
     }).enabled &&
       JSON.stringify(serverPreferences?.(message.guildId) ?? {}) === preferenceVersion;
-    const activePlatforms = platforms.filter(platform => preferences.platforms?.[platform] !== false);
+    const activePlatforms = platforms.filter(platform => preferences.platforms?.[platform] !== false &&
+      (platform !== 'erome' || eromePermitted));
     const eromeSource = activePlatforms.includes('erome') && prepareErome ? eromeSources[0] : undefined;
-    let reply = forceReply || preferences.mode === 'reply';
+    let reply = forceReply || blockedErome || preferences.mode === 'reply';
     if (!enabled() ||
         !canCopy(message) || bypassLinky(message.content) || message.flags.has(MessageFlags.SuppressEmbeds) ||
         (!refresh && reposted.has(message.id))) return;
@@ -259,10 +268,10 @@ export function createLinkRepostHandler(
       if (refresh) throw new Error('Source repost is still in flight.');
       return;
     }
-    const rewritten = rewriteSocialLinks(message.content, activePlatforms);
+    const rewritten = rewriteSocialLinks(inputContent, activePlatforms);
     const youtubeLinks = activePlatforms.includes('youtube') && lookupYouTube && publishYouTube &&
       !message.flags.has(MessageFlags.SuppressEmbeds) ? findYouTubeLinks(message.content).slice(0, 3) : [];
-    if (rewritten === message.content && !youtubeLinks.length && !eromeSource) return;
+    if (rewritten === inputContent && !youtubeLinks.length && !eromeSource) return;
 
     const channelId = message.channelId;
     const context = { messageId: message.id, channelId, guildId: message.guildId };
@@ -275,7 +284,7 @@ export function createLinkRepostHandler(
     let originalMedia: EromeMedia | null = null;
     const providerAttempts: ProviderAttempt[] = [];
     const delivery = createDeliveryAttempt({ requesterId: message.author.id, channelId, guildId: message.guildId,
-      mode: 'automatic', platform: deliveryPlatform(message.content) }, diagnostics,
+      mode: 'automatic', platform: deliveryPlatform(inputContent) }, diagnostics,
       event => progress?.update(event), signal);
     try {
       const channel = message.channel;
@@ -321,7 +330,7 @@ export function createLinkRepostHandler(
         if (!rememberRepost || !enabled()) return;
         const current = await message.fetch(true);
         if (!enabled() || !canCopy(current) || sourceVersion(current) !== version) return;
-        const initial = { content: text, components: repostControls(message.content, { remove: false }),
+        const initial = { content: text, components: repostControls(inputContent, { remove: false }),
           allowedMentions: { parse: [] as never[], repliedUser: false } };
         const notice = progressMessage ? await progressMessage.edit(initial) : await channel.send({ ...initial,
           reply: { messageReference: message.id, failIfNotExists: true } });
@@ -336,16 +345,16 @@ export function createLinkRepostHandler(
         const latest = await message.fetch(true);
         if (!enabled() || !canCopy(latest) || sourceVersion(latest) !== version) { await notice.delete(); rollback = undefined; return; }
         const details = await delivery.controls(notice.id);
-        await notice.edit({ components: [...repostControls(message.content, { retry: true }), ...details], allowedMentions: { parse: [] } });
+        await notice.edit({ components: [...repostControls(inputContent, { retry: true }), ...details], allowedMentions: { parse: [] } });
         rollback = undefined;
       };
       if (eromeSource) progress.update({ stage: 'resolve', state: 'running' });
       const eromeBudget = guildAttachmentBudget(message.guild.premiumTier);
-      originalMedia = eromeSource && prepareEromeMedia && bindEromeMedia && releaseEromeMedia &&
+      originalMedia = eromeSource && enabled() && prepareEromeMedia && bindEromeMedia && releaseEromeMedia &&
         (reply || !message.attachments.size) && onlyEromeLinks(message.content)
         ? await prepareEromeMedia(eromeSource, { context: delivery.context }).catch(() => null) : null;
       if (eromeSource) delivery.context.trace?.setPath(originalMedia ? 'hosted-original' : 'attachment');
-      const erome = eromeSource && !originalMedia && !delivery.context.signal?.aborted
+      const erome = eromeSource && enabled() && !originalMedia && !delivery.context.signal?.aborted
         ? await prepareErome!(eromeSource, undefined, { maxBytes: eromeBudget, context: delivery.context }).catch(() => null) : null;
       if (delivery.context.signal?.aborted) {
         delivery.finish('timeout');
@@ -366,13 +375,13 @@ export function createLinkRepostHandler(
         catch { log.warn(context, 'YouTube lookup unavailable; keeping native links'); }
       }
       // Preview-only keeps Discord's already-native YouTube message untouched.
-      if (rewritten === message.content && !youtube.size && !erome && !originalMedia) return;
+      if (rewritten === inputContent && !youtube.size && !erome && !originalMedia) return;
       const replyContext = await findReplyContext(message, findRepost);
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       const body = formatLinkRepost(rewritten, message.author.id, replyContext);
       const tweetPresentation = translateTweet && preferences.translateTweets !== false && activePlatforms.includes('x') &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
-        ? await translateRepost(message.content, activePlatforms, translateTweet,
+        ? await translateRepost(inputContent, activePlatforms, translateTweet,
           MAX_CONTENT_LENGTH - (body.length - rewritten.length)) : { content: rewritten };
       if (!tweetPresentation) {
         log.warn(context, 'Keeping original: source context and every media link exceed the message limit');
@@ -381,7 +390,7 @@ export function createLinkRepostHandler(
       const translated: NonNullable<typeof tweetPresentation> & { instagramSources?: string[]; instagramVideos?: string[] } =
         translateInstagram && preferences.translateInstagram !== false && activePlatforms.includes('instagram') &&
           !message.flags.has(MessageFlags.SuppressEmbeds)
-          ? await addInstagramCaptions(message.content, tweetPresentation, translateInstagram,
+          ? await addInstagramCaptions(inputContent, tweetPresentation, translateInstagram,
             MAX_CONTENT_LENGTH - INSTAGRAM_PREVIEW_NOTICE.length - (body.length - rewritten.length)) : tweetPresentation;
       const canonical = mapLinks(translated.content, (url, position) => {
         if ((erome || originalMedia) && visibleLink(translated.content, position) && parseEromeUrl(url)) return `<${parseEromeUrl(url)!.url}>`;
@@ -394,7 +403,7 @@ export function createLinkRepostHandler(
       const youtubeCards = youtubeLinks.filter(link => youtube.has(link.id))
         .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url, youtubeDisplay))
         .filter((card): card is APIEmbed => card !== null);
-      if (rewritten === message.content && !youtubeCards.length && !erome && !originalMedia) return;
+      if (rewritten === inputContent && !youtubeCards.length && !erome && !originalMedia) return;
       const embeds = translated.embeds;
       const translationFiles = [...translated.translationFiles ?? [], ...erome ? [erome.file] : []];
       if (translationFiles.length && !permissions.has(PermissionFlagsBits.AttachFiles)) {
@@ -457,9 +466,9 @@ export function createLinkRepostHandler(
         ...(originalMedia ? {
           flags: MessageFlags.IsComponentsV2 as const,
           components: eromeMediaComponents(preparedMedia!, content,
-            repostControls(message.content, { remove: false }).map(row => row.toJSON())),
+            repostControls(inputContent, { remove: false }).map(row => row.toJSON())),
         } : { content, ...(embeds ? { embeds } : {}), files,
-          components: repostControls(message.content, { remove: false }) }),
+          components: repostControls(inputContent, { remove: false }) }),
         allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
         ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds as const } : {}),
       };
@@ -573,7 +582,7 @@ export function createLinkRepostHandler(
       if (youtubeCards.length) {
         try { publication = await publishYouTube!(replacement, youtubeCards); }
         catch { log.warn(resultContext, 'Could not publish YouTube details'); }
-        if (!publication && rewritten === message.content) {
+        if (!publication && rewritten === inputContent) {
           await removeReplacement();
           return;
         }
@@ -629,8 +638,8 @@ export function createLinkRepostHandler(
         messageId: replacement.id, ...(reply ? { sourceMessageId: message.id } : {}), mode: 'automatic' }) : undefined;
       if (rememberRepost) await replacement.edit({
         components: originalMedia ? eromeMediaComponents(originalMedia, content,
-          [...repostControls(message.content), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
-          : [...repostControls(message.content), ...publication?.controls ?? [], ...details], allowedMentions: { parse: [] },
+          [...repostControls(inputContent), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
+          : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions: { parse: [] },
       });
       if (originalMedia && reply) {
         const current = await message.fetch(true);

@@ -38,6 +38,8 @@ Album controls use at most 512 in-memory sessions, expiring after 24 hours or a 
 
 ## Local retention and operations
 
+The seven-day history below powers Discord Details. A separate private operator archive retains sanitized finalized measurements for 30 days by default within a 64 MiB cap, without Discord identities, URLs or message content. Run `npm run report:deliveries -- --days 7` after building, or the container command in [operator reliability](operator-reliability.md), for weekly analysis. It reports coverage and data-loss limitations. Public hosted Linky excludes Erome; the Erome paths in this document apply to self-hosted instances and the dated historical validation below.
+
 `data/delivery-diagnostics.json` holds at most 4,096 attempts, 4 MiB and seven days. It contains finite outcomes, elapsed/stage timings, platform/path labels and the IDs needed to bind Details to its message and restrict private replies. It contains no message text, captions, URLs, media or credentials. Diagnostics expiry cleanup runs periodically and on access. The reuse index removes expired descriptors during startup, activity and minute-by-minute maintenance. Unfinished attempts restored after restart are marked interrupted, not submitted again. A slow or failed diagnostics write omits Details while the preview continues.
 
 The reuse index is the private `erome-reuse` sibling of the configured media directory. Never put it inside the strict media directory. Its failures disable reuse without turning an index record into permission to retain or serve media. The optional website analytics collector remains separate and inactive for these local attempt records; this feature does not send them to a new analytics service.
