@@ -10,6 +10,12 @@ Quick requests publish directly. Slower media requests show the current stage, s
 
 An unavailable preview keeps its original. Where ownership can be saved, automatic failures offer **Retry preview**; any channel member with current view/send permission who is not timed out can retry. A shared retry keeps the original attribution and Remove ownership, and the existing per-source cooldown still applies. **Remove** remains restricted to the original sharer for automatic previews and the requester for manual previews. Discord's native moderation is unchanged.
 
+## Mention notifications
+
+Fresh automatic Replace allows only user tags that appear in the source text and are present in Discord's source `mentions.users` metadata. Attribution, reply excerpts, translated/provider text, roles and `@everyone`/`@here` never add recipients. Tags in code, escaped tags and spoiler tags remain quiet. Provider fallback edits retain the original allowed-user list.
+
+Reply mode, manual fixes, retries and refreshes do not add mention notifications. Linky preserves the source message's `@silent` setting. Recipient notification settings still apply, and the original message can notify before the replacement, so exactly one alert is not guaranteed.
+
 ## Preview detection and provider recovery
 
 The ordinary-preview watcher subscribes to the existing Discord Gateway before publishing or editing. A useful early update can finish verification immediately. If the update is missed, Linky waits up to four seconds and performs one bounded REST reconciliation. Watchers have capacity and lifetime limits and close on cancellation. This replaces repeated polling; it cannot make a third-party provider render faster.
