@@ -36,6 +36,7 @@ const storeComponents = (rows: MessageEditOptions['components']) => (rows ?? [])
 /** Independent Discord boundary: durable writes and visible side effects are observable. */
 function delivery(content = ORIGINAL_X) {
   const events: string[] = [], sent: SentMessage[] = [], remembered: RepostRecord[] = [];
+  const mentions = { users: new Collection<string, { id: string }>(), repliedUser: null as { id: string } | null };
   const expectedChecks: ExpectedPreview[][] = [];
   const state = {
     enabled: true, preferences: { mode: 'replace' } as ServerPreferences,
@@ -78,7 +79,7 @@ function delivery(content = ORIGINAL_X) {
     author: { id: AUTHOR, bot: false }, guild: { members: { me: { id: BOT } } }, channel,
     partial: false, webhookId: null, type: MessageType.Default, poll: null, pinned: false, hasThread: false,
     stickers: new Collection(), components: [], messageSnapshots: new Collection(),
-    attachments: new Collection<string, Attachment>(), flags: new MessageFlagsBitField(),
+    attachments: new Collection<string, Attachment>(), flags: new MessageFlagsBitField(), mentions,
     editedTimestamp: null, reference: null, deletable: true, inGuild: () => true,
     delete: async () => { state.originalDeleted = true; events.push('delete:source'); },
     fetch: async () => {
@@ -107,7 +108,7 @@ function delivery(content = ORIGINAL_X) {
         return result;
       }, ...options,
     });
-  return { source: source as unknown as Message, state, sent, events, remembered, expectedChecks, create };
+  return { source: source as unknown as Message, mentions, state, sent, events, remembered, expectedChecks, create };
 }
 
 test('a matching X error card cannot authorize deletion of the original', async () => {
@@ -174,6 +175,97 @@ test('automatic X fallback edits one output and verifies it before saving owners
   assert.deepEqual(replacement.options.allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
   assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
     replacementId: replacement.message.id, authorId: AUTHOR, mode: 'replace' }]);
+});
+
+test('fresh replacement retains only explicit source recipients through provider fallback and final control edits', async () => {
+  const explicit = '1700000000000000101', parentAuthor = '1700000000000000102', providerUser = '1700000000000000103';
+  const parentMessage = '1700000000000000104', quotedUser = '1700000000000000105', unresolved = '1700000000000000106';
+  const f = delivery(`<@!${explicit}> ${ORIGINAL_X} <@${unresolved}> @everyone <@&${providerUser}>`);
+  for (const id of [explicit, parentAuthor, providerUser, quotedUser, AUTHOR]) f.mentions.users.set(id, { id });
+  f.mentions.repliedUser = { id: parentAuthor };
+  Object.assign(f.source, { type: MessageType.Reply, reference: { messageId: parentMessage },
+    fetchReference: async () => ({ id: parentMessage, channelId: CHANNEL, guildId: GUILD,
+      author: { id: parentAuthor }, content: `Reply excerpt naming <@${quotedUser}>.` }) });
+  f.state.render = round => round === 1 ? [] : [{ url: ALTERNATE_X, video: { url: 'https://cdn.example/video.mp4' } }];
+  await f.create({ translateTweet: async () => ({ ...translatedText, hasMedia: true, hasVideo: true,
+    text: `Provider caption naming <@${providerUser}> and @here.` }) })(f.source);
+  assert.equal(f.sent.length, 1); assert.equal(f.state.originalDeleted, true);
+  const output = f.sent[0];
+  assert(output.message.content.includes(`Shared by <@${AUTHOR}>`));
+  assert(output.message.content.includes(`reply to <@${parentAuthor}>`));
+  assert(output.message.content.includes(`<@${quotedUser}>`));
+  assert(output.message.content.includes(`<@${providerUser}>`));
+  assert(output.message.content.includes(ALTERNATE_X));
+  const expected = { parse: [], users: [explicit], roles: [], repliedUser: false };
+  assert.deepEqual(output.options.allowedMentions, expected);
+  assert.equal(output.edits.filter(edit => typeof edit.content === 'string').length, 1);
+  assert.equal(output.edits.filter(edit => edit.components).length, 1);
+  for (const edit of output.edits) assert.deepEqual(edit.allowedMentions, expected);
+  assert.equal(output.options.nonce, SOURCE);
+  assert.equal(output.options.enforceNonce, true);
+});
+
+test('a silent source keeps its notification suppression while preserving explicit recipients across fallback edits', async () => {
+  const recipient = '1700000000000000101', f = delivery(`<@${recipient}> ${ORIGINAL_X}`);
+  f.mentions.users.set(recipient, { id: recipient });
+  f.source.flags.add(MessageFlags.SuppressNotifications);
+  f.state.render = round => round === 1 ? [] : [{ ...xPreview, url: ALTERNATE_X }];
+  await f.create()(f.source);
+  assert.equal(f.state.originalDeleted, true);
+  assert.equal(f.sent[0].options.flags, MessageFlags.SuppressNotifications);
+  assert.deepEqual(f.sent[0].options.allowedMentions?.users, [recipient]);
+  for (const edit of f.sent[0].edits) {
+    assert.deepEqual(edit.allowedMentions?.users, [recipient]);
+    assert.equal(edit.flags, undefined, 'Fallback edits do not clear the source notification-suppression flag');
+  }
+});
+
+test('Reply mode, forceReply and refresh remain quiet even with resolved explicit source mentions', async () => {
+  const recipient = '1700000000000000101';
+  for (const mode of ['reply', 'forceReply', 'refresh', 'refresh-reply'] as const) {
+    const f = delivery(`<@${recipient}> ${ORIGINAL_X}`);
+    f.mentions.users.set(recipient, { id: recipient });
+    if (mode === 'reply') f.state.preferences = { mode: 'reply' };
+    f.state.render = round => round === 1 ? [] : [{ ...xPreview, url: ALTERNATE_X }];
+    await f.create()(f.source, { ...(mode.startsWith('refresh') ? { refresh: true } : {}),
+      ...(['forceReply', 'refresh-reply'].includes(mode) ? { forceReply: true } : {}) });
+    assert.equal(f.sent.length, 1, mode);
+    const quiet = { parse: [], users: [], roles: [], repliedUser: false };
+    assert.deepEqual(f.sent[0].options.allowedMentions, quiet, mode);
+    for (const edit of f.sent[0].edits) assert.deepEqual(edit.allowedMentions, quiet, mode);
+    assert.equal(f.state.originalDeleted, mode === 'refresh', mode);
+  }
+});
+
+test('failed replacement sends a quiet retry notice rather than notifying source recipients again', async () => {
+  const recipient = '1700000000000000101', f = delivery(`<@${recipient}> ${ORIGINAL_X}`);
+  f.source.flags.add(MessageFlags.SuppressNotifications);
+  f.mentions.users.set(recipient, { id: recipient }); f.state.render = () => [];
+  await f.create()(f.source);
+  assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.sent.length, 2); assert.equal(f.sent[0].deleted, true);
+  assert.deepEqual(f.sent[0].options.allowedMentions?.users, [recipient]);
+  const notice = f.sent[1];
+  assert.equal(notice.options.flags, MessageFlags.SuppressNotifications);
+  assert.deepEqual(notice.options.allowedMentions, { parse: [], repliedUser: false });
+  assert.equal(notice.options.reply?.messageReference, SOURCE);
+  for (const edit of notice.edits) {
+    assert.deepEqual(edit.allowedMentions?.parse, []);
+    assert.deepEqual(edit.allowedMentions?.users ?? [], []);
+  }
+});
+
+test('a source tag removed while translation is pending cannot be published from the earlier mention snapshot', async () => {
+  const recipient = '1700000000000000101', f = delivery(`<@${recipient}> ${ORIGINAL_X}`);
+  f.mentions.users.set(recipient, { id: recipient });
+  await f.create({ translateTweet: async () => {
+    f.source.content = ORIGINAL_X;
+    f.state.remoteContent = ORIGINAL_X;
+    return translatedText;
+  } })(f.source);
+  assert.deepEqual(f.sent, []);
+  assert.equal(f.state.originalDeleted, false);
+  assert.deepEqual(f.remembered, []);
 });
 
 test('automatic deadlines stop retries and source deletion, but preserve an already committed replacement', async t => {

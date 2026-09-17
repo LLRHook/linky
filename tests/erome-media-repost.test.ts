@@ -98,8 +98,9 @@ test('Replace mode removes the source after confirming and retaining its hosted 
   assert(JSON.stringify(f.replacement.components).includes('https://www.erome.com/a/9f9EJu3q'));
 });
 
-test('a slow automatic Replace converts one standalone progress message into its gallery', async () => {
+test('a slow silent Replace keeps progress silent when converting it into its gallery', async () => {
   const f = fixture(), edits: unknown[] = [], edit = f.replacement.edit;
+  f.source.flags.add(MessageFlags.SuppressNotifications);
   f.replacement.edit = async payload => {
     edits.push(payload);
     const result = await edit(payload);
@@ -115,8 +116,9 @@ test('a slow automatic Replace converts one standalone progress message into its
   assert.deepEqual(f.errors, []);
   assert.equal(f.sends.length, 1);
   assert.match(String(f.sends[0].content), /Preparing your Erome preview/);
+  assert.equal(f.sends[0].flags, MessageFlags.SuppressNotifications);
   assert.equal(f.sends[0].reply, undefined);
-  assert(edits.some(payload => (payload as { flags?: number }).flags === MessageFlags.IsComponentsV2 &&
+  assert(edits.some(payload => (payload as { flags?: number }).flags === (MessageFlags.IsComponentsV2 | MessageFlags.SuppressNotifications) &&
     (payload as { content?: unknown }).content === null));
   assert(f.replacement.components.some(component => component.toJSON().type === ComponentType.MediaGallery));
   assert(f.events.includes('delete original'));
@@ -189,6 +191,36 @@ test('hosted Erome Reply retains its source dependency while Replace preserves t
     assert(text.includes('Music') && text.includes('https://www.erome.com/a/9f9EJu3q') &&
       text.includes('https://www.erome.com/a/SecondAlbum'));
   }
+});
+
+test('a tagged slow Replace sends its gallery separately from quiet progress and cleans progress up', async () => {
+  const f = fixture(), target = '444444444444444444', send = f.source.channel.send;
+  const mentions = { parse: [], users: [target], roles: [], repliedUser: false };
+  f.source.content = `<@${target}> ${f.source.content}`;
+  Object.assign(f.source, { mentions: { users: new Collection([[target, { id: target }]]) } });
+  f.source.flags.add(MessageFlags.SuppressNotifications);
+  let progressDeleted = false;
+  f.source.channel.send = async payload => {
+    if (payload.content?.startsWith('Preparing')) {
+      f.sends.push(payload);
+      return { ...f.replacement, id: '123456789012345681',
+        edit: async () => assert.fail('A tagged final gallery must use a new send'),
+        delete: async () => { progressDeleted = true; } };
+    }
+    return send(payload);
+  };
+  await f.run({ prepareEromeMedia: async () => { await delay(1600); return media; } });
+  assert.deepEqual(f.errors, []);
+  assert.equal(f.sends.length, 2);
+  assert.deepEqual(f.sends[0].allowedMentions, { parse: [], repliedUser: false });
+  assert.equal(f.sends[0].flags, MessageFlags.SuppressNotifications);
+  assert.notEqual(f.sends[0].nonce, f.sends[1].nonce);
+  assert.equal(f.sends[1].nonce, f.source.id);
+  assert.deepEqual(f.sends[1].allowedMentions, mentions);
+  assert.equal(f.sends[1].flags, MessageFlags.IsComponentsV2 | MessageFlags.SuppressNotifications);
+  assert(f.events.includes('delete original'));
+  assert(progressDeleted);
+  assert(!f.events.includes('delete preview'));
 });
 
 test('hosted Replace requires Manage Messages before preparation while Reply does not', async () => {

@@ -384,7 +384,17 @@ test('Instagram automatically translates captions when X translation is disabled
   assert.ok(f.events.includes('delete original'));
 });
 
-test('reposts with credit and all mentions disabled, then fetches and deletes original', async () => {
+test('replacement preserves an explicit source user mention as a notification recipient', async () => {
+  const f = fixture();
+  f.source.content = `<@${OTHER_MENTION_ID}> https://x.com/user/status/1`;
+  f.source.mentions.users.set(OTHER_MENTION_ID, { id: OTHER_MENTION_ID });
+  await f.run();
+  assert(f.sent[0].content!.includes(`<@${OTHER_MENTION_ID}>`));
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [OTHER_MENTION_ID], roles: [], repliedUser: false });
+  assert(f.events.includes('delete original'));
+});
+
+test('reposts with credit and unresolved mentions disabled, then fetches and deletes original', async () => {
   const f = fixture();
   await f.run();
   assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
@@ -610,7 +620,7 @@ test('reference lookup attributes the parent author instead of the sharer or ano
   assert.equal(f.referenceLookup.calls, 1);
   assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`);
   assert(f.sent[0].content!.includes(`<@${OTHER_MENTION_ID}> Look`));
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [OTHER_MENTION_ID], roles: [], repliedUser: false });
   assert.equal(f.sent[0].reply, undefined);
   assert(f.events.includes('delete original'));
 });
@@ -1735,13 +1745,13 @@ for (const stage of ['send', 'fetch'] as const) {
   });
 }
 
-test('edits made during translation keep the original and discard the stale repost', async () => {
+test('edits made during translation keep the original without publishing a stale repost', async () => {
   const f = fixture(async () => {
     f.source.content = 'Updated context https://x.com/user/status/1';
     return JAPANESE;
   });
   await f.run();
-  assert.deepEqual(f.events, ['send', 'fetch', 'delete replacement']);
+  assert.deepEqual(f.events, []);
 });
 
 test('literal markers in earlier words or URLs do not leak tracking values into paths', () => {
