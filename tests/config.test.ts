@@ -22,6 +22,8 @@ function readChannels(overrides: NodeJS.ProcessEnv, field = 'channelIds') {
   delete env['PROMPT_ENABLED'];
   delete env['PROMPT_GITHUB_TOKEN'];
   delete env['PROMPT_GUILD_IDS'];
+  delete env['EROME_GUILD_IDS'];
+  delete env['DELIVERY_LOG_RETENTION_DAYS'];
   const result = spawnSync(process.execPath, [
     '--require', require.resolve('tsx/cjs'), '-e',
     'process.stdout.write(JSON.stringify(require(process.argv[1]).config[process.argv[2]] ?? null))',
@@ -38,6 +40,28 @@ test('LINK_CHANNEL_IDS configures one channel', () => {
   const result = readChannels({ LINK_CHANNEL_IDS: SECOND });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), [SECOND]);
+});
+
+test('Erome server policy remains optional and fails closed on malformed explicit restrictions', () => {
+  assert.equal(JSON.parse(readChannels({}, 'eromeGuildIds').stdout), null);
+  assert.deepEqual(JSON.parse(readChannels({ EROME_GUILD_IDS: 'none' }, 'eromeGuildIds').stdout), []);
+  assert.deepEqual(JSON.parse(readChannels({ EROME_GUILD_IDS: `${FIRST}, ${SECOND},${FIRST}` }, 'eromeGuildIds').stdout), [FIRST, SECOND]);
+  for (const value of ['', 'all', `${FIRST},invalid`]) {
+    const result = readChannels({ EROME_GUILD_IDS: value }, 'eromeGuildIds');
+    assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.match(result.stderr, /EROME_GUILD_IDS/);
+  }
+});
+
+test('delivery archive retention defaults to 30 days and accepts only bounded integer days', () => {
+  assert.equal(JSON.parse(readChannels({}, 'deliveryLogRetentionDays').stdout), 30);
+  for (const days of ['1', '30', '90']) {
+    const result = readChannels({ DELIVERY_LOG_RETENTION_DAYS: days }, 'deliveryLogRetentionDays');
+    assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout), Number(days));
+  }
+  for (const days of ['', '0', '91', '-1', '1.5', '1e1', 'Infinity']) {
+    const result = readChannels({ DELIVERY_LOG_RETENTION_DAYS: days }, 'deliveryLogRetentionDays');
+    assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.match(result.stderr, /DELIVERY_LOG_RETENTION_DAYS/);
+  }
 });
 
 test('coding requires explicit enablement, its own credential and a separate server allowlist', () => {

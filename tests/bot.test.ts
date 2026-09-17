@@ -104,7 +104,7 @@ async function retryFixture(t: TestContext) {
     await dispatch(f.client, input);
     return replies;
   };
-  return { ...f, record, state, guild, channel, reads, click, authorId, memberId };
+  return { ...f, record, source, state, guild, channel, reads, click, authorId, memberId };
 }
 
 test('Retry accepts ordinary channel members using fresh access, thread-send and timeout checks', async t => {
@@ -151,6 +151,14 @@ test('Retry rechecks a revoked author and shares its cooldown across eligible me
   assert.deepEqual(f.reads.filter(read => read.startsWith('member:')), [
     `member:${f.authorId}`, `member:${f.memberId}`, `member:${f.authorId}`,
   ]);
+});
+
+test('Retry preserves its existing preview when the operator no longer allows Erome', async t => {
+  t.mock.method(RepostRegistry.prototype, 'retry', async () => assert.fail('Blocked Erome must not start retry cleanup'));
+  const f = await retryFixture(t);
+  f.source.content = 'https://www.erome.com/a/example1';
+  assert.match((await f.click()).at(-1)!, /Erome is unavailable/);
+  assert.deepEqual(f.errors, []);
 });
 
 test('link bot requests message access without privileged member access', () => {
