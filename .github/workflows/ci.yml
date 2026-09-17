@@ -111,6 +111,13 @@ jobs:
             fs.unlinkSync(file);
           '
 
+      - name: Verify private delivery archive and production report
+        run: >-
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges
+          --volume /app/data --env LINKY_ARCHIVE_RUNTIME_TEST=true
+          --mount type=bind,src="${{ github.workspace }}/tests/delivery-archive-runtime.test.mjs",dst=/tmp/delivery-archive-runtime.test.mjs,readonly
+          linky:ci node --test /tmp/delivery-archive-runtime.test.mjs
+
       - name: Verify actual video conversion without network access
         run: >-
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges

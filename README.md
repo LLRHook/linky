@@ -5,9 +5,11 @@
 [![CI](https://github.com/LLRHook/linky/actions/workflows/ci.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/ci.yml)
 [![Deploy](https://github.com/LLRHook/linky/actions/workflows/deploy.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/deploy.yml)
 
-Linky fixes social links in Discord: X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clips and Erome albums. Add it to your server for automatic previews or to your account for links you choose to fix. The hosted bot is free; you do not need to run a server or supply API keys. Self-hosting is optional.
+Linky fixes social links in Discord: X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit and Twitch clips. Add it to your server for automatic previews or to your account for links you choose to fix. The hosted bot is free; you do not need to run a server or supply API keys. Self-hosting is optional for these features. **Erome video and image albums require your own Linky instance and hosting; they are not included in the public hosted bot.**
 
 Visit the [Linky website](https://linkybot.dev) for setup guides and troubleshooting.
+
+See the [product roadmap](docs/product-roadmap.md) for planned improvements and the [dated competitor research](docs/growth-research-2026-09-17.md) for the evidence behind them. Planned features are not available until marked shipped.
 
 ## Add to Discord
 
@@ -47,13 +49,13 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | Bluesky | `bskx.app`, with `fxbsky.app` recovery | Public `/profile/actor/post/id` URLs |
 | Reddit | `vxreddit.com` | Public post URLs; profile and community index pages stay unchanged |
 | Twitch clips | `fxtwitch.seria.moe` | Clip URLs, including channel `/clip/` links; streams and VODs stay unchanged |
-| Erome | Hosted media gallery, with attachment fallback | HTTPS `/a/album-id` albums; video and supported JPEG/PNG images, additional items on demand; follows Replace or Reply mode |
+| Erome (self-host only) | Your own media gallery, with attachment fallback | HTTPS `/a/album-id` albums; video and supported JPEG/PNG images, additional items on demand; follows Replace or Reply mode |
 
 Supported links must use HTTPS and point to posts. Tracking query strings are removed; valid YouTube start timestamps and surrounding text are retained. Automatic fixing starts with new messages from people; editing an unrelated old message does not start a repost. Bots and webhooks are ignored.
 
-Erome needs media delivery because its video CDN can reject Discord's direct fetch. Linky starts with the first video from the first album, or a supported image when the album has no video. By default, Erome requires an age-restricted server channel or a thread in one. An admin with Manage Server permission can allow ordinary channels using `/settings erome_channels:all`; select `age-restricted` to restore the default. The same channel policy applies to `/fix` and **Fix with Linky**. DMs are excluded. The setting does not enable Linky in new channels or turn Erome on when disabled; `/setup` controls automatic channel scope and `/settings erome:false` disables automatic Erome previews. Linky does not scan the video's content.
+On your own instance, Erome needs media delivery because its video CDN can reject Discord's direct fetch. Linky starts with the first video from the first album, or a supported image when the album has no video. By default, Erome requires an age-restricted server channel or a thread in one. An admin with Manage Server permission can allow ordinary channels using `/settings erome_channels:all`; select `age-restricted` to restore the default. The same channel policy applies to `/fix` and **Fix with Linky**. DMs are excluded. The setting does not enable Linky in new channels or turn Erome on when disabled; `/setup` controls automatic channel scope and `/settings erome:false` disables automatic Erome previews. Linky does not scan the video's content.
 
-The hosted bot delivers eligible Erome originals as playable media galleries without re-encoding: MP4, up to 24 MiB, five minutes, 60 fps and native 1080p. Larger or incompatible media uses attachment preparation, with a 64 MiB input limit and compression when needed to fit Discord. Smaller sources stay at their original resolution. JPEG/PNG image albums are supported within separate limits. On a hosted gallery, eligible channel members can use **Load next item** to append one item at a time, up to ten items and 192 MiB total. Existing items stay if the next one fails. Controls expire after 24 hours or a restart; **Original post** opens the full album. Automatic Erome previews follow the server's posting mode: Replace removes the source message after confirmation and ownership checks; Reply keeps it. Source attachments are copied through attachment delivery before replacement. Failed previews, manual fixes and retries keep the source. Availability and speed depend on the source, hosting services and Discord.
+A self-hosted instance with original-media hosting configured delivers eligible Erome originals as playable media galleries without re-encoding: MP4, up to 24 MiB, five minutes, 60 fps and native 1080p. Larger or incompatible media uses attachment preparation, with a 64 MiB input limit and compression when needed to fit Discord. Smaller sources stay at their original resolution. JPEG/PNG image albums are supported within separate limits. On a hosted gallery, eligible channel members can use **Load next item** to append one item at a time, up to ten items and 192 MiB total. Existing items stay if the next one fails. Controls expire after 24 hours or a restart; **Original post** opens the full album. Automatic Erome previews follow the server's posting mode: Replace removes the source message after confirmation and ownership checks; Reply keeps it. Source attachments are copied through attachment delivery before replacement. Failed previews, manual fixes and retries keep the source. Availability and speed depend on the source, hosting services and Discord.
 
 Slow requests show their current stage, and **Details** gives the person who clicks a private outcome and timing report. Details on private replies and DMs remain restricted to their requester. Media jobs rotate fairly between servers and reuse validated results where possible. See [delivery reliability and retention](docs/delivery-reliability.md), [Erome limits](docs/erome-previews.md) and [regional hosting](docs/erome-regional-hosting.md).
 
@@ -67,9 +69,15 @@ Before removing an original, Linky waits for a useful preview tied to each rewri
 
 Attachment names, descriptions, spoilers and reply context are preserved. Replies name the original author and show a short excerpt in small italic text. Replies to Linky reposts name the person who shared that post and quote its content. Link-only messages use their existing preview text when available. Excerpts hide spoilers and omit link targets; messages that cannot be read in the same channel show "Original message unavailable." Missing permissions, failed copies and size limits leave the original intact. Polls, stickers, forwards, pinned messages and thread starters are skipped. A failed source deletion can leave both messages. Reply mode keeps the source and its attachments. Both modes suppress mention notifications.
 
+## Reliability and operations
+
+Delivery Details remain available in Discord for up to seven days. A separate, private operator archive on Hostinger keeps sanitized attempt outcomes and timings for 30 days, bounded by a 64 MiB cap. It contains no Discord user, server, channel or message IDs, message text, captions, source URLs or credentials. The random attempt ID can connect an operator investigation to a Details report. Capacity and storage failures can shorten coverage and are surfaced in the report.
+
+After building, run `npm run report:deliveries -- --days 7` on the bot host to compare outcomes, latency and problem stages. This is an operator command, not a Discord command or a public log page. See [operator reliability](docs/operator-reliability.md) for storage, reports and weekly review. Metadata confirmation is not proof of playback.
+
 ## Self-hosting and development
 
-The hosted bot is free to add; self-hosting is optional. The [self-hosting guide](docs/self-hosting.md) covers Node/Docker setup, environment variables, API keys, quotas, persistent data, logs, deployment and rollback. The optional [Discord coding integration](docs/discord-prompt.md) is disabled on the hosted bot.
+The hosted bot is free to add for the seven social platforms above and available translations. Run your own instance for Erome or your own extensions; self-hosting does not automatically add support for arbitrary websites. The [self-hosting guide](docs/self-hosting.md) covers Node/Docker setup, environment variables, API keys, quotas, persistent data, logs, deployment and rollback. The optional [Discord coding integration](docs/discord-prompt.md) is disabled on the hosted bot.
 
 ```bash
 npm ci

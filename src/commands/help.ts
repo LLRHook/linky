@@ -3,6 +3,7 @@ import type { Config } from '../config';
 import type { ServerSettings } from '../services/ServerSettings';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
 import { evaluateScope } from '../services/ServerScope';
+import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailability';
 
 export const data = new SlashCommandBuilder()
   .setName('help')
@@ -18,7 +19,7 @@ export async function execute(interaction: ChatInputCommandInteraction, settings
     serverEnabled: override, preferences: saved, operatorChannelIds: settings.channelIds, operatorServerIds: settings.serverIds });
   const enabled = interaction.guildId !== null && scope.enabled;
   const serverEnabled = enabled && saved.channelIds === undefined && ['server', 'operator-server'].includes(scope.source);
-  const preferences = effectivePreferences(settings, saved);
+  const preferences = effectivePreferences(settings, saved, interaction.guildId);
   const platforms = preferences.platforms.map(platform => PLATFORM_NAMES[platform]);
   await interaction.reply({
     content: [
@@ -30,7 +31,9 @@ export async function execute(interaction: ChatInputCommandInteraction, settings
         ? 'Post a supported link and I will reply with a cleaned link or available preview, keeping your original message.'
         : 'Post a supported link and I will repost it with a cleaned link or available preview and credit you. The original is removed only after the replacement succeeds.',
       'Automatic fixing checks for a useful preview before removing an original. Video playback can still depend on Discord and the provider.',
-      'Automatic Erome previews follow Replace or Reply mode. Original post opens the full album; channel members with current view/send permission can use Retry preview and hosted Load next item when not timed out. Failed previews, manual fixes and retries keep the source. Server admins can allow ordinary channels with /settings erome_channels:all; the default is age-restricted channels. DMs are excluded. Limits: 64 MiB input and five minutes. Slow jobs show progress; Anyone who can see a public preview can open Details for a private delivery report. Only the original sharer or manual requester can use Remove.',
+      isEromeAvailable(settings, interaction.guildId)
+        ? 'Automatic Erome previews follow Replace or Reply mode. Original post opens the full album; eligible channel members can use hosted Load next item. Failed previews, manual fixes and retries keep the source. Server admins can allow ordinary channels with /settings erome_channels:all; the default is age-restricted channels. DMs are excluded. Limits: 64 MiB input and five minutes. Slow jobs show progress.' : EROME_UNAVAILABLE,
+      'Members who can view and send in the channel can use Retry preview when not timed out. Anyone viewing a public preview can open Details for a private delivery report. Only the original sharer or manual requester can use Remove.',
       preferences.translateTweets ? 'Non-English tweets are shown in English with a small source-language label when translation is available.' : 'X translation is currently disabled.',
       preferences.translateInstagram ? 'Non-English Instagram captions are shown in English with a small source-language label when translation and media are available. Captions are shortened to 300 characters; Original post opens the source caption.' : 'Instagram caption translation is currently disabled.',
       'I stay silent when joining a server.',

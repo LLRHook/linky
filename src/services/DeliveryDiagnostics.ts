@@ -36,6 +36,7 @@ export interface DeliveryReader {
 }
 export interface DeliveryDiagnosticsOptions {
   path: string;
+  archive?: { record(value: unknown): boolean };
   maxAttempts?: number;
   maxBytes?: number;
   retentionMs?: number;
@@ -111,9 +112,14 @@ export class DeliveryDiagnostics {
   begin(request: DeliveryRequest): DeliveryTrace {
     const id = randomUUID();
     const start = this.monotonicNow();
-    if (validRequest(request)) {
-      this.records.set(id, { id, requesterId: request.requesterId, channelId: request.channelId, guildId: request.guildId,
-        mode: request.mode, platform: request.platform, startedAt: this.wallNow(), stages: [] });
+    // The existing trace owns this bounded object. Details eviction must not discard its later archive outcome.
+    const record: DeliveryRecord | undefined = validRequest(request) ? {
+      id, requesterId: request.requesterId, channelId: request.channelId, guildId: request.guildId,
+      mode: request.mode, platform: request.platform, startedAt: this.wallNow(), stages: [],
+    } : undefined;
+    const changed = () => { if (this.records.has(id)) this.changed(); };
+    if (record) {
+      this.records.set(id, record);
       this.changed();
     }
     const duration = (from: number) => Math.round(Math.min(MAX_DURATION, Math.max(0, this.monotonicNow() - from)));
@@ -121,37 +127,33 @@ export class DeliveryDiagnostics {
     return { id,
       startStage: (stage, itemIndex) => {
         const stageStart = this.monotonicNow();
-        const record = this.records.get(id);
         const accepted = Boolean(record && !record.outcome && record.stages.length + openSpans.size < MAX_STAGES &&
           DELIVERY_STAGES.includes(stage) && (itemIndex === undefined || (Number.isInteger(itemIndex) && itemIndex >= 0 && itemIndex <= 100)));
         let finished = false;
         const finish = (outcome: StageOutcome = 'ok') => {
           if (finished || !accepted) return;
           finished = true; openSpans.delete(finish);
-          const current = this.records.get(id);
-          if (!current || current.outcome || !STAGE_OUTCOMES.includes(outcome)) return;
-          current.stages.push({ stage, durationMs: duration(stageStart), outcome, ...(itemIndex !== undefined ? { itemIndex } : {}) });
-          this.changed();
+          if (!record || record.outcome || !STAGE_OUTCOMES.includes(outcome)) return;
+          record.stages.push({ stage, durationMs: duration(stageStart), outcome, ...(itemIndex !== undefined ? { itemIndex } : {}) });
+          changed();
         };
         if (accepted) openSpans.add(finish);
         return { finish };
       },
       setPath: path => {
-        const record = this.records.get(id);
-        if (record && !record.outcome && DELIVERY_PATHS.includes(path)) { record.path = path; this.changed(); }
+        if (record && !record.outcome && DELIVERY_PATHS.includes(path)) { record.path = path; changed(); }
       },
       setCache: cache => {
-        const record = this.records.get(id);
-        if (record && !record.outcome && (cache === 'hit' || cache === 'miss')) { record.cache = cache; this.changed(); }
+        if (record && !record.outcome && (cache === 'hit' || cache === 'miss')) { record.cache = cache; changed(); }
       },
       finish: outcome => {
-        const record = this.records.get(id);
         if (record && !record.outcome && DELIVERY_OUTCOMES.includes(outcome)) {
           const stageOutcome: StageOutcome = outcome === 'confirmed' ? 'ok' : outcome === 'busy' ? 'busy'
             : outcome === 'timeout' ? 'timeout' : ['cancelled', 'interrupted', 'disabled'].includes(outcome) ? 'cancelled'
               : ['partial', 'unavailable', 'metadata-unconfirmed'].includes(outcome) ? 'unavailable' : 'failed';
           for (const finish of openSpans) finish(stageOutcome);
-          record.outcome = outcome; record.durationMs = duration(start); this.changed();
+          record.outcome = outcome; record.durationMs = duration(start); changed();
+          this.archive(record);
         }
       },
     };
@@ -232,6 +234,10 @@ export class DeliveryDiagnostics {
 
   private remove(id: string): void { this.records.delete(id); this.persistedBindings.delete(id); this.dirty = true; }
 
+  private archive(record: DeliveryRecord): void {
+    try { this.options.archive?.record(record); } catch { /* An optional diagnostic sink cannot reject delivery. */ }
+  }
+
   private prune(): void {
     const now = this.wallNow();
     for (const record of this.records.values()) {
@@ -271,6 +277,7 @@ export class DeliveryDiagnostics {
           this.records.set(record.id, record);
           if (record.messageId) this.persistedBindings.set(record.id, record.messageId);
           if (record.outcome === 'interrupted') this.changed();
+          this.archive(record);
         }
       }
       this.prune();

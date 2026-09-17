@@ -12,6 +12,7 @@ import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
+import { isEromeAvailable } from '../src/services/EromeAvailability';
 
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '1700000000000000005';
@@ -94,11 +95,88 @@ function manual(content = ALBUM, context = false) {
       return response as unknown as Message;
     },
   };
-  const run = (options: ManualOptions = {}) => execute(input as unknown as ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
-    config, { prepareErome: async url => { calls.push(url); return prepared(); }, verifyErome: async () => true,
+  const run = (options: ManualOptions = {}, settings: Config = config) => execute(input as unknown as ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
+    settings, { prepareErome: async url => { calls.push(url); return prepared(); }, verifyErome: async () => true,
       verifyPreview: async (_message, expected) => ({ ok: false, missing: [...expected], videoMetadata: false }), ...options });
   return { input, calls, replies, edits, deferrals, response, run };
 }
+
+test('operator Erome restrictions make no media calls and leave automatic sources unchanged', async () => {
+  for (const guildIds of [[], ['1700000000000000099']]) {
+    const f = automatic(); f.state.preferences = { eromeChannels: 'all', platforms: { erome: true } };
+    await f.run({ eromeAvailable: guildId => isEromeAvailable({ ...config, eromeGuildIds: guildIds }, guildId),
+      prepareEromeMedia: async () => assert.fail('Blocked hosted preparation'), bindEromeMedia: async () => true,
+      releaseEromeMedia: async () => {} });
+    assert.deepEqual(f.calls, []); assert.deepEqual(f.outputs, []); assert.equal(f.state.originalDeleted, false);
+  }
+  const allowed = automatic();
+  await allowed.run({ eromeAvailable: guildId => isEromeAvailable({ ...config, eromeGuildIds: [GUILD] }, guildId) });
+  assert.deepEqual(allowed.calls, [ALBUM]);
+});
+
+test('mixed messages still fix normal links but suppress blocked Erome embeds and keep the source', async () => {
+  const f = automatic(`${ALBUM} https://x.com/example/status/20`);
+  f.channel.nsfw = false;
+  await f.run({ eromeAvailable: () => false, verifyPreview: async (_message, expected) => {
+    assert.equal(expected.length, 1); assert.equal(expected[0].platform, 'x');
+    return { ok: true, missing: [], videoMetadata: false };
+  } });
+  assert.deepEqual(f.calls, []); assert.equal(f.outputs.length, 1);
+  assert.equal(f.state.originalDeleted, false); assert.equal(f.records[0].mode, 'reply');
+  assert.match(f.outputs[0].options.content!, /https:\/\/fixupx.com\/example\/status\/20/);
+  assert.ok(f.outputs[0].options.content!.includes(`<${ALBUM}>`));
+  assert.doesNotMatch(JSON.stringify(f.outputs[0].options.components), /erome.com/);
+  assert.deepEqual(f.outputs[0].options.reply, { messageReference: SOURCE, failIfNotExists: true });
+});
+
+test('operator revocation during preparation skips fallback and publication', async () => {
+  const f = automatic(); let available = true;
+  await f.run({ eromeAvailable: () => available,
+    prepareEromeMedia: async () => { available = false; return null; },
+    bindEromeMedia: async () => true, releaseEromeMedia: async () => {} });
+  assert.deepEqual(f.calls, []); assert.deepEqual(f.outputs, []); assert.equal(f.state.originalDeleted, false);
+});
+
+test('operator-blocked slash and context fixes respond privately without preparing media', async () => {
+  for (const context of [false, true]) for (const guildIds of [[], ['1700000000000000099']]) {
+    const f = manual(ALBUM, context);
+    await f.run({ prepareEromeMedia: async () => assert.fail('Blocked hosted preparation'),
+      serverPreferences: () => ({ platforms: { erome: true }, eromeChannels: 'all' }) }, { ...config, eromeGuildIds: guildIds });
+    assert.deepEqual(f.calls, []); assert.deepEqual(f.edits, []); assert.deepEqual(f.deferrals, []);
+    assert.equal(f.replies[0].flags, MessageFlags.Ephemeral);
+    assert.match(f.replies[0].content!, /unavailable.*self-host/);
+    assert.doesNotMatch(f.replies[0].content!, /erome_channels/);
+  }
+});
+
+test('actual private contexts cannot prepare Erome even with an unrestricted self-host policy', async () => {
+  for (const context of [false, true]) {
+    const f = manual(ALBUM, context);
+    Object.assign(f.input, { guildId: null, inGuild: () => false });
+    await f.run();
+    assert.deepEqual(f.calls, []); assert.deepEqual(f.edits, []); assert.deepEqual(f.deferrals, []);
+    assert.equal(f.replies[0].flags, MessageFlags.Ephemeral); assert.match(f.replies[0].content!, /private conversation/);
+  }
+});
+
+test('manual mixed messages fix allowed links without including blocked Erome or requiring its channel policy', async () => {
+  const f = manual(`${ALBUM} https://x.com/example/status/20`, true); f.input.channel.nsfw = false;
+  await f.run({ verifyPreview: async (_message, expected) => {
+    assert.equal(expected.length, 1); return { ok: true, missing: [], videoMetadata: false };
+  } }, { ...config, eromeGuildIds: [] });
+  assert.deepEqual(f.calls, []); assert.deepEqual(f.replies, []);
+  assert.match(f.edits[0].content!, /fixupx.com/);
+  assert.ok(f.edits.every(edit => !String(edit.content).includes('erome.com')));
+});
+
+test('manual attachment preview is withdrawn if operator policy changes during verification', async () => {
+  const settings = { ...config, eromeGuildIds: [GUILD] };
+  const f = manual(); f.input.attachmentSizeLimit = 10 * MiB;
+  await f.run({ verifyErome: async () => { settings.eromeGuildIds = []; return true; } }, settings);
+  assert.deepEqual(f.calls, [ALBUM]);
+  assert.deepEqual(f.edits.at(-1)?.attachments, []);
+  assert.match(f.edits.at(-1)?.content!, /no longer allowed/);
+});
 
 test('automatic Erome gating rejects ordinary channels, unmarked thread parents and DMs before preparation', async () => {
   for (const restriction of ['channel', 'thread', 'missing-parent', 'dm']) {
@@ -425,7 +503,7 @@ test('manual Erome rechecks a revoked server policy after preparation', async ()
     return prepared();
   } });
   assert(f.edits.every(edit => !edit.files?.length));
-  assert.match(f.response.content, /could not be prepared/);
+  assert.match(f.response.content, /no longer allowed/);
 });
 
 test('manual Erome slash and message actions upload only the first album and preserve the source', async () => {
@@ -457,7 +535,7 @@ test('manual Erome stops upload if channel or parent age restriction changes dur
       return prepared();
     } });
     assert(f.edits.every(edit => !edit.files?.length));
-    assert.match(f.response.content, /could not be prepared/);
+    assert.match(f.response.content, /no longer allowed/);
   }
 });
 
