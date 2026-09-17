@@ -98,8 +98,9 @@ test('Replace mode removes the source after confirming and retaining its hosted 
   assert(JSON.stringify(f.replacement.components).includes('https://www.erome.com/a/9f9EJu3q'));
 });
 
-test('a slow automatic Replace converts one standalone progress message into its gallery', async () => {
+test('a slow silent Replace keeps progress silent when converting it into its gallery', async () => {
   const f = fixture(), edits: unknown[] = [], edit = f.replacement.edit;
+  f.source.flags.add(MessageFlags.SuppressNotifications);
   f.replacement.edit = async payload => {
     edits.push(payload);
     const result = await edit(payload);
@@ -115,8 +116,9 @@ test('a slow automatic Replace converts one standalone progress message into its
   assert.deepEqual(f.errors, []);
   assert.equal(f.sends.length, 1);
   assert.match(String(f.sends[0].content), /Preparing your Erome preview/);
+  assert.equal(f.sends[0].flags, MessageFlags.SuppressNotifications);
   assert.equal(f.sends[0].reply, undefined);
-  assert(edits.some(payload => (payload as { flags?: number }).flags === MessageFlags.IsComponentsV2 &&
+  assert(edits.some(payload => (payload as { flags?: number }).flags === (MessageFlags.IsComponentsV2 | MessageFlags.SuppressNotifications) &&
     (payload as { content?: unknown }).content === null));
   assert(f.replacement.components.some(component => component.toJSON().type === ComponentType.MediaGallery));
   assert(f.events.includes('delete original'));
@@ -211,6 +213,7 @@ test('a tagged slow Replace sends its gallery separately from quiet progress and
   assert.deepEqual(f.errors, []);
   assert.equal(f.sends.length, 2);
   assert.deepEqual(f.sends[0].allowedMentions, { parse: [], repliedUser: false });
+  assert.equal(f.sends[0].flags, MessageFlags.SuppressNotifications);
   assert.notEqual(f.sends[0].nonce, f.sends[1].nonce);
   assert.equal(f.sends[1].nonce, f.source.id);
   assert.deepEqual(f.sends[1].allowedMentions, mentions);

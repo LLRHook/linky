@@ -310,6 +310,7 @@ export function createLinkRepostHandler(
       // Discord can mutate this cached message while a metadata lookup is pending.
       const version = sourceVersion(message);
       const nonce = refresh ? randomBytes(12).toString('hex') : message.id;
+      const silentFlag = message.flags.has(MessageFlags.SuppressNotifications) ? MessageFlags.SuppressNotifications : 0;
       const allowedMentions = { parse: [] as never[], users: !reply && !refresh ? sourceMentionUsers(message) : [],
         roles: [], repliedUser: false };
       const progressNonce = allowedMentions.users.length ? randomBytes(12).toString('hex') : nonce;
@@ -322,6 +323,7 @@ export function createLinkRepostHandler(
         progressAttempted = true;
         progressMessage = await sendEromeMedia(() => channel.send({ content, nonce: progressNonce, enforceNonce: true,
           allowedMentions: { parse: [], repliedUser: false },
+          ...(silentFlag ? { flags: silentFlag } : {}),
           ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) }), async () => {
           const recent = await channel.messages.fetch({ limit: 25 });
           const matches = recent.filter(candidate => candidate.author.id === message.client.user.id &&
@@ -337,6 +339,7 @@ export function createLinkRepostHandler(
         const initial = { content: text, components: repostControls(inputContent, { remove: false }),
           allowedMentions: { parse: [] as never[], repliedUser: false } };
         const notice = progressMessage ? await progressMessage.edit(initial) : await channel.send({ ...initial,
+          ...(silentFlag ? { flags: silentFlag } : {}),
           reply: { messageReference: message.id, failIfNotExists: true } });
         progressMessage = undefined;
         rollback = async () => { await notice.delete(); };
@@ -474,8 +477,8 @@ export function createLinkRepostHandler(
         } : { content, ...(embeds ? { embeds } : {}), files,
           components: repostControls(inputContent, { remove: false }) }),
         allowedMentions,
-        ...(message.flags.has(MessageFlags.SuppressNotifications) ? {
-          flags: (originalMedia ? MessageFlags.IsComponentsV2 : 0) | MessageFlags.SuppressNotifications,
+        ...(silentFlag ? {
+          flags: (originalMedia ? MessageFlags.IsComponentsV2 : 0) | silentFlag,
         } : {}),
         ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds as const } : {}),
       };
@@ -574,7 +577,7 @@ export function createLinkRepostHandler(
         // Keep the source and register reply ownership so edits/removal remain safe.
         reply = true;
         content += INSTAGRAM_PREVIEW_NOTICE;
-        await replacement.edit({ content, embeds: [], flags: MessageFlags.SuppressEmbeds,
+        await replacement.edit({ content, embeds: [], flags: MessageFlags.SuppressEmbeds | silentFlag,
           allowedMentions });
       }
       if (!preview.ok && !captionFallback) {
