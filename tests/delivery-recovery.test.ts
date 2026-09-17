@@ -239,12 +239,14 @@ test('Reply mode, forceReply and refresh remain quiet even with resolved explici
 
 test('failed replacement sends a quiet retry notice rather than notifying source recipients again', async () => {
   const recipient = '1700000000000000101', f = delivery(`<@${recipient}> ${ORIGINAL_X}`);
+  f.source.flags.add(MessageFlags.SuppressNotifications);
   f.mentions.users.set(recipient, { id: recipient }); f.state.render = () => [];
   await f.create()(f.source);
   assert.equal(f.state.originalDeleted, false);
   assert.equal(f.sent.length, 2); assert.equal(f.sent[0].deleted, true);
   assert.deepEqual(f.sent[0].options.allowedMentions?.users, [recipient]);
   const notice = f.sent[1];
+  assert.equal(notice.options.flags, MessageFlags.SuppressNotifications);
   assert.deepEqual(notice.options.allowedMentions, { parse: [], repliedUser: false });
   assert.equal(notice.options.reply?.messageReference, SOURCE);
   for (const edit of notice.edits) {
