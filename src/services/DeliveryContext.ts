@@ -2,7 +2,7 @@ export const DELIVERY_STAGES = ['queue', 'resolve', 'download', 'inspect', 'conv
 export type DeliveryStage = typeof DELIVERY_STAGES[number];
 export const DELIVERY_PATHS = ['native', 'explicit', 'hosted-original', 'attachment', 'album'] as const;
 export type DeliveryPath = typeof DELIVERY_PATHS[number];
-export const DELIVERY_OUTCOMES = ['confirmed', 'partial', 'unavailable', 'permission', 'disabled', 'busy', 'timeout',
+export const DELIVERY_OUTCOMES = ['confirmed', 'partial', 'unsupported', 'unavailable', 'permission', 'disabled', 'busy', 'timeout',
   'discord-failure', 'metadata-unconfirmed', 'cancelled', 'interrupted', 'internal-failure'] as const;
 export type DeliveryOutcome = typeof DELIVERY_OUTCOMES[number];
 export type StageOutcome = 'ok' | 'unavailable' | 'busy' | 'timeout' | 'cancelled' | 'failed';

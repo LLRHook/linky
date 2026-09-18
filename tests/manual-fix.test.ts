@@ -596,15 +596,17 @@ test('manual unavailable or changed source cannot publish a verified community c
   }
 });
 
-test('manual mixed native/community failures never claim a confirmed complete preview', async () => {
-  const f = communityCommand(`${COMMUNITY_URL} https://x.com/jack/status/20`), outcomes: DeliveryOutcome[] = [];
-  const diagnostics = { begin: () => ({ id: 'community-mixed', setPath() {}, startStage: () => ({ finish() {} }),
-    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
-  await execute(f.interaction, communityConfig, { diagnostics, lookupYouTubeCommunity: async () => communityPost(),
-    ...previewChecks(f).dependencies });
-  assert.deepEqual(outcomes, ['metadata-unconfirmed']);
-  assert.match(f.response.content, /could not be confirmed/);
-  assert.deepEqual(originalControls(f), [COMMUNITY_URL, 'https://x.com/jack/status/20']);
+test('manual mixed guidance recognizes mobile and other delivery shapes before any public lookup', async () => {
+  for (const other of ['https://youtu.be/dQw4w9WgXcQ', 'https://www.instagram.com/share/ABCDefghi/',
+    'https://www.reddit.com/r/example/s/ABCDefghij', 'https://www.erome.com/a/Synthetic01']) {
+    const f = communityCommand(`${COMMUNITY_URL} ${other}`);
+    await execute(f.interaction, { ...communityConfig, rewritePlatforms: [...communityConfig.rewritePlatforms, 'reddit', 'erome'] }, {
+      serverPreferences: () => ({ eromeChannels: 'all' }),
+      lookupYouTubeCommunity: async () => assert.fail('mixed lookup'), prepareErome: async () => assert.fail('mixed media'),
+      normalizeMobileLinks: async () => assert.fail('mixed normalization') });
+    assert.equal(f.events.length, 1); assert.match(f.events[0].payload.content, /separate messages/);
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+  }
 });
 
 test('manual settings changes during Details binding or controls clear stale previews without discarding owner controls', async () => {
@@ -641,15 +643,25 @@ test('manual context source edits during Details or final controls remove a prev
   }
 });
 
-test('manual mixed verification re-fetches actual rich cards after native waiting', async () => {
-  const f = communityCommand(`${COMMUNITY_URL} https://x.com/jack/status/20`), outcomes: DeliveryOutcome[] = [];
-  const diagnostics = { begin: () => ({ id: 'community-mixed-stale', setPath() {}, startStage: () => ({ finish() {} }),
-    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
-  await execute(f.interaction, communityConfig, { diagnostics, lookupYouTubeCommunity: async () => communityPost(),
-    verifyPreview: async message => {
-      message.fetch = async () => ({ ...message, embeds: [] } as unknown as Awaited<ReturnType<Message['fetch']>>);
-      return { ok: true, missing: [], videoMetadata: false };
-    } });
-  assert.deepEqual(outcomes, ['metadata-unconfirmed']); assert.match(f.response.content, /could not be confirmed/);
-  assert.deepEqual(originalControls(f), [COMMUNITY_URL, 'https://x.com/jack/status/20']);
+test('five community-only manual posts still render while unrelated and hidden links do not create a conflict', async () => {
+  const urls = Array.from({ length: 5 }, (_, i) => COMMUNITY_URL + i);
+  const f = communityCommand(urls.join(' ') + ' https://example.test/page <https://x.com/jack/status/20>');
+  await execute(f.interaction, communityConfig, { lookupYouTubeCommunity: async link => communityPost(typeof link === 'string' ? link : link.url) });
+  assert.equal(f.response.embeds.length, 5); assert.deepEqual(originalControls(f), urls);
+  assert.equal(f.response.components.length, 2); assert.doesNotMatch(f.response.content, /separate messages/);
+});
+
+test('manual mixed community guidance is private and skips every lookup without a retry offer', async () => {
+  for (const context of [false, true]) {
+    const f = communityCommand(`${COMMUNITY_URL} https://x.com/jack/status/20`, context), outcomes: DeliveryOutcome[] = [];
+    const diagnostics = { begin: () => ({ id: 'mixed-guidance', setPath() {}, startStage: () => ({ finish() {} }),
+      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    await execute(f.interaction, communityConfig, { diagnostics,
+      lookupYouTubeCommunity: async () => assert.fail('mixed lookup'),
+      verifyPreview: async () => assert.fail('mixed verify'), normalizeMobileLinks: async () => assert.fail('mixed normalize') });
+    assert.equal(f.events.length, 1); assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+    assert.match(f.events[0].payload.content, /separate messages/);
+    assert.doesNotMatch(f.events[0].payload.content, /retry/i);
+    assert.deepEqual(outcomes, ['unsupported']); assert.equal(f.response.embeds.length, 0);
+  }
 });

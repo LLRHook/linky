@@ -85,3 +85,9 @@ test('CLI validates its finite window, returns fixed errors and can produce text
   assert.equal(await runArchiveReport([], value => unavailable.push(value), async () => ({ ...input([]), readErrors: 1 })), 1);
   assert.match(unavailable[0], /unreadable_or_invalid_records/);
 });
+
+test('archive aggregate keeps unsupported mixtures distinct in the all-finalized denominator', () => {
+  const report = createArchiveReport(input([row({ platform: 'mixed', path: 'explicit', outcome: 'unsupported' })]), { now: NOW });
+  assert.equal(report.confirmation.confirmed, 0); assert.equal(report.confirmation.denominator, 1);
+  assert.equal(report.counts.outcome.unsupported, 1); assert.equal(report.counts.outcome['metadata-unconfirmed'], 0);
+});

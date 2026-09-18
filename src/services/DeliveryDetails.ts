@@ -12,6 +12,7 @@ export function deliveryDetailsButton(id: string): ButtonBuilder {
 
 const outcomeLabels: Record<NonNullable<DeliveryRecord['outcome']>, string> = {
   confirmed: 'The preview was delivered.', partial: 'A partial preview was delivered; the original message was kept.',
+  unsupported: 'This combination of post links needs separate messages.',
   unavailable: 'The preview could not be prepared.', permission: 'A required Discord permission was missing.',
   disabled: 'This feature was disabled for the channel.', busy: 'The media queue was full.',
   timeout: 'The preparation time limit was reached.', 'discord-failure': 'The Discord delivery could not be confirmed.',

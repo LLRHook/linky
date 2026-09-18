@@ -207,3 +207,15 @@ test('explicit community delivery paths round-trip separately from historical na
   const saved = JSON.parse(await readFile(join(directory, 'details-test.json'), 'utf8'));
   assert.deepEqual(saved.attempts.map((row: any) => row.path).sort(), ['explicit', 'native']);
 });
+
+test('unsupported community mixtures round-trip through diagnostics and archive without becoming provider failures', async t => {
+  const { archive, directory } = await fixture(t);
+  const diagnostics = new DeliveryDiagnostics({ path: join(directory, 'details-test.json'), archive, wallNow: () => NOW });
+  await diagnostics.ready;
+  const trace = diagnostics.begin({ ...request, platform: 'mixed' }); trace.setPath('explicit'); trace.finish('unsupported');
+  await diagnostics.close(); await archive.flush();
+  assert.equal((await readDeliveryArchive(directory)).rows[0].outcome, 'unsupported');
+  const restarted = new DeliveryDiagnostics({ path: join(directory, 'details-test.json'), wallNow: () => NOW });
+  await restarted.ready; await restarted.close();
+  assert.equal(JSON.parse(await readFile(join(directory, 'details-test.json'), 'utf8')).attempts[0].outcome, 'unsupported');
+});

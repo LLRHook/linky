@@ -250,6 +250,7 @@ test('delivery summaries do not invent metadata, album items, or a definite Disc
   assert.match(formatDeliveryDetails({ ...record, outcome: 'partial' }), /partial preview/);
   assert.doesNotMatch(formatDeliveryDetails({ ...record, outcome: 'partial' }), /album items/);
   assert.match(formatDeliveryDetails({ ...record, outcome: 'confirmed' }), /preview was delivered/);
+  assert.match(formatDeliveryDetails({ ...record, outcome: 'unsupported' }), /combination of post links needs separate messages/);
   assert.doesNotMatch(formatDeliveryDetails({ ...record, outcome: 'confirmed' }), /supplied preview metadata/);
   assert.match(formatDeliveryDetails({ ...record, outcome: 'discord-failure' }), /delivery could not be confirmed/);
 });
