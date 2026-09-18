@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { runInNewContext } from 'node:vm';
-import { ModuleKind, ScriptTarget, transpileModule } from 'typescript';
+import { transformSync } from 'esbuild';
 import { createEromeMediaPreparer, mediaBaseUrl } from '../src/services/EromeMediaRuntime';
 import { eromeScheduler, withEromePreparation } from '../src/services/Erome';
 import { createMediaAssetStore, type MediaAsset } from '../src/services/MediaAssetStore';
@@ -216,9 +216,10 @@ async function lifecycleFixture(download: Options['download'], publish?: Options
     './Erome': { parseEromeUrl: (raw: string) => ({ url: raw }), eromeScheduler,
       resolveEromeAlbum: async (url: string) => ({ source, album: url, videoCount: 1 }) },
   };
-  const code = transpileModule(await readFile(join(__dirname, '../src/services/EromeMediaRuntime.ts'), 'utf8'), {
-    compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 },
-  }).outputText;
+  // TypeScript 7 no longer exposes transpileModule; esbuild performs the same CommonJS transform.
+  const code = transformSync(await readFile(join(__dirname, '../src/services/EromeMediaRuntime.ts'), 'utf8'), {
+    loader: 'ts', format: 'cjs', target: 'es2022',
+  }).code;
   const loaded = { exports: {} };
   runInNewContext(code, { module: loaded, exports: loaded.exports, URL, AbortController, AbortSignal, Buffer,
     setTimeout, clearTimeout, require: (name: string) => {
