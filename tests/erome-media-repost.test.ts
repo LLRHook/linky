@@ -9,6 +9,7 @@ import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { AlbumRegistration, EromeAlbumSessions } from '../src/services/EromeAlbumSessions';
 
 type AutoOptions = NonNullable<Parameters<typeof createLinkRepostHandler>[3]>;
+type InvocationOptions = NonNullable<Parameters<ReturnType<typeof createLinkRepostHandler>>[1]>;
 
 const bot = '1491240385031311470', channelId = '123456789012345678';
 const media: EromeMedia = { id: 'a'.repeat(32), size: 20, sha256: 'b'.repeat(64), videoCount: 1,
@@ -60,10 +61,10 @@ function fixture(prepared = media, observed = { width: prepared.metadata.width, 
   };
   return { source, replacement, client, events, sends, errors, options,
     preferences: (value: ServerPreferences) => { preferences = value; },
-    run: async (overrides: AutoOptions = {}) => {
+    run: async (overrides: AutoOptions = {}, invocation: InvocationOptions = {}) => {
       const handler = createLinkRepostHandler([channelId], { info() {}, warn() {}, error: (value: unknown) => errors.push(value) },
         undefined, { ...options, ...overrides });
-      try { await handler(source as unknown as Message); } finally { await client.destroy(); }
+      try { await handler(source as unknown as Message, invocation); } finally { await client.destroy(); }
     },
   };
 }
@@ -75,7 +76,7 @@ test('automatic original video captures early metadata, binds ownership and keep
   assert.equal(f.sends.length, 1);
   assert.equal(f.sends[0].flags, MessageFlags.IsComponentsV2);
   assert.equal(f.sends[0].content, undefined); assert.equal(f.sends[0].files, undefined);
-  assert.deepEqual(f.sends[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sends[0].allowedMentions, { parse: [], users: [f.source.author.id], roles: [], repliedUser: false });
   assert.equal(f.sends[0].reply, undefined);
   const components = f.replacement.components.map(component => component.toJSON());
   assert(components.some(component => component.type === ComponentType.MediaGallery));
@@ -98,7 +99,7 @@ test('Replace mode removes the source after confirming and retaining its hosted 
   assert(JSON.stringify(f.replacement.components).includes('https://www.erome.com/a/9f9EJu3q'));
 });
 
-test('a slow silent Replace keeps progress silent when converting it into its gallery', async () => {
+test('a slow silent refresh keeps progress silent when converting it into its gallery', async () => {
   const f = fixture(), edits: unknown[] = [], edit = f.replacement.edit;
   f.source.flags.add(MessageFlags.SuppressNotifications);
   f.replacement.edit = async payload => {
@@ -112,12 +113,13 @@ test('a slow silent Replace keeps progress silent when converting it into its ga
       author: { id: bot }, components } });
     return result;
   };
-  await f.run({ prepareEromeMedia: async () => { await delay(1600); return media; } });
+  await f.run({ prepareEromeMedia: async () => { await delay(1600); return media; } }, { refresh: true });
   assert.deepEqual(f.errors, []);
   assert.equal(f.sends.length, 1);
   assert.match(String(f.sends[0].content), /Preparing your Erome preview/);
   assert.equal(f.sends[0].flags, MessageFlags.SuppressNotifications);
   assert.equal(f.sends[0].reply, undefined);
+  assert(edits.some(payload => (payload as { allowedMentions?: { users?: string[] } }).allowedMentions?.users?.length === 0));
   assert(edits.some(payload => (payload as { flags?: number }).flags === (MessageFlags.IsComponentsV2 | MessageFlags.SuppressNotifications) &&
     (payload as { content?: unknown }).content === null));
   assert(f.replacement.components.some(component => component.toJSON().type === ComponentType.MediaGallery));
@@ -195,7 +197,7 @@ test('hosted Erome Reply retains its source dependency while Replace preserves t
 
 test('a tagged slow Replace sends its gallery separately from quiet progress and cleans progress up', async () => {
   const f = fixture(), target = '444444444444444444', send = f.source.channel.send;
-  const mentions = { parse: [], users: [target], roles: [], repliedUser: false };
+  const mentions = { parse: [], users: [f.source.author.id, target], roles: [], repliedUser: false };
   f.source.content = `<@${target}> ${f.source.content}`;
   Object.assign(f.source, { mentions: { users: new Collection([[target, { id: target }]]) } });
   f.source.flags.add(MessageFlags.SuppressNotifications);
@@ -221,6 +223,37 @@ test('a tagged slow Replace sends its gallery separately from quiet progress and
   assert(f.events.includes('delete original'));
   assert(progressDeleted);
   assert(!f.events.includes('delete preview'));
+});
+
+test('an author-only slow gallery sends a fresh author notification after quiet progress in Replace and Reply', async () => {
+  for (const mode of ['replace', 'reply'] as const) {
+    const f = fixture(), send = f.source.channel.send;
+    f.preferences({ mode, eromeChannels: 'all' });
+    let progressDeleted = false;
+    f.source.channel.send = async payload => {
+      if (payload.content?.startsWith('Preparing')) {
+        f.sends.push(payload);
+        return { ...f.replacement, id: '123456789012345681',
+          edit: async () => assert.fail('The author notification requires a fresh gallery send'),
+          delete: async () => { progressDeleted = true; } };
+      }
+      return send(payload);
+    };
+    await f.run({ prepareEromeMedia: async () => { await delay(1600); return media; } });
+    assert.deepEqual(f.errors, [], mode);
+    assert.equal(f.sends.length, 2, mode);
+    assert.deepEqual(f.sends[0].allowedMentions, { parse: [], repliedUser: false }, mode);
+    assert.notEqual(f.sends[0].nonce, f.sends[1].nonce, mode);
+    assert.equal(f.sends[1].nonce, f.source.id, mode);
+    assert.equal(f.sends[1].enforceNonce, true, mode);
+    assert.deepEqual(f.sends[1].allowedMentions,
+      { parse: [], users: [f.source.author.id], roles: [], repliedUser: false }, mode);
+    assert.equal(f.sends[1].flags, MessageFlags.IsComponentsV2, mode);
+    assert.equal(f.sends[1].reply?.messageReference, mode === 'reply' ? f.source.id : undefined, mode);
+    assert.equal(f.events.includes('delete original'), mode === 'replace', mode);
+    assert(progressDeleted, mode);
+    assert(!f.events.includes('delete preview'), mode);
+  }
 });
 
 test('hosted Replace requires Manage Messages before preparation while Reply does not', async () => {

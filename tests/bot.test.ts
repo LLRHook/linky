@@ -507,7 +507,7 @@ test('startup restores repost ownership and fetches reply excerpts across bot re
     assert.equal(referenceFetches, 1, 'Persisted ownership does not replace fetching the actual parent text');
     assert(!sent[0].content!.includes('discord.com/channels/'));
     assert(!sent[0].content!.includes('Older quoted context'));
-    assert.deepEqual(sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+    assert.deepEqual(sent[0].allowedMentions, { parse: [], users: [sharerId], roles: [], repliedUser: false });
     assert.equal(sourceDeleted, true);
     await client.destroy();
   }
