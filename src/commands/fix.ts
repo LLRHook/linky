@@ -5,7 +5,7 @@ import type { Config } from '../config';
 import { mapLinks, visibleLink } from '../services/LinkTokens';
 import { getProviderCandidates, parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
-import { communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
+import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from '../services/YouTubeCommunity';
 import { originalPostUrl } from '../services/RepostPresentation';
 import { expectedPreviews, inspectPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
@@ -106,6 +106,17 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (deferred) await interaction.editReply({ content, allowedMentions: { parse: [] } });
     else await interaction.reply({ content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
   };
+  if (hasMixedYouTubeCommunityLinks(content, activeConfig.rewritePlatforms.filter(platform =>
+    platform !== 'erome' || isEromeAvailable(config, interaction.guildId)))) {
+    const attempt = createDeliveryAttempt({ requesterId: interaction.user.id, channelId: interaction.channelId,
+      guildId: interaction.guildId ?? undefined, mode: 'manual', platform: deliveryPlatform(content) }, diagnostics, undefined, signal);
+    try {
+      attempt.context.trace?.setPath('explicit');
+      attempt.finish('unsupported');
+      await reject(COMMUNITY_MIXED_GUIDANCE);
+    } finally { attempt.close(); }
+    return;
+  }
   if (normalizeMobileLinks && hasMobileShareLinks(content, activeConfig.rewritePlatforms)) {
     // Share redirects can exceed Discord's acknowledgement window.
     await defer();

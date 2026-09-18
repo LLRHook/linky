@@ -1142,9 +1142,9 @@ test('automatic public community image and text previews need no video API and f
   }
 });
 
-test('unavailable, wrong-identity and missing community lookups preserve every source in a mixed message', async () => {
+test('unavailable, wrong-identity and missing community lookups preserve a community source', async () => {
   for (const lookup of [undefined, async () => null, async () => communityPost({ id: 'UgWrongCommunityIdentity' })]) {
-    const f = delivery(`${ORIGINAL_X} ${COMMUNITY_URL}`);
+    const f = delivery(COMMUNITY_URL);
     await f.create({ lookupYouTubeCommunity: lookup })(f.source);
     assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
   }
@@ -1174,14 +1174,17 @@ test('changed, deleted and cancelled sources cannot publish completed community 
   }
 });
 
-test('community and native previews must both survive Discord before mixed-source deletion', async () => {
-  for (const nativePresent of [true, false]) {
-    const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`);
-    f.state.render = (_round, message) => [...message.embeds.map(embed => embed.toJSON()), ...(nativePresent ? [xPreview] : [])];
-    await f.create({ lookupYouTubeCommunity: async () => communityPost() })(f.source);
-    assert.equal(f.state.originalDeleted, nativePresent);
-    assert.equal(f.sent[0].deleted, !nativePresent);
-    assert(f.expectedChecks.every(items => items.every(item => !item.explicitEmbeds)));
+test('mixed community guidance covers supported video, media and mobile shapes without preparation', async () => {
+  for (const other of [ORIGINAL_X, NATIVE_YOUTUBE, ORIGINAL_IG, 'https://www.erome.com/a/Synthetic01',
+    'https://www.instagram.com/share/ABCDefghi/', 'https://www.reddit.com/r/example/s/ABCDefghij']) {
+    const f = delivery(`${COMMUNITY_URL} ${other}`); f.state.preferences = { eromeChannels: 'all' };
+    Object.assign(f.source.channel, { nsfw: false });
+    await f.create({ lookupYouTubeCommunity: async () => assert.fail('mixed lookup'),
+      prepareErome: async () => assert.fail('mixed media preparation'), verifyPreview: async () => assert.fail('mixed verification'),
+      normalizeMobileLinks: async () => assert.fail('mixed mobile normalization') })(f.source);
+    assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1, other);
+    assert.match(f.sent[0].message.content, /separate messages/); assert.equal(f.sent[0].deleted, false);
+    assert.doesNotMatch(JSON.stringify(f.sent[0].message.components), /linky:retry/);
   }
 });
 
@@ -1190,7 +1193,7 @@ test('community source and embed caps preserve the original instead of dropping 
   const tooMany = delivery(six);
   await tooMany.create({ lookupYouTubeCommunity: async () => assert.fail('six sources must be rejected before lookup') })(tooMany.source);
   assert.equal(tooMany.sent.length, 0);
-  for (const content of [`${COMMUNITY_URL} ${ORIGINAL_X}`, `${COMMUNITY_URL} ${COMMUNITY_URL}2`]) {
+  for (const content of [`${COMMUNITY_URL} ${COMMUNITY_URL}2`]) {
     const f = delivery(content);
     await f.create({ lookupYouTubeCommunity: async link => {
       const source = typeof link === 'string' ? { url: link, id: link.split('/').at(-1)! } : link;
@@ -1200,11 +1203,76 @@ test('community source and embed caps preserve the original instead of dropping 
   }
 });
 
-test('mixed automatic verification re-fetches explicit cards after a native wait and rejects a stale send echo', async () => {
-  const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`);
-  await f.create({ lookupYouTubeCommunity: async () => communityPost(), verifyPreview: async message => {
-    message.fetch = async () => ({ ...message, embeds: [{ toJSON: () => xPreview }] } as Awaited<ReturnType<Message['fetch']>>);
-    return { ok: true, missing: [], videoMetadata: false };
-  } })(f.source);
-  assert.equal(f.state.originalDeleted, false); assert.equal(f.sent[0].deleted, true);
+test('mixed guidance rechecks source and preferences, requires ownership, and deduplicates delivery', async () => {
+  for (const kind of ['changed', 'disabled', 'ownership']) {
+    const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`);
+    if (kind === 'changed') f.state.remoteContent += ' edited';
+    if (kind === 'disabled') f.source.fetch = async () => { f.state.enabled = false; return f.source as Awaited<ReturnType<Message['fetch']>>; };
+    if (kind === 'ownership') f.state.remember = async () => false;
+    await f.create({ lookupYouTubeCommunity: async () => assert.fail('mixed lookup') })(f.source);
+    assert.equal(f.state.originalDeleted, false); assert(f.sent.every(entry => entry.deleted), kind);
+  }
+  const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`), handler = f.create();
+  await handler(f.source); await handler(f.source);
+  assert.equal(f.sent.length, 1); assert.equal(f.remembered[0].authorId, AUTHOR);
+});
+
+test('mixed community guidance skips every lookup and keeps an owned original without Retry or mentions', async () => {
+  const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`), outcomes: DeliveryOutcome[] = [];
+  const diagnostics = { begin: () => ({ id: 'mixed-guidance', setPath() {}, startStage: () => ({ finish() {} }),
+    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+  await f.create({ diagnostics, lookupYouTubeCommunity: async () => assert.fail('mixed community lookup'),
+    translateTweet: async () => assert.fail('mixed translation lookup'),
+    verifyPreview: async () => assert.fail('mixed native verification'),
+    normalizeMobileLinks: async () => assert.fail('mixed normalization lookup') })(f.source);
+  assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
+  assert.match(f.sent[0].message.content, /separate messages/);
+  assert.doesNotMatch(JSON.stringify(f.sent[0].message.components), /linky:retry/);
+  assert.match(JSON.stringify(f.sent[0].message.components), /linky:remove/);
+  assert.deepEqual(f.sent[0].options.allowedMentions, { parse: [], repliedUser: false });
+  assert.equal(f.remembered[0].mode, 'reply'); assert.equal(f.remembered[0].authorId, AUTHOR);
+  assert.deepEqual(outcomes, ['unsupported']); assert.deepEqual(f.expectedChecks, []);
+});
+
+test('five community-only automatic posts still render and ignore unrelated or disabled-platform preview coverage', async () => {
+  const urls = Array.from({ length: 5 }, (_, i) => COMMUNITY_URL + i);
+  for (const extra of ['https://example.test/page', '<https://x.com/jack/status/20>', 'https://x.com/jack/status/20']) {
+    const f = delivery(urls.join(' ') + ' ' + extra); f.state.preferences = { platforms: { x: false } };
+    await f.create({ lookupYouTubeCommunity: async link => {
+      const source = typeof link === 'string' ? { url: link, id: link.split('/').at(-1)! } : link;
+      return communityPost({ ...source, images: [] });
+    } })(f.source);
+    assert.equal(f.sent.length, 1); assert.equal(f.state.originalDeleted, true);
+    assert.equal(f.sent[0].options.embeds?.length, 5); assert.doesNotMatch(f.sent[0].message.content, /separate messages/);
+  }
+});
+
+test('mixed community guidance needs sending permission but no attachment or source-deletion permission', async () => {
+  const f = delivery(`${COMMUNITY_URL} https://www.erome.com/a/Synthetic01`);
+  f.state.preferences = { eromeChannels: 'all' };
+  Object.assign(f.source.channel, { nsfw: false, permissionsFor: () => new PermissionsBitField(
+    PermissionsBitField.All & ~PermissionsBitField.Flags.AttachFiles & ~PermissionsBitField.Flags.ManageMessages) });
+  Object.assign(f.source, { deletable: false });
+  await f.create({ prepareErome: async () => assert.fail('no media lookup'), lookupYouTubeCommunity: async () => assert.fail('no community lookup') })(f.source);
+  assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0].message.content, /separate messages/); assert.equal(f.remembered[0].mode, 'reply');
+});
+
+test('mixed guidance removes stale owned notices after Details binding or final controls', async () => {
+  for (const phase of ['binding', 'controls']) for (const revoke of ['edit', 'delete', 'settings', 'optout']) {
+    const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`); let optedOut = false;
+    const change = () => {
+      if (revoke === 'edit') f.state.remoteContent += ' edited';
+      if (revoke === 'delete') f.source.fetch = async () => { throw { code: 10008 }; };
+      if (revoke === 'settings') f.state.enabled = false;
+      if (revoke === 'optout') optedOut = true;
+    };
+    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }), finish() {} }),
+      bind: async () => { if (phase === 'binding') change(); return true; } } as unknown as DeliveryDiagnostics;
+    if (phase === 'controls') f.state.duringEdit = async () => change();
+    await f.create({ diagnostics, isOptedOut: () => optedOut,
+      lookupYouTubeCommunity: async () => assert.fail('no lookup for mixed guidance') })(f.source);
+    assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].deleted, true, `${phase}/${revoke}`);
+  }
 });

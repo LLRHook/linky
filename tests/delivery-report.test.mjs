@@ -162,3 +162,11 @@ test('explicit community cards remain distinct from historical native previews i
     assert.equal(result.data.counts.path[selected], 1);
   }
 });
+
+test('unsupported mixtures are reported separately from unconfirmed provider metadata', async t => {
+  const { path } = await fixture(t, [attempt(1, { platform: 'mixed', path: 'explicit', outcome: 'unsupported', stages: [] })]);
+  const result = await report(path, '--require', 'mixed:unsupported');
+  assert.equal(result.code, 0); assert.equal(result.data.counts.outcome.unsupported, 1);
+  assert.equal(result.data.counts.outcome['metadata-unconfirmed'], 0);
+  assert.equal(result.data.latency.confirmed.samples, 0);
+});

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { communityEmbedBudget, prepareYouTubeCommunityPosts, createYouTubeCommunityLookup, findYouTubeCommunityLinks, formatYouTubeCommunityPost,
+import { hasMixedYouTubeCommunityLinks, communityEmbedBudget, prepareYouTubeCommunityPosts, createYouTubeCommunityLookup, findYouTubeCommunityLinks, formatYouTubeCommunityPost,
   parseYouTubeCommunityHtml, parseYouTubeCommunityUrl } from '../src/services/YouTubeCommunity';
 
 const ID = 'Ugkxvw3nKUJFYnzgAx5YBGKZ5wuaHdkelGlO';
@@ -272,4 +272,20 @@ test('preparation is all-or-nothing with five-source and aggregate embed/text bu
   const ten = Array.from({ length: 10 }, () => ({ url: url(), image: { url: image() } }));
   assert(communityEmbedBudget(ten)); assert(!communityEmbedBudget(ten, 1));
   assert(!communityEmbedBudget([{ description: 'x'.repeat(3500) }, { description: 'x'.repeat(3000) }]));
+});
+
+test('community conflict detection counts only visible supported and enabled preview shapes', () => {
+  const enabled = ['youtube', 'x', 'instagram', 'reddit', 'erome'];
+  for (const other of ['https://x.com/jack/status/20', 'https://youtu.be/dQw4w9WgXcQ',
+    'https://www.instagram.com/share/ABCDefghi/', 'https://www.reddit.com/r/example/s/ABCDefghij', 'https://www.erome.com/a/Synthetic01']) {
+    assert(hasMixedYouTubeCommunityLinks(`${url()} ${other}`, enabled), other);
+    assert(!hasMixedYouTubeCommunityLinks(`<${url()}> ${other}`, enabled));
+    assert(!hasMixedYouTubeCommunityLinks(`${url()} <${other}>`, enabled));
+    assert(!hasMixedYouTubeCommunityLinks(`${url()} ||${other}||`, enabled));
+    assert(!hasMixedYouTubeCommunityLinks(`${url()} ${other}`, ['x']));
+  }
+  for (const other of [url(OTHER), 'https://example.test/page', 'https://x.com.evil/jack/status/20',
+    'https://www.youtube.com/@NASA/posts', 'https://example.test/?next=https://x.com/jack/status/20'])
+    assert(!hasMixedYouTubeCommunityLinks(`${url()} ${other}`, enabled), other);
+  assert(!hasMixedYouTubeCommunityLinks(`${url()} https://x.com/jack/status/20`, ['youtube']));
 });
