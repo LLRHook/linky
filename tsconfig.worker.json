@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "rootDir": ".", "noEmit": true },
+  "compilerOptions": { "rootDir": ".", "noEmit": true, "types": ["node"] },
   "include": ["api/*.ts", "src/services/RegionalProtocol.ts", "src/services/RegionalHttp.ts", "src/services/RegionalWorker.ts"]
 }
