@@ -2,6 +2,10 @@ import { lookup as lookupDns } from 'node:dns/promises';
 import type { RequestOptions } from 'node:https';
 import type { APIEmbed } from 'discord.js';
 import { mapLinks, visibleLink } from './LinkTokens';
+import { parseSocialUrl } from './SocialProviders';
+import { parseYouTubeUrl } from './YouTube';
+import { parseEromeUrl } from './EromeAlbum';
+import { hasMobileShareLinks } from './MobileShareLinks';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
 
 export interface YouTubeCommunityLink { id: string; url: string }
@@ -40,6 +44,22 @@ export function findYouTubeCommunityLinks(content: string, limit = 5): YouTubeCo
     return url;
   });
   return [...links.values()];
+}
+
+export const COMMUNITY_MIXED_GUIDANCE = 'Share YouTube community posts in separate messages from other supported post links or YouTube videos. Discord does not reliably combine their previews in one message. Your original is unchanged.';
+
+/** Local eligibility only: unrelated, hidden and disabled-platform URLs are not requested preview coverage. */
+export function hasMixedYouTubeCommunityLinks(content: string, platforms: readonly string[]): boolean {
+  if (!platforms.includes('youtube') || !findYouTubeCommunityLinks(content, 1).length) return false;
+  let mixed = false;
+  mapLinks(content, (url, position) => {
+    if (!visibleLink(content, position)) return url;
+    const social = parseSocialUrl(url);
+    if (social && platforms.includes(social.platform) || parseYouTubeUrl(url) ||
+        platforms.includes('erome') && parseEromeUrl(url) || hasMobileShareLinks(url, platforms)) mixed = true;
+    return url;
+  });
+  return mixed;
 }
 
 function textRuns(value: unknown): string | null {

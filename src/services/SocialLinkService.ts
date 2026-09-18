@@ -17,7 +17,7 @@ import { addInstagramCaptions } from './InstagramPresentation';
 import type { ServerPreferences } from './ServerSettings';
 import type { StatsPublication } from './YouTubeStats';
 import { findYouTubeLinks, formatYouTubeStatistics, parseYouTubeUrl, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
-import { communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
+import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from './YouTubeCommunity';
 import { getProviderCandidates, parseSocialUrl } from './SocialProviders';
 import { evaluateScope } from './ServerScope';
@@ -268,8 +268,9 @@ export function createLinkRepostHandler(
       JSON.stringify(serverPreferences?.(message.guildId) ?? {}) === preferenceVersion;
     const activePlatforms = platforms.filter(platform => preferences.platforms?.[platform] !== false &&
       (platform !== 'erome' || eromePermitted));
+    const mixedCommunity = hasMixedYouTubeCommunityLinks(inputContent, activePlatforms);
     const eromeSource = activePlatforms.includes('erome') && prepareErome ? eromeSources[0] : undefined;
-    let reply = forceReply || blockedErome || preferences.mode === 'reply';
+    let reply = forceReply || blockedErome || mixedCommunity || preferences.mode === 'reply';
     if (!enabled() ||
         !canCopy(message) || bypassLinky(message.content) || message.flags.has(MessageFlags.SuppressEmbeds) ||
         (!refresh && reposted.has(message.id))) return;
@@ -291,7 +292,7 @@ export function createLinkRepostHandler(
     const providerAttempts: ProviderAttempt[] = [];
     let cleanupDelivery: ReturnType<typeof createDeliveryAttempt> | undefined;
     try {
-      if (normalizeMobileLinks) {
+      if (normalizeMobileLinks && !mixedCommunity) {
         inputContent = (await normalizeMobileLinks(inputContent, activePlatforms, signal)).content;
         if (!enabled() || !canCopy(message) || bypassLinky(message.content) || sourceVersion(message) !== version) {
           return refresh && enabled() ? 'retry' : undefined;
@@ -302,18 +303,7 @@ export function createLinkRepostHandler(
         !message.flags.has(MessageFlags.SuppressEmbeds) ? findYouTubeLinks(inputContent).slice(0, 3) : [];
       const communityLinks = activePlatforms.includes('youtube') ? findYouTubeCommunityLinks(inputContent, 6) : [];
       if (rewritten === inputContent && !youtubeLinks.length && !communityLinks.length && !eromeSource) return;
-      if (communityLinks.length > 5 || communityLinks.length && !lookupYouTubeCommunity) return;
-      if (communityLinks.length) {
-        const sources = new Set<string>();
-        mapLinks(inputContent, (url, position) => {
-          if (visibleLink(inputContent, position)) {
-            const source = parseSocialUrl(url)?.sourceUrl ?? parseYouTubeUrl(url)?.url ?? parseYouTubeCommunityUrl(url)?.url ?? parseEromeUrl(url)?.url;
-            if (source) sources.add(source);
-          }
-          return url;
-        });
-        if (sources.size > 5) return;
-      }
+      if (!mixedCommunity && (communityLinks.length > 5 || communityLinks.length && !lookupYouTubeCommunity)) return;
       const delivery = createDeliveryAttempt({ requesterId: message.author.id, channelId, guildId: message.guildId,
         mode: 'automatic', platform: deliveryPlatform(inputContent) }, diagnostics,
         event => progress?.update(event), signal);
@@ -330,7 +320,7 @@ export function createLinkRepostHandler(
       ];
       if (!reply) required.push(PermissionFlagsBits.ManageMessages);
       if (!reply && message.attachments.size) required.push(PermissionFlagsBits.AttachFiles);
-      if (eromeSource) required.push(PermissionFlagsBits.AttachFiles);
+      if (eromeSource && !mixedCommunity) required.push(PermissionFlagsBits.AttachFiles);
       if ((!reply && !message.deletable) || !permissions?.has(required)) {
         delivery.finish('permission');
         log.warn(context, 'Skipping link replacement: missing channel permissions');
@@ -361,7 +351,7 @@ export function createLinkRepostHandler(
           return matches.size === 1 ? matches.first()! : null;
         });
       });
-      const failureNotice = async (text: string) => {
+      const failureNotice = async (text: string, retry = true) => {
         await progress!.stop();
         if (!rememberRepost || !enabled()) return;
         const current = await message.fetch(true);
@@ -381,10 +371,28 @@ export function createLinkRepostHandler(
         }
         const latest = await message.fetch(true);
         if (!enabled() || !canCopy(latest) || sourceVersion(latest) !== version) { await notice.delete(); rollback = undefined; return; }
+        const retainGuidance = async () => {
+          const current = await message.fetch(true).catch(() => null);
+          if (current && enabled() && !delivery.context.signal?.aborted && canCopy(current) && sourceVersion(current) === version) return true;
+          await notice.delete(); rollback = undefined;
+          return false;
+        };
         const details = await delivery.controls(notice.id);
-        await notice.edit({ components: [...repostControls(inputContent, { retry: true }), ...details], allowedMentions: { parse: [] } });
+        if (!retry && !await retainGuidance()) return;
+        await notice.edit({ components: [...repostControls(inputContent, { retry }), ...details], allowedMentions: { parse: [] } });
+        if (!retry) {
+          if (!await retainGuidance()) return;
+          reposted.add(message.id);
+          if (reposted.size > RECENT_MESSAGE_LIMIT) reposted.delete(reposted.values().next().value!);
+        }
         rollback = undefined;
       };
+      if (mixedCommunity) {
+        delivery.context.trace?.setPath('explicit');
+        delivery.finish('unsupported');
+        await failureNotice(COMMUNITY_MIXED_GUIDANCE, false);
+        return;
+      }
       if (eromeSource) progress.update({ stage: 'resolve', state: 'running' });
       const eromeBudget = guildAttachmentBudget(message.guild.premiumTier);
       originalMedia = eromeSource && enabled() && prepareEromeMedia && bindEromeMedia && releaseEromeMedia &&

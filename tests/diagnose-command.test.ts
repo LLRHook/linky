@@ -225,5 +225,7 @@ test('community diagnostics explain public cards even without API credentials or
   await execute(f.command, { ...config, youtubeApiKey: undefined }, servers, async () => assert.fail('No community fetch'));
   assert.match(f.events[1].payload.content, /recognized YouTube URL/);
   assert.match(f.events[1].payload.content, /Counts and comments apply only to videos/);
+  assert.match(f.events[1].payload.content, /separate messages/);
+  assert.match(f.events[1].payload.content, /guidance without Retry/);
   assert.match(f.events[1].payload.content, /No post was fetched/);
 });
