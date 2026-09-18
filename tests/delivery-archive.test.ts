@@ -192,3 +192,18 @@ test('startup cleans only its abandoned atomic health files and preserves unrela
   assert(!(await readdir(directory)).includes(temporary));
   assert.equal(await readFile(join(directory, 'unrelated.tmp'), 'utf8'), 'keep');
 });
+
+test('explicit community delivery paths round-trip separately from historical native observations', async t => {
+  const { archive, directory } = await fixture(t);
+  const diagnostics = new DeliveryDiagnostics({ path: join(directory, 'details-test.json'), archive, wallNow: () => NOW });
+  await diagnostics.ready;
+  for (const path of ['native', 'explicit'] as const) {
+    const trace = diagnostics.begin({ ...request, platform: 'youtube' });
+    trace.setPath(path); trace.finish('confirmed');
+  }
+  await diagnostics.close(); await archive.flush();
+  const rows = (await readDeliveryArchive(directory)).rows;
+  assert.deepEqual(rows.map(row => row.path).sort(), ['explicit', 'native']);
+  const saved = JSON.parse(await readFile(join(directory, 'details-test.json'), 'utf8'));
+  assert.deepEqual(saved.attempts.map((row: any) => row.path).sort(), ['explicit', 'native']);
+});

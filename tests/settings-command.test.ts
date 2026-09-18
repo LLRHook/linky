@@ -33,12 +33,55 @@ function interaction(options: Record<string, string | boolean> = {}, guildId: st
   return { command: command as unknown as ChatInputCommandInteraction, events };
 }
 
+test('settings saves Instagram presentation and explains native captions and independent translation preference', async () => {
+  const path = file(), servers = new ServerSettings(path);
+  const configured = { ...config, translateInstagram: true, captionApiKey: 'test' };
+  assert.equal(effectivePreferences(configured, {}).instagramPresentation, 'standard');
+  for (const style of ['compact', 'media-first', 'standard'] as const) {
+    const f = interaction({ instagram_presentation: style, translate_instagram: true });
+    await execute(f.command, configured, servers);
+    assert.equal(new ServerSettings(path).getPreferences(SERVER).instagramPresentation, style);
+    assert.equal(servers.get(SERVER), undefined);
+    assert.equal(servers.getPreferences(SERVER).translateInstagram, true);
+    assert.match(f.events[1].payload.content, /Native provider captions cannot be shortened/);
+    assert.ok(f.events[1].payload.content.length <= 2000, 'settings response fits Discord');
+    assert.equal(effectivePreferences(configured, servers.getPreferences(SERVER)).translateInstagram, style !== 'media-first');
+    assert.deepEqual(f.events[1].payload.allowedMentions, { parse: [] });
+  }
+});
+
+test('help fits Discord with all platforms, translations, scope and each Instagram presentation', async () => {
+  const servers = new ServerSettings(file());
+  await servers.set(SERVER, true);
+  for (const instagramPresentation of ['standard', 'compact', 'media-first'] as const) {
+    await servers.update(SERVER, { instagramPresentation });
+    const f = interaction();
+    await help(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS, translateInstagram: true, captionApiKey: 'test' }, servers);
+    assert.ok(f.events[0].payload.content.length <= 2000, `${instagramPresentation}: ${f.events[0].payload.content.length} characters`);
+    assert.match(f.events[0].payload.content, /\/autofix enabled:false/);
+    assert.match(f.events[0].payload.content, /Test here/);
+  }
+});
+
+test('settings fits Discord with all platforms and explains community support without a video API key', async () => {
+  const servers = new ServerSettings(file());
+  await servers.set(SERVER, true);
+  for (const instagramPresentation of ['standard', 'compact', 'media-first'] as const) {
+    await servers.update(SERVER, { instagramPresentation });
+    const f = interaction();
+    await execute(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS, translateInstagram: true, captionApiKey: 'test' }, servers);
+    const content = f.events[1].payload.content;
+    assert.ok(content.length <= 2000, `${instagramPresentation}: ${content.length} characters`);
+    assert.match(content, /community posts need no API key/);
+  }
+});
+
 test('settings is restricted to server installs and Manage Server with optional choices', () => {
   const command = data.toJSON();
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome', 'erome_channels', 'translate_tweets', 'translate_instagram', 'youtube_display']);
+  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome', 'erome_channels', 'translate_tweets', 'translate_instagram', 'instagram_presentation', 'youtube_display']);
   const eromeChannels = command.options?.find(option => option.name === 'erome_channels');
   assert(eromeChannels && 'choices' in eromeChannels);
   assert.deepEqual(eromeChannels.choices?.map(({ name, value }) => ({ name, value })), [{ name: 'Age-restricted channels', value: 'age-restricted' },

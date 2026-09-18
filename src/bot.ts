@@ -11,12 +11,16 @@ import { execute as prompt, handleStatus as promptStatus } from './commands/prom
 import { handleSetupComponent } from './commands/setupPanel';
 import { commandDefinitions } from './commands/register';
 import { ServerSettings } from './services/ServerSettings';
+import { PersonalPreferences } from './services/PersonalPreferences';
+import { execute as autofix } from './commands/autofix';
+import { createMobileShareLinkNormalizer } from './services/MobileShareLinks';
 import { createLinkRepostHandler } from './services/SocialLinkService';
 import { fetchTweetTranslation } from './services/TweetTranslation';
 import { createCaptionTranslator } from './services/CaptionTranslation';
 import { createInstagramLookup } from './services/InstagramTranslation';
 import { TranslationBudget } from './services/TranslationBudget';
 import { createYouTubeLookup } from './services/YouTube';
+import { createYouTubeCommunityLookup } from './services/YouTubeCommunity';
 import { YouTubeStats } from './services/YouTubeStats';
 import { RepostRegistry } from './services/RepostRegistry';
 import { PreviewHealth } from './services/PreviewRecovery';
@@ -30,6 +34,7 @@ import { DeliveryDiagnostics } from './services/DeliveryDiagnostics';
 import { DeliveryArchive } from './services/DeliveryArchive';
 import { handleDeliveryDetails } from './services/DeliveryDetails';
 import { PreviewWatcher } from './services/PreviewWatcher';
+import { createSetupPreviewTest } from './services/SetupPreviewTest';
 import { ProviderHealth } from './services/ProviderHealth';
 import { EromeAlbumSessions } from './services/EromeAlbumSessions';
 import { createEromeAlbumPolicy } from './services/EromeAlbumPolicy';
@@ -49,6 +54,8 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     ],
   });
   let youtubeStats: YouTubeStats | undefined;
+  const personal = new PersonalPreferences(join(dirname(settings.settingsPath), 'personal-preferences.json'));
+  const normalizeMobileLinks = createMobileShareLinkNormalizer();
   let registry: RepostRegistry | undefined;
   let prompts: PromptService | undefined;
   const shutdown = new AbortController();
@@ -58,6 +65,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     catch { log.warn('Coding requests are unavailable because their job history could not be loaded'); }
   }
   const lookupYouTube = settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined;
+  const lookupYouTubeCommunity = createYouTubeCommunityLookup();
   let translateInstagram: ReturnType<typeof createInstagramLookup> | undefined;
   if (settings.translateInstagram && settings.captionApiKey) {
     try {
@@ -72,6 +80,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   const health = new PreviewHealth();
   const providerHealth = new ProviderHealth();
   const previews = new PreviewWatcher(client);
+  const testSetupHere = createSetupPreviewTest(settings, servers, { armPreview: previews.arm.bind(previews), signal: shutdown.signal });
   const archive = new DeliveryArchive({ directory: join(dirname(settings.settingsPath), 'delivery-logs'),
     retentionDays: settings.deliveryLogRetentionDays,
     onWarning: code => log.warn({ code }, 'Delivery archive needs attention') });
@@ -113,7 +122,8 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     details: async (id, messageId) => (await bindDeliveryDetails(diagnostics, id, messageId)).map(row => row.toJSON()),
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
   });
-  const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums, signal: shutdown.signal };
+  const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums,
+    normalizeMobileLinks, translateInstagram, lookupYouTubeCommunity, signal: shutdown.signal };
   const destroy = client.destroy.bind(client);
   client.destroy = () => {
     if (closing) return closing;
@@ -122,7 +132,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     albums?.close(); previews.close();
     closing = (async () => {
       try {
-        const results = await Promise.allSettled([scheduler.close(), mediaReady.then(media => media?.close())]);
+        const results = await Promise.allSettled([scheduler.close(), mediaReady.then(media => media?.close()), personal.flush()]);
         const historySaved = await diagnostics.close();
         const archiveSaved = await archive.close();
         if (!historySaved || !archiveSaved) log.warn('Delivery history shutdown could not be confirmed');
@@ -133,13 +143,13 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   };
 
   const repost = createLinkRepostHandler(settings.channelIds, log, undefined, {
+    isOptedOut: (guildId, userId) => personal.isOptedOut(guildId, userId),
     serverEnabled: id => servers.get(id),
     serverPreferences: id => servers.getPreferences(id),
     serverIds: settings.serverIds,
     platforms: settings.rewritePlatforms,
     eromeAvailable: guildId => isEromeAvailable(settings, guildId),
     translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
-    translateInstagram,
     lookupYouTube,
     prepareErome,
     ...mediaOptions,
@@ -150,6 +160,9 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     publishYouTube: (message, embeds) => youtubeStats?.publish(message, embeds) ?? Promise.resolve(null),
   });
   client.on(Events.MessageCreate, message => { if (!shutdown.signal.aborted) void repost(message); });
+  client.on(Events.GuildDelete, guild => {
+    void personal.removeGuild(guild.id).catch(() => log.warn('Could not remove departed server personal preferences'));
+  });
   client.on(Events.MessageDelete, message => {
     void releaseEromeMedia(message.id).catch(() => log.warn('Video storage cleanup failed'));
     void registry?.handleSourceDelete(message).catch(() => log.warn('Source deletion cleanup will be retried'));
@@ -182,6 +195,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         if (interaction.commandName === 'help') await help(interaction, settings, servers);
         else if (interaction.commandName === 'setup') await setup(interaction, servers, settings);
         else if (interaction.commandName === 'settings') await preferences(interaction, settings, servers);
+        else if (interaction.commandName === 'autofix') await autofix(interaction, personal, guildId => client.guilds.cache.has(guildId));
         else if (interaction.commandName === 'diagnose') await diagnose(interaction, settings, servers, async link => health.describe(link));
         else if (interaction.commandName === 'fix') await fix(interaction, settings, { prepareErome, ...mediaOptions, ...deliveryOptions,
           serverPreferences: id => servers.getPreferences(id), observePreview: (expected, result) => health.record(expected, result) });
@@ -206,7 +220,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
                 operatorChannelIds: settings.channelIds, operatorServerIds: settings.serverIds }).enabled;
           },
         })) return;
-        if (await handleSetupComponent(interaction, settings, servers)) return;
+        if (await handleSetupComponent(interaction, settings, servers, testSetupHere)) return;
         if (!interaction.isButton()) return;
         if (await removeManual(interaction, releaseEromeMedia) || await registry?.handleRemove(interaction)) return;
         if (interaction.customId !== 'linky:retry' || !registry) return;
@@ -228,7 +242,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         retries.set(record.sourceId, Date.now());
         if (retries.size > 1000) retries.delete(retries.keys().next().value!);
         try {
-          const complete = await registry.retry(record, source => repost(source as Message, { refresh: true, forceReply: true }));
+          const complete = await registry.retry(record, source => repost(source as Message, { refresh: true, forceReply: true, manualRetry: true }));
           await interaction.editReply({ content: complete
             ? 'Retry finished. If a preview was unavailable, the original message was kept.'
             : 'The retry could not finish. The original was kept; any saved cleanup will be retried.' });
@@ -247,6 +261,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   client.once(Events.ClientReady, async (readyClient) => {
     try {
       await readyClient.application.commands.set(commandDefinitions);
+      await personal.retainGuilds(readyClient.guilds.cache.keys());
       await mediaReady;
       await diagnostics.ready;
       // Cleanup continues even if the API key or YouTube support is later disabled.

@@ -31,7 +31,7 @@ export function formatDeliveryDetails(record: DeliveryRecord): string {
   return [
     '**Linky delivery**',
     record.outcome ? outcomeLabels[record.outcome] : 'This request is still being prepared.',
-    `Platform: ${record.platform}${record.path ? ` · Delivery: ${record.path}` : ''}`,
+    `Platform: ${record.platform}${record.path ? ` · Delivery: ${record.path === 'explicit' ? 'post card' : record.path}` : ''}`,
     ...(record.cache ? [`Cache: ${record.cache === 'hit' ? 'reused a validated local preview' : 'no reusable local preview'}.`] : []),
     ...(record.durationMs !== undefined ? [`Elapsed: ${seconds(record.durationMs)}`] : []),
     ...[...totals].map(([stage, total]) => {

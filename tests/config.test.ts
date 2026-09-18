@@ -94,13 +94,13 @@ test('missing channel settings leave the channel allowlist empty', () => {
   assert.deepEqual(JSON.parse(result.stdout), []);
 });
 
-test('YouTube statistics require an operator key and respect the platform allowlist', () => {
-  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: '' }, 'rewritePlatforms').stdout), ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'erome']);
+test('public YouTube community previews need no operator key and respect the platform allowlist', () => {
+  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: '' }, 'rewritePlatforms').stdout), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome']);
   assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: '', YOUTUBE_API_KEY: ' test-key ' }, 'rewritePlatforms').stdout),
     ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome']);
   assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'instagram', YOUTUBE_API_KEY: 'test-key' }, 'rewritePlatforms').stdout),
     ['instagram']);
-  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'youtube', YOUTUBE_API_KEY: ' ' }, 'rewritePlatforms').stdout), []);
+  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'youtube', YOUTUBE_API_KEY: ' ' }, 'rewritePlatforms').stdout), ['youtube']);
 });
 
 test('Instagram translation requires both an explicit operator flag and a nonempty key', () => {

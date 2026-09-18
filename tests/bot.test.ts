@@ -10,6 +10,7 @@ import { data } from '../src/commands/help';
 import { commandDefinitions, registerCommands } from '../src/commands/register';
 import { ServerSettings, type ServerPreferences } from '../src/services/ServerSettings';
 import { RepostRegistry } from '../src/services/RepostRegistry';
+import { PersonalPreferences } from '../src/services/PersonalPreferences';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-bot-tests-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -297,9 +298,9 @@ for (const hasSystemChannel of [true, false]) {
     const { client, logs } = fixture();
     let sends = 0;
     const channel = { send: async () => { sends++; } };
-    const guild = { id: 'new-guild', systemChannel: hasSystemChannel ? channel : null, channels: { cache: new Map([['general', channel]]) } };
+    const guild = { id: '111111111111111111', systemChannel: hasSystemChannel ? channel : null, channels: { cache: new Map([['general', channel]]) } };
     client.emit(Events.GuildCreate, guild as unknown as Guild);
-    for (const listener of client.listeners(Events.ClientReady)) await listener({ user: { id: '1491240385031311470', tag: 'Linky#0805' }, guilds: { cache: new Map([['new-guild', guild]]) },
+    for (const listener of client.listeners(Events.ClientReady)) await listener({ user: { id: '1491240385031311470', tag: 'Linky#0805' }, guilds: { cache: new Map([[guild.id, guild]]) },
       application: { commands: { set: async () => [] } },
     } as unknown as Client<true>);
     assert.equal(sends, 0);
@@ -317,6 +318,74 @@ test('/help describes the active link features privately and without mentions', 
   assert.match(replies[0].content!, /enabled in this channel/);
   assert.match(replies[0].content!, /X, Instagram, TikTok/);
   assert.match(replies[0].content!, /English with a small source-language label/);
+});
+
+test('/autofix dispatch saves a private per-server choice and restart cleanup retains only joined guilds', async () => {
+  const path = join(mkdtempSync(join(directory, 'personal-dispatch-')), 'servers.json');
+  const guildId = '111111111111111111', departed = '222222222222222222', userId = '333333333333333333';
+  const personalPath = join(path, '..', 'personal-preferences.json');
+  const first = fixture({ settingsPath: path });
+  for (const guild of [guildId, departed]) first.client.guilds.cache.set(guild, { id: guild } as Guild);
+  const replies: string[] = [];
+  for (const guild of [guildId, departed]) await dispatch(first.client, {
+    isChatInputCommand: () => true, commandName: 'autofix', guildId: guild, user: { id: userId },
+    options: { getBoolean: () => false },
+    deferReply: async (value: { flags: number }) => assert.equal(value.flags, MessageFlags.Ephemeral),
+    editReply: async (value: { content: string; allowedMentions: unknown }) => {
+      assert.deepEqual(value.allowedMentions, { parse: [] }); replies.push(value.content);
+    },
+  });
+  await first.client.destroy();
+  assert.equal(replies.length, 2);
+  assert.ok(replies.every(reply => reply.startsWith('Automatic fixing is off')));
+  assert.deepEqual(JSON.parse(readFileSync(personalPath, 'utf8')), { [guildId]: [userId], [departed]: [userId] });
+  const restarted = fixture({ settingsPath: path });
+  for (const listener of restarted.client.listeners(Events.ClientReady)) await listener({
+    application: { commands: { set: async () => {} } }, user: { id: '1491240385031311470', tag: 'Linky' },
+    guilds: { cache: new Map([[guildId, {}]]) },
+  } as unknown as Client<true>);
+  assert.deepEqual(JSON.parse(readFileSync(personalPath, 'utf8')), { [guildId]: [userId] });
+  restarted.client.emit(Events.GuildDelete, { id: guildId } as Guild);
+  await restarted.client.destroy();
+  assert.deepEqual(JSON.parse(readFileSync(personalPath, 'utf8')), {});
+  assert.deepEqual([...first.errors, ...restarted.errors], []);
+});
+
+test('/autofix cannot recreate departed-guild records after a delayed acknowledgement and works after rejoin', async () => {
+  const caseDirectory = mkdtempSync(join(directory, 'personal-departure-race-'));
+  const settingsPath = join(caseDirectory, 'servers.json'), personalPath = join(caseDirectory, 'personal-preferences.json');
+  const guildId = '111111111111111111', userId = '333333333333333333';
+  const { client, errors } = fixture({ settingsPath });
+  const guild = { id: guildId } as Guild;
+  client.guilds.cache.set(guildId, guild);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const replies: string[] = [];
+  const input = {
+    isChatInputCommand: () => true, commandName: 'autofix', guildId, user: { id: userId },
+    options: { getBoolean: () => false },
+    deferReply: async (value: { flags: number }) => { assert.equal(value.flags, MessageFlags.Ephemeral); await gate; },
+    editReply: async (value: { content: string; allowedMentions: unknown }) => {
+      assert.deepEqual(value.allowedMentions, { parse: [] }); replies.push(value.content);
+    },
+  };
+  const pending = dispatch(client, input);
+  // Discord removes the guild from its cache before emitting GuildDelete.
+  client.guilds.cache.delete(guildId);
+  client.emit(Events.GuildDelete, guild);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  release(); await pending;
+  assert.equal(new PersonalPreferences(personalPath).isOptedOut(guildId, userId), false,
+    'the delayed command must not restore a record after departure cleanup');
+  assert.match(replies[0], /no longer in this server/);
+  client.guilds.cache.set(guildId, guild);
+  client.emit(Events.GuildCreate, guild);
+  await dispatch(client, { ...input,
+    deferReply: async (value: { flags: number }) => { assert.equal(value.flags, MessageFlags.Ephemeral); },
+  });
+  assert.equal(new PersonalPreferences(personalPath).isOptedOut(guildId, userId), true);
+  assert.match(replies[1], /Automatic fixing is off/);
+  assert.deepEqual(errors, []);
 });
 
 test('/help accurately shows channel scope, disabled platforms and translation settings', async () => {
@@ -390,7 +459,7 @@ test('registration installs the public slash commands and message context action
     put: async (route, options) => { calls.push([route, options]); return []; },
   });
   assert.deepEqual(calls, [Routes.oauth2CurrentApplication(), [Routes.applicationCommands('application-id'), { body: commandDefinitions }]]);
-  assert.deepEqual(commandDefinitions.map(command => command.name), ['help', 'setup', 'settings', 'diagnose', 'fix', 'prompt', 'Fix with Linky']);
+  assert.deepEqual(commandDefinitions.map(command => command.name), ['help', 'setup', 'settings', 'diagnose', 'fix', 'prompt', 'autofix', 'Fix with Linky']);
   assert.equal(data.toJSON().name, 'help');
 });
 

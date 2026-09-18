@@ -380,3 +380,22 @@ test('invalid Erome channel policies cannot update state or load from disk', asy
   }
   assert.deepEqual(servers.getPreferences(FIRST), {});
 });
+
+test('Instagram presentation choices survive restart and reject unknown values', async () => {
+  const path = file(), servers = new ServerSettings(path);
+  assert.equal(servers.getPreferences(FIRST).instagramPresentation, undefined);
+  for (const instagramPresentation of ['standard', 'compact', 'media-first'] as const) {
+    await servers.update(FIRST, { instagramPresentation });
+    assert.equal(new ServerSettings(path).getPreferences(FIRST).instagramPresentation, instagramPresentation);
+    assert.equal(servers.get(FIRST), undefined);
+  }
+  await servers.update(FIRST, { translateInstagram: false });
+  assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), { instagramPresentation: 'media-first', translateInstagram: false });
+  for (const instagramPresentation of ['other', '', true, undefined, null]) {
+    await assert.rejects(servers.update(FIRST, { instagramPresentation } as ServerPreferences));
+    if (instagramPresentation !== undefined) {
+      const invalid = file(); writeFileSync(invalid, JSON.stringify({ [FIRST]: { instagramPresentation } }));
+      assert.throws(() => new ServerSettings(invalid), /Invalid server settings/);
+    }
+  }
+});

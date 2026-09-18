@@ -39,8 +39,7 @@ export const config: Config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   channelIds: parseDiscordIds(process.env['LINK_CHANNEL_IDS']),
   serverIds: parseDiscordIds(process.env['LINK_SERVER_IDS'], 'Server IDs'),
-  rewritePlatforms: parseRewritePlatforms(process.env['REWRITE_PLATFORMS'])
-    .filter(platform => platform !== 'youtube' || youtubeApiKey !== undefined),
+  rewritePlatforms: parseRewritePlatforms(process.env['REWRITE_PLATFORMS']),
   translateTweets: process.env['TRANSLATE_TWEETS']?.toLowerCase() === 'true',
   translateInstagram: process.env['TRANSLATE_INSTAGRAM']?.toLowerCase() === 'true' && Boolean(captionApiKey),
   captionApiKey,

@@ -494,16 +494,28 @@ test('manual ordinary-channel permission is not inherited from another server an
   }
 });
 
-test('manual Erome rechecks a revoked server policy after preparation', async () => {
-  const f = manual();
-  f.input.channel.nsfw = false;
-  let preference: ServerPreferences['eromeChannels'] = 'all';
-  await f.run({ serverPreferences: () => ({ eromeChannels: preference }), prepareErome: async () => {
-    preference = 'age-restricted';
-    return prepared();
-  } });
-  assert(f.edits.every(edit => !edit.files?.length));
-  assert.match(f.response.content, /no longer allowed/);
+test('manual Erome preserves policy-specific revocation notices and source controls after preparation or verification', async () => {
+  for (const context of [false, true]) for (const phase of ['preparation', 'verification']) {
+    const f = manual(ALBUM, context);
+    f.input.channel.nsfw = false;
+    let preference: ServerPreferences['eromeChannels'] = 'all';
+    await f.run({ serverPreferences: () => ({ eromeChannels: preference }), prepareErome: async () => {
+      if (phase === 'preparation') preference = 'age-restricted';
+      return prepared();
+    }, verifyErome: async () => {
+      if (phase === 'verification') preference = 'age-restricted';
+      return true;
+    } });
+    if (phase === 'preparation') assert(f.edits.every(edit => !edit.files?.length));
+    assert.match(f.response.content, /Erome previews are no longer allowed/);
+    assert.equal(f.input.targetMessage.content, ALBUM);
+    const last = f.edits.at(-1)!;
+    assert.deepEqual(last.attachments, []); assert.deepEqual(last.embeds, []);
+    assert.equal(last.flags, MessageFlags.SuppressEmbeds);
+    assert.match(JSON.stringify(last.components), /Original post/);
+    assert.match(JSON.stringify(last.components), /linky:remove-manual/);
+    assert.deepEqual(last.allowedMentions, { parse: [] });
+  }
 });
 
 test('manual Erome slash and message actions upload only the first album and preserve the source', async () => {

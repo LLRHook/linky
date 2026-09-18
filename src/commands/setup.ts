@@ -2,7 +2,7 @@ import { SlashCommandBuilder, MessageFlags, PermissionFlagsBits, InteractionCont
 import type { ServerSettings } from '../services/ServerSettings';
 import type { Config } from '../config';
 import { REWRITE_PLATFORMS } from '../services/LinkConfiguration';
-import { buildSetupPanel } from './setupPanel';
+import { buildSetupPanel, setupContext } from './setupPanel';
 
 export const data = new SlashCommandBuilder()
   .setName('setup')
@@ -33,6 +33,5 @@ export async function execute(interaction: ChatInputCommandInteraction, servers:
   const notice = enabled === null ? undefined : enabled
     ? 'Server enabled. Channel selection kept.'
     : 'Server disabled. Your choices are saved.';
-  await interaction.editReply(buildSetupPanel({ guildId: interaction.guildId, channelId: interaction.channelId,
-    threadParentId: interaction.channel?.isThread() ? interaction.channel.parentId : undefined }, config, servers, notice));
+  await interaction.editReply(buildSetupPanel(setupContext(interaction), config, servers, notice));
 }

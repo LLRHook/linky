@@ -5,13 +5,14 @@ import { deliveryDetailsButton } from './DeliveryDetails';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { parseSocialUrl } from './SocialProviders';
 import { parseYouTubeUrl } from './YouTube';
+import { parseYouTubeCommunityUrl } from './YouTubeCommunity';
 import { parseEromeUrl } from './EromeAlbum';
 
 export function deliveryPlatform(content: string): DeliveryRequest['platform'] {
   const platforms = new Set<DeliveryRequest['platform']>();
   mapLinks(content, (url, position) => {
     if (visibleLink(content, position)) {
-      const platform = parseSocialUrl(url)?.platform ?? (parseYouTubeUrl(url) ? 'youtube' : parseEromeUrl(url) ? 'erome' : undefined);
+      const platform = parseSocialUrl(url)?.platform ?? (parseYouTubeUrl(url) || parseYouTubeCommunityUrl(url) ? 'youtube' : parseEromeUrl(url) ? 'erome' : undefined);
       if (platform) platforms.add(platform);
     }
     return url;
