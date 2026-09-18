@@ -57,9 +57,17 @@ function identity(raw: string): string | null {
   return `${source.platform}:${id}`;
 }
 
+/** TikTok share links (/t/, vm., vt.) hide the post ID; providers publish the canonical post URL. */
+function shortTikTok(raw: string): boolean {
+  const source = parseSocialUrl(raw);
+  return source?.platform === 'tiktok' && !/^\/@[\w.-]+\/(?:video|photo)\/\d+\/?$/.test(source.path);
+}
+
 function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   if (!embed.url) return false;
-  const same = identity(embed.url) !== null && identity(embed.url) === identity(expected.url);
+  const observed = identity(embed.url);
+  const same = observed !== null && (observed === identity(expected.url) ||
+    (shortTikTok(expected.source) && /^tiktok:\d+$/.test(observed)));
   if (!same) return false;
   if (expected.captionFree && embed.description?.trim()) return false;
   const errorTitle = /^(?:error(?:\s+\d+)?|not found|temporarily unavailable|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;

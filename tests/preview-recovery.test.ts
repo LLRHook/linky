@@ -255,3 +255,20 @@ test('diagnostics describe recent observations without claiming a provider outag
   assert.match(health.describe(source), /passed/);
   assert.match(health.describe(source), /does not confirm video playback/);
 });
+
+test('a TikTok share link accepts the canonical post embed that providers publish', () => {
+  const canonical = 'https://www.tiktok.com/@e0rik00/video/7686471409861659936';
+  for (const [short, fixedShort] of [
+    ['https://www.tiktok.com/t/ZTU7oFukc/', 'https://tnktok.com/t/ZTU7oFukc/'],
+    ['https://vm.tiktok.com/ZTU7oFukc/', 'https://tnktok.com/ZTU7oFukc/'],
+  ]) {
+    const items = expectedPreviews(short, fixedShort);
+    assert.equal(items.length, 1);
+    assert.equal(inspectPreviews([{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }], items).ok, true);
+    assert.equal(inspectPreviews([{ url: canonical, title: 'Error', description: 'Try again later' }], items).ok, false);
+    assert.equal(inspectPreviews([{ url: 'https://www.tiktok.com/@someone', thumbnail: { url: 'https://cdn.example/a.png' } }], items).ok, false);
+  }
+  const full = expectedPreviews(canonical, 'https://tnktok.com/@e0rik00/video/7686471409861659936');
+  assert.equal(inspectPreviews([{ url: 'https://www.tiktok.com/@e0rik00/video/1', video: { url: 'https://cdn.example/video.mp4' } }], full).ok, false,
+    'a full post link still requires its own ID');
+});
