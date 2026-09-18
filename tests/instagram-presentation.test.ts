@@ -106,3 +106,61 @@ test('insufficient room for the author and language label preserves the normal p
   const presentation = { content: fixed };
   assert.equal(await addInstagramCaptions(source, presentation, async () => caption, 90), presentation);
 });
+
+test('Compact limits translated captions to 120 characters and retains attribution and source metadata', async () => {
+  const post = { ...caption, text: 'A'.repeat(100) + '👨‍👩‍👧‍👦'.repeat(30) };
+  const result = await addInstagramCaptions(source, { content: fixed }, async () => post, 1900, 'compact');
+  const excerpt = result.content.match(/\*\*\n([^\n]+)\n-#/)![1];
+  assert.ok(excerpt.length <= 120 && excerpt.endsWith('…'));
+  assert.match(excerpt, /^A{100}(?:👨‍👩‍👧‍👦)+…$/);
+  assert.ok(result.content.includes('[@bustervro]'));
+  assert.ok(result.content.includes('Translated from Estonian'));
+  assert.deepEqual(result.instagramSources, [source]);
+  assert.deepEqual(result.instagramCaptionSources, [source]);
+  assert.equal(result.content.startsWith(gallery), true);
+});
+
+test('Media-first selects caption-free media without calling translation or adding caption text', async () => {
+  for (const lookup of [undefined, async () => assert.fail('Media-first must not translate')]) {
+    const result = await addInstagramCaptions(source, { content: `My message\n${fixed}` }, lookup, 1900, 'media-first');
+    assert.equal(result.content, `My message\n${gallery}`);
+    assert.deepEqual(result.instagramSources, [source]);
+    assert.deepEqual(result.instagramVideos, []);
+    assert.equal(result.instagramCaptionSources, undefined);
+  }
+});
+
+test('Media-first preserves other platforms, hidden links and explicit embeds with bounded content', async () => {
+  const unrelated = 'https://www.instagram7.com/p/Unrelated/';
+  const result = await addInstagramCaptions(`${source}\nhttps://www.youtube.com/watch?v=u0_UyltqaFI`,
+    { content: `${fixed}\n${unrelated}\n<${fixed}>\nhttps://www.youtube.com/watch?v=u0_UyltqaFI` }, undefined, 1900, 'media-first');
+  assert.equal(result.content, `${gallery}\n${unrelated}\n<${fixed}>\nhttps://www.youtube.com/watch?v=u0_UyltqaFI`);
+  const rich = { content: fixed, embeds: [{ description: 'Preserved X translation' }] };
+  assert.equal(await addInstagramCaptions(source, rich, undefined, 1900, 'media-first'), rich);
+  const tooLong = { content: fixed + 'a'.repeat(2000) };
+  assert.equal(await addInstagramCaptions(source, tooLong, undefined, 1900, 'media-first'), tooLong);
+  for (const hidden of [`<${source}>`, `||${source}||`, `\`${source}\``]) {
+    const presentation = { content: hidden };
+    assert.equal(await addInstagramCaptions(hidden, presentation, undefined, 1900, 'media-first'), presentation);
+  }
+});
+
+test('Media-first preserves reel and TV video verification requirements without trusting arbitrary provider URLs', async () => {
+  for (const kind of ['reel', 'reels', 'tv']) {
+    const reel = source.replace('/p/', `/${kind}/`), provider = fixed.replace('/p/', `/${kind}/`);
+    const result = await addInstagramCaptions(reel, { content: provider }, undefined, 1900, 'media-first');
+    assert.equal(result.content, gallery);
+    assert.deepEqual(result.instagramVideos, [reel]);
+  }
+  for (const url of ['https://evil.test/p/DdFwAIqgncQ/', 'https://instagram7.com.evil.test/p/DdFwAIqgncQ/']) {
+    const presentation = { content: url };
+    assert.equal(await addInstagramCaptions(source, presentation, undefined, 1900, 'media-first'), presentation);
+  }
+});
+
+test('Standard and Compact leave native provider text unchanged without a translation lookup', async () => {
+  const presentation = { content: fixed };
+  for (const style of ['standard', 'compact'] as const) {
+    assert.equal(await addInstagramCaptions(source, presentation, undefined, 1900, style), presentation);
+  }
+});

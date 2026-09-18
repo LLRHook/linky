@@ -100,3 +100,30 @@ test('deleted messages still reject and a mismatched bot output is never fetched
   Object.assign(untrusted, { author: { id: 'wrong' } });
   assert.equal((await watcher.arm(channel, expected).verify(untrusted)).ok, false);
 });
+
+test('a cold Instagram media preview arriving after seven seconds is accepted before reconciliation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+  let fetches = 0;
+  const pending = watcher.arm(channel, expected).verify(message([], async () => { fetches++; return message(); }));
+  t.mock.timers.tick(7_500);
+  await Promise.resolve();
+  assert.equal(fetches, 0, 'Instagram must still be listening for the observed late media update');
+  raw(client, [embed]);
+  assert.equal((await pending).ok, true);
+});
+
+test('Instagram still confirms immediately and other platforms retain the four-second window', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+  const immediate = watcher.arm(channel, expected).verify(message([], async () => { assert.fail('Early preview needs no fetch'); }));
+  raw(client, [embed]);
+  assert.equal((await immediate).ok, true);
+  const x = expectedPreviews('https://x.com/jack/status/20', 'https://fixupx.com/jack/status/20');
+  let fetches = 0;
+  const pending = watcher.arm(channel, x).verify(message([], async () => { fetches++; return message(); }));
+  t.mock.timers.tick(4_000);
+  await Promise.resolve();
+  assert.equal(fetches, 1);
+  assert.equal((await pending).ok, false);
+});

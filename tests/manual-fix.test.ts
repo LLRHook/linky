@@ -8,6 +8,10 @@ import { data, contextData, execute, manualLinks, removeManual } from '../src/co
 import { inspectPreviews, type ExpectedPreview, type PreviewResult } from '../src/services/PreviewRecovery';
 import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
+import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
+import type { ServerPreferences } from '../src/services/ServerSettings';
+import type { InstagramTranslation } from '../src/services/InstagramTranslation';
+import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
 const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['instagram', 'tiktok', 'x'],
@@ -104,6 +108,21 @@ function originalControls(fixture: ReturnType<typeof command>) {
   assert.equal(controls.at(-1).custom_id, 'linky:remove-manual');
   return controls.filter(control => control.url).map(control => control.url);
 }
+
+test('manual preference changes during preview verification clear the stale preview before recovery', async () => {
+  const f = command('https://instagram.com/reel/ABC/');
+  let preferences: ServerPreferences = {};
+  await execute(f.interaction, config, { serverPreferences: () => preferences, verifyPreview: async (_message, expected) => {
+    preferences = { platforms: { instagram: false } };
+    return { ok: false, missing: [...expected], videoMetadata: false };
+  } });
+  assert(!f.events.some(event => String(event.payload?.content).includes('oginstagram.com')));
+  assert.match(f.response.content, /settings changed/i);
+  const cleared = f.events.at(-1)!.payload;
+  assert.deepEqual(cleared.embeds, []);
+  assert.equal(cleared.flags, MessageFlags.SuppressEmbeds);
+  assert.deepEqual(originalControls(f), ['https://www.instagram.com/reel/ABC/']);
+});
 
 function button() {
   const events: { name: string; payload?: any }[] = [];
@@ -400,4 +419,237 @@ test('moderator permission does not authorize removing a forged non-Linky respon
     assert.deepEqual(f.events.map(event => event.name), ['reply']);
     assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
   }
+});
+
+test('manual mobile shares acknowledge before network work and verify the resolved post', async () => {
+  for (const context of [false, true]) for (const canSend of [false, true]) {
+    const share = 'https://www.instagram.com/share/p/Mobile123?igsh=original';
+    const source = 'https://www.instagram.com/p/ABC/', fixed = 'https://www.instagram7.com/p/ABC/';
+    const f = command(share, context), preview = previewChecks(f);
+    if (!canSend) f.input.memberPermissions = new PermissionsBitField(0n);
+    const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async () => {
+      assert.deepEqual(f.events.map(event => event.name), ['defer']);
+      assert.deepEqual(f.events[0].payload, canSend ? {} : { flags: MessageFlags.Ephemeral });
+      return new Response(null, { status: 302, headers: { location: source + '?igsh=resolved' } });
+    } });
+    f.state.render = () => [{ url: fixed, image: { url: 'https://cdn.example/photo.jpg' } }];
+    await execute(f.interaction, config, { ...preview.dependencies, normalizeMobileLinks });
+    assert.deepEqual(f.events.map(event => event.name), ['defer', 'edit']);
+    assert.equal(f.response.content, fixed);
+    assert.equal(preview.checks[0][0].source, source);
+    assert.deepEqual(originalControls(f), [source]);
+    assert.equal(f.input.targetMessage.content, share);
+  }
+});
+
+test('invalid, hidden, bypassed and disabled mobile shares keep immediate private errors without resolver work', async () => {
+  const share = 'https://www.instagram.com/share/p/Mobile123';
+  for (const content of ['https://evil.test/share/Mobile123', `<${share}>`, `||${share}||`, `\`${share}\``, `${share} !nolinky`, share]) {
+    const f = command(content);
+    await execute(f.interaction, config, {
+      serverPreferences: () => content === share ? { platforms: { instagram: false } } : {},
+      normalizeMobileLinks: async () => assert.fail('An ineligible token cannot start normalization'),
+    });
+    assert.deepEqual(f.events.map(event => event.name), ['reply'], content);
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+  }
+});
+
+test('failed manual share normalization preserves the source and completes the acknowledged response', async () => {
+  const content = 'https://www.instagram.com/share/Mobile123?igsh=original';
+  for (const throws of [false, true]) {
+    const f = command(content);
+    await execute(f.interaction, config, { normalizeMobileLinks: async () => {
+      if (throws) throw new Error('transport unavailable');
+      return { content, originals: new Map() };
+    } });
+    assert.deepEqual(f.events.map(event => event.name), ['defer', 'edit']);
+    assert.match(f.response.content, /No supported post link found/);
+    assert.equal(f.input.targetMessage.content, content);
+    assert.equal(f.response.components.length, 0);
+  }
+});
+
+test('manual normalization receives effective platform settings and stops after a setting changes', async () => {
+  const share = 'https://www.instagram.com/share/Mobile123';
+  const f = command(share);
+  let preferences: ServerPreferences = { platforms: { x: false } };
+  await execute(f.interaction, config, { serverPreferences: () => preferences,
+    normalizeMobileLinks: async (_content, platforms) => {
+      assert.deepEqual(platforms, ['instagram', 'tiktok']);
+      preferences = { platforms: { instagram: false } };
+      return { content: 'https://www.instagram.com/p/ABC/', originals: new Map() };
+    },
+  });
+  assert.deepEqual(f.events.map(event => event.name), ['defer', 'edit']);
+  assert.match(f.response.content, /Link settings changed/);
+  assert.equal(f.response.components.length, 0);
+});
+
+test('manual native YouTube still works without operator providers but honors a server platform disable', async () => {
+  const f = command('https://youtu.be/dQw4w9WgXcQ');
+  await execute(f.interaction, config, { serverPreferences: () => ({ platforms: { youtube: false } }) });
+  assert.deepEqual(f.events.map(event => event.name), ['reply']);
+  assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+});
+
+test('manual Instagram presentation supports translated compact captions and media-first with translation off', async () => {
+  const caption: InstagramTranslation = { sourceUrl: 'https://www.instagram.com/reel/ABC/', shortcode: 'ABC', username: 'author',
+    text: 'A readable translated caption. '.repeat(30), languages: ['et'], mediaOnlyUrl: 'https://g.instagram7.com/p/ABC/', mediaTypes: ['GraphVideo'] };
+  const sizes: number[] = [];
+  for (const style of ['standard', 'compact', 'media-first'] as const) {
+    const f = command(caption.sourceUrl), preview = previewChecks(f);
+    let lookups = 0;
+    f.state.render = () => [{ url: caption.mediaOnlyUrl, video: { url: 'https://cdn.example/video.mp4' } }];
+    await execute(f.interaction, config, { ...preview.dependencies,
+      serverPreferences: () => ({ instagramPresentation: style, translateInstagram: style !== 'media-first' }),
+      translateInstagram: async () => { lookups++; return caption; },
+    });
+    assert.equal(lookups, style === 'media-first' ? 0 : 1);
+    assert.equal(preview.checks[0][0].captionFree, true);
+    assert.equal(preview.checks[0][0].requireVideo, true);
+    assert.equal(f.response.content.includes('Translated from Estonian'), style !== 'media-first');
+    assert.deepEqual(originalControls(f), [caption.sourceUrl]);
+    sizes.push(f.response.content.length);
+  }
+  assert(sizes[1] < sizes[0]); assert(sizes[2] < sizes[1]);
+});
+
+test('manual media-first failures never claim a partial translated caption', async () => {
+  const f = command('https://www.instagram.com/reel/ABC/'), preview = previewChecks(f);
+  f.state.render = () => [];
+  await execute(f.interaction, config, { ...preview.dependencies,
+    serverPreferences: () => ({ instagramPresentation: 'media-first', translateInstagram: false }),
+    translateInstagram: async () => assert.fail('Media-first has no caption lookup'),
+  });
+  assert(preview.checks.flat().every(item => item.captionFree && item.requireVideo));
+  assert.match(f.response.content, /A useful preview could not be confirmed/);
+  assert(!f.response.content.includes('Translated from'));
+  assert(!f.response.content.includes('Instagram preview could not be verified'));
+});
+
+const COMMUNITY_URL = 'https://www.youtube.com/post/UgkxCommunityPublicPost123456789';
+const communityPost = (url = COMMUNITY_URL, images: string[] = []): YouTubeCommunityPost => ({
+  ...parseYouTubeCommunityUrl(url)!, author: { name: 'Creator', url: 'https://www.youtube.com/channel/UC' + 'a'.repeat(22) },
+  text: 'Public community text.', images,
+});
+function communityCommand(content = COMMUNITY_URL, context = false) {
+  const f = command(content, context), edit = f.input.editReply;
+  let cards: APIEmbed[] = [];
+  f.state.render = () => [];
+  f.input.editReply = async payload => {
+    if (payload.embeds) cards = payload.embeds.map((card: any) => 'toJSON' in card ? card.toJSON() : card);
+    const result = await edit(payload);
+    f.response.embeds.unshift(...cards.map(card => ({ toJSON: () => card })));
+    return result;
+  };
+  return f;
+}
+const communityConfig: Config = { ...config, rewritePlatforms: [...config.rewritePlatforms, 'youtube'] };
+
+test('manual community previews work without a video key, expose full images, and retain original and owner controls', async () => {
+  for (const context of [false, true]) {
+    const f = communityCommand(COMMUNITY_URL, context), paths: string[] = [], outcomes: DeliveryOutcome[] = [];
+    const diagnostics = { begin: () => ({ id: 'community-manual', setPath: (path: string) => paths.push(path),
+      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
+    bind: async () => false } as unknown as DeliveryDiagnostics;
+    await execute(f.interaction, communityConfig, { diagnostics, serverPreferences: () => ({ youtubeDisplay: 'preview' }),
+      lookupYouTubeCommunity: async (link, signal) => { assert(signal); return communityPost(typeof link === 'string' ? link : link.url,
+        ['https://yt3.ggpht.com/first=s1080', 'https://yt3.ggpht.com/second=s500']); },
+      verifyPreview: async () => assert.fail('community is not a video/native preview') });
+    assert.equal(f.response.embeds.length, 2);
+    assert.equal(f.response.embeds[0].toJSON().image?.url, 'https://yt3.ggpht.com/first=s1080');
+    assert.deepEqual(originalControls(f), [COMMUNITY_URL]);
+    assert.equal(paths.at(-1), 'explicit'); assert.deepEqual(outcomes, ['confirmed']);
+  }
+});
+
+test('manual community galleries require all posts and keep every original control on lookup or budget failure', async () => {
+  const sources = Array.from({ length: 5 }, (_, i) => COMMUNITY_URL + i);
+  for (const kind of ['lookup', 'budget']) {
+    const f = communityCommand(sources.join(' '));
+    await execute(f.interaction, communityConfig, { lookupYouTubeCommunity: async link => kind === 'lookup' ? null
+      : communityPost(typeof link === 'string' ? link : link.url, Array.from({ length: 3 }, (_, i) => `https://yt3.ggpht.com/image${i}=s1080`)) });
+    assert.equal(f.response.embeds.length, 0);
+    assert.deepEqual(originalControls(f), sources);
+    assert.equal(f.response.components.length, 2);
+    assert(f.response.components.every(row => row.toJSON().components.length <= 5));
+    assert.match(f.response.content, /original is unchanged/i);
+  }
+  const six = communityCommand([...sources, COMMUNITY_URL + '5'].join(' '));
+  await execute(six.interaction, communityConfig, { lookupYouTubeCommunity: async () => assert.fail('six sources looked up') });
+  assert.match(six.events[0].payload.content, /at most five/);
+});
+
+test('manual unavailable or changed source cannot publish a verified community card', async () => {
+  for (const kind of ['missing', 'edited', 'preferences']) {
+    const f = communityCommand(COMMUNITY_URL, true);
+    let preferences: ServerPreferences = {};
+    Object.assign(f.input.targetMessage, { fetch: async () => {
+      if (kind === 'missing') throw Error('Unknown Message');
+      if (kind === 'preferences') preferences = { platforms: { youtube: false } };
+      return { ...f.input.targetMessage, ...(kind === 'edited' ? { content: COMMUNITY_URL + ' edited' } : {}) };
+    } });
+    await execute(f.interaction, communityConfig, { lookupYouTubeCommunity: async () => communityPost(), serverPreferences: () => preferences });
+    assert.equal(f.response.embeds.length, 0); assert.deepEqual(originalControls(f), [COMMUNITY_URL]);
+    assert.match(f.response.content, /original is unchanged/i);
+  }
+});
+
+test('manual mixed native/community failures never claim a confirmed complete preview', async () => {
+  const f = communityCommand(`${COMMUNITY_URL} https://x.com/jack/status/20`), outcomes: DeliveryOutcome[] = [];
+  const diagnostics = { begin: () => ({ id: 'community-mixed', setPath() {}, startStage: () => ({ finish() {} }),
+    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+  await execute(f.interaction, communityConfig, { diagnostics, lookupYouTubeCommunity: async () => communityPost(),
+    ...previewChecks(f).dependencies });
+  assert.deepEqual(outcomes, ['metadata-unconfirmed']);
+  assert.match(f.response.content, /could not be confirmed/);
+  assert.deepEqual(originalControls(f), [COMMUNITY_URL, 'https://x.com/jack/status/20']);
+});
+
+test('manual settings changes during Details binding or controls clear stale previews without discarding owner controls', async () => {
+  for (const phase of ['binding', 'controls']) {
+    const f = command('https://instagram.com/p/ABC/'); let preferences: ServerPreferences = {};
+    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }), finish() {} }),
+      bind: async () => { if (phase === 'binding') preferences = { platforms: { instagram: false } }; return true; } } as unknown as DeliveryDiagnostics;
+    const edit = f.input.editReply;
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      if (phase === 'controls' && payload.content === undefined && payload.components) preferences = { platforms: { instagram: false } };
+      return result;
+    };
+    await execute(f.interaction, config, { diagnostics, serverPreferences: () => preferences, ...previewChecks(f).dependencies });
+    assert.match(f.response.content, /settings changed/);
+    assert.deepEqual(originalControls(f), ['https://www.instagram.com/p/ABC/']);
+    assert.equal(f.events.at(-1)!.payload.flags, MessageFlags.SuppressEmbeds);
+  }
+});
+
+test('manual context source edits during Details or final controls remove a previously verified community card', async () => {
+  for (const phase of ['binding', 'controls']) {
+    const f = communityCommand(COMMUNITY_URL, true), outcomes: DeliveryOutcome[] = [];
+    const change = () => { f.input.targetMessage.content = COMMUNITY_URL + ' edited'; };
+    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }),
+      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
+      bind: async () => { if (phase === 'binding') change(); return true; } } as unknown as DeliveryDiagnostics;
+    const edit = f.input.editReply;
+    f.input.editReply = async payload => { const result = await edit(payload);
+      if (phase === 'controls' && payload.content === undefined && payload.components) change(); return result; };
+    await execute(f.interaction, communityConfig, { diagnostics, lookupYouTubeCommunity: async () => communityPost() });
+    assert.equal(f.response.embeds.length, 0); assert.match(f.response.content, /source changed/);
+    assert.deepEqual(originalControls(f), [COMMUNITY_URL]); assert.deepEqual(outcomes, ['unavailable']);
+  }
+});
+
+test('manual mixed verification re-fetches actual rich cards after native waiting', async () => {
+  const f = communityCommand(`${COMMUNITY_URL} https://x.com/jack/status/20`), outcomes: DeliveryOutcome[] = [];
+  const diagnostics = { begin: () => ({ id: 'community-mixed-stale', setPath() {}, startStage: () => ({ finish() {} }),
+    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+  await execute(f.interaction, communityConfig, { diagnostics, lookupYouTubeCommunity: async () => communityPost(),
+    verifyPreview: async message => {
+      message.fetch = async () => ({ ...message, embeds: [] } as unknown as Awaited<ReturnType<Message['fetch']>>);
+      return { ok: true, missing: [], videoMetadata: false };
+    } });
+  assert.deepEqual(outcomes, ['metadata-unconfirmed']); assert.match(f.response.content, /could not be confirmed/);
+  assert.deepEqual(originalControls(f), [COMMUNITY_URL, 'https://x.com/jack/status/20']);
 });

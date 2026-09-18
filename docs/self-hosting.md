@@ -52,7 +52,7 @@ Linky registers its commands automatically at startup. Open `/setup` to enable y
 | `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
 | `TRANSLATE_INSTAGRAM` | `true` enables English Instagram captions when the translation key is available; default `false` |
 | `GOOGLE_TRANSLATE_API_KEY` | Optional dedicated Cloud Translation Basic v2 key; independent of the YouTube key |
-| `YOUTUBE_API_KEY` | Optional operator key for YouTube Data API v3; absent means YouTube is left untouched |
+| `YOUTUBE_API_KEY` | Optional operator key for YouTube Data API v3; absent leaves native videos untouched; public community text/image posts need no key |
 | `EROME_MEDIA_ENABLED` | Enables optional regional original-video delivery after hosting is configured; default `false` |
 | `EROME_WORKER_KEY`, `EROME_WORKER_BASE_URL` | Shared worker HMAC secret and the dedicated Vercel worker project's HTTPS origin |
 | `EROME_MEDIA_BASE_URL` | Public HTTPS media origin, without a path, query or credentials |
@@ -71,6 +71,10 @@ For Instagram captions, complete [Google's Cloud Translation setup](https://docs
 Google currently includes the first **500,000 characters/month** for standard translation, then charges **$20 per million characters**. Its credit is shared by Basic and Advanced translation. Linky also enforces a durable **15,000 characters/day** limit, resetting at midnight Pacific; one instance can admit at most 465,000 characters in a 31-day month. Preserve `data/translation-usage.json` in the data volume and keep the Cloud quota as a separate guard. Other usage, changing prices, extra instances or deleting the journal can invalidate that allowance calculation. A failed budget write disables that request; malformed saved usage disables caption translation until repaired. [Pricing](https://cloud.google.com/products/translate/pricing), [quotas](https://docs.cloud.google.com/translate/quotas).
 
 Instagram caption lookup sends the public post shortcode to Instagram7. Translation sends caption text to Google, without the surrounding Discord message or Discord account/server IDs. Results use bounded five-minute memory caches. The usage journal stores only a date and character count; it contains no captions. English captions posted to Discord follow Discord's message retention. Update the hosted privacy notice before enabling this optional data flow.
+
+`data/personal-preferences.json` stores only opted-out server/account ID pairs, with a 1 MiB and 10,000-record limit. Re-enabling your automatic fixes removes your pair. Removing the bot clears that server on departure or the next successful startup; operator backups need separate deletion. Writes are atomic and owner-only on POSIX. Invalid storage stops startup rather than silently forgetting choices. Retain this file across upgrades; versions predating `/autofix` do not honor it.
+
+Public YouTube community lookups fetch only an allowed first-party `/post/` page with pinned public DNS, no redirects or cookies, a five-second default deadline and a 2 MiB response limit. Their bounded memory cache retains successful post metadata for one minute and failed lookups for 15 seconds. Mobile share resolution similarly uses strict platform destinations and bounded requests. Neither lookup sends Discord IDs or surrounding message text.
 
 `data/reposts.json` stores source/repost/author/channel/server IDs, posting mode and pending cleanup IDs. It contains no chat text. Ownership lasts up to 30 days, with a 10,000-record cap; pending cleanup is retained for retry. Recent provider observations are process-local and contain no message content or server IDs.
 

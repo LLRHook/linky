@@ -195,3 +195,35 @@ test('all-channel Erome diagnostics keep server, channel and platform enablement
     assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
   }
 });
+
+test('mobile redirect shares and direct Reddit aliases are recognized locally without provider requests', async () => {
+  const servers = new ServerSettings(file());
+  for (const [link, platform] of [
+    ['https://www.instagram.com/share/ABCDefghi/', 'Instagram'],
+    ['https://www.reddit.com/r/example/s/ABCDefghij', 'Reddit'],
+    ['https://redd.it/90bu6w', 'Reddit'],
+    ['https://m.reddit.com/r/example/comments/90bu6w/title/', 'Reddit'],
+  ]) {
+    const f = interaction(link);
+    await execute(f.command, { ...config, rewritePlatforms: ['instagram', 'reddit'] }, servers,
+      async () => assert.fail('shape-only diagnostics must not request a provider'));
+    assert.match(f.events[1].payload.content, new RegExp(`recognized ${platform} URL`));
+    assert.match(f.events[1].payload.content, /No link was resolved or fetched/);
+  }
+  for (const link of ['https://reddit.com.evil/r/example/s/ABCDefghij', '<https://redd.it/90bu6w>',
+    'https://www.instagram.com@evil.test/share/ABCDefghi/', 'https://redd.it:443/90bu6w']) {
+    const f = interaction(link);
+    await execute(f.command, { ...config, rewritePlatforms: ['instagram', 'reddit'] }, servers,
+      async () => assert.fail('hostile or hidden shape reached provider'));
+    assert.match(f.events[1].payload.content, /Link format: unsupported/);
+  }
+});
+
+test('community diagnostics explain public cards even without API credentials or video statistics', async () => {
+  const servers = new ServerSettings(file()); await servers.update(SERVER, { youtubeDisplay: 'preview' });
+  const f = interaction('https://www.youtube.com/post/UgkxCommunityPublicPost123456789');
+  await execute(f.command, { ...config, youtubeApiKey: undefined }, servers, async () => assert.fail('No community fetch'));
+  assert.match(f.events[1].payload.content, /recognized YouTube URL/);
+  assert.match(f.events[1].payload.content, /Counts and comments apply only to videos/);
+  assert.match(f.events[1].payload.content, /No post was fetched/);
+});

@@ -1,4 +1,4 @@
-# Operator delivery history and weekly review
+# Operator delivery history and daily review
 
 The bot collects delivery measurements on its own host. Public Linky runs on Hostinger, with the archive in its existing persistent Docker volume. No separate log server, paid monitoring account or public dashboard is required.
 
@@ -16,6 +16,8 @@ The archive is separate from the website's optional metrics adapter. No log endp
 
 Each finalized attempt has a random attempt ID, start timestamp, platform, automatic/manual mode, a fixed outcome, delivery path, elapsed time, bounded stage timings and a cache hit/miss when observed. Only those allowed fields are copied. Discord user, server, channel and message IDs, source and media URLs, captions, message text, media bytes, credentials and arbitrary error messages are excluded.
 
+The `explicit` path identifies messages containing Linky-authored YouTube community cards. Their confirmation checks Discord's returned creator, text and ordered image references against the prepared cards. It is not a native provider observation or a video-playback check; do not combine it with native video confirmation when comparing reliability.
+
 The attempt ID is the one shown by Details. It can connect a user's report to a retained measurement, but the archive does not preserve the original message or its identity. Interactive Details remains subject to its shorter retention and existing authorization.
 
 Finalization queues a record without awaiting disk I/O in the delivery path. Startup imports available finalized Details records, marks unfinished restored attempts interrupted, and avoids recounting imported attempt IDs. It cannot reconstruct records that had already expired or were never saved. A finalized attempt can still be archived after its interactive Details entry is evicted.
@@ -24,20 +26,20 @@ Daily files rotate on UTC boundaries. Retention and the disk cap can remove olde
 
 Set `DELIVERY_LOG_RETENTION_DAYS=30` in the host's `.env`, then restart or deploy to apply it. The parser rejects values outside 1–90. Changing retention does not change Details permissions or expand the data recorded.
 
-## Pull a weekly report
+## Pull a daily report with trend context
 
 In a compiled checkout:
 
 ```sh
 npm run build
-npm run report:deliveries -- --days 7
+npm run report:deliveries -- --days 1 --json
 npm run report:deliveries -- --days 7 --json
 ```
 
 In the production container, which intentionally has no npm:
 
 ```sh
-docker exec linky node ops/delivery-archive-report.mjs --days 7
+docker exec linky node ops/delivery-archive-report.mjs --days 1 --json
 docker exec linky node ops/delivery-archive-report.mjs --days 7 --json
 ```
 
@@ -53,6 +55,6 @@ Check coverage first. A day with no records is not evidence that everything work
 
 These are instrumented delivery attempts, not a census of all messages, installs or active users. Ignored links and passive native previews do not create deliveries. Button-only YouTube refreshes, translation quality and provider-specific outcomes are not separate product metrics in this archive. Add those measurements only when a decision needs them, with a bounded schema and an updated privacy notice.
 
-Each week, compare the previous seven days with an equivalent prior period where coverage exists. First investigate repeated failures and slow stages on advertised hosted platforms. Choose one evidence-backed item from the [product roadmap](product-roadmap.md), define a regression test or measured acceptance criterion, and validate it through a PR. Record sample sizes and unknowns. Keep self-hosted media work separate from the public hosted product's reliability and acquisition measures.
+Each day, review the previous 24 hours and compare with the previous daily window only when coverage is comparable. Use seven days for qualified trend context. The archive began September 17, 2026; earlier imported media tests are not current hosted-platform coverage. First investigate repeated failures and slow stages on advertised hosted platforms. Choose one evidence-backed item from the [product roadmap](product-roadmap.md), define a regression test or measured acceptance criterion, and validate it through a PR. Record sample sizes and unknowns. Keep self-hosted media work separate from the public hosted product's reliability and acquisition measures.
 
 The first week establishes a baseline; it does not justify a comparative uptime or speed claim. [The competitor research](growth-research-2026-09-17.md) records user requests and documented capabilities, not head-to-head performance results.

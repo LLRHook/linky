@@ -1,6 +1,7 @@
 import { escapeMarkdown, type AttachmentBuilder, type APIEmbed } from 'discord.js';
 import { parseInstagramUrl, type InstagramTranslation } from './InstagramTranslation';
 import { mapLinks, visibleLink } from './LinkTokens';
+import type { ServerPreferences } from './ServerSettings';
 
 export interface CaptionPresentation {
   content: string;
@@ -23,8 +24,8 @@ function literal(text: string): string {
 }
 
 /** One short paragraph, without splitting emoji, Markdown escapes or caption URLs. */
-function excerpt(text: string, budget: number): string {
-  const compact = text.replace(/\s+/g, ' ').trim(), limit = Math.min(CAPTION_LIMIT, budget);
+function excerpt(text: string, budget: number, captionLimit = CAPTION_LIMIT): string {
+  const compact = text.replace(/\s+/g, ' ').trim(), limit = Math.min(captionLimit, budget);
   const full = literal(compact);
   if (full.length <= limit) return full;
   const urls = [...compact.matchAll(/https?:\/\/[^\s<>`]+/gi)];
@@ -40,16 +41,34 @@ function excerpt(text: string, budget: number): string {
 /** Preserve the native media, replacing its provider caption with English message text. */
 export async function addInstagramCaptions<T extends CaptionPresentation>(
   original: string, presentation: T,
-  lookup: (sourceUrl: string) => Promise<InstagramTranslation | null>, contentLimit: number,
-): Promise<T & { instagramSources?: string[]; instagramVideos?: string[] }> {
+  lookup: ((sourceUrl: string) => Promise<InstagramTranslation | null>) | undefined, contentLimit: number,
+  style: NonNullable<ServerPreferences['instagramPresentation']> = 'standard',
+): Promise<T & { instagramSources?: string[]; instagramVideos?: string[]; instagramCaptionSources?: string[] }> {
   // Explicit rich embeds can suppress the native media we need to retain.
   if (presentation.embeds?.length || presentation.content.length > contentLimit) return presentation;
   const sources = new Map<string, string>();
   mapLinks(original, (url, position) => {
     const source = visibleLink(original, position) && parseInstagramUrl(url);
-    if (source && sources.size < 3) sources.set(source.shortcode, source.sourceUrl);
+    if (source && (style === 'media-first' || sources.size < 3)) sources.set(source.shortcode, source.sourceUrl);
     return url;
   });
+  if (style === 'media-first') {
+    const included = new Map<string, string>();
+    const content = mapLinks(presentation.content, (url, position) => {
+      if (!visibleLink(presentation.content, position)) return url;
+      const source = parseInstagramUrl(url.replace(/^https:\/\/(?:www\.)?instagram7\.com(?=\/)/i, 'https://www.instagram.com'));
+      const originalSource = source && sources.get(source.shortcode);
+      if (!source || !originalSource) return url;
+      included.set(source.shortcode, originalSource);
+      return `https://g.instagram7.com/p/${source.shortcode}/`;
+    });
+    if (!included.size || content.length > contentLimit) return presentation;
+    const instagramSources = [...included.values()];
+    // Callers must verify caption-free media before removing the original.
+    return { ...presentation, content, instagramSources,
+      instagramVideos: instagramSources.filter(url => /\/(?:reels?|tv)\//.test(url)) };
+  }
+  if (!lookup) return presentation;
   const posts = new Map<string, InstagramTranslation>();
   for (const [shortcode, sourceUrl] of sources) {
     try {
@@ -79,8 +98,9 @@ export async function addInstagramCaptions<T extends CaptionPresentation>(
     frames.reduce((length, frame) => length + frame.heading.length + frame.footer.length, 0)) / values.length);
   if (budget < 1) return presentation;
   const captions = values.map((post, index) =>
-    `${frames[index].heading}${excerpt(post.text, budget)}${frames[index].footer}`).join('\n\n');
+    `${frames[index].heading}${excerpt(post.text, budget, style === 'compact' ? 120 : CAPTION_LIMIT)}${frames[index].footer}`).join('\n\n');
   const metadata = { instagramSources: values.map(post => post.sourceUrl),
+    instagramCaptionSources: values.map(post => post.sourceUrl),
     instagramVideos: values.filter(post => post.mediaTypes.includes('GraphVideo')).map(post => post.sourceUrl) };
   return { ...presentation, content: `${media}\n\n${captions}`, ...metadata };
 }
