@@ -16,7 +16,8 @@ export function effectivePreferences(config: Config, preferences: ServerPreferen
     platforms,
     translateTweets: config.translateTweets && preferences.translateTweets !== false && platforms.includes('x'),
     translateInstagram: Boolean(config.translateInstagram && config.captionApiKey?.trim()) &&
-      preferences.translateInstagram !== false && platforms.includes('instagram'),
+      preferences.translateInstagram !== false && preferences.instagramPresentation !== 'media-first' && platforms.includes('instagram'),
+    instagramPresentation: preferences.instagramPresentation ?? 'standard',
     youtubeDisplay: preferences.youtubeDisplay ?? 'counts-and-comment',
     eromeChannels: preferences.eromeChannels ?? 'age-restricted',
   };
@@ -42,6 +43,8 @@ export const data = new SlashCommandBuilder()
     .addChoices({ name: 'Age-restricted channels', value: 'age-restricted' }, { name: 'All enabled channels', value: 'all' }))
   .addBooleanOption(option => option.setName('translate_tweets').setDescription('Translate non-English tweets when enabled by the bot operator.'))
   .addBooleanOption(option => option.setName('translate_instagram').setDescription('Translate non-English Instagram captions when enabled by the bot operator.'))
+  .addStringOption(option => option.setName('instagram_presentation').setDescription('Choose Instagram caption length or caption-free media.')
+    .addChoices({ name: 'Standard', value: 'standard' }, { name: 'Compact', value: 'compact' }, { name: 'Media-first', value: 'media-first' }))
   .addStringOption(option => option.setName('youtube_display').setDescription('Choose the extra details shown with YouTube previews.')
     .addChoices({ name: 'Preview only', value: 'preview' }, { name: 'Counts only', value: 'counts' },
       { name: 'Counts and top comment', value: 'counts-and-comment' }));
@@ -66,6 +69,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
   if (translateTweets !== null) patch.translateTweets = translateTweets;
   const translateInstagram = interaction.options.getBoolean('translate_instagram');
   if (translateInstagram !== null) patch.translateInstagram = translateInstagram;
+  const instagramPresentation = interaction.options.getString('instagram_presentation');
+  if (instagramPresentation !== null) patch.instagramPresentation = instagramPresentation as ServerPreferences['instagramPresentation'];
   const youtubeDisplay = interaction.options.getString('youtube_display');
   if (youtubeDisplay !== null) patch.youtubeDisplay = youtubeDisplay as ServerPreferences['youtubeDisplay'];
   const eromeChannels = interaction.options.getString('erome_channels');
@@ -101,10 +106,15 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
         !config.translateTweets ? 'Off (disabled by the bot operator)' :
           !effective.platforms.includes('x') ? 'Off (X link fixing is disabled)' : 'Off'}.`,
       `English Instagram caption translation: ${effective.translateInstagram ? 'On when translation and media are available' :
+        effective.instagramPresentation === 'media-first' ? 'Off (Media-first hides captions; your translation choice is saved)' :
         !config.translateInstagram || !config.captionApiKey?.trim() ? 'Off (unavailable from the bot operator)' :
           !effective.platforms.includes('instagram') ? 'Off (Instagram link fixing is disabled)' : 'Off'}.`,
+      `Instagram presentation: ${effective.instagramPresentation === 'media-first' ? 'Media-first (caption-free provider media, even with translation off)' :
+        effective.instagramPresentation === 'compact' ? 'Compact (translated captions up to 120 characters)' : 'Standard (translated captions up to 300 characters)'}.`,
+      'Caption limits apply to Linky’s translated text. Native provider captions cannot be shortened when translation is unavailable. Media-first requires a verified caption-free preview; unavailable media keeps the original.',
       `YouTube display: ${effective.youtubeDisplay === 'preview' ? 'Preview only' :
         effective.youtubeDisplay === 'counts' ? 'Counts only' : 'Counts and top comment'}${effective.platforms.includes('youtube') ? '.' : ' (YouTube is currently off).'}`,
+      ...(effective.platforms.includes('youtube') && !config.youtubeApiKey ? ['Video counts/comments are unavailable; community posts need no API key.'] : []),
       'Use /setup to choose channels or change server enablement. Preview availability depends on the source and preview provider.',
     ].join('\n'),
     allowedMentions: { parse: [] },

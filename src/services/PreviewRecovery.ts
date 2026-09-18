@@ -3,6 +3,7 @@ import type { APIEmbed, Message } from 'discord.js';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { getProviderCandidates, parseSocialUrl, parseProviderUrl, type SocialPlatform, type ProviderCandidate } from './SocialProviders';
 import { parseYouTubeUrl } from './YouTube';
+import { parseYouTubeCommunityUrl, type PreparedCommunityPost } from './YouTubeCommunity';
 
 export interface ExpectedPreview {
   source: string;
@@ -13,6 +14,8 @@ export interface ExpectedPreview {
   requireVideo?: boolean;
   /** A translated caption is already displayed; the media embed must not repeat the original. */
   captionFree?: boolean;
+  /** Exact bot-authored card payloads from a verified first-party community lookup. */
+  explicitEmbeds?: readonly APIEmbed[];
 }
 
 export interface PreviewResult {
@@ -24,12 +27,13 @@ export interface PreviewResult {
   attributed?: ExpectedPreview[];
 }
 
-export function expectedPreviews(original: string, rendered: string): ExpectedPreview[] {
+export function expectedPreviews(original: string, rendered: string, communityPosts: readonly PreparedCommunityPost[] = []): ExpectedPreview[] {
   const expectations = new Map<string, ExpectedPreview>();
   mapLinks(original, (url, position) => {
     if (!visibleLink(original, position)) return url;
     const social = parseSocialUrl(url);
     const youtube = parseYouTubeUrl(url);
+    const community = parseYouTubeCommunityUrl(url);
     if (social) {
       mapLinks(rendered, (observed, position) => {
         if (!visibleLink(rendered, position)) return observed;
@@ -41,6 +45,10 @@ export function expectedPreviews(original: string, rendered: string): ExpectedPr
       });
     } else if (youtube && rendered.includes(youtube.url)) {
       expectations.set(youtube.url, { source: youtube.url, url: youtube.url, platform: 'youtube', providerId: 'youtube' });
+    } else if (community) {
+      const prepared = communityPosts.find(post => post.source === community.url);
+      if (prepared?.embeds.length) expectations.set(community.url, { source: community.url, url: community.url,
+        platform: 'youtube', providerId: 'youtube-community', explicitEmbeds: prepared.embeds });
     }
     return url;
   });
@@ -48,6 +56,8 @@ export function expectedPreviews(original: string, rendered: string): ExpectedPr
 }
 
 export function previewIdentity(raw: string): string | null {
+  const community = parseYouTubeCommunityUrl(raw);
+  if (community) return `youtube-community:${community.id}`;
   const video = parseYouTubeUrl(raw);
   if (video) return `youtube:${video.id}`;
   const source = parseSocialUrl(raw) ?? parseProviderUrl(raw);
@@ -60,6 +70,7 @@ export function previewIdentity(raw: string): string | null {
 }
 
 function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
+  if (expected.explicitEmbeds) return false;
   if (!embed.url) return false;
   const same = previewIdentity(embed.url) !== null && previewIdentity(embed.url) === previewIdentity(expected.url);
   if (!same) return false;
@@ -78,10 +89,25 @@ function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
     Boolean(embed.description?.trim() && (embed.title?.trim() || embed.author?.name?.trim())));
 }
 
+function matchesExpectation(embeds: readonly APIEmbed[], expected: ExpectedPreview): boolean {
+  if (!expected.explicitEmbeds) return embeds.some(embed => matches(embed, expected));
+  const source = parseYouTubeCommunityUrl(expected.source), cards = expected.explicitEmbeds;
+  if (!source || expected.url !== source.url || expected.providerId !== 'youtube-community' ||
+      cards.length < 1 || cards.length > 10) return false;
+  const observed = embeds.filter(embed => embed.url && previewIdentity(embed.url) === `youtube-community:${source.id}`);
+  return observed.length === cards.length && cards.every((card, index) => {
+    const actual = observed[index];
+    return card.url === source.url && actual.url === card.url && (!actual.type || actual.type === 'rich') &&
+      actual.title === card.title && actual.description === card.description &&
+      actual.author?.name === card.author?.name && actual.author?.url === card.author?.url &&
+      actual.image?.url === card.image?.url && !actual.video && !actual.thumbnail && !actual.fields?.length;
+  });
+}
+
 export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly ExpectedPreview[]): PreviewResult {
   return {
-    ok: expected.length > 0 && expected.every(item => embeds.some(embed => matches(embed, item))),
-    missing: expected.filter(item => !embeds.some(embed => matches(embed, item))),
+    ok: expected.length > 0 && expected.every(item => matchesExpectation(embeds, item)),
+    missing: expected.filter(item => !matchesExpectation(embeds, item)),
     videoMetadata: embeds.some(embed => Boolean(embed.video?.url) && expected.some(item => matches(embed, item))),
     attributed: expected.filter(item => embeds.some(embed => embed.type !== 'rich' && matches(embed, item) &&
       (parseProviderUrl(embed.url!)?.providerId === item.providerId || (item.providerId === 'youtube' && parseYouTubeUrl(embed.url!) !== null)))),
@@ -126,6 +152,7 @@ export class PreviewHealth {
 
   record(expected: readonly ExpectedPreview[], result: PreviewResult): void {
     for (const item of expected) {
+      if (item.explicitEmbeds) continue;
       const old = this.observations.get(item.providerId) ?? { succeeded: 0, failed: 0, checkedAt: 0, lastSucceeded: false };
       const passed = !result.missing.some(missing => missing.source === item.source);
       if (passed && !(result.attributed ?? []).some(observed => observed.source === item.source && observed.providerId === item.providerId)) continue;
@@ -135,6 +162,7 @@ export class PreviewHealth {
   }
 
   describe(link: string): string {
+    if (parseYouTubeCommunityUrl(link)) return 'YouTube community image and text posts use verified public post data and Linky-authored cards. No video playback or counts are inferred.';
     const candidates = getProviderCandidates(link);
     if (!candidates.length && parseYouTubeUrl(link)) return 'YouTube uses its native video preview. Counts depend on the YouTube API.';
     return candidates.map(candidate => {

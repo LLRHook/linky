@@ -76,7 +76,9 @@ export class PreviewWatcher {
       try {
         if (!latest.ok && subscribed) {
           await new Promise<void>(resolve => {
-            const timer = setTimeout(resolve, Math.max(0, Math.min(6_000, this.options.gatewayWaitMs ?? 4_000)));
+            // Cold Instagram media has arrived after 7.5s in live checks; useful updates still wake immediately.
+            const gatewayWaitMs = expected.some(item => item.platform === 'instagram') ? 8_000 : 4_000;
+            const timer = setTimeout(resolve, Math.max(0, Math.min(8_000, this.options.gatewayWaitMs ?? gatewayWaitMs)));
             wake = () => { clearTimeout(timer); resolve(); };
             if (latest.ok || stopped) wake();
           });

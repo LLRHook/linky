@@ -9,6 +9,7 @@ export interface ServerPreferences {
   platforms?: Partial<Record<RewritePlatform, boolean>>;
   translateTweets?: boolean;
   translateInstagram?: boolean;
+  instagramPresentation?: 'standard' | 'compact' | 'media-first';
   /** Additional channel restriction; absent inherits scope, empty disables every channel. */
   channelIds?: string[];
   youtubeDisplay?: 'preview' | 'counts' | 'counts-and-comment';
@@ -25,7 +26,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
-  const fields = ['mode', 'platforms', 'translateTweets', 'translateInstagram', 'channelIds', 'youtubeDisplay', 'eromeChannels', ...(allowEnabled ? ['enabled'] : [])];
+  const fields = ['mode', 'platforms', 'translateTweets', 'translateInstagram', 'instagramPresentation', 'channelIds', 'youtubeDisplay', 'eromeChannels', ...(allowEnabled ? ['enabled'] : [])];
   if (!isRecord(value) || Reflect.ownKeys(value).some(key => typeof key !== 'string' || !fields.includes(key))) {
     throw new Error('Unknown server preference fields.');
   }
@@ -51,6 +52,12 @@ function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
       throw new Error('YouTube display must be preview, counts, or counts-and-comment.');
     }
     result.youtubeDisplay = value.youtubeDisplay;
+  }
+  if (Object.hasOwn(value, 'instagramPresentation')) {
+    if (value.instagramPresentation !== 'standard' && value.instagramPresentation !== 'compact' && value.instagramPresentation !== 'media-first') {
+      throw new Error('Instagram presentation must be standard, compact, or media-first.');
+    }
+    result.instagramPresentation = value.instagramPresentation;
   }
   if (Object.hasOwn(value, 'eromeChannels')) {
     if (value.eromeChannels !== 'age-restricted' && value.eromeChannels !== 'all') {

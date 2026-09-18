@@ -16,6 +16,8 @@ import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { TweetTranslation } from '../src/services/TweetTranslation';
 import type { InstagramTranslation } from '../src/services/InstagramTranslation';
 import { YouTubeStats, YOUTUBE_STATS_TTL } from '../src/services/YouTubeStats';
+import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
+import { type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '1700000000000000005';
@@ -55,7 +57,8 @@ function delivery(content = ORIGINAL_X) {
       const entry = { options, edits: [], deleted: false } as unknown as SentMessage;
       const output = {
         id, channelId: CHANNEL, guildId: GUILD, author: { id: BOT, bot: true },
-        content: options.content ?? '', attachments: new Collection<string, Attachment>(), embeds: [] as { toJSON(): APIEmbed }[],
+        content: options.content ?? '', attachments: new Collection<string, Attachment>(),
+        embeds: (options.embeds ?? []).map(embed => ({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed })),
         components: storeComponents(options.components),
         delete: async () => { entry.deleted = true; events.push(`delete:${id}`); },
         edit: async (edit: MessageEditOptions) => {
@@ -972,4 +975,236 @@ test('repeated Instagram links near the content limit use bounded fallback and d
   assert.equal(refreshed.options.flags, undefined);
   assert(!refreshed.edits.some(edit => edit.flags === MessageFlags.SuppressEmbeds));
   assert.deepEqual(refreshed.message.embeds.map(embed => embed.toJSON()), [instagramImage()]);
+});
+
+test('automatic mobile links resolve before translation and media verification, with canonical original-post controls', async () => {
+  for (const platform of ['instagram', 'reddit'] as const) {
+    const share = platform === 'instagram' ? 'https://www.instagram.com/share/p/Mobile123' : 'https://www.reddit.com/r/aww/s/Mobile123';
+    const canonical = platform === 'instagram' ? 'https://www.instagram.com/p/ABC/' : 'https://www.reddit.com/r/aww/comments/abc123/title/';
+    const f = delivery(share);
+    let calls = 0;
+    const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async () => {
+      calls++; return new Response(null, { status: 302, headers: { location: canonical + '?tracking=removed' } });
+    } });
+    const provider = platform === 'instagram' ? 'https://www.instagram7.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/';
+    f.state.render = () => [{ url: provider, image: { url: 'https://cdn.example/post.jpg' } }];
+    await f.create({ normalizeMobileLinks })(f.source);
+    assert.equal(calls, 1); assert.equal(f.state.originalDeleted, true);
+    assert.equal(f.expectedChecks[0][0].source, canonical);
+    assert.equal(f.expectedChecks[0][0].url, provider);
+    assert.equal(f.expectedChecks[0].length, 1);
+    assert(JSON.stringify(f.sent[0].message.components).includes(canonical));
+  }
+});
+
+test('mobile resolution failure retains the exact original and never publishes an unverified share replacement', async () => {
+  const share = 'https://www.instagram.com/share/reel/Mobile123?igsh=original';
+  const f = delivery(share);
+  await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({ resolve4: async () => ['127.0.0.1'],
+    connect: async () => assert.fail('Private DNS must not connect') }) })(f.source);
+  assert.equal(f.source.content, share); assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
+});
+
+test('automatic scope, bypass and copying gates run before an injected mobile resolver', async () => {
+  for (const gate of ['disabled', 'bot', 'bypass', 'suppressed', 'optout']) {
+    const f = delivery('https://www.instagram.com/share/Mobile123');
+    if (gate === 'disabled') f.state.enabled = false;
+    if (gate === 'bot') Object.assign(f.source.author, { bot: true });
+    if (gate === 'bypass') Object.assign(f.source, { content: f.source.content + ' !nolinky' });
+    if (gate === 'suppressed') f.source.flags.add(MessageFlags.SuppressEmbeds);
+    await f.create({ isOptedOut: () => gate === 'optout',
+      normalizeMobileLinks: async () => assert.fail('Do not resolve blocked automatic work') })(f.source);
+    assert.equal(f.sent.length, 0, gate); assert.equal(f.state.originalDeleted, false, gate);
+  }
+  for (const content of ['||https://www.instagram.com/share/Mobile123||', '<https://www.instagram.com/share/Mobile123>',
+    '`https://www.instagram.com/share/Mobile123`', 'https://www.instagram.com/share/Mobile123']) {
+    const f = delivery(content);
+    if (!content.startsWith('||') && !content.startsWith('<') && !content.startsWith('`')) f.state.preferences.platforms = { instagram: false };
+    await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({
+      resolve4: async () => assert.fail('Hidden and disabled platforms cannot resolve'),
+    }) })(f.source);
+    assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
+  }
+});
+
+test('source and preference edits during mobile resolution cancel stale work before publication', async () => {
+  for (const change of ['source', 'preferences', 'optout']) {
+    const share = 'https://www.instagram.com/share/Mobile123', f = delivery(share);
+    let optedOut = false;
+    await f.create({ isOptedOut: () => optedOut, normalizeMobileLinks: async () => {
+      if (change === 'source') Object.assign(f.source, { content: 'The author changed this.', editedTimestamp: 123 });
+      else if (change === 'preferences') f.state.preferences = { ...f.state.preferences, platforms: { instagram: false } };
+      else optedOut = true;
+      return { content: 'https://www.instagram.com/p/ABC/', originals: new Map() };
+    } })(f.source);
+    assert.equal(f.sent.length, 0, change); assert.equal(f.state.originalDeleted, false, change);
+  }
+});
+
+test('in-flight deduplication includes mobile resolution and releases after an unsuccessful resolution', async () => {
+  const f = delivery('https://www.instagram.com/share/Mobile123');
+  let finish!: () => void, calls = 0;
+  const handle = f.create({ normalizeMobileLinks: async content => {
+    calls++;
+    if (calls === 1) await new Promise<void>(resolve => { finish = resolve; });
+    return { content, originals: new Map() };
+  } });
+  const first = handle(f.source);
+  await handle(f.source);
+  await assert.rejects(handle(f.source, { refresh: true }), /in flight/);
+  assert.equal(calls, 1);
+  finish(); await first;
+  await handle(f.source);
+  assert.equal(calls, 2); assert.equal(f.sent.length, 0);
+});
+
+test('stored opt-out races cancel previews and edit refreshes, while an explicit retry bypasses only opt-out', async () => {
+  for (const stage of ['translation', 'preview', 'ownership']) {
+    const f = delivery();
+    let optedOut = false;
+    if (stage === 'preview') f.state.duringPreview = async () => { optedOut = true; };
+    if (stage === 'ownership') f.state.remember = async () => { optedOut = true; return true; };
+    await f.create({ isOptedOut: () => optedOut, ...(stage === 'translation' ? {
+      translateTweet: async () => { optedOut = true; return null; },
+    } : {}) })(f.source);
+    assert.equal(f.state.originalDeleted, false, stage);
+    assert(f.sent.every(entry => entry.deleted), stage);
+  }
+  const f = delivery();
+  const handle = f.create({ isOptedOut: (guildId, userId) => {
+    assert.equal(guildId, GUILD); assert.equal(userId, AUTHOR); return true;
+  } });
+  await handle(f.source, { refresh: true, forceReply: true });
+  assert.equal(f.sent.length, 0, 'an ordinary edit refresh still honors opt-out');
+  await handle(f.source, { forceReply: true, manualRetry: true });
+  assert.equal(f.sent.length, 1); assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.remembered[0].mode, 'reply');
+  const disabled = delivery(); disabled.state.enabled = false;
+  await disabled.create({ isOptedOut: () => true })(disabled.source, { manualRetry: true });
+  assert.equal(disabled.sent.length, 0, 'explicit retry never enables a disabled server');
+});
+
+test('Instagram media-first runs without translation and cannot claim a translated-caption fallback', async () => {
+  for (const playable of [true, false]) {
+    const f = delivery('https://www.instagram.com/reel/ABC/');
+    f.state.preferences = { instagramPresentation: 'media-first', translateInstagram: false };
+    f.state.render = () => playable ? [instagramVideo()] : [];
+    await f.create({ translateInstagram: async () => assert.fail('Media-first must not translate') })(f.source);
+    assert.equal(f.state.originalDeleted, playable);
+    assert(f.expectedChecks.flat().every(item => item.captionFree && item.requireVideo));
+    assert.equal(f.sent[0].deleted, !playable);
+    const surviving = f.sent.filter(entry => !entry.deleted);
+    assert(surviving.every(entry => !entry.message.content.includes('Translated from')));
+    assert(surviving.every(entry => !entry.message.content.includes('Instagram preview could not be verified')));
+    if (!playable) assert.match(surviving[0].message.content, /Your original is still here/);
+  }
+});
+
+test('Instagram compact presentation reaches automatic delivery with a shorter real caption', async () => {
+  const caption = { ...instagramCaption(), text: 'A readable caption sentence. '.repeat(30) };
+  const sizes: number[] = [];
+  for (const mode of ['standard', 'compact'] as const) {
+    const f = delivery(caption.sourceUrl); f.state.preferences = { instagramPresentation: mode };
+    f.state.render = () => [instagramImage()];
+    await f.create({ translateInstagram: async () => caption })(f.source);
+    assert.equal(f.state.originalDeleted, true);
+    assert.match(f.sent[0].message.content, /Translated from Estonian/);
+    sizes.push(f.sent[0].message.content.length);
+  }
+  assert(sizes[1] < sizes[0]);
+});
+
+const COMMUNITY_ID = 'UgkxCommunityPublicPost123456789', COMMUNITY_URL = `https://www.youtube.com/post/${COMMUNITY_ID}`;
+const communityPost = (changes: Partial<YouTubeCommunityPost> = {}): YouTubeCommunityPost => ({
+  id: COMMUNITY_ID, url: COMMUNITY_URL, author: { name: 'Creator', url: 'https://www.youtube.com/channel/UC' + 'a'.repeat(22) },
+  text: 'A public community update.', images: ['https://yt3.ggpht.com/first=s1080', 'https://yt3.ggpht.com/second=s500'], ...changes,
+});
+
+test('automatic public community image and text previews need no video API and follow Replace or Reply', async () => {
+  for (const mode of ['replace', 'reply'] as const) for (const images of [[], communityPost().images]) {
+    const f = delivery(COMMUNITY_URL), observations: any[] = [], paths: string[] = [];
+    f.state.preferences = { mode, youtubeDisplay: 'preview' };
+    const diagnostics = { begin: () => ({ id: 'community-attempt', setPath: (path: string) => paths.push(path),
+      startStage: () => ({ finish() {} }), finish() {} }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    await f.create({ lookupYouTubeCommunity: async (_link, signal) => {
+      assert(signal); return communityPost({ images });
+    }, diagnostics, observePreview: (expected, result) => observations.push({ expected, result }),
+    lookupYouTube: async () => assert.fail('community must not need video statistics'),
+    armPreview: () => assert.fail('explicit community cards must not arm a native observation watcher') })(f.source);
+    assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
+    assert.equal(f.state.originalDeleted, mode === 'replace');
+    assert.equal(f.sent[0].options.embeds?.length, Math.max(1, images.length));
+    assert.match(JSON.stringify(f.sent[0].message.components), /Original post/);
+    assert.match(JSON.stringify(f.sent[0].message.components), new RegExp(COMMUNITY_ID));
+    assert.equal(paths.at(-1), 'explicit'); assert.equal(f.expectedChecks.length, 0);
+    assert(observations.some(row => row.result.ok && row.result.videoMetadata === false));
+    assert(observations.every(row => !(row.result.attributed ?? []).some((item: any) => item.providerId === 'youtube-community')));
+  }
+});
+
+test('unavailable, wrong-identity and missing community lookups preserve every source in a mixed message', async () => {
+  for (const lookup of [undefined, async () => null, async () => communityPost({ id: 'UgWrongCommunityIdentity' })]) {
+    const f = delivery(`${ORIGINAL_X} ${COMMUNITY_URL}`);
+    await f.create({ lookupYouTubeCommunity: lookup })(f.source);
+    assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
+  }
+});
+
+test('community lookup is skipped for disabled platforms, opted-out authors, hidden links and nolinky messages', async () => {
+  for (const kind of ['disabled', 'platform', 'optout', 'hidden', 'nolinky']) {
+    const f = delivery(kind === 'hidden' ? `<${COMMUNITY_URL}>` : kind === 'nolinky' ? `${COMMUNITY_URL} nolinky` : COMMUNITY_URL);
+    if (kind === 'disabled') f.state.enabled = false;
+    if (kind === 'platform') f.state.preferences = { platforms: { youtube: false } };
+    await f.create({ lookupYouTubeCommunity: async () => assert.fail(`${kind} performed a lookup`),
+      isOptedOut: () => kind === 'optout' })(f.source);
+    assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
+  }
+});
+
+test('changed, deleted and cancelled sources cannot publish completed community lookups', async () => {
+  for (const kind of ['changed', 'deleted', 'disabled']) {
+    const f = delivery(COMMUNITY_URL);
+    await f.create({ lookupYouTubeCommunity: async () => {
+      if (kind === 'changed') f.state.remoteContent += ' edited';
+      if (kind === 'deleted') f.source.fetch = async () => { throw Error('Unknown Message'); };
+      if (kind === 'disabled') f.state.enabled = false;
+      return communityPost();
+    } })(f.source);
+    assert.equal(f.sent.length, 0, kind); assert.equal(f.state.originalDeleted, false);
+  }
+});
+
+test('community and native previews must both survive Discord before mixed-source deletion', async () => {
+  for (const nativePresent of [true, false]) {
+    const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`);
+    f.state.render = (_round, message) => [...message.embeds.map(embed => embed.toJSON()), ...(nativePresent ? [xPreview] : [])];
+    await f.create({ lookupYouTubeCommunity: async () => communityPost() })(f.source);
+    assert.equal(f.state.originalDeleted, nativePresent);
+    assert.equal(f.sent[0].deleted, !nativePresent);
+    assert(f.expectedChecks.every(items => items.every(item => !item.explicitEmbeds)));
+  }
+});
+
+test('community source and embed caps preserve the original instead of dropping posts or gallery images', async () => {
+  const six = Array.from({ length: 6 }, (_, i) => `${COMMUNITY_URL}${i}`).join(' ');
+  const tooMany = delivery(six);
+  await tooMany.create({ lookupYouTubeCommunity: async () => assert.fail('six sources must be rejected before lookup') })(tooMany.source);
+  assert.equal(tooMany.sent.length, 0);
+  for (const content of [`${COMMUNITY_URL} ${ORIGINAL_X}`, `${COMMUNITY_URL} ${COMMUNITY_URL}2`]) {
+    const f = delivery(content);
+    await f.create({ lookupYouTubeCommunity: async link => {
+      const source = typeof link === 'string' ? { url: link, id: link.split('/').at(-1)! } : link;
+      return communityPost({ ...source, images: Array.from({ length: 10 }, (_, i) => `https://yt3.ggpht.com/image${i}=s1080`) });
+    } })(f.source);
+    assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
+  }
+});
+
+test('mixed automatic verification re-fetches explicit cards after a native wait and rejects a stale send echo', async () => {
+  const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`);
+  await f.create({ lookupYouTubeCommunity: async () => communityPost(), verifyPreview: async message => {
+    message.fetch = async () => ({ ...message, embeds: [{ toJSON: () => xPreview }] } as Awaited<ReturnType<Message['fetch']>>);
+    return { ok: true, missing: [], videoMetadata: false };
+  } })(f.source);
+  assert.equal(f.state.originalDeleted, false); assert.equal(f.sent[0].deleted, true);
 });

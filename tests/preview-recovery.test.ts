@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { type APIEmbed, type Message } from 'discord.js';
+import { EmbedType, type APIEmbed, type Message } from 'discord.js';
 import { expectedPreviews, inspectPreviews, nextProviderContent, PreviewHealth, waitForPreviews } from '../src/services/PreviewRecovery';
 import { translationEmbeds } from '../src/services/TweetPresentation';
+import { formatYouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 
 const source = 'https://www.instagram.com/reel/DdFKS1ABmK4/';
 const fixed = 'https://www.instagram7.com/reel/DdFKS1ABmK4/';
@@ -271,4 +272,25 @@ test('provider status does not credit canonical metadata to the most recently at
   assert.equal(canonical.ok, true);
   health.record(expected, canonical);
   assert.match(health.describe(source), /no recent/);
+});
+
+test('community cards require exact source, author, text and ordered full images without claiming native video metadata', () => {
+  const url = 'https://www.youtube.com/post/UgkxCommunityPublicPost123456789';
+  const cards = formatYouTubeCommunityPost({ id: url.split('/').at(-1)!, url,
+    author: { name: 'Creator', url: 'https://www.youtube.com/channel/UC' + 'a'.repeat(22) },
+    text: 'Public text with **literal** formatting.', images: ['https://yt3.ggpht.com/one=s1080', 'https://yt3.ggpht.com/two=s500'] });
+  const expected = expectedPreviews(url, `<${url}>`, [{ source: url, embeds: cards }]);
+  assert.equal(expected.length, 1); assert.deepEqual(expectedPreviews(url, `<${url}>`), []);
+  const success = inspectPreviews(cards.map(card => ({ ...card, type: EmbedType.Rich })), expected);
+  assert.equal(success.ok, true); assert.equal(success.videoMetadata, false); assert.deepEqual(success.attributed, []);
+  for (const actual of [[], cards.slice(0, 1), [...cards].reverse(),
+    [{ ...cards[0], author: { ...cards[0].author!, name: 'Impersonator' } }, cards[1]],
+    [{ ...cards[0], description: 'Different post' }, cards[1]],
+    [{ ...cards[0], image: { url: 'https://evil.test/image' } }, cards[1]],
+    [{ ...cards[0], url: url + 'spoof' }, cards[1]],
+    [{ ...cards[0], video: { url: 'https://www.youtube.com/embed/dQw4w9WgXcQ' } }, cards[1]],
+    [{ url, title: 'YouTube', thumbnail: { url: 'https://yt3.ggpht.com/one=s1080' } }],
+  ]) assert.equal(inspectPreviews(actual, expected).ok, false, JSON.stringify(actual));
+  const health = new PreviewHealth(); health.record(expected, success);
+  assert.match(health.describe(url), /community/i);
 });

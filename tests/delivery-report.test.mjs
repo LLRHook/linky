@@ -150,3 +150,15 @@ test('operator can stream the standalone script to node stdin without installing
   });
   assert.equal(output.stderr, ''); assert.equal(JSON.parse(output.stdout).checks.passed, true);
 });
+
+test('explicit community cards remain distinct from historical native previews in aggregate reports and filters', async t => {
+  const { path } = await fixture(t, [attempt(1, { platform: 'youtube', path: 'native' }),
+    attempt(2, { platform: 'youtube', path: 'explicit' })]);
+  const all = await report(path);
+  assert.equal(all.data.counts.path.native, 1); assert.equal(all.data.counts.path.explicit, 1);
+  for (const selected of ['native', 'explicit']) {
+    const result = await report(path, '--path', selected);
+    assert.equal(result.code, 0); assert.equal(result.data.samples.selected, 1);
+    assert.equal(result.data.counts.path[selected], 1);
+  }
+});

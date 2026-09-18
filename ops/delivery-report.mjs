@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 const MAX_BYTES = 4 * 1024 * 1024, MAX_ATTEMPTS = 4096, MAX_DURATION = 86_400_000;
 const PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'youtube', 'erome', 'mixed'];
-const PATHS = ['native', 'hosted-original', 'attachment', 'album'];
+const PATHS = ['native', 'explicit', 'hosted-original', 'attachment', 'album'];
 const OUTCOMES = ['confirmed', 'partial', 'unavailable', 'permission', 'disabled', 'busy', 'timeout',
   'discord-failure', 'metadata-unconfirmed', 'cancelled', 'interrupted', 'internal-failure'];
 const STAGES = ['queue', 'resolve', 'download', 'inspect', 'convert', 'store', 'publish', 'preview', 'ownership'];

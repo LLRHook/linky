@@ -9,7 +9,7 @@ import { ChannelType, Collection, ComponentType, MessageFlags, PermissionFlagsBi
   type ButtonInteraction, type ChannelSelectMenuInteraction, type StringSelectMenuInteraction } from 'discord.js';
 import type { Config } from '../src/config';
 import { ServerSettings } from '../src/services/ServerSettings';
-import { buildSetupPanel, handleSetupComponent, isSetupComponent, SETUP_ACTIONS } from '../src/commands/setupPanel';
+import { buildSetupPanel, handleSetupComponent, isSetupComponent, SETUP_ACTIONS, setupReadiness } from '../src/commands/setupPanel';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-setup-panel-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -70,7 +70,7 @@ test('V2 migration explicitly clears legacy content and embeds while preserving 
   assert.equal(rows.length, 4);
   const controls = rows.flatMap(row => row.components);
   assert.deepEqual(controls.map(control => 'custom_id' in control ? control.custom_id : '').sort(), Object.values(SETUP_ACTIONS).sort());
-  assert.deepEqual(rows.map(row => row.components.length), [1, 1, 1, 3]);
+  assert.deepEqual(rows.map(row => row.components.length), [1, 1, 1, 4]);
   assert(1 + container.components.length + controls.length <= 40, 'nested controls remain within the V2 component limit');
   assert(text.length <= 4000);
   for (const control of controls) {
@@ -252,4 +252,84 @@ test('failed panel save shows the unchanged state and later writes remain usable
   assert.equal(new ServerSettings(path).get(SERVER), false);
   await handleSetupComponent(component(SETUP_ACTIONS.mode, ['reply']).interaction, config, servers);
   assert.equal(new ServerSettings(path).getPreferences(SERVER).mode, 'reply');
+});
+
+function readyComponent(customId: string = SETUP_ACTIONS.test, permissions = new PermissionsBitField(PermissionFlagsBits.Administrator)) {
+  const f = component(customId);
+  Object.assign(f.input, {
+    guild: { members: { me: { id: 'bot' } } },
+    channel: { isThread: () => false, isSendable: () => true, permissionsFor: () => permissions },
+  });
+  return f;
+}
+
+test('setup shows both mode examples, saved channels, effective scope and actual permission readiness', async () => {
+  const servers = new ServerSettings(file());
+  await servers.set(SERVER, true);
+  await servers.update(SERVER, { channelIds: [CHANNEL], mode: 'reply' });
+  const view = panelView(buildSetupPanel({ guildId: SERVER, channelId: CHANNEL, canSend: true,
+    permissions: new PermissionsBitField([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks]) }, config, servers));
+  assert.match(view.text, /Reply example:.*original link stays/);
+  assert.match(view.text, /Replace example:.*checks the preview/);
+  assert.match(view.text, new RegExp(`Saved selection: <#${CHANNEL}>`));
+  assert.match(view.text, /Effective scope: selected channels and their accessible threads/);
+  assert.match(view.text, /Ready for a plain link/);
+  assert.match(view.text, /Opening setup and saving choices never posts a sample/);
+});
+
+test('only explicit Test here invokes the sample callback and never changes settings', async () => {
+  const servers = new ServerSettings(file());
+  let samples = 0;
+  const callback = async () => { samples++; return 'Sample preview confirmed; no original was removed.'; };
+  const save = readyComponent(SETUP_ACTIONS.enable);
+  await handleSetupComponent(save.interaction, config, servers, callback);
+  assert.equal(samples, 0);
+  const click = readyComponent();
+  await handleSetupComponent(click.interaction, config, servers, callback);
+  assert.equal(samples, 1);
+  assert.equal(click.events[0].name, 'defer');
+  assert.match(panelView(click.events[1].payload).text, /Sample preview confirmed/);
+  assert.equal(servers.get(SERVER), true);
+  assert.deepEqual(servers.getPreferences(SERVER), {});
+});
+
+test('Test here refuses disabled scope, missing permissions, unavailable permission data and missing callback privately', async () => {
+  for (const scenario of ['disabled', 'excluded', 'permission', 'unknown', 'unavailable', 'platforms'] as const) {
+    const servers = new ServerSettings(file());
+    const f = scenario === 'unknown' ? component(SETUP_ACTIONS.test) : readyComponent(SETUP_ACTIONS.test,
+      new PermissionsBitField(scenario === 'permission' ? PermissionFlagsBits.ViewChannel : PermissionFlagsBits.Administrator));
+    if (scenario === 'disabled') await servers.set(SERVER, false);
+    if (scenario === 'excluded') await servers.update(SERVER, { channelIds: [] });
+    if (scenario === 'platforms') await servers.update(SERVER, { platforms: { x: false, instagram: false } });
+    await handleSetupComponent(f.interaction, config, servers, scenario === 'unavailable' ? undefined : async () => assert.fail(scenario));
+    assert.equal(f.events.length, 1, scenario);
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral, scenario);
+    assert.match(f.events[0].payload.content, /No sample was posted/, scenario);
+  }
+});
+
+test('Test here rechecks scope after deferring and reports callback failures without public fallback', async () => {
+  const servers = new ServerSettings(file());
+  const f = readyComponent();
+  f.input.deferUpdate = async () => { await servers.set(SERVER, false); };
+  await handleSetupComponent(f.interaction, config, servers, async () => assert.fail('Stale scope posted'));
+  assert.match(panelView(f.events[0].payload).text, /readiness changed/);
+  await servers.set(SERVER, true);
+  const failure = readyComponent();
+  await assert.rejects(handleSetupComponent(failure.interaction, config, servers, async () => { throw new Error('send failed'); }), /send failed/);
+  assert.match(panelView(failure.events[1].payload).text, /sample test could not finish/);
+});
+
+test('readiness uses thread send permission and current saved posting mode', async () => {
+  const servers = new ServerSettings(file());
+  const context = { guildId: SERVER, channelId: CHANNEL, isThread: true, canSend: true,
+    permissions: new PermissionsBitField([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.SendMessagesInThreads]) };
+  assert.match(setupReadiness(context, config, servers).summary, /Manage Messages/);
+  await servers.update(SERVER, { mode: 'reply' });
+  assert.equal(setupReadiness(context, config, servers).ready, true);
+  context.permissions.remove(PermissionFlagsBits.SendMessagesInThreads);
+  context.permissions.add(PermissionFlagsBits.SendMessages);
+  assert.match(setupReadiness(context, config, servers).summary, /Send Messages in Threads/);
 });

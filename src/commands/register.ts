@@ -7,8 +7,9 @@ import { data as settings } from './settings';
 import { data as diagnose } from './diagnose';
 import { data as fix, contextData } from './fix';
 import { data as prompt } from './prompt';
+import { data as autofix } from './autofix';
 
-export const commandDefinitions = [help, setup, settings, diagnose, fix, prompt, contextData].map(command => command.toJSON());
+export const commandDefinitions = [help, setup, settings, diagnose, fix, prompt, autofix, contextData].map(command => command.toJSON());
 
 export async function registerCommands(rest: Pick<REST, 'get' | 'put'>): Promise<void> {
   const application = await rest.get(Routes.oauth2CurrentApplication()) as RESTGetAPIOAuth2CurrentApplicationResult;

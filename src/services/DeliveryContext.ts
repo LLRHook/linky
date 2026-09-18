@@ -1,6 +1,6 @@
 export const DELIVERY_STAGES = ['queue', 'resolve', 'download', 'inspect', 'convert', 'store', 'publish', 'preview', 'ownership'] as const;
 export type DeliveryStage = typeof DELIVERY_STAGES[number];
-export const DELIVERY_PATHS = ['native', 'hosted-original', 'attachment', 'album'] as const;
+export const DELIVERY_PATHS = ['native', 'explicit', 'hosted-original', 'attachment', 'album'] as const;
 export type DeliveryPath = typeof DELIVERY_PATHS[number];
 export const DELIVERY_OUTCOMES = ['confirmed', 'partial', 'unavailable', 'permission', 'disabled', 'busy', 'timeout',
   'discord-failure', 'metadata-unconfirmed', 'cancelled', 'interrupted', 'internal-failure'] as const;
