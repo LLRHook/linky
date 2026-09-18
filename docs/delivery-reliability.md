@@ -12,9 +12,9 @@ An unavailable preview keeps its original. Where ownership can be saved, automat
 
 ## Mention notifications
 
-Fresh automatic Replace allows only user tags that appear in the source text and are present in Discord's source `mentions.users` metadata. Attribution, reply excerpts, translated/provider text, roles and `@everyone`/`@here` never add recipients. Tags in code, escaped tags and spoiler tags remain quiet. Provider fallback edits retain the original allowed-user list.
+Fresh automatic posts allow the original source author to be notified through **Shared by**, in both Replace and Reply mode. Replace also allows user tags that appear in the source text and are present in Discord's source `mentions.users` metadata. Reply allows only the source author; body mentions stay quiet. Reply excerpts, translated/provider text, roles and `@everyone`/`@here` never add recipients. Body tags in code, escaped tags and spoiler tags remain quiet. Provider fallback edits retain the original allowed-user list.
 
-Reply mode, manual fixes, retries and refreshes do not add mention notifications. Linky preserves the source message's `@silent` setting. Recipient notification settings still apply, and the original message can notify before the replacement, so exactly one alert is not guaranteed.
+Manual fixes, retries, refreshes, failure notices and progress messages do not add mention notifications. Linky preserves the source message's `@silent` setting. Recipient notification settings still apply, and the original message can notify before the replacement, so exactly one alert is not guaranteed.
 
 ## Preview detection and provider recovery
 

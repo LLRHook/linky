@@ -380,7 +380,7 @@ test('Instagram automatically translates captions when X translation is disabled
   assert.match(f.sent[0].content!, /Translated from Estonian/);
   assert.match(f.sent[0].content!, /https:\/\/g\.instagram7\.com\/p\/DdFwAIqgncQ\//);
   assert.equal(f.sent[0].embeds, undefined);
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
   assert.ok(f.events.includes('delete original'));
 });
 
@@ -390,17 +390,17 @@ test('replacement preserves an explicit source user mention as a notification re
   f.source.mentions.users.set(OTHER_MENTION_ID, { id: OTHER_MENTION_ID });
   await f.run();
   assert(f.sent[0].content!.includes(`<@${OTHER_MENTION_ID}>`));
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [OTHER_MENTION_ID], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID, OTHER_MENTION_ID], roles: [], repliedUser: false });
   assert(f.events.includes('delete original'));
 });
 
-test('reposts with credit and unresolved mentions disabled, then fetches and deletes original', async () => {
+test('Shared by notifies the source author without a self-tag while unresolved mentions stay disabled', async () => {
   const f = fixture();
   await f.run();
   assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
   assert.equal(f.sent[0].content,
     `${QUOTED_CREDIT}\n> Look\nhttps://fixupx.com/user/status/1#part @everyone <@&999> <@888>`);
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
   assert.equal(f.sent[0].nonce, f.source.id);
   assert.equal(f.sent[0].enforceNonce, true);
   assert.equal(f.sent[0].reply, undefined);
@@ -421,7 +421,7 @@ test('reply presentation shows the actual referenced text beneath both authors w
   ]);
   assert.equal(f.referenceLookup.calls, 1);
   assert(!f.sent[0].content!.includes('discord.com/channels/'));
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
 });
 
 test('reply excerpts collapse whitespace, escape formatting and neutralize links without adding previews', async () => {
@@ -438,7 +438,7 @@ test('reply excerpts collapse whitespace, escape formatting and neutralize links
   assert(!f.sent[0].content!.includes('ParentOnly'));
   assert(!f.sent[0].content!.includes('www.example.com'));
   assert.equal(f.replacement.embeds.length, 1, 'Only the source share produces a preview');
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
 });
 
 test('reply excerpts never expose closed, unclosed or escaped-closing spoiler content', async () => {
@@ -620,7 +620,7 @@ test('reference lookup attributes the parent author instead of the sharer or ano
   assert.equal(f.referenceLookup.calls, 1);
   assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`);
   assert(f.sent[0].content!.includes(`<@${OTHER_MENTION_ID}> Look`));
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [OTHER_MENTION_ID], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID, OTHER_MENTION_ID], roles: [], repliedUser: false });
   assert.equal(f.sent[0].reply, undefined);
   assert(f.events.includes('delete original'));
 });
@@ -636,7 +636,7 @@ test('Discord’s known repliedUser author still fetches the excerpt without usi
   await f.run();
   assert.equal(f.referenceLookup.calls, 1);
   assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *The actual parent text.*`));
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
 });
 
 test('replying to a persisted Linky repost credits its original human author instead of Linky', async () => {
@@ -654,7 +654,7 @@ test('replying to a persisted Linky repost credits its original human author ins
   assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`);
   assert.equal(f.sent[0].content!.split('\n')[1], '-# *Original message unavailable.*');
   assert.equal(f.referenceLookup.calls, 1);
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
 });
 
 test('persisted cross-channel ownership retains attribution without copying another channel’s text', async () => {
@@ -711,7 +711,7 @@ test('an older same-bot repost recovers only its anchored original-author header
     await f.run();
     assert.equal(f.referenceLookup.calls, 1);
     assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *`));
-    assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+    assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
   }
 });
 
@@ -762,7 +762,7 @@ test('legacy header recovery rejects a fetched parent with the wrong identity', 
   }
 });
 
-test('reply mode retains parent attribution while replying to the sharer without notifications', async () => {
+test('reply mode notifies the sharer while keeping parent attribution quiet', async () => {
   const f = fixture();
   f.source.type = MessageType.Reply;
   f.source.reference = { messageId: PARENT_MESSAGE_ID };
@@ -775,7 +775,7 @@ test('reply mode retains parent attribution while replying to the sharer without
   })(f.source as unknown as Message);
   assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)\n-# *`));
   assert.deepEqual(f.sent[0].reply, { messageReference: f.source.id, failIfNotExists: true });
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
   assert(!f.events.includes('delete original'));
 });
 
@@ -893,7 +893,7 @@ test('reply mode preserves the original, references it, and never notifies menti
   await handler(f.source as unknown as Message);
   assert.deepEqual(f.events, ['send', 'fetch']);
   assert.deepEqual(f.sent[0].reply, { messageReference: f.source.id, failIfNotExists: true });
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
   assert.match(f.sent[0].content!, /https:\/\/fixupx\.com\/user\/status\/1/);
 });
 
@@ -1505,7 +1505,7 @@ const JAPANESE: TweetTranslation = {
   photos: [], hasMedia: false, hasVideo: false,
 };
 
-test('translated cards and video captions retain the reply excerpt and both authors without notifications', async () => {
+test('translated cards and video captions notify the sharer while retaining a quiet reply excerpt and parent credit', async () => {
   for (const hasVideo of [false, true]) {
     const f = fixture(async () => ({ ...JAPANESE, hasVideo, hasMedia: hasVideo }));
     f.source.type = MessageType.Reply;
@@ -1518,7 +1518,7 @@ test('translated cards and video captions retain the reply excerpt and both auth
     assert.equal(f.sent[0].content!.split('\n')[1], '-# *Please translate this.*');
     if (hasVideo) assert(f.sent[0].content!.includes(JAPANESE.text));
     else assert.equal((f.sent[0].embeds![0] as APIEmbed).description, JAPANESE.text);
-    assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+    assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
   }
 });
 
@@ -1532,7 +1532,7 @@ test('text-only translation replaces the native card with English and a small fo
     description: JAPANESE.text, color: 0x637dff, footer: { text: 'Translated from Japanese' },
   }]);
   assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
 });
 
 test('translated photo cards preserve every photo without repeating the caption', async () => {

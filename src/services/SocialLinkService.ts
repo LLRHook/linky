@@ -311,7 +311,9 @@ export function createLinkRepostHandler(
       const version = sourceVersion(message);
       const nonce = refresh ? randomBytes(12).toString('hex') : message.id;
       const silentFlag = message.flags.has(MessageFlags.SuppressNotifications) ? MessageFlags.SuppressNotifications : 0;
-      const allowedMentions = { parse: [] as never[], users: !reply && !refresh ? sourceMentionUsers(message) : [],
+      // Shared by is a real mention of the original poster on fresh automatic deliveries.
+      const allowedMentions = { parse: [] as never[], users: refresh || forceReply ? [] :
+        [...new Set([message.author.id, ...(!reply ? sourceMentionUsers(message) : [])])].slice(0, 100),
         roles: [], repliedUser: false };
       const progressNonce = allowedMentions.users.length ? randomBytes(12).toString('hex') : nonce;
       let progressAttempted = false;
