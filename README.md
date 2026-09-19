@@ -85,7 +85,7 @@ On fresh automatic posts, **Shared by** can notify the original sharer in both R
 
 Delivery Details remain available in Discord for up to seven days. A separate, private operator archive on Hostinger keeps sanitized attempt outcomes and timings for 30 days, bounded by a 64 MiB cap. It contains no Discord user, server, channel or message IDs, message text, captions, source URLs or credentials. The random attempt ID can connect an operator investigation to a Details report. Capacity and storage failures can shorten coverage and are surfaced in the report.
 
-After building, run `npm run report:deliveries -- --days 7` on the bot host to compare outcomes, latency and problem stages. This is an operator command, not a Discord command or a public log page. See [operator reliability](docs/operator-reliability.md) for storage, reports and daily review. Metadata confirmation is not proof of playback.
+After building, run `npm run report:deliveries -- --days 7` on the bot host to compare outcomes, latency and problem stages. This is an operator command, not a Discord command or a public log page. See [operator reliability](docs/operator-reliability.md) for storage, reports and daily review. Metadata confirmation is not proof of playback. `npm run check:providers` checks provider metadata for a public link corpus without Discord; see [preview providers](docs/provider-checks.md#provider-metadata-control).
 
 ## Self-hosting and development
 
