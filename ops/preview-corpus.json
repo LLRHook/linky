@@ -1,0 +1,11 @@
+[
+  { "source": "https://x.com/jack/status/20", "expect": "text", "note": "public text post" },
+  { "source": "https://www.instagram.com/reel/DdFKS1ABmK4/", "expect": "video", "note": "public Reel used in the September 18 live check" },
+  { "source": "https://www.tiktok.com/t/ZTU7oFukc/", "expect": "video", "note": "share link; provider publishes the canonical post URL" },
+  { "source": "https://www.tiktok.com/@nba/video/7111722063571782958", "expect": "video", "note": "public long-form post URL" },
+  { "source": "https://bsky.app/profile/bsky.app/post/3mv3shqdfuc2e", "expect": "image", "note": "public image post" },
+  { "source": "https://www.reddit.com/r/aww/comments/1wk8pjs/", "expect": "video", "note": "public v.redd.it post" },
+  { "source": "https://www.reddit.com/r/aww/comments/1wk82hz/", "expect": "image", "note": "public gallery post" },
+  { "source": "https://www.reddit.com/r/aww/comments/1wkbubh/", "expect": "image", "note": "public single image post" },
+  { "source": "https://clips.twitch.tv/SeductiveHedonisticEelWholeWheat-_z75h_guvIl-kXEL", "expect": "video", "note": "public clip" }
+]
