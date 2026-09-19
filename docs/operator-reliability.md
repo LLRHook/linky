@@ -43,6 +43,8 @@ docker exec linky node ops/delivery-archive-report.mjs --days 1 --json
 docker exec linky node ops/delivery-archive-report.mjs --days 7 --json
 ```
 
+When a platform shows repeated unconfirmed previews, run `npm run check:providers` from the same checkout to separate provider metadata from Discord's embed generation; see [preview providers](provider-checks.md#provider-metadata-control). It prints the corpus links it fetched and nothing from the archive.
+
 Reports are read-only. They aggregate the selected period without printing attempt IDs or Discord data. Review outcomes by platform and delivery path, confirmed and nonconfirmed counts, latency sample sizes, medians and p95, failed stages, observed cache hits/misses, and archive coverage or loss warnings. Keep reports private unless deliberately publishing a reviewed aggregate.
 
 The existing `node ops/delivery-report.mjs --file data/delivery-diagnostics.json` remains available for controlled release checks against the short Details history. Its filters, minimum-sample requirements and rejected-outcome checks are unchanged; see [delivery reliability](delivery-reliability.md).
