@@ -16,7 +16,7 @@ The archive is separate from the website's optional metrics adapter. No log endp
 
 Each finalized attempt has a random attempt ID, start timestamp, platform, automatic/manual mode, a fixed outcome, delivery path, elapsed time, bounded stage timings and a cache hit/miss when observed. Only those allowed fields are copied. Discord user, server, channel and message IDs, source and media URLs, captions, message text, media bytes, credentials and arbitrary error messages are excluded.
 
-The `explicit` path identifies messages containing Linky-authored YouTube community cards. Their confirmation checks Discord's returned creator, text and ordered image references against the prepared cards. It is not a native provider observation or a video-playback check; do not combine it with native video confirmation when comparing reliability.
+The `explicit` path identifies messages containing Linky-authored YouTube community or article cards. Confirmation checks Discord's returned fields and image references against the prepared cards. It is not a native provider observation or a video-playback check; do not combine it with native video confirmation when comparing reliability. `articles` is a separate platform. Its resolve stage includes metadata retrieval; an unavailable result can mean a nonarticle page, blocked or missing metadata, a network limit or a failed request. Do not label every unavailable article candidate as a publisher outage. Article cache observations are not currently instrumented.
 
 The attempt ID is the one shown by Details. It can connect a user's report to a retained measurement, but the archive does not preserve the original message or its identity. Interactive Details remains subject to its shorter retention and existing authorization.
 

@@ -4,17 +4,19 @@ import { mapLinks, visibleLink } from './LinkTokens';
 import { getProviderCandidates, parseSocialUrl, parseProviderUrl, type SocialPlatform, type ProviderCandidate } from './SocialProviders';
 import { parseYouTubeUrl } from './YouTube';
 import { parseYouTubeCommunityUrl, type PreparedCommunityPost } from './YouTubeCommunity';
+import { parseArticleUrl } from './ArticlePreview';
+import type { PreparedArticle } from './ArticlePosts';
 
 export interface ExpectedPreview {
   source: string;
   url: string;
-  platform: SocialPlatform | 'youtube';
+  platform: SocialPlatform | 'youtube' | 'articles';
   providerId: string;
   /** A trusted metadata lookup identified this post as a video. */
   requireVideo?: boolean;
   /** A translated caption is already displayed; the media embed must not repeat the original. */
   captionFree?: boolean;
-  /** Exact bot-authored card payloads from a verified first-party community lookup. */
+  /** Exact bot-authored card payloads from a verified public metadata lookup. */
   explicitEmbeds?: readonly APIEmbed[];
 }
 
@@ -27,7 +29,8 @@ export interface PreviewResult {
   attributed?: ExpectedPreview[];
 }
 
-export function expectedPreviews(original: string, rendered: string, communityPosts: readonly PreparedCommunityPost[] = []): ExpectedPreview[] {
+export function expectedPreviews(original: string, rendered: string, communityPosts: readonly PreparedCommunityPost[] = [],
+  articles: readonly PreparedArticle[] = []): ExpectedPreview[] {
   const expectations = new Map<string, ExpectedPreview>();
   mapLinks(original, (url, position) => {
     if (!visibleLink(original, position)) return url;
@@ -49,6 +52,10 @@ export function expectedPreviews(original: string, rendered: string, communityPo
       const prepared = communityPosts.find(post => post.source === community.url);
       if (prepared?.embeds.length) expectations.set(community.url, { source: community.url, url: community.url,
         platform: 'youtube', providerId: 'youtube-community', explicitEmbeds: prepared.embeds });
+    } else {
+      const source = parseArticleUrl(url), prepared = source && articles.find(article => article.source === source);
+      if (source && prepared && prepared.embeds.length === 1 && prepared.embeds[0].url) expectations.set(source, { source,
+        url: prepared.embeds[0].url, platform: 'articles', providerId: 'article-metadata', explicitEmbeds: prepared.embeds });
     }
     return url;
   });
@@ -99,6 +106,7 @@ function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
 
 function matchesExpectation(embeds: readonly APIEmbed[], expected: ExpectedPreview): boolean {
   if (!expected.explicitEmbeds) return embeds.some(embed => matches(embed, expected));
+  if (expected.platform === 'articles') return matchesArticle(embeds, expected);
   const source = parseYouTubeCommunityUrl(expected.source), cards = expected.explicitEmbeds;
   if (!source || expected.url !== source.url || expected.providerId !== 'youtube-community' ||
       cards.length < 1 || cards.length > 10) return false;
@@ -110,6 +118,30 @@ function matchesExpectation(embeds: readonly APIEmbed[], expected: ExpectedPrevi
       actual.author?.name === card.author?.name && actual.author?.url === card.author?.url &&
       actual.image?.url === card.image?.url && !actual.video && !actual.thumbnail && !actual.fields?.length;
   });
+}
+
+/** Discord may normalize an embed timestamp while retaining the same instant. */
+function sameTimestamp(actual: string | undefined, expected: string | undefined): boolean {
+  if (actual === expected) return true;
+  return Boolean(actual && expected && Number.isFinite(Date.parse(expected)) && Date.parse(actual) === Date.parse(expected));
+}
+
+function matchesArticle(embeds: readonly APIEmbed[], expected: ExpectedPreview): boolean {
+  const cards = expected.explicitEmbeds;
+  if (expected.providerId !== 'article-metadata' || !parseArticleUrl(expected.source) ||
+      !parseArticleUrl(expected.url) || cards?.length !== 1) return false;
+  const card = cards[0];
+  if (card.url !== expected.url || !card.title?.trim()) return false;
+  const observed = embeds.filter(embed => embed.url === expected.url);
+  if (observed.length !== 1) return false;
+  const actual = observed[0];
+  return (!actual.type || actual.type === 'rich') && actual.title === card.title &&
+    actual.description === card.description && actual.color === card.color &&
+    actual.author?.name === card.author?.name && actual.author?.url === card.author?.url &&
+    actual.author?.icon_url === card.author?.icon_url && actual.image?.url === card.image?.url &&
+    actual.footer?.text === card.footer?.text && actual.footer?.icon_url === card.footer?.icon_url &&
+    sameTimestamp(actual.timestamp, card.timestamp) && !actual.video && !actual.thumbnail &&
+    !actual.fields?.length && !actual.provider;
 }
 
 export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly ExpectedPreview[]): PreviewResult {
@@ -171,6 +203,7 @@ export class PreviewHealth {
 
   describe(link: string): string {
     if (parseYouTubeCommunityUrl(link)) return 'YouTube community image and text posts use verified public post data and Linky-authored cards. No video playback or counts are inferred.';
+    if (parseArticleUrl(link)) return 'Public articles use publisher metadata in Linky-authored cards. A confirmed card does not verify the article’s claims.';
     const candidates = getProviderCandidates(link);
     if (!candidates.length && parseYouTubeUrl(link)) return 'YouTube uses its native video preview. Counts depend on the YouTube API.';
     return candidates.map(candidate => {

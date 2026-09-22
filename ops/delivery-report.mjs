@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const MAX_BYTES = 4 * 1024 * 1024, MAX_ATTEMPTS = 4096, MAX_DURATION = 86_400_000;
-const PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'youtube', 'erome', 'mixed'];
+const PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'youtube', 'articles', 'erome', 'mixed'];
 const PATHS = ['native', 'explicit', 'hosted-original', 'attachment', 'album'];
 const OUTCOMES = ['confirmed', 'partial', 'unsupported', 'unavailable', 'permission', 'disabled', 'busy', 'timeout',
   'discord-failure', 'metadata-unconfirmed', 'cancelled', 'interrupted', 'internal-failure'];

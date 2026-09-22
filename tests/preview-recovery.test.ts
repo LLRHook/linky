@@ -4,6 +4,7 @@ import { EmbedType, type APIEmbed, type Message } from 'discord.js';
 import { expectedPreviews, inspectPreviews, nextProviderContent, PreviewHealth, waitForPreviews } from '../src/services/PreviewRecovery';
 import { translationEmbeds } from '../src/services/TweetPresentation';
 import { formatYouTubeCommunityPost } from '../src/services/YouTubeCommunity';
+import { formatArticlePreview } from '../src/services/ArticlePreview';
 
 const source = 'https://www.instagram.com/reel/DdFKS1ABmK4/';
 const fixed = 'https://www.instagram7.com/reel/DdFKS1ABmK4/';
@@ -310,4 +311,30 @@ test('a TikTok share link accepts the canonical post embed that providers publis
   const full = expectedPreviews(canonical, 'https://tnktok.com/@e0rik00/video/7686471409861659936');
   assert.equal(inspectPreviews([{ url: 'https://www.tiktok.com/@e0rik00/video/1', video: { url: 'https://cdn.example/video.mp4' } }], full).ok, false,
     'a full post link still requires its own ID');
+});
+
+test('article confirmations require the exact publisher card and cannot claim native video metadata', () => {
+  const source = 'https://publisher.example.com/article/old-path';
+  const url = 'https://publisher.example.com/news/canonical-path';
+  const cards = formatArticlePreview({ source, url, title: 'A public article', publisher: 'Publisher',
+    description: 'A short excerpt.', image: 'https://publisher.example.com/article.jpg', publishedAt: '2026-09-22T12:00:00Z' });
+  const expected = expectedPreviews(source, `<${source}>`, [], [{ source, embeds: cards }]);
+  assert.equal(expected.length, 1); assert.equal(expected[0].platform, 'articles');
+  assert.deepEqual(expectedPreviews(source, `<${source}>`), []);
+  const success = inspectPreviews(cards.map(card => ({ ...card, type: EmbedType.Rich, timestamp: '2026-09-22T12:00:00+00:00' })), expected);
+  assert.equal(success.ok, true); assert.equal(success.videoMetadata, false); assert.deepEqual(success.attributed, []);
+  for (const actual of [[], [...cards, ...cards],
+    [{ ...cards[0], title: 'Other article' }], [{ ...cards[0], description: 'Other text' }],
+    [{ ...cards[0], author: { ...cards[0].author!, name: 'Other publisher' } }],
+    [{ ...cards[0], footer: { text: 'Other host' } }], [{ ...cards[0], timestamp: '2025-01-01T00:00:00Z' }],
+    [{ ...cards[0], image: { url: 'https://elsewhere.example.com/image.jpg' } }],
+    [{ ...cards[0], video: { url: 'https://publisher.example.com/video.mp4' } }],
+    [{ ...cards[0], url: url + '/other' }], [{ ...cards[0], type: EmbedType.Article }],
+    [{ url, title: 'Native article', thumbnail: { url: 'https://publisher.example.com/article.jpg' } }],
+  ]) assert.equal(inspectPreviews(actual, expected).ok, false, JSON.stringify(actual));
+  assert.equal(nextProviderContent(`<${source}>`, expected, new Set()), `<${source}>`);
+  assert.equal(inspectPreviews(cards, [{ ...expected[0], providerId: 'unvetted' }]).ok, false);
+  assert.equal(inspectPreviews(cards, [{ ...expected[0], source: 'https://youtube.com/watch?v=dQw4w9WgXcQ' }]).ok, false);
+  const health = new PreviewHealth(); health.record(expected, success);
+  assert.match(health.describe(source), /publisher metadata/);
 });

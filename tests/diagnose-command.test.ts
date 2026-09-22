@@ -111,11 +111,15 @@ test('thread diagnostics match selected parent scope and require thread sending'
 
 test('unsupported and disabled links do not call the provider observation hook', async () => {
   const servers = new ServerSettings(file());
-  for (const link of ['https://example.test/post', 'https://x.com.evil/status/123', 'hello https://x.com/u/status/123']) {
+  for (const link of ['https://example.test/post', 'hello https://x.com/u/status/123']) {
     const f = interaction(link);
     await execute(f.command, config, servers, async () => assert.fail('Unsupported lookup'));
     assert.match(f.events[1].payload.content, /Link format: unsupported/);
   }
+  const unrelated = interaction('https://x.com.evil/status/123');
+  await execute(unrelated.command, config, servers, async () => assert.fail('Unrelated host reached social provider'));
+  assert.match(unrelated.events[1].payload.content, /public article candidate; metadata has not been fetched/);
+  assert.match(unrelated.events[1].payload.content, /unavailable from the bot operator/);
   await servers.update(SERVER, { platforms: { x: false } });
   const f = interaction('https://x.com/u/status/123');
   await execute(f.command, config, servers, async () => assert.fail('Disabled lookup'));
@@ -210,13 +214,18 @@ test('mobile redirect shares and direct Reddit aliases are recognized locally wi
     assert.match(f.events[1].payload.content, new RegExp(`recognized ${platform} URL`));
     assert.match(f.events[1].payload.content, /No link was resolved or fetched/);
   }
-  for (const link of ['https://reddit.com.evil/r/example/s/ABCDefghij', '<https://redd.it/90bu6w>',
+  for (const link of ['<https://redd.it/90bu6w>',
     'https://www.instagram.com@evil.test/share/ABCDefghi/', 'https://redd.it:443/90bu6w']) {
     const f = interaction(link);
     await execute(f.command, { ...config, rewritePlatforms: ['instagram', 'reddit'] }, servers,
       async () => assert.fail('hostile or hidden shape reached provider'));
     assert.match(f.events[1].payload.content, /Link format: unsupported/);
   }
+  const unrelated = interaction('https://reddit.com.evil/r/example/s/ABCDefghij');
+  await execute(unrelated.command, { ...config, rewritePlatforms: ['instagram', 'reddit'] }, servers,
+    async () => assert.fail('Unrelated host reached a mobile share provider'));
+  assert.match(unrelated.events[1].payload.content, /public article candidate; metadata has not been fetched/);
+  assert.match(unrelated.events[1].payload.content, /unavailable from the bot operator/);
 });
 
 test('community diagnostics explain public cards even without API credentials or video statistics', async () => {

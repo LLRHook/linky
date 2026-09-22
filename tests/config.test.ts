@@ -95,9 +95,9 @@ test('missing channel settings leave the channel allowlist empty', () => {
 });
 
 test('public YouTube community previews need no operator key and respect the platform allowlist', () => {
-  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: '' }, 'rewritePlatforms').stdout), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome']);
+  assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: '' }, 'rewritePlatforms').stdout), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome']);
   assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: '', YOUTUBE_API_KEY: ' test-key ' }, 'rewritePlatforms').stdout),
-    ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome']);
+    ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome']);
   assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'instagram', YOUTUBE_API_KEY: 'test-key' }, 'rewritePlatforms').stdout),
     ['instagram']);
   assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'youtube', YOUTUBE_API_KEY: ' ' }, 'rewritePlatforms').stdout), ['youtube']);

@@ -1,4 +1,4 @@
-export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome'] as const;
+export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome'] as const;
 export type RewritePlatform = typeof REWRITE_PLATFORMS[number];
 
 const DISCORD_ID = /^[1-9]\d{16,19}$/;

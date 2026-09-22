@@ -6,7 +6,7 @@ import { describeScope, evaluateScope } from '../services/ServerScope';
 import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailability';
 
 export const PLATFORM_NAMES = { x: 'X', instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube',
-  bluesky: 'Bluesky', reddit: 'Reddit', twitch: 'Twitch clips', erome: 'Erome' };
+  bluesky: 'Bluesky', reddit: 'Reddit', twitch: 'Twitch clips', articles: 'Articles', erome: 'Erome' };
 
 export function effectivePreferences(config: Config, preferences: ServerPreferences, guildId?: string | null) {
   const platforms = config.rewritePlatforms.filter(platform => preferences.platforms?.[platform] !== false &&
@@ -38,6 +38,7 @@ export const data = new SlashCommandBuilder()
   .addBooleanOption(option => option.setName('bluesky').setDescription('Fix Bluesky post previews in this server.'))
   .addBooleanOption(option => option.setName('reddit').setDescription('Fix Reddit post previews in this server.'))
   .addBooleanOption(option => option.setName('twitch').setDescription('Fix Twitch clip previews in this server.'))
+  .addBooleanOption(option => option.setName('articles').setDescription('Preview public articles with publisher metadata in this server.'))
   .addBooleanOption(option => option.setName('erome').setDescription('Preview Erome albums when available from the bot operator.'))
   .addStringOption(option => option.setName('erome_channels').setDescription('Choose where this server permits Erome previews.')
     .addChoices({ name: 'Age-restricted channels', value: 'age-restricted' }, { name: 'All enabled channels', value: 'all' }))

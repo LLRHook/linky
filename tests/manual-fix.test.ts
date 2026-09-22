@@ -12,6 +12,7 @@ import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLink
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { InstagramTranslation } from '../src/services/InstagramTranslation';
 import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
+import type { ArticlePreview } from '../src/services/ArticlePreview';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
 const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['instagram', 'tiktok', 'x'],
@@ -664,4 +665,177 @@ test('manual mixed community guidance is private and skips every lookup without 
     assert.doesNotMatch(f.events[0].payload.content, /retry/i);
     assert.deepEqual(outcomes, ['unsupported']); assert.equal(f.response.embeds.length, 0);
   }
+});
+
+const ARTICLE_URL = 'https://publisher.example.com/news/public-article';
+const articlePost = (source = ARTICLE_URL): ArticlePreview => ({ source, url: source,
+  title: 'A public article', publisher: 'Example Publisher', description: 'A short publisher-provided excerpt.',
+  image: 'https://publisher.example.com/images/article.jpg', publishedAt: '2026-09-22T12:00:00Z' });
+const articleConfig: Config = { ...config, rewritePlatforms: [...config.rewritePlatforms, 'articles'] };
+
+test('manual article parser respects platform settings, hidden links, bypasses and the source URL limit', () => {
+  assert.deepEqual(manualLinks(ARTICLE_URL, articleConfig), [{ source: ARTICLE_URL, fixed: `<${ARTICLE_URL}>` }]);
+  assert.deepEqual(manualLinks(`${ARTICLE_URL} ${ARTICLE_URL}#read`, articleConfig), [{ source: ARTICLE_URL, fixed: `<${ARTICLE_URL}>` }]);
+  for (const content of [`<${ARTICLE_URL}>`, `||${ARTICLE_URL}||`, `\`${ARTICLE_URL}\``, `${ARTICLE_URL} !nolinky`, ARTICLE_URL + 'x'.repeat(500)]) {
+    assert.deepEqual(manualLinks(content, articleConfig), [], content);
+  }
+  assert.deepEqual(manualLinks(ARTICLE_URL, config), []);
+  for (const unsafe of ['https://127.0.0.1/article', 'https://intranet.local/article', 'https://erome.com/a/Example',
+    'https://youtube.com/account', 'https://instagram.com/someone']) {
+    assert.deepEqual(manualLinks(unsafe, { ...articleConfig, rewritePlatforms: ['articles'] }), [], unsafe);
+  }
+});
+
+test('manual article previews use authored cards without native waits and retain requester controls', async () => {
+  for (const context of [false, true]) {
+    const f = communityCommand(ARTICLE_URL, context), paths: string[] = [], outcomes: DeliveryOutcome[] = [];
+    const diagnostics = { begin: () => ({ id: 'article-manual', setPath: (path: string) => paths.push(path),
+      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
+      bind: async () => false } as unknown as DeliveryDiagnostics;
+    await execute(f.interaction, articleConfig, { diagnostics,
+      lookupArticle: async (source, signal) => { assert(signal); assert.equal(source, ARTICLE_URL); return articlePost(source); },
+      verifyPreview: async () => assert.fail('Authored articles must not wait for native unfurls') });
+    assert.equal(f.response.content, `<${ARTICLE_URL}>`);
+    assert.equal(f.response.embeds.length, 1);
+    const card = f.response.embeds[0].toJSON();
+    assert.equal(card.title, 'A public article');
+    assert.equal(card.author?.name, 'Publisher: Example Publisher');
+    assert.match(card.footer?.text ?? '', /Article metadata/);
+    assert.deepEqual(originalControls(f), [ARTICLE_URL]);
+    assert.equal(paths.at(-1), 'explicit'); assert.deepEqual(outcomes, ['confirmed']);
+    assert.equal(f.input.targetMessage.content, ARTICLE_URL);
+    assert(f.events.filter(event => event.name === 'edit').every(event => event.payload.allowedMentions.parse.length === 0));
+  }
+});
+
+test('manual article preparation is all-or-nothing and caps requests before lookup', async () => {
+  const sources = Array.from({ length: 3 }, (_, index) => ARTICLE_URL + index);
+  for (const kind of ['unavailable', 'partial', 'throw', 'missing-lookup'] as const) {
+    const f = communityCommand(sources.join(' '), true);
+    const lookupArticle = kind === 'missing-lookup' ? undefined : async (source: string) => {
+      if (kind === 'throw') throw Error('provider unavailable');
+      return kind === 'partial' && source === sources[0] ? articlePost(source) : null;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle });
+    assert.equal(f.response.embeds.length, 0); assert.match(f.response.content, /original is unchanged/i);
+    assert.deepEqual(originalControls(f), sources); assert.equal(f.input.targetMessage.content, sources.join(' '));
+  }
+  const four = communityCommand([...sources, ARTICLE_URL + '3'].join(' '));
+  await execute(four.interaction, articleConfig, { lookupArticle: async () => assert.fail('four articles looked up') });
+  assert.deepEqual(four.events.map(event => event.name), ['reply']);
+  assert.equal(four.events[0].payload.flags, MessageFlags.Ephemeral);
+  assert.match(four.events[0].payload.content, /at most three articles/);
+});
+
+test('manual articles with social, disabled platform, insecure or local links are rejected privately before fetches', async () => {
+  for (const other of ['https://x.com/jack/status/20', COMMUNITY_URL, 'https://erome.com/a/Example',
+    'http://publisher.example.com/old', 'https://127.0.0.1/private']) {
+    const f = communityCommand(`${ARTICLE_URL} ${other}`);
+    await execute(f.interaction, articleConfig, {
+      lookupArticle: async () => assert.fail('mixed article lookup'), lookupYouTubeCommunity: async () => assert.fail('mixed community lookup'),
+      normalizeMobileLinks: async () => assert.fail('mixed mobile normalization') });
+    assert.deepEqual(f.events.map(event => event.name), ['reply']);
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+    assert.match(f.events[0].payload.content, /separately/);
+  }
+  const disabled = communityCommand(ARTICLE_URL);
+  await execute(disabled.interaction, articleConfig, { serverPreferences: () => ({ platforms: { articles: false } }),
+    lookupArticle: async () => assert.fail('disabled article lookup') });
+  assert.deepEqual(disabled.events.map(event => event.name), ['reply']);
+});
+
+test('three manual articles allow hidden social links and require an exact echoed card for every article', async () => {
+  const sources = Array.from({ length: 3 }, (_, index) => ARTICLE_URL + index);
+  const f = communityCommand(sources.join(' ') + ' <https://x.com/jack/status/20> ||https://youtube.com/watch?v=dQw4w9WgXcQ||');
+  await execute(f.interaction, articleConfig, { lookupArticle: async source => articlePost(source) });
+  assert.equal(f.response.embeds.length, 3); assert.deepEqual(originalControls(f), sources);
+  assert.doesNotMatch(f.response.content, /could not/);
+  const mismatch = communityCommand(ARTICLE_URL), edit = mismatch.input.editReply;
+  mismatch.input.editReply = async payload => {
+    const result = await edit(payload);
+    if (payload.embeds?.length) mismatch.response.embeds = [{ toJSON: () => ({ ...payload.embeds[0], title: 'Wrong article' }) }];
+    return result;
+  };
+  await execute(mismatch.interaction, articleConfig, { lookupArticle: async source => articlePost(source) });
+  assert.match(mismatch.response.content, /preview could not be confirmed/);
+  assert.equal(mismatch.response.embeds.length, 0, 'An unverified article card must be removed');
+  assert.deepEqual(originalControls(mismatch), [ARTICLE_URL]);
+});
+
+test('manual article source edits, deletions, shutdown and preference changes prevent publication', async () => {
+  for (const kind of ['edited', 'deleted', 'cancelled', 'preferences'] as const) {
+    const f = communityCommand(ARTICLE_URL, true), controller = new AbortController();
+    let preferences: ServerPreferences = {};
+    Object.assign(f.input.targetMessage, { fetch: async () => {
+      if (kind === 'deleted') throw Error('Unknown Message');
+      return f.input.targetMessage;
+    } });
+    await execute(f.interaction, articleConfig, { signal: controller.signal, serverPreferences: () => preferences,
+      lookupArticle: async source => {
+        if (kind === 'edited') f.input.targetMessage.content += ' edited';
+        if (kind === 'cancelled') controller.abort();
+        if (kind === 'preferences') preferences = { platforms: { articles: false } };
+        return articlePost(source);
+      } });
+    assert.equal(f.response.embeds.length, 0, kind);
+    assert.match(f.response.content, /original (?:post )?is unchanged/i, kind);
+    assert.deepEqual(originalControls(f), [ARTICLE_URL]);
+  }
+});
+
+test('manual article source and settings changes during publication, Details binding and final controls remove stale cards', async () => {
+  for (const kind of ['source', 'preferences', 'cancelled'] as const) for (const phase of ['publish', 'binding', 'controls']) {
+    const f = communityCommand(ARTICLE_URL, true), controller = new AbortController();
+    let preferences: ServerPreferences = {};
+    const change = () => {
+      if (kind === 'source') f.input.targetMessage.content += ' edited';
+      if (kind === 'preferences') preferences = { platforms: { articles: false } };
+      if (kind === 'cancelled') controller.abort();
+    };
+    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
+      startStage: () => ({ finish() {} }), finish() {} }),
+      bind: async () => { if (phase === 'binding') change(); return true; } } as unknown as DeliveryDiagnostics;
+    const edit = f.input.editReply;
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      if (phase === 'publish' && payload.embeds?.length || phase === 'controls' && payload.content === undefined && payload.components) change();
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { diagnostics, signal: controller.signal, serverPreferences: () => preferences,
+      lookupArticle: async source => articlePost(source) });
+    assert.equal(f.response.embeds.length, 0, `${kind}/${phase}`);
+    assert.match(f.response.content, /(?:settings changed|source changed)/i, `${kind}/${phase}`);
+    assert.deepEqual(originalControls(f), [ARTICLE_URL]);
+  }
+});
+
+
+test('manual tracking aliases publish one verified article card while preserving every original control', async () => {
+  const sources = [ARTICLE_URL + '?utm_source=first', ARTICLE_URL + '?utm_source=second'];
+  for (const context of [false, true]) {
+    const f = communityCommand(sources.join(' '), context), observed: PreviewResult[] = [];
+    await execute(f.interaction, articleConfig, {
+      lookupArticle: async source => ({ ...articlePost(source), url: ARTICLE_URL }),
+      observePreview: (expected, result) => { assert.equal(expected.length, 2); observed.push(result); },
+    });
+    assert.equal(f.response.embeds.length, 1);
+    assert.equal(f.response.embeds[0].toJSON().url, ARTICLE_URL);
+    assert.deepEqual(originalControls(f), sources);
+    assert.deepEqual(observed.map(result => result.ok), [true]);
+    assert.doesNotMatch(f.response.content, /could not/);
+  }
+});
+
+test('manual articles with conflicting canonical metadata publish no cards and retain both source controls', async () => {
+  const sources = [ARTICLE_URL + '?utm_source=first', ARTICLE_URL + '?utm_source=second'];
+  const f = communityCommand(sources.join(' '), true);
+  await execute(f.interaction, articleConfig, {
+    lookupArticle: async source => ({ ...articlePost(source), url: ARTICLE_URL,
+      ...(source === sources[1] ? { title: 'Conflicting article' } : {}) }),
+    observePreview: () => assert.fail('Conflicting cards must never reach verification'),
+  });
+  assert.equal(f.response.embeds.length, 0);
+  assert.match(f.response.content, /article preview could not be verified/);
+  assert.deepEqual(originalControls(f), sources);
+  assert.equal(f.input.targetMessage.content, sources.join(' '));
 });

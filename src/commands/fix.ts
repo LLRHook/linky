@@ -5,6 +5,8 @@ import type { Config } from '../config';
 import { mapLinks, visibleLink } from '../services/LinkTokens';
 import { getProviderCandidates, parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
+import { findArticleLinks, parseArticleUrl, type ArticleLookup } from '../services/ArticlePreview';
+import { ARTICLE_MIXED_GUIDANCE, articleEmbeds, hasMixedArticleLinks, prepareArticlePosts } from '../services/ArticlePosts';
 import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from '../services/YouTubeCommunity';
 import { originalPostUrl } from '../services/RepostPresentation';
@@ -30,7 +32,7 @@ const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegratio
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
 export const data = new SlashCommandBuilder().setName('fix').setDescription('Make a link preview on request, without enabling automatic fixing.')
   .setIntegrationTypes(...installs).setContexts(...contexts)
-  .addStringOption(option => option.setName('link').setDescription('A supported social post, video or clip URL.').setRequired(true).setMaxLength(1500));
+  .addStringOption(option => option.setName('link').setDescription('A public article, supported social post, video or clip URL.').setRequired(true).setMaxLength(1500));
 export const contextData = new ContextMenuCommandBuilder().setName('Fix with Linky').setType(ApplicationCommandType.Message)
   .setIntegrationTypes(...installs).setContexts(...contexts);
 
@@ -39,6 +41,7 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
   guildId?: string | null, limit = 3): { source: string; fixed: string }[] {
   const links = new Map<string, { source: string; fixed: string }>();
   let eromeAdded = false;
+  const articleSources = new Set(config.rewritePlatforms.includes('articles') ? findArticleLinks(content, 4) : []);
   mapLinks(content, (url, position) => {
     if (!visibleLink(content, position)) return url;
     const social = parseSocialUrl(url);
@@ -56,6 +59,9 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
       links.set(youtube.url, { source: youtube.url, fixed: youtube.url });
     } else if (community && config.rewritePlatforms.includes('youtube')) {
       links.set(community.url, { source: community.url, fixed: `<${community.url}>` });
+    } else if (config.rewritePlatforms.includes('articles')) {
+      const article = parseArticleUrl(url);
+      if (article && articleSources.has(article)) links.set(article, { source: article, fixed: `<${article}>` });
     }
     return url;
   });
@@ -65,7 +71,7 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
 export async function execute(interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
   config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment,
     prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation, serverPreferences,
-    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateInstagram, lookupYouTubeCommunity, signal }: {
+    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateInstagram, lookupYouTubeCommunity, lookupArticle, signal }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     prepareErome?: EromePreparer;
@@ -82,6 +88,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     normalizeMobileLinks?: MobileShareLinkNormalizer;
     translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
     lookupYouTubeCommunity?: YouTubeCommunityLookup;
+    lookupArticle?: ArticleLookup;
     signal?: AbortSignal;
   } = {}): Promise<void> {
   let content = interaction.isChatInputCommand() ? interaction.options.getString('link', true) : interaction.targetMessage.content;
@@ -106,14 +113,15 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (deferred) await interaction.editReply({ content, allowedMentions: { parse: [] } });
     else await interaction.reply({ content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
   };
-  if (hasMixedYouTubeCommunityLinks(content, activeConfig.rewritePlatforms.filter(platform =>
+  const mixedArticles = hasMixedArticleLinks(content, activeConfig.rewritePlatforms);
+  if (mixedArticles || hasMixedYouTubeCommunityLinks(content, activeConfig.rewritePlatforms.filter(platform =>
     platform !== 'erome' || isEromeAvailable(config, interaction.guildId)))) {
     const attempt = createDeliveryAttempt({ requesterId: interaction.user.id, channelId: interaction.channelId,
       guildId: interaction.guildId ?? undefined, mode: 'manual', platform: deliveryPlatform(content) }, diagnostics, undefined, signal);
     try {
       attempt.context.trace?.setPath('explicit');
       attempt.finish('unsupported');
-      await reject(COMMUNITY_MIXED_GUIDANCE);
+      await reject(mixedArticles ? ARTICLE_MIXED_GUIDANCE : COMMUNITY_MIXED_GUIDANCE);
     } finally { attempt.close(); }
     return;
   }
@@ -130,6 +138,11 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
   const eromeAllowed = () => interaction.inGuild() && isEromeAvailable(config, interaction.guildId) && canPreviewErome(interaction.channel,
     interaction.guildId ? serverPreferences?.(interaction.guildId)?.eromeChannels : undefined);
   const communityLinks = activeConfig.rewritePlatforms.includes('youtube') ? findYouTubeCommunityLinks(content, 6) : [];
+  const articleLinks = activeConfig.rewritePlatforms.includes('articles') ? findArticleLinks(content, 4) : [];
+  if (articleLinks.length > 3) {
+    await reject('Choose at most three articles for one preview. The original message is unchanged.');
+    return;
+  }
   const links = manualLinks(content, activeConfig, interaction.guildId, communityLinks.length ? 6 : 3)
     .filter(link => !parseYouTubeUrl(link.source) || preferences.platforms?.youtube !== false);
   if (communityLinks.length && (communityLinks.length > 5 || links.length > 5)) {
@@ -145,7 +158,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     return;
   }
   if (!links.length) {
-    await reject('No supported post link found. Choose an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, or a Twitch clip.' +
+    await reject('No supported post link found. Choose a public article, an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, or a Twitch clip.' +
       (isEromeAvailable(config, interaction.guildId) ? ' Erome albums also work in allowed server channels.' : '') +
       ' Links inside <angle brackets>, spoilers or code are skipped.');
     return;
@@ -205,12 +218,26 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
         components: buttonRows(), allowedMentions: { parse: [] } });
       return;
     }
-    if (community.length) context.trace?.setPath('explicit');
+    if (articleLinks.length) context.trace?.setPath('explicit');
+    const articleStage = articleLinks.length ? context.trace?.startStage('resolve') : undefined;
+    const articles = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal) : [];
+    articleStage?.finish(articles ? 'ok' : 'unavailable');
+    if (await stopChangedPreferences()) return;
+    if (articles === null || articles.length && !await sourceCurrent()) {
+      await progress.stop();
+      attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
+      await interaction.editReply({ content: 'The article preview could not be verified, or its source changed. The original is unchanged. Public article metadata is required.',
+        embeds: [], components: buttonRows(), allowedMentions: { parse: [] } });
+      return;
+    }
+    const explicitPosts = [...community, ...articles];
+    const previewName = articles.length ? 'article' : 'community';
+    if (explicitPosts.length) context.trace?.setPath('explicit');
     const stopChangedSource = async () => {
-      if (!community.length || await sourceCurrent()) return false;
+      if (!explicitPosts.length || await sourceCurrent()) return false;
       if (await stopChangedPreferences()) return true;
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
-      await interaction.editReply({ content: 'The source changed or became unavailable. The community preview was removed; the original is unchanged.',
+      await interaction.editReply({ content: `The source changed or became unavailable. The ${previewName} preview was removed; the original is unchanged.`,
         embeds: [], attachments: [], components: buttonRows(), allowedMentions: { parse: [] } });
       return true;
     };
@@ -326,16 +353,16 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (erome) rendered += eromeNotice(erome.videoCount, erome.kind);
     const instagramIds = new Set((presentation.instagramSources ?? []).map(url => parseInstagramUrl(url)?.shortcode));
     const instagramVideos = new Set((presentation.instagramVideos ?? []).map(url => parseInstagramUrl(url)?.shortcode));
-    const expectations = () => expectedPreviews(original, rendered, community).map(item => {
+    const expectations = () => expectedPreviews(original, rendered, community, articles).map(item => {
       const id = parseInstagramUrl(item.source)?.shortcode;
       return { ...item, ...(id && instagramIds.has(id) ? { captionFree: true } : {}),
         ...(id && instagramVideos.has(id) ? { requireVideo: true } : {}) };
     });
     let expected = expectations();
-    const embeds = community.flatMap(post => post.embeds);
-    if (community.length && (!communityEmbedBudget(embeds, expected.filter(item => !item.explicitEmbeds).length) || !await sourceCurrent())) {
+    const embeds = [...community.flatMap(post => post.embeds), ...articleEmbeds(articles)];
+    if (explicitPosts.length && (!communityEmbedBudget(embeds, expected.filter(item => !item.explicitEmbeds).length) || !await sourceCurrent())) {
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
-      await interaction.editReply({ content: 'The complete community preview exceeds the message limits, or its source changed. Share fewer posts; the original is unchanged.',
+      await interaction.editReply({ content: `The complete ${previewName} preview exceeds the message limits, or its source changed. Share fewer posts; the original is unchanged.`,
         components: buttonRows(), allowedMentions: { parse: [] } });
       return;
     }
@@ -383,10 +410,10 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       providerAttempts.push({ expected, result: preview });
       observePreview?.(expected, preview);
     }
-    if (community.length && !await sourceCurrent()) {
+    if (explicitPosts.length && !await sourceCurrent()) {
       if (await stopChangedPreferences()) return;
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
-      await interaction.editReply({ content: 'The source changed or became unavailable. The community preview was removed; the original is unchanged.',
+      await interaction.editReply({ content: `The source changed or became unavailable. The ${previewName} preview was removed; the original is unchanged.`,
         embeds: [], attachments: [], components: buttonRows(), allowedMentions: { parse: [] } });
       return;
     }
@@ -400,6 +427,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (!preview.ok || context.signal?.aborted) await interaction.editReply({ content: rendered + (context.signal?.aborted
       ? '\n-# This preview reached its time limit. The original post link is available below; try again later.'
       : '\n-# A useful preview could not be confirmed. The original post link is available below.'),
+      ...(articles.length ? { embeds: [] } : {}),
       ...(erome && !eromeVerified ? { attachments: [] } : {}), allowedMentions: { parse: [] } });
     const details = await attempt.controls(message.id);
     if (await stopChangedPreferences()) return;

@@ -4,7 +4,7 @@ import { atomicWrite } from './AtomicWrite';
 import { DELIVERY_OUTCOMES, DELIVERY_PATHS, DELIVERY_STAGES, type DeliveryOutcome, type DeliveryPath,
   type DeliveryStage, type DeliveryTrace, type StageOutcome } from './DeliveryContext';
 
-const PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'youtube', 'erome', 'mixed'] as const;
+const PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'youtube', 'articles', 'erome', 'mixed'] as const;
 const STAGE_OUTCOMES: readonly StageOutcome[] = ['ok', 'unavailable', 'busy', 'timeout', 'cancelled', 'failed'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DISCORD_ID = /^\d{17,20}$/;

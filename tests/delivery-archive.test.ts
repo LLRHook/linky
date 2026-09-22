@@ -23,6 +23,19 @@ async function fixture(t: TestContext, options: Partial<DeliveryArchiveOptions> 
   return { directory, archive };
 }
 
+test('article cards retain their own platform and explicit path without storing publisher metadata', async t => {
+  const { archive, directory } = await fixture(t);
+  const article = attempt({ platform: 'articles', path: 'explicit', cache: undefined,
+    stages: [{ stage: 'resolve', durationMs: 150, outcome: 'ok' }, { stage: 'preview', durationMs: 1, outcome: 'ok' }] });
+  assert.equal(archive.record({ ...article, sourceUrl: 'https://publisher.com/story', title: 'Private candidate title' }), true);
+  assert.equal(await archive.flush(), true);
+  const rows = (await readDeliveryArchive(directory)).rows;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].platform, 'articles');
+  assert.equal(rows[0].path, 'explicit');
+  assert.doesNotMatch(JSON.stringify(rows), /publisher|candidate title|sourceUrl/);
+});
+
 test('archive copies only finalized finite fields, writes privately and deduplicates UUIDs', async t => {
   const { archive, directory } = await fixture(t);
   const record = attempt();

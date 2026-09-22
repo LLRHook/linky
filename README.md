@@ -5,7 +5,7 @@
 [![CI](https://github.com/LLRHook/linky/actions/workflows/ci.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/ci.yml)
 [![Deploy](https://github.com/LLRHook/linky/actions/workflows/deploy.yml/badge.svg)](https://github.com/LLRHook/linky/actions/workflows/deploy.yml)
 
-Linky fixes social links in Discord: X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit and Twitch clips. Add it to your server for automatic previews or to your account for links you choose to fix. The hosted bot is free; you do not need to run a server or supply API keys. Self-hosting is optional for these features. **Erome video and image albums require your own Linky instance and hosting; they are not included in the public hosted bot.**
+Linky fixes social links in Discord: X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit and Twitch clips. It also previews public articles using the publisher's headline, excerpt and image when available. Add it to your server for automatic previews or to your account for links you choose to fix. The hosted bot is free; you do not need to run a server or supply API keys. Self-hosting is optional for these features. **Erome video and image albums require your own Linky instance and hosting; they are not included in the public hosted bot.**
 
 Visit the [Linky website](https://linkybot.dev) for setup guides and troubleshooting.
 
@@ -51,13 +51,16 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | Bluesky | `bskx.app`, with `fxbsky.app` recovery | Public `/profile/actor/post/id` URLs |
 | Reddit | `vxreddit.com` | Public post URLs, `redd.it` links and resolvable `/r/name/s/` or `/u/name/s/` mobile shares; profile and community index pages stay unchanged |
 | Twitch clips | `fxtwitch.seria.moe` | Clip URLs, including channel `/clip/` links; streams and VODs stay unchanged |
+| Articles | Publisher metadata in a Linky card | Public HTTPS pages with Open Graph article metadata or Article JSON-LD; up to three articles together |
 | Erome (self-host only) | Your own media gallery, with attachment fallback | HTTPS `/a/album-id` albums; video and supported JPEG/PNG images, additional items on demand; follows Replace or Reply mode |
 
 Instagram and Reddit mobile shares follow a bounded, cookie-free HTTPS lookup to an allowed public post on the same platform. A failed or unsafe redirect leaves the original untouched.
 
 The September 18 Hostinger check resolved an Instagram share but received HTTP 403 for the tested Reddit app share. Use a full Reddit `/comments/` URL or a `redd.it` link when the source refuses resolution; Linky does not bypass login or access restrictions.
 
-Supported links must use HTTPS and point to posts. Tracking query strings are removed; valid YouTube start timestamps and surrounding text are retained. Automatic fixing starts with new messages from people; editing an unrelated old message does not start a repost. Bots and webhooks are ignored.
+Supported links must use HTTPS and point to posts or public articles. Social tracking query strings are removed; article queries, valid YouTube start timestamps and surrounding text are retained. Automatic fixing starts with new messages from people; editing an unrelated old message does not start a repost. Bots and webhooks are ignored.
+
+Public article previews show the publisher's headline, a labelled publisher, an excerpt of up to 300 characters, and an image and publication date when available. They work automatically in enabled channels and through `/fix` or **Apps → Fix with Linky**, without an API key. Share up to three article links together, separately from social or other links: authored cards can suppress Discord's other native previews. Linky preserves the original when metadata is missing, a page is unavailable, or any article in the set cannot be prepared. It does not summarize, fact-check, translate or bypass paywalls. `/settings articles:false` or the setup Platforms menu disables articles. See [article support and limits](docs/article-previews.md).
 
 On your own instance, Erome needs media delivery because its video CDN can reject Discord's direct fetch. Linky starts with the first video from the first album, or a supported image when the album has no video. By default, Erome requires an age-restricted server channel or a thread in one. An admin with Manage Server permission can allow ordinary channels using `/settings erome_channels:all`; select `age-restricted` to restore the default. The same channel policy applies to `/fix` and **Fix with Linky**. DMs are excluded. The setting does not enable Linky in new channels or turn Erome on when disabled; `/setup` controls automatic channel scope and `/settings erome:false` disables automatic Erome previews. Linky does not scan the video's content.
 
@@ -89,7 +92,7 @@ After building, run `npm run report:deliveries -- --days 7` on the bot host to c
 
 ## Self-hosting and development
 
-The hosted bot is free to add for the seven social platforms above and available translations. Run your own instance for Erome or your own extensions; self-hosting does not automatically add support for arbitrary websites. The [self-hosting guide](docs/self-hosting.md) covers Node/Docker setup, environment variables, API keys, quotas, persistent data, logs, deployment and rollback. The optional [Discord coding integration](docs/discord-prompt.md) is disabled on the hosted bot.
+The hosted bot is free to add for the seven social platforms above, public article previews and available translations. Run your own instance for Erome or your own extensions; self-hosting does not automatically add support for arbitrary websites. The [self-hosting guide](docs/self-hosting.md) covers Node/Docker setup, environment variables, API keys, quotas, persistent data, logs, deployment and rollback. The optional [Discord coding integration](docs/discord-prompt.md) is disabled on the hosted bot.
 
 ```bash
 npm ci

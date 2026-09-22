@@ -21,6 +21,7 @@ import { createInstagramLookup } from './services/InstagramTranslation';
 import { TranslationBudget } from './services/TranslationBudget';
 import { createYouTubeLookup } from './services/YouTube';
 import { createYouTubeCommunityLookup } from './services/YouTubeCommunity';
+import { createArticleLookup } from './services/ArticlePreview';
 import { YouTubeStats } from './services/YouTubeStats';
 import { RepostRegistry } from './services/RepostRegistry';
 import { PreviewHealth } from './services/PreviewRecovery';
@@ -66,6 +67,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   }
   const lookupYouTube = settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined;
   const lookupYouTubeCommunity = createYouTubeCommunityLookup();
+  const lookupArticle = createArticleLookup();
   let translateInstagram: ReturnType<typeof createInstagramLookup> | undefined;
   if (settings.translateInstagram && settings.captionApiKey) {
     try {
@@ -123,7 +125,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
   });
   const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums,
-    normalizeMobileLinks, translateInstagram, lookupYouTubeCommunity, signal: shutdown.signal };
+    normalizeMobileLinks, translateInstagram, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
   const destroy = client.destroy.bind(client);
   client.destroy = () => {
     if (closing) return closing;
