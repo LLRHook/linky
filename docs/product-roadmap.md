@@ -10,6 +10,10 @@ Linky already has private setup and diagnosis, channel selection, Reply/Replace,
 
 The seven-day Details history is for individual investigations. The separate operator archive defaults to 30 days within 64 MiB and omits Discord identities, message contents and URLs. Both are distinct from size-rotated Docker logs and optional website analytics. The [operator reliability guide](operator-reliability.md) defines collection and reporting; an observed delivery check does not establish client playback.
 
+## September 22 article previews
+
+Public article cards add publisher-labelled headlines, short metadata excerpts and available images without a new API service. They follow existing scope, personal opt-out and source-retention rules. Article detection requires usable public page metadata; it does not guarantee support for every website or judge the article's claims. The initial GAMBA candidate checks rendered the requested Manhattan Institute article and a NASA article, and retained a nonarticle page. These selected checks do not establish general success rates. See [article limits](article-previews.md) and the feature PR for release checks.
+
 ## September 18 implementation
 
 The current release work adds bounded Instagram and Reddit mobile-share resolution, private per-server `/autofix` preferences, setup readiness and explicit sample tests, three Instagram presentation choices, and public YouTube community text/image cards. Each has focused failure and retention tests. Public-page parsing and provider media remain external dependencies. Release and live validation are tracked with the implementation PR; these notes do not establish an uptime or conversion improvement.

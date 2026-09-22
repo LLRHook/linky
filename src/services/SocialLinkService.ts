@@ -40,6 +40,8 @@ import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
 import { formatLinkRepost, repostControls } from './RepostPresentation';
 import { sourceMentionUsers } from './SourceMentions';
 import type { MobileShareLinkNormalizer } from './MobileShareLinks';
+import { findArticleLinks, parseArticleUrl, type ArticleLookup } from './ArticlePreview';
+import { ARTICLE_MIXED_GUIDANCE, articleEmbeds, hasMixedArticleLinks, prepareArticlePosts } from './ArticlePosts';
 
 export { REWRITE_PLATFORMS, parseRewritePlatforms, parseDiscordIds, type RewritePlatform } from './LinkConfiguration';
 export { originalPostUrl, formatLinkRepost, repostControls } from './RepostPresentation';
@@ -209,7 +211,7 @@ export function createLinkRepostHandler(
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
   { platforms = REWRITE_PLATFORMS, translateTweet, translateInstagram, serverIds = [], serverEnabled, serverPreferences,
-    lookupYouTube, lookupYouTubeCommunity, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
+    lookupYouTube, lookupYouTubeCommunity, lookupArticle, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
     eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
     verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost, diagnostics, armPreview, providerHealth, albums,
@@ -222,6 +224,7 @@ export function createLinkRepostHandler(
     serverPreferences?: (serverId: string) => ServerPreferences;
     lookupYouTube?: (ids: readonly string[], display?: YouTubeDisplay) => Promise<Map<string, YouTubeStatistics>>;
     lookupYouTubeCommunity?: YouTubeCommunityLookup;
+    lookupArticle?: ArticleLookup;
     publishYouTube?: (message: Message, embeds: APIEmbed[]) => Promise<StatsPublication | null>;
     prepareErome?: EromePreparer;
     eromeAvailable?: (guildId: string) => boolean;
@@ -269,8 +272,9 @@ export function createLinkRepostHandler(
     const activePlatforms = platforms.filter(platform => preferences.platforms?.[platform] !== false &&
       (platform !== 'erome' || eromePermitted));
     const mixedCommunity = hasMixedYouTubeCommunityLinks(inputContent, activePlatforms);
+    const mixedArticles = Boolean(lookupArticle) && hasMixedArticleLinks(inputContent, activePlatforms);
     const eromeSource = activePlatforms.includes('erome') && prepareErome ? eromeSources[0] : undefined;
-    let reply = forceReply || blockedErome || mixedCommunity || preferences.mode === 'reply';
+    let reply = forceReply || blockedErome || mixedCommunity || mixedArticles || preferences.mode === 'reply';
     if (!enabled() ||
         !canCopy(message) || bypassLinky(message.content) || message.flags.has(MessageFlags.SuppressEmbeds) ||
         (!refresh && reposted.has(message.id))) return;
@@ -302,7 +306,9 @@ export function createLinkRepostHandler(
       const youtubeLinks = activePlatforms.includes('youtube') && lookupYouTube && publishYouTube &&
         !message.flags.has(MessageFlags.SuppressEmbeds) ? findYouTubeLinks(inputContent).slice(0, 3) : [];
       const communityLinks = activePlatforms.includes('youtube') ? findYouTubeCommunityLinks(inputContent, 6) : [];
-      if (rewritten === inputContent && !youtubeLinks.length && !communityLinks.length && !eromeSource) return;
+      const articleLinks = activePlatforms.includes('articles') && lookupArticle ? findArticleLinks(inputContent, 4) : [];
+      if (articleLinks.length > 3) return;
+      if (rewritten === inputContent && !youtubeLinks.length && !communityLinks.length && !articleLinks.length && !eromeSource) return;
       if (!mixedCommunity && (communityLinks.length > 5 || communityLinks.length && !lookupYouTubeCommunity)) return;
       const delivery = createDeliveryAttempt({ requesterId: message.author.id, channelId, guildId: message.guildId,
         mode: 'automatic', platform: deliveryPlatform(inputContent) }, diagnostics,
@@ -387,10 +393,19 @@ export function createLinkRepostHandler(
         }
         rollback = undefined;
       };
-      if (mixedCommunity) {
+      const articleStage = articleLinks.length ? delivery.context.trace?.startStage('resolve') : undefined;
+      const articles = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, delivery.context.signal) : [];
+      articleStage?.finish(articles ? 'ok' : delivery.context.signal?.aborted ? 'cancelled' : 'unavailable');
+      if (articles === null) { delivery.finish(delivery.context.signal?.aborted ? 'cancelled' : 'unavailable'); return; }
+      if (articles.length) {
+        delivery.context.trace?.setPath('explicit');
+        const current = await message.fetch(true);
+        if (!enabled() || !canCopy(current) || sourceVersion(current) !== version) return refresh && enabled() ? 'retry' : undefined;
+      }
+      if (mixedCommunity || articles.length && hasMixedArticleLinks(inputContent, activePlatforms)) {
         delivery.context.trace?.setPath('explicit');
         delivery.finish('unsupported');
-        await failureNotice(COMMUNITY_MIXED_GUIDANCE, false);
+        await failureNotice(articles.length ? ARTICLE_MIXED_GUIDANCE : COMMUNITY_MIXED_GUIDANCE, false);
         return;
       }
       if (eromeSource) progress.update({ stage: 'resolve', state: 'running' });
@@ -428,7 +443,7 @@ export function createLinkRepostHandler(
         catch { log.warn(context, 'YouTube lookup unavailable; keeping native links'); }
       }
       // Preview-only keeps Discord's already-native YouTube message untouched.
-      if (rewritten === inputContent && !youtube.size && !community.length && !erome && !originalMedia) return;
+      if (rewritten === inputContent && !youtube.size && !community.length && !articles.length && !erome && !originalMedia) return;
       const replyContext = await findReplyContext(message, findRepost);
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       const body = formatLinkRepost(rewritten, message.author.id, replyContext);
@@ -450,6 +465,8 @@ export function createLinkRepostHandler(
             MAX_CONTENT_LENGTH - INSTAGRAM_PREVIEW_NOTICE.length - (body.length - rewritten.length),
             preferences.instagramPresentation) : tweetPresentation;
       const canonical = mapLinks(translated.content, (url, position) => {
+        const article = parseArticleUrl(url);
+        if (article && visibleLink(translated.content, position) && articles.some(post => post.source === article)) return `<${article}>`;
         const communityPost = parseYouTubeCommunityUrl(url);
         if (communityPost && visibleLink(translated.content, position) && community.some(post => post.source === communityPost.url)) return `<${communityPost.url}>`;
         if ((erome || originalMedia) && visibleLink(translated.content, position) && parseEromeUrl(url)) return `<${parseEromeUrl(url)!.url}>`;
@@ -462,8 +479,9 @@ export function createLinkRepostHandler(
       const youtubeCards = youtubeLinks.filter(link => youtube.has(link.id))
         .map(link => formatYouTubeStatistics(youtube.get(link.id)!, link.url, youtubeDisplay))
         .filter((card): card is APIEmbed => card !== null);
-      if (rewritten === inputContent && !youtubeCards.length && !community.length && !erome && !originalMedia) return;
-      const embeds = community.length ? [...translated.embeds ?? [], ...community.flatMap(post => post.embeds)] : translated.embeds;
+      if (rewritten === inputContent && !youtubeCards.length && !community.length && !articles.length && !erome && !originalMedia) return;
+      const explicitCards = [...community.flatMap(post => post.embeds), ...articleEmbeds(articles)];
+      const embeds = explicitCards.length ? [...translated.embeds ?? [], ...explicitCards] : translated.embeds;
       const translationFiles = [...translated.translationFiles ?? [], ...erome ? [erome.file] : []];
       if (translationFiles.length && !permissions.has(PermissionFlagsBits.AttachFiles)) {
         log.warn(context, 'Keeping original: a full translation attachment needs Attach Files permission');
@@ -493,7 +511,7 @@ export function createLinkRepostHandler(
       const instagramVideos = new Set((translated.instagramVideos ?? []).map(url => parseInstagramUrl(url)?.shortcode));
       const instagramCaptionIds = new Set((usedFormatted ? translated.instagramCaptionSources ?? [] : [])
         .map(url => parseInstagramUrl(url)?.shortcode));
-      const expectations = () => expectedPreviews(`${inputContent}\n${translated.mediaSources ?? ''}`, content, community)
+      const expectations = () => expectedPreviews(`${inputContent}\n${translated.mediaSources ?? ''}`, content, community, articles)
         .filter(item => !textStatusIds.has(parseSocialUrl(item.source)?.statusId ?? ''))
         .map(item => {
           const instagramId = parseInstagramUrl(item.source)?.shortcode;
@@ -513,7 +531,7 @@ export function createLinkRepostHandler(
         if (preferred.length <= MAX_CONTENT_LENGTH) content = preferred;
       }
       let expected = expectations();
-      if (community.length && (expected.length > 5 || !communityEmbedBudget(embeds ?? [], expected.filter(item => !item.explicitEmbeds).length))) {
+      if (explicitCards.length && (expected.length > 5 || !communityEmbedBudget(embeds ?? [], expected.filter(item => !item.explicitEmbeds).length))) {
         delivery.finish('unavailable');
         log.warn(context, 'Keeping original: complete community and native preview coverage exceeds the message limits');
         return;
@@ -701,7 +719,7 @@ export function createLinkRepostHandler(
         return;
       }
       if (reply) {
-        if (!originalMedia) rollback = undefined;
+        if (!originalMedia && !explicitCards.length) rollback = undefined;
         log.info(resultContext, 'Replied with fixed social links; kept original message');
       } else {
         // Sending, checking and deleting are separate Discord requests, not a transaction.
@@ -720,8 +738,10 @@ export function createLinkRepostHandler(
           [...repostControls(inputContent), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
           : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions,
       });
-      if (originalMedia && reply) {
+      if ((originalMedia || explicitCards.length) && reply) {
+        if (await stopExpired()) return;
         const current = await message.fetch(true);
+        if (await stopExpired()) return;
         if (!enabled() || !canCopy(current) || sourceVersion(current) !== version) {
           await removeReplacement();
           rollback = undefined;

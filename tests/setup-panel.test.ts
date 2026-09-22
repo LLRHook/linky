@@ -154,7 +154,7 @@ test('mode and platform menus preserve operator enablement and capabilities', as
   assert.equal(servers.get(SERVER), undefined);
   assert.equal(new ServerSettings(path).getPreferences(SERVER).mode, 'reply');
   assert.deepEqual(servers.getPreferences(SERVER).platforms, { x: false, instagram: true, tiktok: false, youtube: true,
-    bluesky: false, reddit: false, twitch: false });
+    bluesky: false, reddit: false, twitch: false, articles: false });
   const view = panelView(platform.events[1].payload);
   assert.match(view.text, /Active in this channel/);
   const platforms = view.rows[1].components[0];
