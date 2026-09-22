@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM node:26-trixie-slim@sha256:65f816afd401c1c4de3293acc46dce115398152af4bdcd73c103b096988922d7 AS builder
+FROM node:26-trixie-slim@sha256:3a771f83944bb763050c23c0225c260638c4b7899e7a72485ef75e5e570499e5 AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
-FROM node:26-trixie-slim@sha256:65f816afd401c1c4de3293acc46dce115398152af4bdcd73c103b096988922d7 AS runtime
+FROM node:26-trixie-slim@sha256:3a771f83944bb763050c23c0225c260638c4b7899e7a72485ef75e5e570499e5 AS runtime
 WORKDIR /app
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/* /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
