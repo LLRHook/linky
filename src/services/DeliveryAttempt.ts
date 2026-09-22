@@ -7,12 +7,13 @@ import { parseSocialUrl } from './SocialProviders';
 import { parseYouTubeUrl } from './YouTube';
 import { parseYouTubeCommunityUrl } from './YouTubeCommunity';
 import { parseEromeUrl } from './EromeAlbum';
+import { parseArticleUrl } from './ArticlePreview';
 
 export function deliveryPlatform(content: string): DeliveryRequest['platform'] {
   const platforms = new Set<DeliveryRequest['platform']>();
   mapLinks(content, (url, position) => {
     if (visibleLink(content, position)) {
-      const platform = parseSocialUrl(url)?.platform ?? (parseYouTubeUrl(url) || parseYouTubeCommunityUrl(url) ? 'youtube' : parseEromeUrl(url) ? 'erome' : undefined);
+      const platform = parseSocialUrl(url)?.platform ?? (parseYouTubeUrl(url) || parseYouTubeCommunityUrl(url) ? 'youtube' : parseEromeUrl(url) ? 'erome' : parseArticleUrl(url) ? 'articles' : undefined);
       if (platform) platforms.add(platform);
     }
     return url;

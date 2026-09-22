@@ -30,6 +30,7 @@ import { parseProviderUrl } from '../src/services/SocialProviders';
 import { parseYouTubeUrl } from '../src/services/YouTube';
 import type { YouTubeStatistics } from '../src/services/YouTube';
 import type { RepostRecord } from '../src/services/RepostRegistry';
+import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { APIEmbed } from 'discord.js';
 
 const CHANNEL_ID = '123456789012345678';
@@ -256,8 +257,8 @@ test('platform names select which hosts are rewritten', () => {
 });
 
 test('platform configuration defaults to every platform and rejects unknown names', () => {
-  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome']);
-  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome']);
+  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome']);
+  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome']);
   assert.deepEqual(parseRewritePlatforms(' tiktok , x '), ['tiktok', 'x']);
   assert.deepEqual(parseRewritePlatforms('x,x'), ['x']);
   for (const invalid of ['twitter', 'x,', ',x', 'x,,tiktok', 'X', 'all']) {
@@ -1767,5 +1768,156 @@ test('preserves multiline and combined closing Markdown around stripped queries'
   for (const [prefix, suffix] of [['**First line\n', '**'], ['*Read **', '***'], ['**Read *', '***']]) {
     assert.equal(rewriteSocialLinks(prefix + 'https://x.com/u/status/123?t=abc' + suffix),
       prefix + 'https://fixupx.com/u/status/123' + suffix);
+  }
+});
+
+const ARTICLE_URL = 'https://manhattan.institute/article/the-fiscal-impact-of-immigration-2025-update';
+const articleLookup = async (source: string) => ({ source, url: source, title: 'A public article',
+  publisher: 'Example publisher', description: 'Publisher-supplied excerpt.', image: 'https://images.publisher.com/hero.jpg' });
+
+test('articles replace only after the complete authored card is echoed and preserve context and attribution', async () => {
+  const f = fixture();
+  f.source.content = `Read this ${ARTICLE_URL}`;
+  const handler = createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: articleLookup,
+    verifyPreview: async () => { assert.fail('Article cards must not wait for native unfurls'); } });
+  await handler(f.source as unknown as Message);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nRead this <${ARTICLE_URL}>`);
+  assert.equal(f.sent[0].embeds?.length, 1);
+  assert.equal(f.replacement.embeds[0].toJSON().author?.name, 'Publisher: Example publisher');
+  assert.equal(f.replacement.embeds[0].toJSON().url, ARTICLE_URL);
+  assert.deepEqual(f.sent[0].allowedMentions?.users, [AUTHOR_ID]);
+  assert(f.events.includes('delete original'));
+});
+
+test('articles retain all originals when metadata is missing, partial or over the three-article limit', async () => {
+  for (const content of [ARTICLE_URL, `${ARTICLE_URL} https://publisher.com/unavailable`,
+    [1, 2, 3, 4].map(i => `https://publisher.com/article/${i}`).join(' ')]) {
+    const f = fixture(); f.source.content = content;
+    let calls = 0;
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: async source => {
+      calls++; return content === ARTICLE_URL || source.endsWith('unavailable') ? null : articleLookup(source);
+    } })(f.source as unknown as Message);
+    assert.equal(f.sent.length, 0);
+    assert(!f.events.includes('delete original'));
+    if (content.includes('/article/4')) assert.equal(calls, 0);
+  }
+});
+
+test('article lookup respects scope, permissions, bypass and platform preferences before fetching', async () => {
+  const cases = ['scope', 'permission', 'disabled', 'operator', 'optout', 'angles', 'code', 'spoiler', 'nolinky', 'social'] as const;
+  for (const scenario of cases) {
+    const f = fixture(); f.source.content = ARTICLE_URL;
+    if (scenario === 'permission') f.permissions.remove(PermissionFlagsBits.EmbedLinks);
+    if (scenario === 'angles') f.source.content = `<${ARTICLE_URL}>`;
+    if (scenario === 'code') f.source.content = '`' + ARTICLE_URL + '`';
+    if (scenario === 'spoiler') f.source.content = `||${ARTICLE_URL}||`;
+    if (scenario === 'nolinky') f.source.content += ' !nolinky';
+    if (scenario === 'social') f.source.content = 'https://www.erome.com/a/abc123';
+    await createLinkRepostHandler(scenario === 'scope' ? [] : CHANNEL_ID, f.log, undefined, {
+      platforms: scenario === 'operator' ? ['x'] : ['articles'],
+      isOptedOut: () => scenario === 'optout',
+      serverPreferences: () => scenario === 'disabled' ? { platforms: { articles: false } } : {},
+      lookupArticle: async () => { assert.fail(`No request expected: ${scenario}`); },
+    })(f.source as unknown as Message);
+    assert.equal(f.sent.length, 0, scenario);
+    assert(!f.events.includes('delete original'), scenario);
+  }
+});
+
+test('article lookup cannot publish after source edits, deletion, opt-out or changed preferences', async () => {
+  for (const scenario of ['edit', 'delete', 'preference', 'optout', 'shutdown']) {
+    const f = fixture(); f.source.content = ARTICLE_URL;
+    let changed = false;
+    const controller = new AbortController();
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+      platforms: ['articles'], signal: controller.signal,
+      isOptedOut: () => scenario === 'optout' && changed,
+      serverPreferences: () => scenario === 'preference' && changed ? { platforms: { articles: false } } : {},
+      lookupArticle: async source => {
+        changed = true;
+        if (scenario === 'edit') f.source.content = 'Changed text ' + source;
+        if (scenario === 'delete') f.source.fetch = async () => { throw { code: 10008 }; };
+        if (scenario === 'shutdown') controller.abort();
+        return articleLookup(source);
+      },
+    })(f.source as unknown as Message);
+    assert.equal(f.sent.length, 0, scenario);
+    assert(!f.events.includes('delete original'), scenario);
+  }
+});
+
+test('unrelated or incomplete Discord article cards cannot authorize source deletion', async () => {
+  for (const scenario of ['missing', 'wrong-title', 'wrong-image']) {
+    const f = fixture(); f.source.content = ARTICLE_URL;
+    const send = f.source.channel.send;
+    f.source.channel.send = async options => {
+      const result = await send(options);
+      const card = result.embeds[0].toJSON();
+      result.embeds = scenario === 'missing' ? [] : [{ toJSON: () => ({ ...card,
+        ...(scenario === 'wrong-title' ? { title: 'Other article' } : { image: { url: 'https://publisher.com/other.jpg' } }) }) }];
+      return result;
+    };
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: articleLookup })(f.source as unknown as Message);
+    assert(!f.events.includes('delete original'), scenario);
+    assert(f.events.includes('delete replacement'), scenario);
+  }
+});
+
+test('article reply mode keeps originals without Manage Messages permission', async () => {
+  const f = fixture(); f.source.content = ARTICLE_URL;
+  f.permissions.remove(PermissionFlagsBits.ManageMessages);
+  f.source.deletable = false;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: articleLookup,
+    serverPreferences: () => ({ mode: 'reply' }) })(f.source as unknown as Message);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].reply?.messageReference, f.source.id);
+  assert(!f.events.includes('delete original'));
+});
+
+test('mixed article and social links retain originals and give split-message guidance without Retry', async () => {
+  const f = fixture(); f.source.content = `${ARTICLE_URL} https://x.com/user/status/1`;
+  Object.assign(f.replacement, { edit: async () => f.replacement });
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles', 'x'], lookupArticle: articleLookup,
+    rememberRepost: async () => true })(f.source as unknown as Message);
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0].content!, /Share articles separately/);
+  assert.equal(f.sent[0].embeds, undefined);
+  assert(!f.events.includes('delete original'));
+  assert(!JSON.stringify(f.sent).includes('linky:retry'));
+});
+
+test('article replies remove stale cards when revocation races Details binding or the final controls edit', async () => {
+  for (const phase of ['details', 'controls']) {
+    for (const reason of ['edit', 'delete', 'preferences', 'opt-out', 'shutdown']) {
+      const f = fixture(), controller = new AbortController();
+      f.source.content = ARTICLE_URL;
+      let changed = false;
+      const revoke = () => {
+        changed = true;
+        if (reason === 'edit') { f.source.content += ' changed'; f.source.editedTimestamp = 1; }
+        if (reason === 'delete') f.source.fetch = async () => { throw { code: 10008 }; };
+        if (reason === 'shutdown') controller.abort();
+      };
+      Object.assign(f.replacement, { edit: async () => {
+        f.events.push('edit controls');
+        if (phase === 'controls') revoke();
+        return f.replacement;
+      } });
+      const diagnostics = { begin: () => ({ id: '12345678-1234-4123-8123-123456789abc', setPath() {},
+        startStage: () => ({ finish() {} }), finish() {} }), bind: async () => {
+        if (phase === 'details') revoke();
+        return true;
+      } } as unknown as DeliveryDiagnostics;
+      await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+        platforms: ['articles'], lookupArticle: articleLookup, signal: controller.signal, diagnostics,
+        rememberRepost: async () => true, isOptedOut: () => reason === 'opt-out' && changed,
+        serverPreferences: () => ({ mode: 'reply', ...(reason === 'preferences' && changed ? { platforms: { articles: false } } : {}) }),
+      })(f.source as unknown as Message);
+      assert.equal(changed, true, `${phase}: ${reason}`);
+      assert.equal(f.sent.length, 1, `${phase}: ${reason}`);
+      assert(f.events.includes('delete replacement'), `${phase}: ${reason} left a stale preview`);
+      assert(!f.events.includes('delete original'), `${phase}: ${reason} deleted its source`);
+    }
   }
 });

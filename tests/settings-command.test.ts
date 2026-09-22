@@ -81,7 +81,7 @@ test('settings is restricted to server installs and Manage Server with optional 
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'erome', 'erome_channels', 'translate_tweets', 'translate_instagram', 'instagram_presentation', 'youtube_display']);
+  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome', 'erome_channels', 'translate_tweets', 'translate_instagram', 'instagram_presentation', 'youtube_display']);
   const eromeChannels = command.options?.find(option => option.name === 'erome_channels');
   assert(eromeChannels && 'choices' in eromeChannels);
   assert.deepEqual(eromeChannels.choices?.map(({ name, value }) => ({ name, value })), [{ name: 'Age-restricted channels', value: 'age-restricted' },

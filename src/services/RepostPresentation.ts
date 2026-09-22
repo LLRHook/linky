@@ -4,6 +4,7 @@ import { parseSocialUrl } from './SocialProviders';
 import { parseYouTubeUrl } from './YouTube';
 import { parseYouTubeCommunityUrl } from './YouTubeCommunity';
 import { parseEromeUrl } from './Erome';
+import { parseArticleUrl } from './ArticlePreview';
 import { formatReplyExcerpt, type ReplyContext } from './ReplyContext';
 
 export function originalPostUrl(source: string): string {
@@ -16,7 +17,7 @@ export function repostControls(original: string, { retry = false, remove = true 
   const urls = new Set<string>();
   mapLinks(original, (url, position) => {
     if (visibleLink(original, position)) {
-      const source = parseSocialUrl(url)?.sourceUrl ?? parseYouTubeUrl(url)?.url ?? parseYouTubeCommunityUrl(url)?.url ?? parseEromeUrl(url)?.url;
+      const source = parseSocialUrl(url)?.sourceUrl ?? parseYouTubeUrl(url)?.url ?? parseYouTubeCommunityUrl(url)?.url ?? parseEromeUrl(url)?.url ?? parseArticleUrl(url);
       if (source) urls.add(originalPostUrl(source));
     }
     return url;
