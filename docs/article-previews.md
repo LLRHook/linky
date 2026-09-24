@@ -7,6 +7,7 @@ The card contains a publisher-labelled headline, an excerpt of up to 300 charact
 ## Supported pages and controls
 
 - Pages need `og:type=article` or Schema.org `Article`, `NewsArticle` or `BlogPosting` JSON-LD in their HTML head, with a usable title. Pages without article metadata, logins and private pages remain unchanged.
+- Media pages keep Discord's native player. Pages declaring `og:video`, a `video.*`/`music.*` `og:type` or a Twitter player card are skipped even when they also carry Article JSON-LD (Tenor does). Discord's own domains and hosts it plays natively (Tenor, Giphy, Imgur, Streamable, Vimeo, Spotify, SoundCloud and similar) are never article candidates.
 - Up to three distinct article links can share a message. All must be prepared before replacing it. Keep articles separate from social and other links because authored cards can suppress Discord's native unfurls. Mixed messages retain the source and receive split-message guidance when supported.
 - Keep unrelated website links separate too. When a message contains an article candidate without usable metadata, automatic processing leaves the entire message unchanged, including any social links beside it.
 - `/settings articles:false` or the setup Platforms menu disables articles. Server enablement, channel scope, personal `/autofix` choices, `!nolinky`, hidden links, source-edit checks and owner-only Remove still apply. Original post and Details remain available to viewers.
