@@ -23,11 +23,17 @@ export interface ArticleLookupOptions {
 }
 
 const MAX_BYTES = 512 * 1024;
+// Discord's own domains; its invites, messages and gifts render first-party cards.
+const DISCORD_HOSTS = ['discord.com', 'discordapp.com', 'discord.gg', 'discordapp.net', 'discord.media', 'discord.new',
+  'discord.gift', 'discord.gifts', 'discord.co', 'discord.dev', 'discordstatus.com', 'discordcdn.com', 'discordsays.com', 'dis.gd'];
+// Hosts Discord unfurls with a native GIF, video or audio player; an authored card would replace that player.
+const NATIVE_MEDIA_HOSTS = ['tenor.com', 'giphy.com', 'gph.is', 'klipy.com', 'imgur.com', 'gfycat.com', 'streamable.com',
+  'vimeo.com', 'medal.tv', 'spotify.com', 'spotify.link', 'soundcloud.com', 'music.apple.com'];
 const EXCLUDED = new Set([
   'x.com', 'twitter.com', 't.co', 'twimg.com', 'instagram.com', 'cdninstagram.com', 'facebook.com', 'fb.com', 'fb.watch',
   'tiktok.com', 'tiktokv.com', 'bsky.app', 'bsky.social', 'reddit.com', 'redd.it', 'redditmedia.com',
   'twitch.tv', 'twitchcdn.net', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'ytimg.com',
-  'erome.com', 'erome.net', 'discord.com', 'discordapp.com', 'discord.gg', 'discordapp.net',
+  'erome.com', 'erome.net', ...DISCORD_HOSTS, ...NATIVE_MEDIA_HOSTS,
   'kkclip.com', 'kkclips.com', 'ddinstagram.com', 'vxtiktok.com', 'fxtiktok.com', 'rxddit.com',
   ...SOCIAL_PROVIDERS.flatMap(provider => [...provider.hosts]),
 ]);
@@ -222,8 +228,12 @@ function imageUrl(value: unknown, current: URL): string | null {
 function parseMetadata(html: string, source: string, current: URL): ArticlePreview | null {
   const head = headMetadata(html), get = (key: string) => head.meta.get(key);
   const canonical = sameOriginUrl(head.canonical, current) ?? sameOriginUrl(get('og:url'), current) ?? current.href;
+  const type = get('og:type')?.toLowerCase().trim();
+  // Discord already plays media pages natively; an Article JSON-LD (as on Tenor) must not replace that player.
+  if (/^(?:video|music)(?:\.|$)/.test(type ?? '') || get('twitter:card')?.toLowerCase().trim() === 'player' ||
+      ['og:video', 'og:video:url', 'og:video:secure_url', 'twitter:player:stream'].some(key => get(key))) return null;
   const article = structuredArticle(head.json, current, canonical);
-  if (get('og:type')?.toLowerCase().trim() !== 'article' && !article) return null;
+  if (type !== 'article' && !article) return null;
   const title = metadataText(get('og:title')) || metadataText(article?.headline) || head.title;
   if (!title) return null;
   const publisher = metadataText(get('og:site_name'), 1000) || metadataText(object(article?.publisher).name, 1000) || current.hostname;
