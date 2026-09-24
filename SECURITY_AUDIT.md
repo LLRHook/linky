@@ -4,7 +4,7 @@
 
 Reviewed on 15 September 2026, on the maintenance branch based on `6f1c1927f367f3c5a240bdd9b9386c80c9fec705`. Scope includes the bot, regional media workers, persisted state, provider responses, dependencies, Git history, CI, deployment and production-container packages. This is a point-in-time audit, not a claim that unknown vulnerabilities are absent. No evidence of exploitation was found or inferred from scanner results.
 
-The repository has no `bugs.md` tracker. This file owns the audit findings and follow-up conditions. The website has its own audit in the separate website repository.
+This file owns the audit findings and their evidence; follow-up work is tracked in `bugs.md` and `features.md` since 2026-09-24. The website has its own audit in the separate website repository.
 
 ## Results
 

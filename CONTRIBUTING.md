@@ -31,3 +31,13 @@ Test `/fix` and **Apps → Fix with Linky** in guild and user installation conte
 The security baseline and exact scanner commands are in [SECURITY_AUDIT.md](SECURITY_AUDIT.md). CI scans the complete Git history with Gitleaks and checks npm advisories. Test-only secret-scan suppressions must identify the exact synthetic fixture; never suppress a whole credential rule. Dependency and base-image updates arrive through Dependabot and still require the normal checks.
 
 For bugs, include expected and actual behavior, a reproducible public link where possible, sanitized logs and any Discord error code. Report security issues privately to `victor.n.ivanov@gmail.com`.
+
+## Project-cycle files
+
+`bugs.md`, `features.md`, `CHANGELOG.md` and `VERIFICATION.md` are interlocked: defects and features are filed, work is verified against `VERIFICATION.md`, and shipped or fixed entries are migrated into `CHANGELOG.md`.
+
+- File a `BUG-<id>` in `bugs.md / ## Open` when you find a bug, in the same change; never silently fix one. When the fix lands, tick it, add a `**Fix:**` line and set `Status: fixed-pending-migration`.
+- File a `FEAT-<id>` in `features.md / ## Open` before writing feature code. When it ships, tick it, add an `**Implementation:**` line and set `Status: shipped-pending-migration`.
+- Ids are UNIX-epoch timestamps (`date +%s`), never sequential. Append new entries at the end of their section and change `Status:` in place. The trackers carry `merge=union` so concurrent appends merge; the only physical move between sections happens at the release verification run.
+- Every ticket carries a `Bump:` (`major | minor | patch`). Migration copies a one-liner with the id and bump marker into `CHANGELOG.md / Unreleased`.
+- A green `VERIFICATION.md` run appends a `Verified` entry to `CHANGELOG.md` and updates the test counts in `VERIFICATION.md`. When a doc claim drifts from the code, fix it with evidence or file a `docs` bug; do not edit a claim without checking.

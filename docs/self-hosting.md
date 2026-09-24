@@ -104,7 +104,7 @@ npm run check:workers # regional worker entrypoints
 bash tests/deploy.test.sh
 ```
 
-CI tests Node.js 22 and 24, deployment safeguards, and the production container. See [contribution guide](../CONTRIBUTING.md) for live preview checks.
+CI tests Node.js 22, 24 and 26, deployment safeguards, and the production container. See [contribution guide](../CONTRIBUTING.md) for live preview checks.
 
 The hosted bot deploys after CI passes for a push to `main`. Deployment accepts only the current tested commit, builds before replacing the bot, and checks its Discord connection. Failed startup restores the previous image and deployed Compose configuration. The server's `.env` and data volume are preserved.
 
