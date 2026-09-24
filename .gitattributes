@@ -2,3 +2,12 @@
 *.sh text eol=lf
 *.yml text eol=lf
 Dockerfile text eol=lf
+
+# Append-mostly project-cycle trackers: auto-merge concurrent appends instead
+# of conflicting. Ids are UNIX-epoch timestamps and entries are append-only +
+# sorted-on-read, so union keeping both sides is safe. The one operation union
+# can't merge is moving an entry between sections — do that only at release
+# migration (single-owner). See CONTRIBUTING.md.
+bugs.md      merge=union
+features.md  merge=union
+CHANGELOG.md merge=union
