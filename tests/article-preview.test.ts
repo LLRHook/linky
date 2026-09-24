@@ -31,10 +31,11 @@ test('article candidates normalize only HTTPS host syntax and discard fragments'
   ]) assert.equal(parseArticleUrl(value), null, value);
 });
 
-test('social platforms and all provider aliases including arbitrary subdomains are excluded', () => {
+test('social platforms, Discord domains, native media players and all provider aliases including arbitrary subdomains are excluded', () => {
   for (const host of ['x.com', 'twitter.com', 't.co', 'instagram.com', 'tiktok.com', 'bsky.app', 'reddit.com', 'redd.it',
     'youtube.com', 'youtu.be', 'twitch.tv', 'erome.com', 'discord.com', 'discord.gg', 'fixupx.com', 'vxtwitter.com', 'fixvx.com',
-    'instagram7.com', 'oginstagram.com', 'tnktok.com', 'bskx.app', 'fxbsky.app', 'vxreddit.com', 'fxtwitch.seria.moe']) {
+    'instagram7.com', 'oginstagram.com', 'discordapp.net', 'discord.gift', 'discord.new', 'dis.gd',
+    'tenor.com', 'giphy.com', 'imgur.com', 'streamable.com', 'vimeo.com', 'spotify.com', 'soundcloud.com', 'klipy.com', 'tnktok.com', 'bskx.app', 'fxbsky.app', 'vxreddit.com', 'fxtwitch.seria.moe']) {
     assert.equal(parseArticleUrl(`https://${host}/article/news`), null, host);
     assert.equal(parseArticleUrl(`https://anything.${host}/article/news`), null, host);
   }
@@ -114,6 +115,21 @@ test('bounded JSON-LD article requires Schema.org context, headline and matching
     { '@context': 'https://schema.org', ...article, '@type': 'WebPage' },
     { '@context': 'https://schema.org', ...article, headline: '' }]) {
     assert.equal(await fixture(async () => response(render(value))).lookup(source), null);
+  }
+});
+
+test('media pages keep their native Discord player even when they also declare an Article', async () => {
+  const ld = `<script type="application/ld+json">${JSON.stringify({ '@context': 'http://schema.org', '@type': 'Article',
+    headline: 'Crying GIF', url: source })}</script>`;
+  assert.equal((await fixture(async () => response(html(ld))).lookup(source))?.title, 'Crying GIF');
+  for (const media of ['<meta property="og:type" content="video.other">', '<meta property="og:type" content="music.song">',
+    '<meta property="og:video" content="https://media.publisher.com/a.mp4">',
+    '<meta property="og:video:secure_url" content="https://media.publisher.com/a.mp4">',
+    '<meta name="twitter:card" content="player">',
+    '<meta name="twitter:player:stream" content="https://media.publisher.com/a.mp4">']) {
+    assert.equal(await fixture(async () => response(html(media + ld))).lookup(source), null, media);
+    assert.equal(await fixture(async () => response(html(media + '<meta property="og:type" content="article"><meta property="og:title" content="A">')))
+      .lookup(source), null, media);
   }
 });
 
