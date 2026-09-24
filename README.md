@@ -102,6 +102,8 @@ npm run check:workers
 bash tests/deploy.test.sh
 ```
 
-CI tests Node.js 22 and 24, deployment safeguards and the production container. See [CONTRIBUTING.md](CONTRIBUTING.md) for live checks and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for dependency, secret-scan and supply-chain results. The bot deploys to Hostinger after the tested `main` commit passes CI; website deployment is separate.
+CI tests Node.js 22, 24 and 26, deployment safeguards and the production container. See [CONTRIBUTING.md](CONTRIBUTING.md) for live checks and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for dependency, secret-scan and supply-chain results. The bot deploys to Hostinger after the tested `main` commit passes CI; website deployment is separate.
+
+[VERIFICATION.md](VERIFICATION.md) is the release-readiness protocol: it runs the CI commands verbatim, maps every shipped change to its proving test and re-ticks the privacy and safety constraints above. Known defects are tracked in [bugs.md](bugs.md), planned work in [features.md](features.md), and verified fixes and features are migrated into [CHANGELOG.md](CHANGELOG.md).
 
 [MIT license](LICENSE).
