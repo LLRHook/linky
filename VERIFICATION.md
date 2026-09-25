@@ -43,7 +43,7 @@ server is available.
 
 - [ ] 0.1 Record the commit under test: `git rev-parse --short HEAD`. Every result and the final Verified entry bind to it.
 - [ ] 0.2 Clean tree on `main`: `git status --short` prints nothing except untracked scratch files.
-- [ ] 0.3 Toolchain: `node --version` is 22, 24 or 26 (CI matrix); `npm --version` prints a version; `docker version --format '{{.Server.Version}}'` prints a version (needed for Stage 2.5).
+- [ ] 0.3 Toolchain: `node --version` is 22, 24 or 26 (CI matrix); if the host runs another major, run Stages 1–2 inside `node:22`, `node:24` and `node:26` containers with the repo copied in (no host `node_modules`), which also matches CI's Linux runner; `npm --version` prints a version; `docker version --format '{{.Server.Version}}'` prints a version (needed for Stage 2.5).
 - [ ] 0.4 Dependencies: `npm ci` exits 0.
 - [ ] 0.5 No `.env` is required for Stages 1–2; `git check-ignore -q .env && echo ignored` prints `ignored`.
 - [ ] 0.6 Production profile: Stage 2.5 runs the built image (`NODE_ENV=production`, non-root `node` user, read-only root, all capabilities dropped), not `npm run dev`.
@@ -62,8 +62,8 @@ server is available.
 - [ ] 1.1 Strict production build (CI step "TypeScript build (strict)"): `npm run build` exits 0. `tsconfig.json` has `strict`, `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noFallthroughCasesInSwitch`.
 - [ ] 1.2 Regional worker type-check (CI step "Check regional video workers"): `npm run check:workers` exits 0.
 - [ ] 1.3 Dependency audit (CI step "Audit dependencies"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
-- [ ] 1.4 Secrets: CI runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$'` prints nothing.
-- [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|CaptionTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger" ` shows no new hard-coded provider host outside the catalogue modules. Any hit is a finding.
+- [ ] 1.4 Secrets: CI runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966).
+- [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|CaptionTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `SocialLinkService.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding.
 - [ ] 1.6 Bounded network I/O: every outbound fetch has a timeout, redirect policy and byte cap (`BoundedJson.ts`, `ArticlePreview.ts`, `MobileShareLinks.ts`, `RegionalHttp.ts`). New fetch sites must reuse those helpers.
 - [ ] 1.7 Performance anti-pattern scan of the message hot path (`src/bot.ts` message handler → `SocialLinkService`): no per-message disk read in the loop, no unbounded regex on message bodies, no await per link before detection completes. Record any finding as a `BUG` (area `perf`).
 - [ ] 1.8 No lint or formatter is wired in this repo (no ESLint/Prettier config); do not invent one here.
@@ -129,7 +129,7 @@ observation in a Discord client.
 - [ ] 3.10 Failure path: an unavailable post keeps the original and shows **Retry preview** owned by the sharer.
 - [ ] 3.11 Suppression: `!nolinky`, `<angle-bracket>` links and links inside code stay untouched; `/autofix enabled:false` stops automatic fixing for that member.
 - [ ] 3.12 `/diagnose link:` reports permissions, settings and recent provider observations.
-- [ ] 3.13 Provider metadata control: `npm run check:providers` after `npm run build` exits 0 and every corpus entry prints `ok`. Network-dependent; a provider outage is logged, not a block, unless it reproduces from the bot host.
+- [ ] 3.13 Provider metadata control: `npm run check:providers` after `npm run build` exits 0 and every corpus entry prints `ok`. Network-dependent; a provider outage is logged, not a block, unless it reproduces from the bot host. A failure that public DNS or a second network also shows (for example NXDOMAIN) counts as reproduced and is filed as a `BUG` (area `providers`).
 - [ ] 3.14 Operator report (bot host only): `docker exec linky node ops/delivery-archive-report.mjs --days 1 --json` returns a report whose `platforms` counts are consistent with 3.4–3.8.
 
 ## Stage 4 — Adversarial, stress & performance checks
@@ -213,6 +213,25 @@ from the developer machine) and Stage 4 was executed by test evidence only.
 | PR #58 keep native GIF/media players | `tests/article-preview.test.ts` "media pages keep their native Discord player even when they also declare an Article" |
 | PR #55 dotenv 18 | `tests/config.test.ts`; Stage 2.5 module check loads `dotenv/config` in the image |
 | PR #59 @types/node 26.6.2, tsx 4.23.15 | `npm run build`, `npm test` |
+
+**2026-09-25 — run, SHA 4ae273d (main after PR #60; only docs/trackers changed since d4d6e32).** Host is macOS
+with Node 25.9.0 (outside the CI matrix), so Stages 1–2 ran CI's exact commands in `node:22` (v22.23.3),
+`node:24` (v24.21.0) and `node:26` (v26.10.0) containers; Docker 29.7.2. Stage 3 was not walked in a Discord
+client; 3.13 was executed. Stage 4 by test evidence; 4.6 and 4.7 not executed (no test token; no `src/` change
+since the deployed d4d6e32).
+
+| Stage                    | Pass / Fail | Notes |
+|--------------------------|-------------|-------|
+| 0 Pre-flight             | Pass        | clean tree, `.env` ignored, containers for the Node matrix |
+| 1 Static review          | Pass        | build, check:workers, audit 0 vulnerabilities on 22/24/26; 1.4 command corrected (BUG-1790322966) |
+| 2 Automated tests        | Pass        | 1,190 + 62 (54 pass / 8 skipped) on each of 22/24/26, two identical runs each; deploy 24 `PASS:`; container module check (v26.9.0 production, uid 1000), archive 1, video 7; CI and Deploy success for 4ae273d |
+| 3 Functional E2E         | Fail / partial | walkthrough not run; 3.13 exit 1: Instagram providers down (BUG-1790322965) |
+| 4 Adversarial / perf     | Pass (tests)| evidence files present; no perf budget (FEAT-1790270881 open) |
+| 5 Hard constraints       | Pass        | by test evidence; Dockerfile `USER node`, compose read-only / cap_drop / no-new-privileges |
+| 6 Reporting hygiene      | Pass        | BUG-1790322965 and BUG-1790322966 filed; no Verified entry (Stage 3 incomplete) |
+
+2a: no ticket shipped since d4d6e32 besides PR #60 (docs/trackers); BUG-1790270870 proven by
+`grep -n "Node.js 22, 24 and 26" README.md docs/self-hosting.md`. 2b: `git diff --stat d4d6e32..HEAD -- src tests` is empty.
 
 ---
 
