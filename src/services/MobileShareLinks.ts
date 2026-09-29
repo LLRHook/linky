@@ -22,6 +22,9 @@ export interface MobileShareLinkDependencies {
 
 const INSTAGRAM_HOSTS = new Set(['instagram.com', 'www.instagram.com', 'm.instagram.com', 'mobile.instagram.com']);
 const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com', 'm.reddit.com']);
+// https://github.com/MinnDevelopment/fxreddit documents /r|u|user/.../s/... redirects.
+// Resolution only: vxReddit still generates the final preview, checked by post ID.
+const REDDIT_REDIRECT_HOST = 'rxddit.com';
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_LINKS = 5;
 const MAX_HOPS = 4;
@@ -91,13 +94,19 @@ export function hasMobileShareLinks(content: string, enabledPlatforms: readonly 
   return found;
 }
 
-/** Resolve only first-party HTTP redirects; never download HTML or use a session cookie. */
+function redditRedirectSource(url: URL, fallback: boolean): URL {
+  return fallback && url.hostname === REDDIT_REDIRECT_HOST
+    ? new URL(`https://www.reddit.com${url.pathname}${url.search}${url.hash}`) : url;
+}
+
+/** Bounded first-party redirects with one fixed Reddit resolver fallback; no HTML or cookies. */
 async function resolveShare(url: URL, platform: MobilePlatform, signal: AbortSignal,
   dependencies: MobileShareLinkDependencies): Promise<string | null> {
   const seen = new Set<string>();
   let current = url;
+  let redditFallback = false;
   for (let hop = 0; hop < MAX_HOPS; hop++) {
-    if (signal.aborted || seen.has(current.href) || sharePlatform(current) !== platform) return null;
+    if (signal.aborted || seen.has(current.href) || sharePlatform(redditRedirectSource(current, redditFallback)) !== platform) return null;
     seen.add(current.href);
     const addresses = await regionalAbortable((dependencies.resolve4 ?? resolve4)(current.hostname), signal);
     // Only IPv4 is used. Reject mixed answers as well as entirely private answers;
@@ -119,11 +128,19 @@ async function resolveShare(url: URL, platform: MobilePlatform, signal: AbortSig
     // The consumed response-body limit is zero, including on failures, compressed
     // responses and login pages. Set-Cookie is discarded and never replayed.
     cancelRegionalResponse(response);
-    if (signal.aborted || !REDIRECT_STATUSES.has(response.status)) return null;
+    if (signal.aborted) return null;
+    if (platform === 'reddit' && !redditFallback &&
+        (response.status === 403 || response.status === 429 || response.status >= 500)) {
+      redditFallback = true;
+      // Only the original share path is sent to the fixed resolver, without tracking queries.
+      current = new URL(`https://${REDDIT_REDIRECT_HOST}${url.pathname}${url.hash}`);
+      continue;
+    }
+    if (!REDIRECT_STATUSES.has(response.status)) return null;
     const location = response.headers.get('location');
     const next = location && redirectUrl(location, current);
     if (!next) return null;
-    const canonical = canonicalDestination(next, platform);
+    const canonical = canonicalDestination(redditRedirectSource(next, redditFallback), platform);
     if (canonical) return canonical;
     current = next;
   }

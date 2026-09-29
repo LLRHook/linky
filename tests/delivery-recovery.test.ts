@@ -978,18 +978,20 @@ test('repeated Instagram links near the content limit use bounded fallback and d
 });
 
 test('automatic mobile links resolve before translation and media verification, with canonical original-post controls', async () => {
-  for (const platform of ['instagram', 'reddit'] as const) {
+  for (const [platform, blocked] of [['instagram', false], ['reddit', false], ['reddit', true]] as const) {
     const share = platform === 'instagram' ? 'https://www.instagram.com/share/p/Mobile123' : 'https://www.reddit.com/r/aww/s/Mobile123';
     const canonical = platform === 'instagram' ? 'https://www.instagram.com/p/ABC/' : 'https://www.reddit.com/r/aww/comments/abc123/title/';
     const f = delivery(share);
     let calls = 0;
-    const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async () => {
-      calls++; return new Response(null, { status: 302, headers: { location: canonical + '?tracking=removed' } });
+    const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async options => {
+      calls++;
+      if (blocked && options.hostname === 'www.reddit.com') return new Response(null, { status: 403 });
+      return new Response(null, { status: 302, headers: { location: canonical + '?tracking=removed' } });
     } });
     const provider = platform === 'instagram' ? 'https://www.instagram7.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/';
     f.state.render = () => [{ url: provider, image: { url: 'https://cdn.example/post.jpg' } }];
     await f.create({ normalizeMobileLinks })(f.source);
-    assert.equal(calls, 1); assert.equal(f.state.originalDeleted, true);
+    assert.equal(calls, blocked ? 2 : 1); assert.equal(f.state.originalDeleted, true);
     assert.equal(f.expectedChecks[0][0].source, canonical);
     assert.equal(f.expectedChecks[0][0].url, provider);
     assert.equal(f.expectedChecks[0].length, 1);
@@ -1003,6 +1005,20 @@ test('mobile resolution failure retains the exact original and never publishes a
   await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({ resolve4: async () => ['127.0.0.1'],
     connect: async () => assert.fail('Private DNS must not connect') }) })(f.source);
   assert.equal(f.source.content, share); assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
+});
+
+test('a recovered Reddit share keeps its original when Discord returns an unrelated preview', async () => {
+  const share = 'https://www.reddit.com/r/aww/s/Mobile123';
+  const f = delivery(share);
+  f.state.render = () => [{ url: 'https://vxreddit.com/comments/unrelated', video: { url: 'https://cdn.example/video.mp4' } }];
+  const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'],
+    connect: async options => options.hostname === 'www.reddit.com' ? new Response(null, { status: 403 })
+      : new Response(null, { status: 302, headers: { location: 'https://rxddit.com/comments/abc123' } }),
+  });
+  await f.create({ normalizeMobileLinks })(f.source);
+  assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.source.content, share);
+  assert(f.sent.some(sent => sent.message.content.includes('could not confirm a preview')));
 });
 
 test('automatic scope, bypass and copying gates run before an injected mobile resolver', async () => {

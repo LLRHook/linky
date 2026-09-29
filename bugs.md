@@ -57,6 +57,17 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** open
 
+### [BUG-1790722056] Reddit app shares silently remain unchanged when Reddit blocks redirect resolution
+- [x] **Severity:** med
+- **Area:** providers, previews
+- **File(s):** src/services/MobileShareLinks.ts, tests/mobile-share-links.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts
+- **Observation:** The reported public Reddit app share was recognized, but Hostinger received HTTP 403 without a canonical redirect. Automatic fixing then had no supported post URL to publish. The same post's vxReddit video worked directly in GAMBA.
+- **Expected:** Resolve supported public app shares when a vetted redirect service can supply the canonical post, verify its preview, and retain the source if resolution or delivery fails.
+- **Repro / Notes:** A real Hostinger invocation of createMobileShareLinkNormalizer returned normalized=false and HTTP 403 for the reported share. Regression fixtures cover blocked first-party lookup, allowed fallback, malformed redirects, DNS, deadlines, body cancellation, automatic delivery and manual commands.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Use one vetted FixReddit redirect fallback within the existing network budgets, then verify the canonical vxReddit preview. The reported share automatically replaced in GAMBA in 2.411 seconds and played to completion in Chrome Discord; an unavailable-share control retained its source. Regression, build, worker, dependency-audit and deploy-safeguard checks passed.
+
 ---
 
 ## Migrated to changelog

@@ -48,6 +48,88 @@ test('supported Reddit mobile share redirects and identity-bearing aliases norma
   assert.equal(f.calls.length, 0);
 });
 
+test('blocked Reddit app shares resolve through the fixed redirect service before normal rewriting', async () => {
+  const original = redditShare + '?utm_source=ios#thread';
+  const f = fixture(async options => options.hostname === 'www.reddit.com'
+    ? new Response(null, { status: 403 })
+    : redirect('https://rxddit.com/r/aww/comments/abc123/title/?utm_source=redirect'));
+  const result = await f.normalizer(original, ['reddit']);
+  assert.equal(result.content, redditPost + '#thread');
+  assert.deepEqual([...result.originals], [[redditPost + '#thread', original]]);
+  assert.deepEqual(f.calls.map(call => [call.hostname, call.path]), [
+    ['www.reddit.com', '/r/aww/s/Share123?utm_source=ios'], ['rxddit.com', '/r/aww/s/Share123'],
+  ]);
+  const headers = new Headers(f.calls[1].headers as Record<string, string>);
+  assert.match(headers.get('user-agent')!, /Linky/);
+  assert.equal(headers.has('cookie'), false);
+  assert.equal(headers.has('authorization'), false);
+});
+
+test('Reddit resolver accepts only validated canonical redirects and preserves failures', async () => {
+  for (const location of [redditPost, '/r/aww/comments/abc123/title/',
+    'https://rxddit.com/r/aww/comments/abc123/title/']) {
+    const f = fixture(async options => options.hostname === 'www.reddit.com'
+      ? new Response(null, { status: 403 }) : redirect(location));
+    assert.equal((await f.normalizer(redditShare, ['reddit'])).content, redditPost);
+  }
+  for (const location of ['https://evil.test/comments/abc123', 'https://rxddit.com:443/comments/abc123',
+    'https://user@rxddit.com/comments/abc123', 'https://www.rxddit.com/comments/abc123',
+    'http://rxddit.com/comments/abc123', 'https://rxddit.com/foo/../comments/abc123',
+    'https://rxddit.com/%2e%2e/comments/abc123', 'https://rxddit.com/r/aww/',
+    'https://rxddit.com/login?next=' + redditPost, 'https://www.instagram.com/p/abc123/']) {
+    const f = fixture(async options => options.hostname === 'www.reddit.com'
+      ? new Response(null, { status: 403 }) : redirect(location));
+    assert.equal((await f.normalizer(redditShare, ['reddit'])).content, redditShare, location);
+    assert.equal(f.calls.length, 2);
+  }
+  for (const status of [200, 403, 404, 429, 502]) {
+    const f = fixture(async options => new Response(null, { status: options.hostname === 'www.reddit.com' ? 403 : status }));
+    const result = await f.normalizer(redditShare, ['reddit']);
+    assert.equal(result.content, redditShare); assert.equal(result.originals.size, 0);
+    assert.equal(f.calls.length, 2);
+  }
+});
+
+test('Reddit fallback revalidates DNS and keeps the existing shared hop and time budgets', async () => {
+  const requests: string[] = [], dns: string[] = [];
+  const privateResolver = createMobileShareLinkNormalizer({
+    resolve4: async host => { dns.push(host); return host === 'rxddit.com' ? ['127.0.0.1'] : ['1.1.1.1']; },
+    connect: async options => { requests.push(String(options.hostname)); return new Response(null, { status: 403 }); },
+  });
+  assert.equal((await privateResolver(redditShare, ['reddit'])).content, redditShare);
+  assert.deepEqual(dns, ['www.reddit.com', 'rxddit.com']);
+  assert.deepEqual(requests, ['www.reddit.com']);
+  const loop = fixture(async options => options.hostname === 'www.reddit.com'
+    ? new Response(null, { status: 403 }) : redirect('/r/aww/s/Share' + loop.calls.length));
+  assert.equal((await loop.normalizer(redditShare, ['reddit'])).content, redditShare);
+  assert.equal(loop.calls.length, 4);
+  const stalled = createMobileShareLinkNormalizer({ timeoutMs: 10, resolve4: async () => ['1.1.1.1'],
+    connect: async options => options.hostname === 'www.reddit.com' ? new Response(null, { status: 403 })
+      : new Promise<Response>(() => undefined),
+  });
+  assert.equal((await stalled(redditShare, ['reddit'])).content, redditShare);
+});
+
+test('fallback is restricted to blocked Reddit shares and never reads provider bodies', async () => {
+  for (const status of [403, 429, 500, 502, 503]) {
+    let cancelled = 0;
+    const f = fixture(async options => new Response(new ReadableStream({
+      pull() { assert.fail('Redirect resolution must not download HTML'); }, cancel() { cancelled++; },
+    }, { highWaterMark: 0 }), { status: options.hostname === 'www.reddit.com' ? status : 302,
+      headers: { location: 'https://rxddit.com/comments/abc123', 'set-cookie': 'must-not-replay' } }));
+    assert.equal((await f.normalizer(redditShare, ['reddit'])).content, 'https://www.reddit.com/comments/abc123');
+    assert.equal(cancelled, 2);
+  }
+  for (const status of [200, 400, 401, 404, 410]) {
+    const f = fixture(async () => new Response(null, { status }));
+    assert.equal((await f.normalizer(redditShare, ['reddit'])).content, redditShare);
+    assert.equal(f.calls.length, 1);
+  }
+  const instagram = fixture(async () => new Response(null, { status: 403 }));
+  assert.equal((await instagram.normalizer(share, ['instagram', 'reddit'])).content, share);
+  assert.equal(instagram.calls.length, 1);
+});
+
 test('public address is pinned independently on every requested redirect hop, preserving TLS hostname', async () => {
   let dns = 0, requests = 0;
   const normalizer = createMobileShareLinkNormalizer({
