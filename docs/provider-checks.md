@@ -1,6 +1,6 @@
 # Preview providers and verification
 
-Reviewed September 18, 2026. Provider availability changes independently of Linky. A successful HTML response, a Discord embed and actual video playback are separate observations. Dated samples below retain their original test dates.
+Reviewed September 29, 2026. Provider availability changes independently of Linky. A successful HTML response, a Discord embed and actual video playback are separate observations. Dated samples below retain their original test dates.
 
 Linky's catalog accepts fixed HTTPS hosts and post-shaped paths. It does not fetch arbitrary URLs supplied by members. Discord generates previews; Linky checks the returned embed's post identity before removing the source. Known video paths and videos identified by translation metadata require a video reference. Caption-mode translated text is checked as delivered content rather than waiting for an intentionally suppressed native embed.
 
@@ -10,7 +10,7 @@ Linky's catalog accepts fixed HTTPS hosts and post-shaped paths. It does not fet
 | Instagram | `www.instagram7.com`, `oginstagram.com` | OGInstagram produced matching image previews for two public posts that failed on Instagram7, plus video metadata for a public Reel in Discord. These samples establish a useful fallback, not an uptime or playback guarantee. Legacy `/tv/` paths have not been verified with OGInstagram. |
 | TikTok | `tnktok.com` | fxTikTok supports long post URLs and mobile shares. Short URLs still depend on redirect resolution. No verified alternate is configured. |
 | Bluesky | `bskx.app`, `fxbsky.app` | VixBluesky returned image and video metadata for current public examples. FxBluesky returned text but no media URL in sampled HTML; actual Discord checks decide whether a fallback is useful. |
-| Reddit | `vxreddit.com` | Maintainer image and video examples returned corresponding media metadata. `rxddit.com` returned 502 and was excluded. `redd.it` post IDs and mobile post aliases normalize directly. App `/s/` shares use bounded public redirects when Reddit permits them; galleries and feeds remain excluded. |
+| Reddit | `vxreddit.com`; `rxddit.com` for blocked share redirects only | `redd.it` post IDs and mobile post aliases normalize directly. App `/s/` shares first try Reddit; HTTP 403, 429 or 5xx can use FixReddit's public redirect within the same four-hop/four-second budget. Only validated public Reddit post destinations proceed to vxReddit. No verified alternate media provider is configured; gallery shortcut URLs and feeds remain excluded. |
 | Twitch clips | `fxtwitch.seria.moe` | The maintainer's clip returned canonical clip identity and video metadata. Its media URL uses the provider's shortening service. Linky requires no Twitch or shortening-service credential. Streams and VODs are excluded. |
 | YouTube | Native video preview; public-page community cards | Counts and optional comments use YouTube Data API v3. Public `/post/` text and images use a separate cookie-free page lookup. Statistics and authored community cards never substitute for video playback evidence. |
 
@@ -19,6 +19,14 @@ Sources: [FxEmbed documentation](https://docs.fxembed.com/guide/getting-started/
 ## Repeatable checks
 
 On September 18, a public Instagram mobile share resolved from Hostinger through HTTP 302. A Reddit app share returned HTTP 403 and stayed unchanged; its canonical `/comments/` URL and deterministic `redd.it` form avoid that resolution step. Tests reject unsafe redirects, non-public DNS answers, loops, excess hops and expired requests. These observations do not guarantee all mobile shares resolve.
+
+### Reddit app-share recovery
+
+On September 29, the reported `/r/nflMenace_com/s/fJmIbjYad6` share reproduced the HTTP 403 on Hostinger. Changing GET to HEAD or using an explicit LinkyBot user agent did not resolve it. [FixReddit's documented share route](https://github.com/MinnDevelopment/fxreddit#example-embeds) returned a canonical post redirect, while [vxReddit's implementation](https://github.com/dylanpdx/vxReddit/blob/main/vxreddit.py) resolves shares before retrieving Reddit media and generating previews. The direct vxReddit control for this post played to completion in GAMBA's Chrome Discord client.
+
+Linky uses the existing first-party lookup, then one fixed `rxddit.com` redirect fallback on a blocked or server-error response. The fallback receives only the original share path, with no tracking query, cookies or credentials. Every requested hop rechecks and pins public IPv4 DNS; no HTML or media body is downloaded. Malformed destinations, login pages, loops, deadlines and unsuccessful fallback responses preserve the original. The resolved post goes through the existing vxReddit preview and post-identity checks before automatic source deletion. This is a redirect fallback, not a claim that FixReddit's media service is consistently available; its maintainer describes best-effort hosting and no active maintenance commitment.
+
+The scoped candidate also automatically replaced the reported app share in GAMBA in 2.411 seconds, with matching video metadata before source deletion. Its 4.907-second clip played to completion in Chrome Discord at 1106×720. An unavailable-share control produced no replacement and retained the source. These selected checks do not establish general latency or mobile-client playback.
 
 Controlled Discord checks that day confirmed the previously reported X text post both directly and with attribution in under half a second. One Instagram Reel produced useful video metadata around 7.5 seconds, after the old check had ended; the Instagram Gateway window now allows eight seconds and still wakes immediately on success. Empty Instagram media cards remained unusable after 20 seconds. The historical captioned image post had a working OGInstagram gallery while Instagram7 lacked media. Keep those causes separate; a longer wait cannot repair an empty provider response.
 
