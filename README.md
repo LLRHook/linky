@@ -54,9 +54,9 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | Articles | Publisher metadata in a Linky card | Public HTTPS pages with Open Graph article metadata or Article JSON-LD; up to three articles together |
 | Erome (self-host only) | Your own media gallery, with attachment fallback | HTTPS `/a/album-id` albums; video and supported JPEG/PNG images, additional items on demand; follows Replace or Reply mode |
 
-Instagram and Reddit mobile shares follow a bounded, cookie-free HTTPS lookup to an allowed public post on the same platform. A failed or unsafe redirect leaves the original untouched.
+Instagram and Reddit mobile shares follow a bounded, cookie-free HTTPS lookup to an allowed public post on the same platform. If Reddit rejects an app-share lookup, Linky can send the share path without tracking parameters to FixReddit (`rxddit.com`) to resolve it, then use vxReddit for the preview. A failed or unsafe redirect leaves the original untouched.
 
-The September 18 Hostinger check resolved an Instagram share but received HTTP 403 for the tested Reddit app share. Use a full Reddit `/comments/` URL or a `redd.it` link when the source refuses resolution; Linky does not bypass login or access restrictions.
+The September 29 Hostinger check reproduced Reddit's HTTP 403 and resolved the reported app share through the fallback. Its vxReddit video played in a GAMBA Discord control. This is one tested public post, not a guarantee for every share. Full Reddit `/comments/` URLs and `redd.it` links avoid the share-resolution request. Private or unavailable posts can still fail.
 
 Supported links must use HTTPS and point to posts or public articles. Social tracking query strings are removed; article queries, valid YouTube start timestamps and surrounding text are retained. Automatic fixing starts with new messages from people; editing an unrelated old message does not start a repost. Bots and webhooks are ignored.
 

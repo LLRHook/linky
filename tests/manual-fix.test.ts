@@ -423,18 +423,22 @@ test('moderator permission does not authorize removing a forged non-Linky respon
 });
 
 test('manual mobile shares acknowledge before network work and verify the resolved post', async () => {
-  for (const context of [false, true]) for (const canSend of [false, true]) {
-    const share = 'https://www.instagram.com/share/p/Mobile123?igsh=original';
-    const source = 'https://www.instagram.com/p/ABC/', fixed = 'https://www.instagram7.com/p/ABC/';
+  for (const platform of ['instagram', 'reddit']) for (const context of [false, true]) for (const canSend of [false, true]) {
+    const share = platform === 'reddit' ? 'https://www.reddit.com/r/aww/s/Mobile123'
+      : 'https://www.instagram.com/share/p/Mobile123?igsh=original';
+    const source = platform === 'reddit' ? 'https://www.reddit.com/comments/abc123' : 'https://www.instagram.com/p/ABC/';
+    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123' : 'https://www.instagram7.com/p/ABC/';
     const f = command(share, context), preview = previewChecks(f);
     if (!canSend) f.input.memberPermissions = new PermissionsBitField(0n);
-    const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async () => {
+    const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async options => {
       assert.deepEqual(f.events.map(event => event.name), ['defer']);
       assert.deepEqual(f.events[0].payload, canSend ? {} : { flags: MessageFlags.Ephemeral });
+      if (options.hostname === 'www.reddit.com') return new Response(null, { status: 403 });
       return new Response(null, { status: 302, headers: { location: source + '?igsh=resolved' } });
     } });
     f.state.render = () => [{ url: fixed, image: { url: 'https://cdn.example/photo.jpg' } }];
-    await execute(f.interaction, config, { ...preview.dependencies, normalizeMobileLinks });
+    await execute(f.interaction, { ...config, rewritePlatforms: [...config.rewritePlatforms, 'reddit'] },
+      { ...preview.dependencies, normalizeMobileLinks });
     assert.deepEqual(f.events.map(event => event.name), ['defer', 'edit']);
     assert.equal(f.response.content, fixed);
     assert.equal(preview.checks[0][0].source, source);
