@@ -10,7 +10,7 @@ import { ARTICLE_MIXED_GUIDANCE, articleEmbeds, hasMixedArticleLinks, prepareArt
 import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from '../services/YouTubeCommunity';
 import { originalPostUrl } from '../services/RepostPresentation';
-import { expectedPreviews, inspectPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
+import { expectedPreviews, verifyPublishedPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
 import { parseEromeUrl } from '../services/Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer, type EromeProgress } from '../services/EromeDelivery';
 import type { ServerPreferences } from '../services/ServerSettings';
@@ -380,13 +380,10 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     const verify = async (): Promise<PreviewResult> => {
       if (context.signal?.aborted || eromeSource && !eromeAllowed()) return { ok: false, missing: [...expected], videoMetadata: false };
       const stage = context.trace?.startStage('preview');
-      const native = expected.filter(item => !item.explicitEmbeds), explicit = expected.filter(item => item.explicitEmbeds);
-      const observed = native.length ? await (previewWatch?.verify(message) ?? verifyPreview(message, native))
-        : { ok: explicit.length > 0 || eromeVerified, missing: [], videoMetadata: false };
-      const latest = explicit.length && native.length ? await message.fetch(true).catch(() => null) : message;
-      const cards = explicit.length ? inspectPreviews(latest?.embeds.map(embed => embed.toJSON()) ?? [], explicit)
-        : { ok: true, missing: [], videoMetadata: false };
-      const result = { ...observed, ok: observed.ok && cards.ok, missing: [...observed.missing, ...cards.missing] };
+      const result = await verifyPublishedPreviews(message, expected, {
+        verifyNative: native => previewWatch?.verify(message) ?? verifyPreview(message, native),
+        contentVerified: eromeVerified,
+      });
       stage?.finish(context.signal?.aborted ? 'timeout' : result.ok ? 'ok' : 'unavailable');
       return { ...result, ok: !context.signal?.aborted && result.ok && (!erome || eromeVerified), videoMetadata: result.videoMetadata || eromeVerified && erome?.kind !== 'image' };
     };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EmbedType, type APIEmbed, type Message } from 'discord.js';
-import { expectedPreviews, inspectPreviews, nextProviderContent, PreviewHealth, waitForPreviews } from '../src/services/PreviewRecovery';
+import { expectedPreviews, inspectPreviews, nextProviderContent, PreviewHealth, verifyPublishedPreviews, waitForPreviews } from '../src/services/PreviewRecovery';
 import { translationEmbeds } from '../src/services/TweetPresentation';
 import { formatYouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { formatArticlePreview } from '../src/services/ArticlePreview';
@@ -10,6 +10,64 @@ const source = 'https://www.instagram.com/reel/DdFKS1ABmK4/';
 const fixed = 'https://www.instagram7.com/reel/DdFKS1ABmK4/';
 const expected = expectedPreviews(source, fixed);
 const media: APIEmbed = { url: fixed, video: { url: 'https://cdn.example/video.mp4' } };
+
+test('preview expectations retain source order and choose the last visible provider for each post identity', () => {
+  const first = 'https://x.com/first/status/123#one';
+  const alias = 'https://twitter.com/second/status/123#two';
+  const other = 'https://www.reddit.com/r/test/comments/abc123/post/';
+  const preferred = 'https://vxtwitter.com/third/status/123#last';
+  const rendered = `https://fixupx.com/first/status/123 ${preferred} https://vxreddit.com/comments/abc123 ` +
+    '<https://fixupx.com/hidden/status/123> ||https://vxtwitter.com/hidden/status/123||';
+  assert.deepEqual(expectedPreviews(`${first} ${other} ${alias} ${first}`, rendered), [
+    { source: first, url: preferred, platform: 'x', providerId: 'fixvx' },
+    { source: other, url: 'https://vxreddit.com/comments/abc123', platform: 'reddit', providerId: 'vxreddit' },
+    { source: 'https://x.com/second/status/123#two', url: preferred, platform: 'x', providerId: 'fixvx' },
+  ]);
+  assert.deepEqual(expectedPreviews(`<${first}> ||${other}||`, rendered), []);
+});
+
+test('a full Discord-sized set of distinct links keeps every post identity', () => {
+  const sources = Array.from({ length: 40 }, (_, index) => `https://x.com/user/status/${index + 1000}`);
+  const rendered = sources.map(url => url.replace('x.com', 'fixupx.com'));
+  assert(sources.join(' ').length < 2000);
+  const actual = expectedPreviews(sources.join(' '), rendered.join(' '));
+  assert.deepEqual(actual.map(item => item.source), sources);
+  assert.deepEqual(actual.map(item => item.url), rendered);
+});
+
+test('mixed native and authored previews reconcile once and preserve native provider evidence', async () => {
+  const source = 'https://publisher.example.com/article/test';
+  const cards = formatArticlePreview({ source, url: source, title: 'A public article', publisher: 'Publisher' });
+  const authored = expectedPreviews(source, `<${source}>`, [], [{ source, embeds: cards }]);
+  const requested = [...expected, ...authored];
+  let fetches = 0, verifications = 0;
+  const message = { embeds: [], fetch: async () => {
+    fetches++; return { embeds: cards.map(card => ({ toJSON: () => card })) };
+  } } as unknown as Message;
+  const nativeResult = inspectPreviews([media], expected);
+  const result = await verifyPublishedPreviews(message, requested, { verifyNative: async native => {
+    verifications++; assert.deepEqual(native, expected); return nativeResult;
+  } });
+  assert.equal(result.ok, true); assert.equal(result.videoMetadata, true);
+  assert.deepEqual(result.attributed, nativeResult.attributed);
+  assert.equal(fetches, 1); assert.equal(verifications, 1);
+  message.fetch = async () => { throw new Error('Missing output'); };
+  const failed = await verifyPublishedPreviews(message, requested, { verifyNative: async () => nativeResult });
+  assert.equal(failed.ok, false); assert.deepEqual(failed.missing, authored);
+});
+
+test('authored-only and delivered-text previews do not wait for native media or refetch the message', async () => {
+  const source = 'https://publisher.example.com/article/test';
+  const cards = formatArticlePreview({ source, url: source, title: 'A public article', publisher: 'Publisher' });
+  const requested = expectedPreviews(source, `<${source}>`, [], [{ source, embeds: cards }]);
+  const message = { embeds: cards.map(card => ({ toJSON: () => card })), fetch: async () => {
+    assert.fail('No native reconciliation needed');
+  } } as unknown as Message;
+  const verifyNative = async () => { assert.fail('No native previews requested'); };
+  assert.equal((await verifyPublishedPreviews(message, requested, { verifyNative })).ok, true);
+  assert.equal((await verifyPublishedPreviews(message, [], { verifyNative })).ok, false);
+  assert.equal((await verifyPublishedPreviews(message, [], { verifyNative, contentVerified: true })).ok, true);
+});
 
 test('a provider homepage, error card or unrelated embed does not qualify as a useful preview', () => {
   assert.equal(expected.length, 1);
