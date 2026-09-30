@@ -15,7 +15,7 @@ const application = process.env.LINKY_BENCH_APP ?? resolve('dist');
 const schedulerModule = process.env.LINKY_BENCH_SCHEDULER ?? join(application, 'services/EromeWorkScheduler.js');
 const { createEromeWorkScheduler } = require(schedulerModule);
 const { createVideoAttachment, createOriginalVideoInspector } = require(join(application, 'services/VideoAttachment.js'));
-const { rewriteSocialLinks } = require(join(application, 'services/SocialLinkService.js'));
+const { rewriteSocialLinks } = require(join(application, 'services/SocialProviders.js'));
 const execute = promisify(execFile), environment = { PATH: process.env.PATH, LANG: 'C', LC_ALL: 'C' };
 const rounded = number => Math.round(number * 1000) / 1000;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');

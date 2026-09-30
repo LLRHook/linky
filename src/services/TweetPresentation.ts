@@ -1,5 +1,8 @@
 import { AttachmentBuilder, escapeMarkdown, type APIEmbed } from 'discord.js';
 import type { TweetTranslation } from './TweetTranslation';
+import type { RewritePlatform } from './LinkConfiguration';
+import { mapLinks, visibleLink } from './LinkTokens';
+import { parseSocialUrl, rewriteSocialLinks } from './SocialProviders';
 
 export function tweetParts(tweet: TweetTranslation): TweetTranslation[] {
   return [tweet, ...(tweet.quote ? tweetParts(tweet.quote) : [])];
@@ -71,4 +74,75 @@ export function translationAttachment(tweets: TweetTranslation[]): AttachmentBui
   return new AttachmentBuilder(Buffer.from(text, 'utf8'), {
     name: 'translation.txt', description: 'Full English translation, including quoted posts.',
   });
+}
+
+/** Build one compact card, or captions alongside native video/mixed-link previews. */
+export async function translateRepost(
+  original: string,
+  platforms: readonly RewritePlatform[],
+  fetchTranslation: (statusId: string) => Promise<TweetTranslation | null>,
+  contentLimit: number,
+): Promise<{ content: string; embeds?: APIEmbed[]; translationFiles?: AttachmentBuilder[];
+  textStatusIds?: string[]; videoStatusIds?: string[]; mediaSources?: string } | null> {
+  const content = rewriteSocialLinks(original, platforms);
+  const links = new Map<string, string>();
+  let linkCount = 0;
+  mapLinks(original, (url, position) => {
+    linkCount++;
+    const id = parseSocialUrl(url)?.statusId;
+    if (id && visibleLink(original, position)) links.set(id, rewriteSocialLinks(url, platforms));
+    return url;
+  });
+  const results = await Promise.all([...links.keys()].map(async (id) => {
+    try { return [id, await fetchTranslation(id)] as const; }
+    catch { return [id, null] as const; }
+  }));
+  const translations = new Map(results.filter((entry): entry is readonly [string, TweetTranslation] => entry[1] !== null));
+  if (!translations.size) return { content };
+  const [id, translation] = translations.entries().next().value!;
+  if (linkCount === 1 && !tweetParts(translation).some((part) => part.hasVideo)) {
+    const embeds = translationEmbeds(translation, links.get(id)!);
+    if (embeds) return { content, embeds };
+  }
+  const galleries = new Set<string>();
+  const mediaSources = new Set<string>();
+  const textStatusIds: string[] = [];
+  const videoStatusIds: string[] = [];
+  const rewritten = mapLinks(original, (url, position) => {
+    if (!visibleLink(original, position)) return url;
+    const rewritten = rewriteSocialLinks(url, platforms);
+    const id = parseSocialUrl(url)?.statusId;
+    const translation = id && translations.get(id);
+    if (!translation) return rewritten;
+    if (!translation.hasMedia) textStatusIds.push(id!);
+    if (translation.hasVideo) videoStatusIds.push(id!);
+    for (const quote of tweetParts(translation).slice(1)) {
+      if (quote.hasMedia && quote.url) {
+        mediaSources.add(quote.url);
+        const quoteId = parseSocialUrl(quote.url)?.statusId;
+        if (quote.hasVideo && quoteId) videoStatusIds.push(quoteId);
+        galleries.add(quote.url.replace(/^https:\/\/(?:x|twitter)\.com\//, 'https://g.fixupx.com/'));
+      }
+    }
+    return translation.hasMedia ? rewritten.replace('https://fixupx.com/', 'https://g.fixupx.com/') : `<${rewritten}>`;
+  });
+  const tweets = [...translations.values()];
+  const captions = tweets.map((tweet) => translationCaption(tweet)).join('\n\n');
+  const withMedia = `${rewritten}${galleries.size ? '\n' + [...galleries].join('\n') : ''}`;
+  const translated = `${withMedia}\n\n${captions}`;
+  const rendered = { textStatusIds, videoStatusIds, mediaSources: [...mediaSources].join('\n') };
+  if (translated.length <= contentLimit) return { content: translated, ...rendered };
+  if (withMedia.length > contentLimit) return null;
+
+  // Keep complete long translations downloadable instead of silently abandoning them.
+  const base = withMedia;
+  const note = '\n-# Full English translation attached.';
+  const budget = contentLimit - base.length - note.length - 3;
+  const preview = budget >= 100 ? splitDescription(captions, Math.min(budget, 800))?.[0] : undefined;
+  const summary = `${base}${preview ? '\n\n' + preview + '\u2026' : ''}${note}`;
+  return {
+    content: summary.length <= contentLimit ? summary : base,
+    translationFiles: [translationAttachment(tweets)],
+    ...rendered,
+  };
 }

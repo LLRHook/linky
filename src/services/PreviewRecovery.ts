@@ -32,20 +32,21 @@ export interface PreviewResult {
 export function expectedPreviews(original: string, rendered: string, communityPosts: readonly PreparedCommunityPost[] = [],
   articles: readonly PreparedArticle[] = []): ExpectedPreview[] {
   const expectations = new Map<string, ExpectedPreview>();
+  const renderedPosts = new Map<string, Omit<ExpectedPreview, 'source'>>();
+  mapLinks(rendered, (url, position) => {
+    if (!visibleLink(rendered, position)) return url;
+    const provider = parseProviderUrl(url), identity = provider && previewIdentity(url);
+    if (identity) renderedPosts.set(identity, { url, platform: provider.platform, providerId: provider.providerId });
+    return url;
+  });
   mapLinks(original, (url, position) => {
     if (!visibleLink(original, position)) return url;
     const social = parseSocialUrl(url);
     const youtube = parseYouTubeUrl(url);
     const community = parseYouTubeCommunityUrl(url);
     if (social) {
-      mapLinks(rendered, (observed, position) => {
-        if (!visibleLink(rendered, position)) return observed;
-        const provider = parseProviderUrl(observed);
-        if (provider && previewIdentity(observed) === previewIdentity(social.sourceUrl)) {
-          expectations.set(social.sourceUrl, { source: social.sourceUrl, url: observed, platform: provider.platform, providerId: provider.providerId });
-        }
-        return observed;
-      });
+      const identity = previewIdentity(social.sourceUrl), renderedPost = identity && renderedPosts.get(identity);
+      if (renderedPost) expectations.set(social.sourceUrl, { source: social.sourceUrl, ...renderedPost });
     } else if (youtube && rendered.includes(youtube.url)) {
       expectations.set(youtube.url, { source: youtube.url, url: youtube.url, platform: 'youtube', providerId: 'youtube' });
     } else if (community) {
@@ -145,13 +146,27 @@ function matchesArticle(embeds: readonly APIEmbed[], expected: ExpectedPreview):
 }
 
 export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly ExpectedPreview[]): PreviewResult {
+  const missing = expected.filter(item => !matchesExpectation(embeds, item));
   return {
-    ok: expected.length > 0 && expected.every(item => matchesExpectation(embeds, item)),
-    missing: expected.filter(item => !matchesExpectation(embeds, item)),
+    ok: expected.length > 0 && missing.length === 0,
+    missing,
     videoMetadata: embeds.some(embed => Boolean(embed.video?.url) && expected.some(item => matches(embed, item))),
     attributed: expected.filter(item => embeds.some(embed => embed.type !== 'rich' && matches(embed, item) &&
       (parseProviderUrl(embed.url!)?.providerId === item.providerId || (item.providerId === 'youtube' && parseYouTubeUrl(embed.url!) !== null)))),
   };
+}
+
+/** Combine native media evidence with exact authored cards for both delivery entry points. */
+export async function verifyPublishedPreviews(message: Message, expected: readonly ExpectedPreview[], {
+  verifyNative, contentVerified = false,
+}: { verifyNative: (expected: readonly ExpectedPreview[]) => Promise<PreviewResult>; contentVerified?: boolean }): Promise<PreviewResult> {
+  const native = expected.filter(item => !item.explicitEmbeds), explicit = expected.filter(item => item.explicitEmbeds);
+  const observed = native.length ? await verifyNative(native)
+    : { ok: explicit.length > 0 || contentVerified, missing: [], videoMetadata: false };
+  const latest = explicit.length && native.length ? await message.fetch(true).catch(() => null) : message;
+  const cards = explicit.length ? inspectPreviews(latest?.embeds.map(embed => embed.toJSON()) ?? [], explicit)
+    : { ok: true, missing: [], videoMetadata: false };
+  return { ...observed, ok: observed.ok && cards.ok, missing: [...observed.missing, ...cards.missing] };
 }
 
 /** A bounded wait for Discord's asynchronously generated embeds, never a playback claim. */

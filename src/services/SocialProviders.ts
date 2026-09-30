@@ -1,3 +1,6 @@
+import { mapLinks, visibleLink } from './LinkTokens';
+import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
+
 export type SocialPlatform = 'x' | 'instagram' | 'tiktok' | 'bluesky' | 'reddit' | 'twitch';
 
 export interface SocialUrl {
@@ -125,4 +128,14 @@ export function parseProviderUrl(raw: string): (SocialUrl & { providerId: Social
     : /^\/[A-Za-z0-9_-]+\/?(?:[?#]|$)/.test(path) ? 'vm.tiktok.com' : 'www.tiktok.com';
   const source = parseSocialUrl(`https://${sourceHost}${path}`);
   return source ? { ...source, providerId: provider.id } : null;
+}
+
+/** Rewrite supported post URLs, retaining surrounding text and fragments. */
+export function rewriteSocialLinks(content: string, platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS): string {
+  const enabled = new Set(platforms);
+  return mapLinks(content, (url, position) => {
+    if (!visibleLink(content, position)) return url;
+    const source = parseSocialUrl(url);
+    return source && enabled.has(source.platform) ? getProviderCandidates(source)[0]?.url ?? url : url;
+  });
 }

@@ -3,7 +3,6 @@ import { randomBytes } from 'node:crypto';
 import {
   Attachment,
   AttachmentBuilder,
-  AttachmentFlags,
   Message,
   MessageFlags,
   MessageType,
@@ -19,11 +18,12 @@ import type { StatsPublication } from './YouTubeStats';
 import { findYouTubeLinks, formatYouTubeStatistics, parseYouTubeUrl, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
 import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from './YouTubeCommunity';
-import { getProviderCandidates, parseSocialUrl } from './SocialProviders';
+import { parseSocialUrl, rewriteSocialLinks } from './SocialProviders';
+import { downloadAttachment, isSpoiler, MAX_COPY_ATTACHMENT_BYTES } from './RepostAttachments';
 import { evaluateScope } from './ServerScope';
 import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
-import { expectedPreviews, inspectPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
-import { splitDescription, translationAttachment, translationCaption, translationEmbeds, tweetParts } from './TweetPresentation';
+import { expectedPreviews, verifyPublishedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
+import { translateRepost } from './TweetPresentation';
 import { findReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from './EromeDelivery';
@@ -44,137 +44,16 @@ import { findArticleLinks, parseArticleUrl, type ArticleLookup } from './Article
 import { ARTICLE_MIXED_GUIDANCE, articleEmbeds, hasMixedArticleLinks, prepareArticlePosts } from './ArticlePosts';
 
 export { REWRITE_PLATFORMS, parseRewritePlatforms, parseDiscordIds, type RewritePlatform } from './LinkConfiguration';
+export { rewriteSocialLinks } from './SocialProviders';
+export { downloadAttachment } from './RepostAttachments';
 export { originalPostUrl, formatLinkRepost, repostControls } from './RepostPresentation';
 
 const MAX_CONTENT_LENGTH = 2_000;
 const INSTAGRAM_PREVIEW_NOTICE = '\n-# Instagram preview could not be verified; the original post is still here.';
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const DOWNLOAD_TIMEOUT_MS = 15_000;
 const RECENT_MESSAGE_LIMIT = 1_000;
-
-/** Rewrite supported post URLs, retaining surrounding text and fragments. */
-export function rewriteSocialLinks(content: string, platforms: readonly RewritePlatform[] = REWRITE_PLATFORMS): string {
-  const enabled = new Set(platforms);
-  return mapLinks(content, (url, position) => {
-    if (!visibleLink(content, position)) return url;
-    const source = parseSocialUrl(url);
-    return source && enabled.has(source.platform) ? getProviderCandidates(source)[0]?.url ?? url : url;
-  });
-}
 
 export function bypassLinky(content: string): boolean {
   return /(?:^|\s)!nolinky(?=\s|$)/i.test(content);
-}
-
-/** Build one compact card, or captions alongside native video/mixed-link previews. */
-async function translateRepost(
-  original: string,
-  platforms: readonly RewritePlatform[],
-  fetchTranslation: (statusId: string) => Promise<TweetTranslation | null>,
-  contentLimit: number,
-): Promise<{ content: string; embeds?: APIEmbed[]; translationFiles?: AttachmentBuilder[];
-  textStatusIds?: string[]; videoStatusIds?: string[]; mediaSources?: string } | null> {
-  const content = rewriteSocialLinks(original, platforms);
-  const links = new Map<string, string>();
-  let linkCount = 0;
-  mapLinks(original, (url, position) => {
-    linkCount++;
-    const id = parseSocialUrl(url)?.statusId;
-    if (id && visibleLink(original, position)) links.set(id, rewriteSocialLinks(url, platforms));
-    return url;
-  });
-  const results = await Promise.all([...links.keys()].map(async (id) => {
-    try { return [id, await fetchTranslation(id)] as const; }
-    catch { return [id, null] as const; }
-  }));
-  const translations = new Map(results.filter((entry): entry is readonly [string, TweetTranslation] => entry[1] !== null));
-  if (!translations.size) return { content };
-  const [id, translation] = translations.entries().next().value!;
-  if (linkCount === 1 && !tweetParts(translation).some((part) => part.hasVideo)) {
-    const embeds = translationEmbeds(translation, links.get(id)!);
-    if (embeds) return { content, embeds };
-  }
-  const galleries = new Set<string>();
-  const mediaSources = new Set<string>();
-  const textStatusIds: string[] = [];
-  const videoStatusIds: string[] = [];
-  const rewritten = mapLinks(original, (url, position) => {
-    if (!visibleLink(original, position)) return url;
-    const rewritten = rewriteSocialLinks(url, platforms);
-    const id = parseSocialUrl(url)?.statusId;
-    const translation = id && translations.get(id);
-    if (!translation) return rewritten;
-    if (!translation.hasMedia) textStatusIds.push(id!);
-    if (translation.hasVideo) videoStatusIds.push(id!);
-    for (const quote of tweetParts(translation).slice(1)) {
-      if (quote.hasMedia && quote.url) {
-        mediaSources.add(quote.url);
-        const quoteId = parseSocialUrl(quote.url)?.statusId;
-        if (quote.hasVideo && quoteId) videoStatusIds.push(quoteId);
-        galleries.add(quote.url.replace(/^https:\/\/(?:x|twitter)\.com\//, 'https://g.fixupx.com/'));
-      }
-    }
-    return translation.hasMedia ? rewritten.replace('https://fixupx.com/', 'https://g.fixupx.com/') : `<${rewritten}>`;
-  });
-  const tweets = [...translations.values()];
-  const captions = tweets.map((tweet) => translationCaption(tweet)).join('\n\n');
-  const withMedia = `${rewritten}${galleries.size ? '\n' + [...galleries].join('\n') : ''}`;
-  const translated = `${withMedia}\n\n${captions}`;
-  const rendered = { textStatusIds, videoStatusIds, mediaSources: [...mediaSources].join('\n') };
-  if (translated.length <= contentLimit) return { content: translated, ...rendered };
-  if (withMedia.length > contentLimit) return null;
-
-  // Keep complete long translations downloadable instead of silently abandoning them.
-  const base = withMedia;
-  const note = '\n-# Full English translation attached.';
-  const budget = contentLimit - base.length - note.length - 3;
-  const preview = budget >= 100 ? splitDescription(captions, Math.min(budget, 800))?.[0] : undefined;
-  const summary = `${base}${preview ? '\n\n' + preview + '\u2026' : ''}${note}`;
-  return {
-    content: summary.length <= contentLimit ? summary : base,
-    translationFiles: [translationAttachment(tweets)],
-    ...rendered,
-  };
-}
-
-function isSpoiler(attachment: Attachment): boolean {
-  return attachment.spoiler || attachment.flags.has(AttachmentFlags.IsSpoiler);
-}
-
-/** Discord.js URL uploads do not check HTTP status, so download and verify first. */
-export async function downloadAttachment(
-  attachment: Attachment,
-  fetchFile: typeof fetch = fetch
-): Promise<AttachmentBuilder> {
-  if (attachment.size > MAX_ATTACHMENT_BYTES) throw new Error('Attachment exceeds copy limit.');
-  const response = await fetchFile(attachment.url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-  if (!response.ok || !response.body) {
-    await response.body?.cancel();
-    throw new Error(`Attachment download failed (${response.status}).`);
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > attachment.size || size > MAX_ATTACHMENT_BYTES) {
-        await reader.cancel();
-        throw new Error('Attachment download exceeded its expected size.');
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  if (size !== attachment.size) throw new Error('Attachment download was incomplete.');
-  return new AttachmentBuilder(Buffer.concat(chunks), {
-    name: attachment.name,
-    description: attachment.description ?? undefined,
-  }).setSpoiler(isSpoiler(attachment));
 }
 
 function canCopy(message: Message): boolean {
@@ -493,7 +372,7 @@ export function createLinkRepostHandler(
       const translationBytes = (translated.translationFiles ?? []).reduce((total, file) =>
         total + (Buffer.isBuffer(file.attachment) ? file.attachment.byteLength : 0), 0);
       if (content.length > MAX_CONTENT_LENGTH || attachments.length + translationFiles.length > 10 ||
-          attachments.reduce((total, attachment) => total + attachment.size, translationBytes) > MAX_ATTACHMENT_BYTES) {
+          attachments.reduce((total, attachment) => total + attachment.size, translationBytes) > MAX_COPY_ATTACHMENT_BYTES) {
         log.warn(context, 'Skipping link replacement: content or attachments exceed copy limits');
         return;
       }
@@ -619,13 +498,10 @@ export function createLinkRepostHandler(
       const verify = async (expected: ExpectedPreview[]): Promise<PreviewResult> => {
         if (delivery.context.signal?.aborted) return { ok: false, missing: [...expected], videoMetadata: false };
         const stage = expected.length ? delivery.context.trace?.startStage('preview') : undefined;
-        const native = expected.filter(item => !item.explicitEmbeds), explicit = expected.filter(item => item.explicitEmbeds);
-        const observed = native.length ? await (previewWatch?.verify(replacement) ?? verifyPreview(replacement, native))
-          : { ok: explicit.length > 0 || textStatusIds.size > 0 || eromeVerified, missing: [], videoMetadata: false };
-        const latest = explicit.length && native.length ? await replacement.fetch(true).catch(() => null) : replacement;
-        const cards = explicit.length ? inspectPreviews(latest?.embeds.map(embed => embed.toJSON()) ?? [], explicit)
-          : { ok: true, missing: [], videoMetadata: false };
-        const result = { ...observed, ok: observed.ok && cards.ok, missing: [...observed.missing, ...cards.missing] };
+        const result = await verifyPublishedPreviews(replacement, expected, {
+          verifyNative: native => previewWatch?.verify(replacement) ?? verifyPreview(replacement, native),
+          contentVerified: textStatusIds.size > 0 || eromeVerified,
+        });
         stage?.finish(delivery.context.signal?.aborted ? 'timeout' : result.ok ? 'ok' : 'unavailable');
         return { ...result, ok: !delivery.context.signal?.aborted && result.ok && (!(erome || originalMedia) || eromeVerified), videoMetadata: result.videoMetadata || eromeVerified && (originalMedia?.kind ?? erome?.kind) !== 'image' };
       };
