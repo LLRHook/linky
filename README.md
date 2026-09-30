@@ -104,6 +104,8 @@ bash tests/deploy.test.sh
 
 CI tests Node.js 22, 24 and 26, deployment safeguards and the production container. See [CONTRIBUTING.md](CONTRIBUTING.md) for live checks and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for dependency, secret-scan and supply-chain results. The bot deploys to Hostinger after the tested `main` commit passes CI; website deployment is separate.
 
+[PERFORMANCE_AUDIT.md](PERFORMANCE_AUDIT.md) records measured local CPU costs, the delivery module boundaries and remaining measurement gaps. Its synthetic timings are separate from provider delays and Discord playback checks.
+
 [VERIFICATION.md](VERIFICATION.md) is the release-readiness protocol: it runs the CI commands verbatim, maps every shipped change to its proving test and re-ticks the privacy and safety constraints above. Known defects are tracked in [bugs.md](bugs.md), planned work in [features.md](features.md), and verified fixes and features are migrated into [CHANGELOG.md](CHANGELOG.md).
 
 [MIT license](LICENSE).

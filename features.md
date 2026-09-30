@@ -72,6 +72,7 @@ Priority guide: crit / high / med / low.
   - A test in `npm test` fails when the p95 exceeds the confirmed budget.
   - `VERIFICATION.md` Stage 4 records the budget and the measured baseline.
 - **Test plan:** The assertion itself plus a fixture check that the corpus covers every platform in `SocialProviders`.
+- **Audit note (2026-09-30):** `PERFORMANCE_AUDIT.md` and `benchmarks/link-handling.cjs` establish exploratory CPU measurements and a reusable synthetic corpus. This ticket remains open because the budget and CI guard have not shipped.
 - **Out of scope:** Measuring Discord publication latency; Erome scheduling (already benchmarked).
 - **Bump:** patch
 - **Status:** open
@@ -89,6 +90,32 @@ Priority guide: crit / high / med / low.
 - **Test plan:** Deploy-script mock case; unit test for the readiness writer with a fake clock.
 - **Out of scope:** External uptime monitoring; exposing an HTTP endpoint on the hosted bot.
 - **Bump:** minor
+- **Status:** open
+
+### [FEAT-1790785729] Include share resolution and provider cache decisions in delivery measurements
+- [ ] **Priority:** med
+- **Area:** perf, previews, archive
+- **File(s):** src/commands/fix.ts, src/services/SocialLinkService.ts, src/services/DeliveryContext.ts, src/services/DeliveryDiagnostics.ts, tests/delivery-diagnostics.test.ts
+- **Why:** The 2026-09-30 audit found that both entry points normalize mobile shares before starting the delivery attempt. Redirect latency is therefore absent from reported duration, and unsuccessful resolution may have no recorded attempt. Ordinary-provider caches do not supply observed hit/miss coverage.
+- **Approach:** Define the eligible-attempt boundary before network work, time share resolution, and expose bounded cache decisions from existing translation/metadata lookups. Keep ignored-message and unavailable-source coverage explicit in operator reports. Retain the archive schema's exclusion of URLs, captions and Discord identities.
+- **Library / dependency notes:** Reuse the current trace/archive interfaces and injected clocks; no metrics service is needed.
+- **Acceptance criteria:** A delayed share resolver appears in elapsed/stage timing; failed resolution has a documented outcome; supported cache decisions are observed rather than inferred; reports explain comparable denominators.
+- **Test plan:** Inject delayed/failed resolvers, clocks and cached lookups into automatic/manual entry points; verify archive privacy and source preservation.
+- **Out of scope:** Changing provider ordering, preview deadlines or cache sizes without measurements.
+- **Bump:** patch
+- **Status:** open
+
+### [FEAT-1790785730] Define a consistent formatting check for contributors
+- [ ] **Priority:** low
+- **Area:** tooling, tests
+- **File(s):** package.json, CONTRIBUTING.md, .github/workflows/ci.yml
+- **Why:** The 2026-09-30 cleanup found strict TypeScript unused-code checks but no formatter or lint/fix command. Formatting is maintained manually.
+- **Approach:** Select a formatter after checking current docs and repository conventions, then separate its mechanical adoption from behavior changes. Keep a check command available locally and in CI.
+- **Library / dependency notes:** No dependency selected or installed by this cleanup; evaluate and pin an actively maintained tool before implementation.
+- **Acceptance criteria:** Contributors have documented format/check commands; CI catches formatting drift; an initial mechanical diff is separately reviewable.
+- **Test plan:** Verify idempotent formatting, check failure on a deliberately malformed fixture, and the existing build/test suite.
+- **Out of scope:** Adding architectural lint rules or reformatting code during this cleanup.
+- **Bump:** patch
 - **Status:** open
 
 ---
