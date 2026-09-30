@@ -192,6 +192,13 @@ export class RepostRegistry {
         const existing = next.records.find(r => r.sourceId === copy.sourceId || r.replacementId === copy.replacementId);
         if (existing) {
           if (FIELDS.every(key => existing[key as keyof RepostRecord] === copy[key as keyof RepostRecord])) return true;
+          if (existing.sourceId === copy.sourceId && existing.replacementId === copy.replacementId &&
+            existing.guildId === copy.guildId && existing.channelId === copy.channelId && existing.authorId === copy.authorId &&
+            existing.mode === 'replace' && copy.mode === 'reply' &&
+            !next.refresh.includes(existing.replacementId) && !next.remove.includes(existing.replacementId)) {
+            existing.mode = 'reply';
+            return true;
+          }
           if (existing.sourceId !== copy.sourceId || existing.replacementId === copy.replacementId ||
             existing.guildId !== copy.guildId || existing.channelId !== copy.channelId || existing.authorId !== copy.authorId ||
             copy.mode !== 'reply' || !next.refresh.includes(existing.replacementId) || next.remove.includes(existing.replacementId)) return false;

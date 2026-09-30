@@ -46,6 +46,7 @@ function delivery(content = ORIGINAL_X) {
     render: (_round: number, _message: Message): APIEmbed[] => [xPreview],
     duringPreview: async (_round: number): Promise<void> => {},
     duringEdit: async (_edit: MessageEditOptions): Promise<void> => {},
+    deleteSource: async (): Promise<void> => {},
     remember: async (_record: RepostRecord): Promise<boolean> => true,
   };
   let sequence = 100;
@@ -84,7 +85,7 @@ function delivery(content = ORIGINAL_X) {
     stickers: new Collection(), components: [], messageSnapshots: new Collection(),
     attachments: new Collection<string, Attachment>(), flags: new MessageFlagsBitField(), mentions,
     editedTimestamp: null, reference: null, deletable: true, inGuild: () => true,
-    delete: async () => { state.originalDeleted = true; events.push('delete:source'); },
+    delete: async () => { await state.deleteSource(); state.originalDeleted = true; events.push('delete:source'); },
     fetch: async () => {
       events.push('fetch:source');
       return { ...source, content: state.remoteContent, editedTimestamp: state.editedTimestamp } as unknown as Message;
@@ -153,6 +154,65 @@ test('missing or unrelated previews preserve the original and leave only an owne
     assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
       replacementId: notice.message.id, authorId: AUTHOR, mode: 'reply' }]);
     assert.equal(f.expectedChecks.length, 2, 'try each catalogued X provider once');
+  }
+});
+
+test('definitive deletion refusals keep a verified reply copy with finished controls', async () => {
+  for (const code of [60003, 50013]) {
+    const f = delivery(), outcomes: DeliveryOutcome[] = [];
+    f.state.deleteSource = async () => { throw { code }; };
+    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
+      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
+      bind: async () => true } as unknown as DeliveryDiagnostics;
+    await f.create({ diagnostics })(f.source);
+    assert.equal(f.state.originalDeleted, false);
+    assert.equal(f.sent.length, 1);
+    const replacement = f.sent[0];
+    assert.equal(replacement.deleted, false);
+    const record = { guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
+      replacementId: replacement.message.id, authorId: AUTHOR };
+    assert.deepEqual(f.remembered, [{ ...record, mode: 'replace' }, { ...record, mode: 'reply' }]);
+    assert.equal(replacement.edits.filter(edit => edit.components).length, 1);
+    assert.match(JSON.stringify(replacement.edits.at(-1)?.components), /linky:remove/);
+    assert.match(JSON.stringify(replacement.edits.at(-1)?.components), /linky:details/);
+    assert.deepEqual(outcomes, ['permission']);
+  }
+});
+
+test('ambiguous deletion failures keep the replacement without final controls', async () => {
+  const f = delivery(), outcomes: DeliveryOutcome[] = [];
+  f.state.deleteSource = async () => { throw { status: 500 }; };
+  const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
+    startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
+    bind: async () => true } as unknown as DeliveryDiagnostics;
+  await f.create({ diagnostics })(f.source);
+  assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].deleted, false);
+  assert.equal(f.sent[0].edits.filter(edit => edit.components).length, 0);
+  assert.equal(f.remembered.length, 1);
+  assert.equal(f.remembered[0].mode, 'replace');
+  assert.deepEqual(outcomes, ['discord-failure']);
+});
+
+test('a refused or thrown reply downgrade removes the preview after a definitive deletion refusal', async () => {
+  for (const failure of ['refused', 'thrown']) {
+    const f = delivery(), outcomes: DeliveryOutcome[] = [];
+    f.state.deleteSource = async () => { throw { code: 60003 }; };
+    f.state.remember = async record => {
+      if (record.mode === 'replace') return true;
+      if (failure === 'thrown') throw new Error('disk unavailable');
+      return false;
+    };
+    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
+      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
+      bind: async () => true } as unknown as DeliveryDiagnostics;
+    await f.create({ diagnostics })(f.source);
+    assert.equal(f.state.originalDeleted, false);
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].deleted, true);
+    assert.equal(f.sent[0].edits.length, 0);
+    assert.deepEqual(outcomes, ['permission']);
   }
 });
 

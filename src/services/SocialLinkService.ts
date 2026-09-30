@@ -594,6 +594,7 @@ export function createLinkRepostHandler(
         if (enabled() && canCopy(confirmed) && refresh) return 'retry';
         return;
       }
+      let restricted: number | undefined;
       if (reply) {
         if (!originalMedia && !explicitCards.length) rollback = undefined;
         log.info(resultContext, 'Replied with fixed social links; kept original message');
@@ -601,8 +602,31 @@ export function createLinkRepostHandler(
         // Sending, checking and deleting are separate Discord requests, not a transaction.
         // An ambiguous deletion error must not remove the only remaining copy.
         rollback = undefined;
-        await confirmed.delete();
-        log.info(resultContext, 'Replaced social links and deleted original message');
+        try { await confirmed.delete(); }
+        catch (err) {
+          const code = typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'number' ? err.code : undefined;
+          if (code !== 60003 && code !== 50013) throw err;
+          // Discord rejected the request, so the source still exists.
+          if (rememberRepost) {
+            let remembered = false;
+            try {
+              remembered = await rememberRepost({ guildId: message.guildId, channelId, sourceId: message.id,
+                replacementId: replacement.id, authorId: message.author.id, mode: 'reply' });
+            } catch { /* A failed downgrade cannot retain this copy. */ }
+            if (!remembered) {
+              await removeReplacement();
+              log.warn({ ...resultContext, errorCode: code }, 'Keeping original: could not save reply ownership after deletion was refused');
+              delivery.finish('permission');
+              return;
+            }
+          }
+          reply = true;
+          restricted = code;
+          log.warn({ ...resultContext, errorCode: code }, code === 60003
+            ? 'Kept original: server requires two-factor authentication for moderation, so Discord refused deletion; the bot owner account needs 2FA or the server can use /settings mode:reply'
+            : 'Kept original: Discord denied Manage Messages when deleting the original');
+        }
+        if (!restricted) log.info(resultContext, 'Replaced social links and deleted original message');
       }
       // Do not expose a Remove action while original deletion is still in flight.
       const details = await delivery.controls(replacement.id);
@@ -627,7 +651,7 @@ export function createLinkRepostHandler(
         rollback = undefined;
       }
       // Once deletion has been sent, keep the potentially sole copy even if a final edit runs late.
-      delivery.finish(delivery.context.signal?.aborted ? 'timeout' : captionFallback ? 'partial' : 'confirmed');
+      delivery.finish(delivery.context.signal?.aborted ? 'timeout' : restricted ? 'permission' : captionFallback ? 'partial' : 'confirmed');
     } catch (err) {
       cleanupDelivery?.finish(cleanupDelivery.context.signal?.aborted ? 'timeout' : 'discord-failure');
       if (rollback) await rollback().catch(() => log.warn(context, 'Could not remove incomplete preview'));

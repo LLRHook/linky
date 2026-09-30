@@ -1,5 +1,5 @@
 import {
-  ApplicationIntegrationType, InteractionContextType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
+  ApplicationIntegrationType, GuildMFALevel, InteractionContextType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import type { Config } from '../config';
@@ -76,6 +76,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     channel?.isSendable() ? undefined : 'This channel cannot receive Linky messages. For a forum or media post, check inside its thread.',
     missing === undefined ? 'Channel permissions could not be checked. Check Linky’s role and channel overrides.' :
       missing.length ? `Missing channel permissions: ${missing.join(', ')}.` : 'Required permissions for a plain link are present.',
+    effective.mode === 'replace' && interaction.guild?.mfaLevel === GuildMFALevel.Elevated
+      ? 'This server requires two-factor authentication for moderation. Discord refuses Linky’s original-message deletion (error 60003) unless the bot owner account has 2FA enabled; until then Linky keeps originals and posts its preview alongside. Enable 2FA on the bot owner account or use /settings mode:reply.' : undefined,
     permissions && !permissions.has(PermissionFlagsBits.AttachFiles)
       ? effective.mode === 'replace' ? 'Attach Files is also needed when copying attachments or sending a long translation file.'
         : 'Attach Files is needed for Erome videos and long translation files. Original attachments stay on the source.' : undefined,

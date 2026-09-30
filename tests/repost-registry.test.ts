@@ -73,6 +73,29 @@ test('ownership survives restart with only allowed metadata and isolated read va
   assert.equal(await registry.remember({ ...f.record, content: 'not allowed' } as RepostRecord), false);
 });
 
+test('replace ownership can downgrade to reply only for the identical copy', async t => {
+  const f = await fixture(t), registry = f.manager();
+  assert.equal(await registry.remember({ ...f.record, mode: 'replace' }), true);
+  assert.equal(await registry.remember({ ...f.record, replacementId: snowflake(0, 1) }), false);
+  for (const field of ['sourceId', 'guildId', 'channelId', 'authorId'] as const) {
+    assert.equal(await registry.remember({ ...f.record, [field]: snowflake(0, 2) }), false);
+  }
+  assert.equal(await registry.remember(f.record), true);
+  assert.equal(registry.findByReplacement(f.replacement.id)?.mode, 'reply');
+  assert.equal(f.manager().findByReplacement(f.replacement.id)?.mode, 'reply');
+  assert.equal(await registry.remember({ ...f.record, mode: 'replace' }), false);
+});
+
+test('replace ownership cannot downgrade while removal is pending', async t => {
+  const f = await fixture(t), registry = f.manager();
+  assert.equal(await registry.remember({ ...f.record, mode: 'replace' }), true);
+  f.failDelete({ code: 50013 });
+  await registry.handleRemove(f.interaction().value);
+  assert.deepEqual((await f.saved()).remove, [f.replacement.id]);
+  assert.equal(await registry.remember(f.record), false);
+  assert.equal(registry.findByReplacement(f.replacement.id)?.mode, 'replace');
+});
+
 test('unauthorized, forged and cross-channel buttons never fetch or delete a target', async t => {
   const f = await fixture(t), registry = f.manager();
   await registry.remember(f.record);
