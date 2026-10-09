@@ -87,7 +87,7 @@ test('health modes remain separate and preference preserves hidden text and capt
   assert.equal(first(health), 'instagram7');
   assert.equal(first(health, { captionFree: true }), 'oginstagram');
   assert.equal(first(health, { captionFree: true, requireVideo: true }), 'instagram7');
-  const gallery = 'https://g.instagram7.com/reel/Post/';
+  const gallery = 'https://g.fkinstagram.com/reel/Post/';
   const text = `${gallery}\nTranslated caption <${gallery}> \`${gallery}\``;
   assert.equal(health.preferContent(text), text.replace(gallery, 'https://g.oginstagram.com/reel/Post/'));
   assert.equal(health.order(getProviderCandidates('https://www.tiktok.com/@name/video/123'))[0].providerId, 'tnktok');

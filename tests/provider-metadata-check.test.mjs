@@ -33,7 +33,7 @@ test('a TikTok share link is satisfied by the canonical post metadata and a full
 test('error cards, missing media, HTTP failures and cross-origin redirects are reported without satisfying Linky', async () => {
   const reel = { source: 'https://www.instagram.com/reel/DdFKS1ABmK4/', expect: 'video' };
   const byHost = {
-    'www.instagram7.com': respond(200, page({ 'og:url': 'https://www.instagram.com/reel/DdFKS1ABmK4/', 'og:title': 'Error', 'og:description': 'Try again later' })),
+    'fkinstagram.com': respond(200, page({ 'og:url': 'https://www.instagram.com/reel/DdFKS1ABmK4/', 'og:title': 'Error', 'og:description': 'Try again later' })),
     'oginstagram.com': respond(403, ''),
   };
   const result = await assessSource(reel, services, { fetch: async url => byHost[new URL(url).hostname] });

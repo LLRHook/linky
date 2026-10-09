@@ -155,7 +155,7 @@ test('manual parser uses supported explicit URLs, canonicalizes Twitter and dedu
   assert.deepEqual(manualLinks('https://twitter.com/jack/status/20?s=46 https://x.com/jack/status/20?other=1', config),
     [{ source: 'https://x.com/jack/status/20', fixed: 'https://fixupx.com/jack/status/20' }]);
   assert.deepEqual(manualLinks('https://www.instagram.com/reel/ABC/?igsh=share', config),
-    [{ source: 'https://www.instagram.com/reel/ABC/', fixed: 'https://www.instagram7.com/reel/ABC/' }]);
+    [{ source: 'https://www.instagram.com/reel/ABC/', fixed: 'https://fkinstagram.com/reel/ABC/' }]);
   assert.deepEqual(manualLinks('https://vm.tiktok.com/ABC/', config),
     [{ source: 'https://vm.tiktok.com/ABC/', fixed: 'https://tnktok.com/ABC/' }]);
 });
@@ -258,7 +258,7 @@ test('manual X fallback verifies the alternate on the same response and preserve
 
 test('manual Instagram fallback recovers slash and context actions on the same response', async () => {
   const original = 'https://www.instagram.com/p/DdKVPMEhTXe/?igsh=tracking';
-  const primary = 'https://www.instagram7.com/p/DdKVPMEhTXe/', alternate = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+  const primary = 'https://fkinstagram.com/p/DdKVPMEhTXe/', alternate = 'https://oginstagram.com/p/DdKVPMEhTXe/';
   for (const context of [false, true]) {
     const f = command(original, context), preview = previewChecks(f);
     f.state.render = content => content === alternate
@@ -310,7 +310,7 @@ test('missing, unrelated and matching error previews exhaust manual X recovery w
 });
 
 test('manual recovery changes only the failed provider and excludes hidden or capped source links', async () => {
-  const instagram = 'https://www.instagram7.com/reels/DdFKS1ABmK4/';
+  const instagram = 'https://fkinstagram.com/reels/DdFKS1ABmK4/';
   const f = command('https://x.com/jack/status/20 https://instagram.com/reels/DdFKS1ABmK4/ ' +
     '||https://x.com/jack/status/999|| <https://youtu.be/dQw4w9WgXcQ>', true);
   f.state.render = (_content, edit) => [
@@ -349,7 +349,7 @@ test('manual YouTube uses native video metadata without requiring an API key or 
 
 test('an Instagram reel thumbnail or a YouTube counts card cannot count as manual video recovery', async () => {
   for (const [source, embed] of [
-    ['https://instagram.com/reel/ABC/', { url: 'https://www.instagram7.com/reel/ABC/', thumbnail: { url: 'https://media.example/photo.jpg' } }],
+    ['https://instagram.com/reel/ABC/', { url: 'https://fkinstagram.com/reel/ABC/', thumbnail: { url: 'https://media.example/photo.jpg' } }],
     ['https://youtu.be/dQw4w9WgXcQ', { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', title: 'YouTube stats', fields: [{ name: 'Views', value: '42' }] }],
   ] as const) {
     const f = command(source), preview = previewChecks(f);
@@ -427,7 +427,7 @@ test('manual mobile shares acknowledge before network work and verify the resolv
     const share = platform === 'reddit' ? 'https://www.reddit.com/r/aww/s/Mobile123'
       : 'https://www.instagram.com/share/p/Mobile123?igsh=original';
     const source = platform === 'reddit' ? 'https://www.reddit.com/comments/abc123' : 'https://www.instagram.com/p/ABC/';
-    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123' : 'https://www.instagram7.com/p/ABC/';
+    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123' : 'https://fkinstagram.com/p/ABC/';
     const f = command(share, context), preview = previewChecks(f);
     if (!canSend) f.input.memberPermissions = new PermissionsBitField(0n);
     const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async options => {
@@ -500,7 +500,7 @@ test('manual native YouTube still works without operator providers but honors a 
 
 test('manual Instagram presentation supports translated compact captions and media-first with translation off', async () => {
   const caption: InstagramTranslation = { sourceUrl: 'https://www.instagram.com/reel/ABC/', shortcode: 'ABC', username: 'author',
-    text: 'A readable translated caption. '.repeat(30), languages: ['et'], mediaOnlyUrl: 'https://g.instagram7.com/p/ABC/', mediaTypes: ['GraphVideo'] };
+    text: 'A readable translated caption. '.repeat(30), languages: ['et'], mediaOnlyUrl: 'https://g.fkinstagram.com/p/ABC/', mediaTypes: ['GraphVideo'] };
   const sizes: number[] = [];
   for (const style of ['standard', 'compact', 'media-first'] as const) {
     const f = command(caption.sourceUrl), preview = previewChecks(f);
