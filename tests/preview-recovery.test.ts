@@ -7,7 +7,7 @@ import { formatYouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { formatArticlePreview } from '../src/services/ArticlePreview';
 
 const source = 'https://www.instagram.com/reel/DdFKS1ABmK4/';
-const fixed = 'https://www.instagram7.com/reel/DdFKS1ABmK4/';
+const fixed = 'https://fkinstagram.com/reel/DdFKS1ABmK4/';
 const expected = expectedPreviews(source, fixed);
 const media: APIEmbed = { url: fixed, video: { url: 'https://cdn.example/video.mp4' } };
 
@@ -15,8 +15,8 @@ test('a provider homepage, error card or unrelated embed does not qualify as a u
   assert.equal(expected.length, 1);
   for (const embed of [
     { url: fixed, title: 'Error', description: 'Try again later' },
-    { url: 'https://www.instagram7.com/', thumbnail: { url: 'https://cdn.example/logo.png' } },
-    { url: 'https://www.instagram7.com/reel/wrong/', video: { url: 'https://cdn.example/video.mp4' } },
+    { url: 'https://fkinstagram.com/', thumbnail: { url: 'https://cdn.example/logo.png' } },
+    { url: 'https://fkinstagram.com/reel/wrong/', video: { url: 'https://cdn.example/video.mp4' } },
     { url: 'https://evil.test/reel/DdFKS1ABmK4/', video: { url: 'https://cdn.example/video.mp4' } },
   ]) assert.equal(inspectPreviews([embed], expected).ok, false);
   assert.equal(inspectPreviews([media], expected).ok, true);
@@ -25,7 +25,7 @@ test('a provider homepage, error card or unrelated embed does not qualify as a u
 
 test('every visible rewritten post requires its own preview and hidden posts are excluded', () => {
   const original = `${source} https://instagram.com/p/Another/ <https://instagram.com/p/Hidden/>`;
-  const rendered = `${fixed} https://www.instagram7.com/p/Another/ <https://instagram.com/p/Hidden/>`;
+  const rendered = `${fixed} https://fkinstagram.com/p/Another/ <https://instagram.com/p/Hidden/>`;
   const items = expectedPreviews(original, rendered);
   assert.equal(items.length, 2);
   assert.equal(inspectPreviews([media], items).ok, false);
@@ -33,7 +33,7 @@ test('every visible rewritten post requires its own preview and hidden posts are
 });
 
 test('suppressed caption links cannot replace or create a rendered Instagram preview expectation', () => {
-  const gallery = 'https://g.instagram7.com/p/DdFKS1ABmK4/';
+  const gallery = 'https://g.fkinstagram.com/p/DdFKS1ABmK4/';
   for (const hidden of [`<${fixed}>`, `\`${fixed}\``, `\`\`\`\n${fixed}\n\`\`\``, `||${fixed}||`]) {
     const rendered = `${gallery}\n\nThe English caption refers to ${hidden}`;
     assert.deepEqual(expectedPreviews(source, rendered), [{ source, url: gallery,
@@ -44,7 +44,7 @@ test('suppressed caption links cannot replace or create a rendered Instagram pre
 
 test('video metadata and useful image previews are reported separately from playback', () => {
   const imageSource = 'https://instagram.com/p/Photo/';
-  const imageFixed = 'https://www.instagram7.com/p/Photo/';
+  const imageFixed = 'https://fkinstagram.com/p/Photo/';
   const image = inspectPreviews([{ url: imageFixed, image: { url: 'https://cdn.example/photo.jpg' } }], expectedPreviews(imageSource, imageFixed));
   assert.equal(image.ok, true);
   assert.equal(image.videoMetadata, false);
@@ -115,7 +115,7 @@ test('provider recovery only changes failed links to catalogued alternatives and
     visited.push(new URL(next).hostname);
     content = next;
   }
-  assert.deepEqual(visited, ['www.instagram7.com', 'oginstagram.com']);
+  assert.deepEqual(visited, ['fkinstagram.com', 'oginstagram.com']);
   assert.equal(content, 'https://oginstagram.com/reel/DdFKS1ABmK4/');
   assert.equal(attempted.size, 2);
   assert.equal(nextProviderContent(content, expectedPreviews(source, content), attempted), content);
@@ -169,7 +169,7 @@ test('Instagram fallback still requires video metadata for Reel source paths', (
 
 test('Instagram recovery preserves working mixed links, hidden posts and surrounding text', () => {
   const photo = 'https://www.instagram.com/p/DdKVPMEhTXe/';
-  const primary = 'https://www.instagram7.com/p/DdKVPMEhTXe/';
+  const primary = 'https://fkinstagram.com/p/DdKVPMEhTXe/';
   const hidden = '<https://instagram.com/p/Hidden/> ||https://instagram.com/p/Spoiler/|| `https://instagram.com/p/Code/`';
   const untouched = 'https://example.com/?next=https://instagram.com/p/Nested/';
   const original = `Photo: ${photo}\nAlready useful: https://x.com/jack/status/20\n${hidden}\n${untouched}`;
@@ -192,13 +192,13 @@ test('Instagram recovery preserves working mixed links, hidden posts and surroun
 });
 
 test('plural Instagram reel URLs match the canonical singular path', () => {
-  const expected = expectedPreviews('https://instagram.com/reels/DdFKS1ABmK4/', 'https://www.instagram7.com/reels/DdFKS1ABmK4/');
+  const expected = expectedPreviews('https://instagram.com/reels/DdFKS1ABmK4/', 'https://fkinstagram.com/reels/DdFKS1ABmK4/');
   assert.equal(inspectPreviews([media], expected).ok, true);
 });
 
 test('translated Instagram recovery changes only the gallery URL and preserves its English caption', () => {
   const original = 'https://www.instagram.com/p/DdKVPMEhTXe/';
-  const primary = 'https://g.instagram7.com/p/DdKVPMEhTXe/';
+  const primary = 'https://g.fkinstagram.com/p/DdKVPMEhTXe/';
   const alternate = 'https://g.oginstagram.com/p/DdKVPMEhTXe/';
   const caption = 'The English caption.\n-# Translated from Japanese';
   const rendered = `${primary}\n${caption}`;
@@ -213,7 +213,7 @@ test('translated Instagram recovery changes only the gallery URL and preserves i
 });
 
 test('caption-free Instagram galleries require the same post media and reject original-language descriptions', () => {
-  for (const host of ['g.instagram7.com', 'g.oginstagram.com']) {
+  for (const host of ['g.fkinstagram.com', 'g.oginstagram.com']) {
     const source = 'https://www.instagram.com/p/DdKVPMEhTXe/';
     const url = `https://${host}/p/DdKVPMEhTXe/`;
     const expected = expectedPreviews(source, url).map(item => ({ ...item, captionFree: true }));
@@ -263,7 +263,7 @@ test('recovery ranking cannot add unvetted URLs or revisit an attempted provider
   const recovered = nextProviderContent(fixed, expected, attempted, candidates => [
     { ...candidates[1], url: 'https://unvetted.example/video' }, ...[...candidates].reverse(),
   ]);
-  assert.equal(recovered, fixed.replace('www.instagram7.com', 'oginstagram.com'));
+  assert.equal(recovered, fixed.replace('fkinstagram.com', 'oginstagram.com'));
   assert.equal(nextProviderContent(recovered, expectedPreviews(source, recovered), attempted, candidates => [...candidates].reverse()), recovered);
 });
 
