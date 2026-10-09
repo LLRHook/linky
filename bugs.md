@@ -68,6 +68,39 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** Use one vetted FixReddit redirect fallback within the existing network budgets, then verify the canonical vxReddit preview. The reported share automatically replaced in GAMBA in 2.411 seconds and played to completion in Chrome Discord; an unavailable-share control retained its source. Regression, build, worker, dependency-audit and deploy-safeguard checks passed.
 
+### [BUG-1791399021] Instagram previews and caption lookups use an unavailable provider domain
+- [x] **Severity:** high
+- **Area:** providers, previews
+- **File(s):** src/services/SocialProviders.ts, src/services/InstagramTranslation.ts, src/services/InstagramPresentation.ts, tests/social-providers.test.ts, tests/instagram-translation.test.ts, tests/instagram-presentation.test.ts
+- **Observation:** On 2026-10-07, the configured primary's `instagram7.com`, `www.instagram7.com` and `g.instagram7.com` hosts returned DNS `ENOTFOUND`; Google and Cloudflare public DNS also returned NXDOMAIN. Both normal previews and caption lookup/gallery URLs use that domain. The reported Instagram post reached the unconfirmed-preview notice.
+- **Expected:** Normal, translated and Media-first Instagram previews use the reachable primary service, retain bounded OGInstagram recovery and keep the original when no matching media arrives.
+- **Repro / Notes:** `npm run check:providers -- https://www.instagram.com/p/DeIfsDPo0zx/`; upstream outage report: https://github.com/Bl0ck154/InstaFix-Revived/issues/3. The same service at https://fkinstagram.com/ returned matching image metadata and downloadable JPEG bytes for this post, caption-free gallery metadata, Reel video metadata and the existing caption API shape. These are provider observations, not live Discord rendering or playback verification.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Shared primary provider configuration now uses `fkinstagram.com` for normal previews and caption lookup, and `g.fkinstagram.com` for translated and Media-first galleries. Legacy URLs remain recognizable; OGInstagram remains the bounded alternate. Migration, host validation, captions, fallback and source-preservation tests pass; build and worker checks pass. The full suite passed on rerun (1,192 TypeScript tests and 54 script tests, with eight environment-dependent skips).
+- **Production evidence:** Read-only inspection on October 8 matched the screenshot to the unchanged source link `https://www.instagram.com/p/DeIfsDPo0zx/`, posted October 7 at 18:37:57 UTC. Attempt `843953d7-bf36-4458-9e2e-c37b44e881f6` ended `metadata-unconfirmed` after 17,101 ms; its two preview stages were unavailable after 8,149 ms and 8,147 ms. The final operational log at 18:38:14.635 UTC named `oginstagram`. A current Hostinger probe still returned `ENOTFOUND` for Instagram7; OGInstagram and both replacement routes now returned matching image metadata and downloadable JPEG bytes. Historical failed confirmation does not establish a continuing OGInstagram outage.
+
+### [BUG-1791399500] Dependency audit fails for development-only fast-copy
+- [x] **Severity:** med
+- **Area:** security, ci
+- **File(s):** package-lock.json
+- **Observation:** On 2026-10-07, `npm audit --audit-level=low` failed on the existing `fast-copy@4.0.2` dependency of development-only `pino-pretty@13.1.3`. Advisory GHSA-jggr-w7fw-pc2j rates deeply nested input causing stack exhaustion as moderate. The Instagram provider fix does not change dependencies.
+- **Expected:** The CI dependency audit passes with a reviewed, non-vulnerable transitive dependency version.
+- **Repro / Notes:** `npm audit --audit-level=low`; `npm explain fast-copy`. Advisory: https://github.com/advisories/GHSA-jggr-w7fw-pc2j. The audit reports a fix is available; update and validate separately from the preview-provider change.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Update only the transitive `fast-copy` lockfile entry from 4.0.2 to the latest stable 4.1.2 after checking the upstream advisory and depth-limit documentation. No dependency ranges or production packages change. `npm audit --audit-level=low` reports zero vulnerabilities; build, worker checks, 1,197 TypeScript tests, 54 script tests (eight environment-dependent skips) and deployment safeguards pass.
+
+### [BUG-1791399501] Archive timeout test intermittently fails during Windows temporary-directory cleanup
+- [ ] **Severity:** low
+- **Area:** tests
+- **File(s):** tests/delivery-archive.test.ts
+- **Observation:** On 2026-10-07, a full `npm test` run failed `close has a finite wait and stalled persistence never throws from record or traces` with `ENOTEMPTY` while removing its temporary archive directory. The other 1,191 TypeScript tests passed, and the unchanged archive suite passed all 13 tests when rerun alone. A subsequent full run passed all 1,192 TypeScript tests and 54 script tests (eight environment-dependent skips).
+- **Expected:** The fixture's cleanup reliably completes after pending archive writes on Windows, including during a full concurrent suite run.
+- **Repro / Notes:** `npm test` on Windows; isolate with `npx --no-install tsx --test tests/delivery-archive.test.ts`. The fixture removes its directory after `archive.close()`, and the affected test configures a 10 ms close timeout. Investigate pending writes at teardown; the production root cause is not established by this cleanup failure.
+- **Bump:** patch
+- **Status:** open
+
 ---
 
 ## Migrated to changelog

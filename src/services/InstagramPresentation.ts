@@ -1,6 +1,7 @@
 import { escapeMarkdown, type AttachmentBuilder, type APIEmbed } from 'discord.js';
 import { parseInstagramUrl, type InstagramTranslation } from './InstagramTranslation';
 import { mapLinks, visibleLink } from './LinkTokens';
+import { INSTAGRAM_PROVIDER, parseProviderUrl } from './SocialProviders';
 import type { ServerPreferences } from './ServerSettings';
 
 export interface CaptionPresentation {
@@ -56,11 +57,12 @@ export async function addInstagramCaptions<T extends CaptionPresentation>(
     const included = new Map<string, string>();
     const content = mapLinks(presentation.content, (url, position) => {
       if (!visibleLink(presentation.content, position)) return url;
-      const source = parseInstagramUrl(url.replace(/^https:\/\/(?:www\.)?instagram7\.com(?=\/)/i, 'https://www.instagram.com'));
+      const provider = parseProviderUrl(url);
+      const source = parseInstagramUrl(provider?.providerId === INSTAGRAM_PROVIDER.id ? provider.sourceUrl : url);
       const originalSource = source && sources.get(source.shortcode);
       if (!source || !originalSource) return url;
       included.set(source.shortcode, originalSource);
-      return `https://g.instagram7.com/p/${source.shortcode}/`;
+      return `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${source.shortcode}/`;
     });
     if (!included.size || content.length > contentLimit) return presentation;
     const instagramSources = [...included.values()];
@@ -74,7 +76,7 @@ export async function addInstagramCaptions<T extends CaptionPresentation>(
     try {
       const post = await lookup(sourceUrl);
       if (post && post.shortcode === shortcode && parseInstagramUrl(post.sourceUrl)?.shortcode === shortcode &&
-          post.mediaOnlyUrl === `https://g.instagram7.com/p/${shortcode}/` && post.text.trim() && post.languages.length) {
+          post.mediaOnlyUrl === `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${shortcode}/` && post.text.trim() && post.languages.length) {
         posts.set(shortcode, post);
       }
     } catch { /* A failed caption lookup leaves that link's original preview available. */ }
@@ -82,7 +84,8 @@ export async function addInstagramCaptions<T extends CaptionPresentation>(
   const included = new Map<string, InstagramTranslation>();
   const media = mapLinks(presentation.content, (url, position) => {
     if (!visibleLink(presentation.content, position)) return url;
-    const source = parseInstagramUrl(url.replace(/^https:\/\/(?:www\.)?instagram7\.com(?=\/)/i, 'https://www.instagram.com'));
+    const provider = parseProviderUrl(url);
+    const source = parseInstagramUrl(provider?.providerId === INSTAGRAM_PROVIDER.id ? provider.sourceUrl : url);
     const post = source && posts.get(source.shortcode);
     if (!post) return url;
     included.set(post.shortcode, post);

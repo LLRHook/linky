@@ -10,11 +10,19 @@ export interface SocialUrl {
   readonly postId?: string;
 }
 
+// https://fkinstagram.com/ serves InstaFix Revived after instagram7.com stopped resolving.
+// Keep the provider ID and observed legacy aliases for existing previews and health records.
+export const INSTAGRAM_PROVIDER = {
+  id: 'instagram7', platform: 'instagram', label: 'Instagram7',
+  origin: 'https://fkinstagram.com', captionFreeOrigin: 'https://g.fkinstagram.com',
+  hosts: ['fkinstagram.com', 'g.fkinstagram.com', 'www.instagram7.com', 'instagram7.com', 'g.instagram7.com'],
+} as const;
+
 /** Catalog order is the preferred delivery order, not a claim of current health. */
 export const SOCIAL_PROVIDERS = [
   { id: 'fixupx', platform: 'x', label: 'FxEmbed', origin: 'https://fixupx.com', hosts: ['fixupx.com', 'fxtwitter.com', 'g.fixupx.com', 'g.fxtwitter.com'] },
   { id: 'fixvx', platform: 'x', label: 'vxTwitter', origin: 'https://vxtwitter.com', hosts: ['vxtwitter.com', 'fixvx.com'] },
-  { id: 'instagram7', platform: 'instagram', label: 'Instagram7', origin: 'https://www.instagram7.com', captionFreeOrigin: 'https://g.instagram7.com', hosts: ['www.instagram7.com', 'instagram7.com', 'g.instagram7.com'] },
+  INSTAGRAM_PROVIDER,
   // https://github.com/seirenkr/OGInstagram — gallery/direct modes share this service.
   { id: 'oginstagram', platform: 'instagram', label: 'OGInstagram', origin: 'https://oginstagram.com', captionFreeOrigin: 'https://g.oginstagram.com', hosts: ['oginstagram.com', 'www.oginstagram.com', 'g.oginstagram.com'] },
   { id: 'tnktok', platform: 'tiktok', label: 'fxTikTok', origin: 'https://tnktok.com', hosts: ['tnktok.com', 'www.tnktok.com'] },

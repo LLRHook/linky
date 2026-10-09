@@ -5,7 +5,7 @@ import { expectedPreviews } from '../src/services/PreviewRecovery';
 import { PreviewWatcher } from '../src/services/PreviewWatcher';
 
 const source = 'https://www.instagram.com/reel/RealPost/';
-const fixed = 'https://www.instagram7.com/reel/RealPost/';
+const fixed = 'https://fkinstagram.com/reel/RealPost/';
 const expected = expectedPreviews(source, fixed);
 const embed: APIEmbed = { url: fixed, video: { url: 'https://cdn.example/video.mp4' } };
 const bot = '100000000000000001', channel = '100000000000000002', id = '100000000000000003';
@@ -49,7 +49,7 @@ test('Gateway update wakes an active verifier and unrelated messages cannot sati
 test('canonical and late previous-provider embeds can confirm source metadata without provider credit', async t => {
   const { client, watcher } = fixture(t);
   for (const url of [source, fixed]) {
-    const alternate = expectedPreviews(source, fixed.replace('www.instagram7.com', 'oginstagram.com'));
+    const alternate = expectedPreviews(source, fixed.replace('fkinstagram.com', 'oginstagram.com'));
     const watch = watcher.arm(channel, alternate);
     raw(client, [{ ...embed, url }]);
     const result = await watch.verify(message());

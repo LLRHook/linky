@@ -24,7 +24,7 @@ const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '170
 const ORIGINAL_X = 'https://twitter.com/jack/status/20?s=46';
 const PRIMARY_X = 'https://fixupx.com/jack/status/20', ALTERNATE_X = 'https://vxtwitter.com/jack/status/20';
 const ORIGINAL_IG = 'https://www.instagram.com/p/DdKVPMEhTXe/?igsh=tracking';
-const PRIMARY_IG = 'https://www.instagram7.com/p/DdKVPMEhTXe/', ALTERNATE_IG = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+const PRIMARY_IG = 'https://fkinstagram.com/p/DdKVPMEhTXe/', ALTERNATE_IG = 'https://oginstagram.com/p/DdKVPMEhTXe/';
 const YOUTUBE_ID = 'dQw4w9WgXcQ', NATIVE_YOUTUBE = `https://www.youtube.com/watch?v=${YOUTUBE_ID}`;
 const xPreview: APIEmbed = { url: PRIMARY_X, title: 'Jack', description: 'A public post.' };
 const videoPreview: APIEmbed = { url: NATIVE_YOUTUBE, video: { url: `https://www.youtube.com/embed/${YOUTUBE_ID}` } };
@@ -416,7 +416,7 @@ test('failed Instagram providers preserve the source and leave only an owned ret
 
 test('matching Instagram reel thumbnails from both providers cannot authorize source deletion', async () => {
   const f = delivery('https://www.instagram.com/reels/DdFKS1ABmK4/');
-  f.state.render = round => [{ url: round === 1 ? 'https://www.instagram7.com/reels/DdFKS1ABmK4/' :
+  f.state.render = round => [{ url: round === 1 ? 'https://fkinstagram.com/reels/DdFKS1ABmK4/' :
     'https://oginstagram.com/reels/DdFKS1ABmK4/', thumbnail: { url: 'https://media.example/reel-poster.jpg' } }];
   await f.create()(f.source);
   assert.equal(f.expectedChecks.length, 2);
@@ -669,7 +669,7 @@ test('multiple translated text posts are delivered without requiring intentional
 test('a translated caption beside a reel still requires that reel to produce video metadata', async () => {
   for (const available of [true, false]) {
     const f = delivery(`${ORIGINAL_X} https://instagram.com/reels/ABC/`);
-    f.state.render = () => available ? [{ url: 'https://www.instagram7.com/reel/ABC/', video: { url: 'https://cdn.example/reel.mp4' } }] : [];
+    f.state.render = () => available ? [{ url: 'https://fkinstagram.com/reel/ABC/', video: { url: 'https://cdn.example/reel.mp4' } }] : [];
     await f.create({ translateTweet: async () => translatedText })(f.source);
     assert.equal(f.state.originalDeleted, available);
     assert.deepEqual(f.expectedChecks[0].map(item => item.platform), ['instagram']);
@@ -769,11 +769,11 @@ test('a failure notice is cancelled if setup changes during source fetch or owne
 
 const instagramCaption = (shortcode = 'ABC', kind = 'p', mediaTypes = ['GraphImage']): InstagramTranslation => ({
   sourceUrl: `https://www.instagram.com/${kind}/${shortcode}/`, shortcode, username: 'traveller',
-  text: 'This is the full English caption.', languages: ['et'], mediaOnlyUrl: `https://g.instagram7.com/p/${shortcode}/`, mediaTypes,
+  text: 'This is the full English caption.', languages: ['et'], mediaOnlyUrl: `https://g.fkinstagram.com/p/${shortcode}/`, mediaTypes,
 });
-const instagramImage = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.instagram7.com/p/${shortcode}/`,
+const instagramImage = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.fkinstagram.com/p/${shortcode}/`,
   image: { url: `https://cdn.example/${shortcode}.jpg` } });
-const instagramVideo = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.instagram7.com/p/${shortcode}/`,
+const instagramVideo = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.fkinstagram.com/p/${shortcode}/`,
   video: { url: `https://cdn.example/${shortcode}.mp4` } });
 
 test('translated Instagram images and reels retain their native media before replacing the original', async () => {
@@ -904,7 +904,7 @@ test('multi-post and mixed-platform Instagram failures use complete-delivery rol
     assert.equal(f.remembered[0].mode, 'reply');
     assert.equal(f.expectedChecks[0].length, 2);
     assert(f.expectedChecks.flat().filter(item => item.platform === 'instagram').every(item =>
-      item.captionFree && /^https:\/\/g\.(?:instagram7|oginstagram)\.com\/p\//.test(item.url)));
+      item.captionFree && /^https:\/\/g\.(?:fkinstagram|oginstagram)\.com\/p\//.test(item.url)));
   }
 });
 
@@ -988,7 +988,7 @@ test('automatic mobile links resolve before translation and media verification, 
       if (blocked && options.hostname === 'www.reddit.com') return new Response(null, { status: 403 });
       return new Response(null, { status: 302, headers: { location: canonical + '?tracking=removed' } });
     } });
-    const provider = platform === 'instagram' ? 'https://www.instagram7.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/';
+    const provider = platform === 'instagram' ? 'https://fkinstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/';
     f.state.render = () => [{ url: provider, image: { url: 'https://cdn.example/post.jpg' } }];
     await f.create({ normalizeMobileLinks })(f.source);
     assert.equal(calls, blocked ? 2 : 1); assert.equal(f.state.originalDeleted, true);

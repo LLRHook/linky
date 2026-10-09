@@ -1,3 +1,5 @@
+import { INSTAGRAM_PROVIDER } from './SocialProviders';
+
 export interface InstagramTranslation {
   sourceUrl: string;
   shortcode: string;
@@ -32,7 +34,7 @@ async function metadata(sourceUrl: string, shortcode: string, fetchJson: typeof 
   let timer: ReturnType<typeof setTimeout> | undefined, reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     const operation = (async () => {
-      const response = await fetchJson(`https://www.instagram7.com/api/${shortcode}${/\/(?:reels?|tv)\//.test(sourceUrl) ? '?kind=reel' : ''}`, {
+      const response = await fetchJson(`${INSTAGRAM_PROVIDER.origin}/api/${shortcode}${/\/(?:reels?|tv)\//.test(sourceUrl) ? '?kind=reel' : ''}`, {
         signal: controller.signal, redirect: 'error', credentials: 'omit',
         headers: { Accept: 'application/json', 'User-Agent': 'LinkyBot/1.0 (+https://linkybot.dev)' },
       });
@@ -98,7 +100,7 @@ export function createInstagramLookup(translate: Translate, fetchJson: typeof fe
         .filter(language => !['en', 'und', 'zxx', 'mul'].includes(language.split('-')[0]));
       if (!languages.length || languages.length > 8) return null;
       return { shortcode, username: data.Username.trim(), text: translated.text.trim(), languages,
-        mediaOnlyUrl: `https://g.instagram7.com/p/${shortcode}/`, mediaTypes };
+        mediaOnlyUrl: `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${shortcode}/`, mediaTypes };
     } catch { return null; }
   }
 
