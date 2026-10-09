@@ -19,7 +19,7 @@ test('preserves X recovery and Instagram/TikTok primaries when adding Instagram 
     { providerId: 'fixvx', platform: 'x', url: 'https://vxtwitter.com/jack/status/20#reply' },
   ]);
   assert.deepEqual(getProviderCandidates('https://m.instagram.com/reels/DdFKS1ABmK4/?igsh=tracking'),
-    [{ providerId: 'instagram7', platform: 'instagram', url: 'https://www.instagram7.com/reels/DdFKS1ABmK4/' },
+    [{ providerId: 'instagram7', platform: 'instagram', url: 'https://fkinstagram.com/reels/DdFKS1ABmK4/' },
       { providerId: 'oginstagram', platform: 'instagram', url: 'https://oginstagram.com/reels/DdFKS1ABmK4/' }]);
   assert.deepEqual(getProviderCandidates('https://www.tiktok.com/@person/video/12345?share=1'),
     [{ providerId: 'tnktok', platform: 'tiktok', url: 'https://tnktok.com/@person/video/12345' }]);
@@ -29,7 +29,7 @@ test('Instagram recovery keeps the original path and fragment with Instagram7 fi
   for (const kind of ['p', 'reel', 'reels', 'tv']) {
     const path = `/${kind}/DdKVPMEhTXe/`;
     assert.deepEqual(getProviderCandidates(`https://www.instagram.com${path}?stkn=tracking#reply`), [
-      { providerId: 'instagram7', platform: 'instagram', url: `https://www.instagram7.com${path}#reply` },
+      { providerId: 'instagram7', platform: 'instagram', url: `https://fkinstagram.com${path}#reply` },
       { providerId: 'oginstagram', platform: 'instagram', url: `https://oginstagram.com${path}#reply` },
     ]);
   }
@@ -43,13 +43,32 @@ test('Instagram recovery keeps the original path and fragment with Instagram7 fi
   }
 });
 
+test('Instagram7 migration recognizes current and legacy previews without generating the unavailable host', () => {
+  const path = '/p/DeIfsDPo0zx/';
+  for (const host of ['fkinstagram.com', 'g.fkinstagram.com', 'www.instagram7.com', 'instagram7.com', 'g.instagram7.com']) {
+    const url = `https://${host}${path}?stkn=tracking#reply`;
+    assert.deepEqual(parseProviderUrl(url), { platform: 'instagram', providerId: 'instagram7',
+      sourceUrl: `https://www.instagram.com${path}#reply`, path, fragment: '#reply' });
+    assert.deepEqual(getProviderCandidates(url), [], 'Provider links are not rewritten as source links');
+    for (const invalid of [`http://${host}${path}`, `https://${host}:443${path}`, `https://user@${host}${path}`,
+      `https://${host}.evil.test${path}`, `https://${host}/p/../p/DeIfsDPo0zx/`, `https://${host}/profile`]) {
+      assert.equal(parseProviderUrl(invalid), null, invalid);
+    }
+  }
+  for (const captionFree of [false, true]) {
+    const candidates = getProviderCandidates(`https://www.instagram.com${path}?stkn=tracking`, { captionFree });
+    assert.equal(candidates[0].url, `https://${captionFree ? 'g.' : ''}fkinstagram.com${path}`);
+    assert.equal(candidates.length, 2, 'The old hostname must not become a separate recovery attempt');
+  }
+});
+
 test('caption-free Instagram recovery uses gallery routes without inventing separate providers', () => {
   for (const kind of ['p', 'reel', 'reels', 'tv']) {
     const path = `/${kind}/DdKVPMEhTXe/`;
     const source = `https://www.instagram.com${path}?igsh=tracking#reply`;
     const candidates = getProviderCandidates(source, { captionFree: true });
     assert.deepEqual(candidates, [
-      { providerId: 'instagram7', platform: 'instagram', url: `https://g.instagram7.com${path}#reply` },
+      { providerId: 'instagram7', platform: 'instagram', url: `https://g.fkinstagram.com${path}#reply` },
       { providerId: 'oginstagram', platform: 'instagram', url: `https://g.oginstagram.com${path}#reply` },
     ]);
     for (const candidate of candidates) {
@@ -62,7 +81,7 @@ test('caption-free Instagram recovery uses gallery routes without inventing sepa
       }
     }
     assert.deepEqual(getProviderCandidates(source).map(candidate => new URL(candidate.url).hostname),
-      ['www.instagram7.com', 'oginstagram.com'], 'ordinary reposts retain their existing caption-bearing providers');
+      ['fkinstagram.com', 'oginstagram.com'], 'ordinary reposts retain their existing caption-bearing providers');
   }
 });
 
@@ -96,12 +115,12 @@ test('recognizes observed provider URLs only through the static catalog and orig
   assert.equal(parsed?.providerId, 'fixupx');
   assert.equal(parsed?.sourceUrl, 'https://x.com/i/status/20');
   assert.equal(parseProviderUrl('https://fixvx.com/jack/status/20')?.providerId, 'fixvx');
-  assert.equal(parseProviderUrl('https://www.instagram7.com/reel/ABC/')?.sourceUrl, 'https://www.instagram.com/reel/ABC/');
+  assert.equal(parseProviderUrl('https://fkinstagram.com/reel/ABC/')?.sourceUrl, 'https://www.instagram.com/reel/ABC/');
   assert.equal(parseProviderUrl('https://g.fixupx.com/jack/status/20')?.statusId, '20');
   assert.equal(parseProviderUrl('https://tnktok.com/ZABC/')?.sourceUrl, 'https://vm.tiktok.com/ZABC/');
   for (const url of ['https://fixupx.com:443/jack/status/20', 'https://evil.test/jack/status/20',
     'https://user@vxtwitter.com/jack/status/20', 'https://fixupx.com.evil.test/jack/status/20',
-    'https://fixupx.com/jack', 'https://www.instagram7.com/reel/../ABC/']) {
+    'https://fixupx.com/jack', 'https://fkinstagram.com/reel/../ABC/']) {
     assert.equal(parseProviderUrl(url), null, url);
   }
 });

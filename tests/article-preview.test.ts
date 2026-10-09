@@ -34,7 +34,7 @@ test('article candidates normalize only HTTPS host syntax and discard fragments'
 test('social platforms, Discord domains, native media players and all provider aliases including arbitrary subdomains are excluded', () => {
   for (const host of ['x.com', 'twitter.com', 't.co', 'instagram.com', 'tiktok.com', 'bsky.app', 'reddit.com', 'redd.it',
     'youtube.com', 'youtu.be', 'twitch.tv', 'erome.com', 'discord.com', 'discord.gg', 'fixupx.com', 'vxtwitter.com', 'fixvx.com',
-    'instagram7.com', 'oginstagram.com', 'discordapp.net', 'discord.gift', 'discord.new', 'dis.gd',
+    'instagram7.com', 'fkinstagram.com', 'g.fkinstagram.com', 'oginstagram.com', 'discordapp.net', 'discord.gift', 'discord.new', 'dis.gd',
     'tenor.com', 'giphy.com', 'imgur.com', 'streamable.com', 'vimeo.com', 'spotify.com', 'soundcloud.com', 'klipy.com', 'tnktok.com', 'bskx.app', 'fxbsky.app', 'vxreddit.com', 'fxtwitch.seria.moe']) {
     assert.equal(parseArticleUrl(`https://${host}/article/news`), null, host);
     assert.equal(parseArticleUrl(`https://anything.${host}/article/news`), null, host);

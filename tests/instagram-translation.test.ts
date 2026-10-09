@@ -28,7 +28,7 @@ test('rejects fixer links, profiles, unknown paths and authorities without makin
     async () => assert.fail('No metadata request for rejected input'));
   for (const value of [
     source().replace('https:', 'http:'), source().replace('www.', 'g.'), source().replace('instagram.com', 'instagram7.com'),
-    `https://g.instagram7.com/p/${CODE}/`, `https://www.instagram.com:443/p/${CODE}/`,
+    `https://g.fkinstagram.com/p/${CODE}/`, `https://www.instagram.com:443/p/${CODE}/`,
     `https://www.instagram.com:444/p/${CODE}/`, `https://user@www.instagram.com/p/${CODE}/`,
     `https://www.instagram.com.evil.test/p/${CODE}/`, `https://www.instagram.com./p/${CODE}/`,
     `https://www.instagram.com\\@evil.test/p/${CODE}/`, `https://evil.test/?next=${source()}`,
@@ -53,22 +53,22 @@ test('DdFwAIqgncQ passes its full mixed-language caption to the translator and r
     return json(payload());
   });
   const result = await lookup(source() + '?igsh=tracking');
-  assert.deepEqual(requests, [`https://www.instagram7.com/api/${CODE}`]);
+  assert.deepEqual(requests, [`https://fkinstagram.com/api/${CODE}`]);
   assert.deepEqual(captions, [caption]); assert(caption.length > 250);
   assert.deepEqual(result, { sourceUrl: source(), shortcode: CODE, username: 'bustervro',
-    text: translated.text, languages: ['et'], mediaOnlyUrl: `https://g.instagram7.com/p/${CODE}/`, mediaTypes: ['GraphImage'] });
+    text: translated.text, languages: ['et'], mediaOnlyUrl: `https://g.fkinstagram.com/p/${CODE}/`, mediaTypes: ['GraphImage'] });
   assert.equal(Object.hasOwn(result!, 'hasWorkingMedia'), false, 'GraphImage is metadata, not a media-health assertion');
 });
 
 test('Reels use video-oriented lookup but still return the documented canonical gallery path', async () => {
   for (const kind of ['reel', 'reels', 'tv']) {
     const lookup = createInstagramLookup(async () => translated, async input => {
-      assert.equal(String(input), `https://www.instagram7.com/api/${CODE}?kind=reel`);
+      assert.equal(String(input), `https://fkinstagram.com/api/${CODE}?kind=reel`);
       return json(payload({ Medias: [{ TypeName: 'GraphVideo' }] }));
     });
     const result = await lookup(source(CODE, kind));
     assert.equal(result?.sourceUrl, source(CODE, kind)); assert.deepEqual(result?.mediaTypes, ['GraphVideo']);
-    assert.equal(result?.mediaOnlyUrl, `https://g.instagram7.com/p/${CODE}/`);
+    assert.equal(result?.mediaOnlyUrl, `https://g.fkinstagram.com/p/${CODE}/`);
   }
 });
 
@@ -94,7 +94,7 @@ test('the mistyped lowercase-l shortcode cannot reuse the uppercase-I post cache
   });
   assert(await lookup(source()));
   assert.equal(await lookup(source('DdFwAlqgncQ')), null);
-  assert.deepEqual(requests, [`https://www.instagram7.com/api/${CODE}`, 'https://www.instagram7.com/api/DdFwAlqgncQ']);
+  assert.deepEqual(requests, [`https://fkinstagram.com/api/${CODE}`, 'https://fkinstagram.com/api/DdFwAlqgncQ']);
 });
 
 test('provider errors, redirects, invalid JSON and malformed UTF-8 fail open', async () => {
@@ -164,7 +164,7 @@ test('source post and Reel metadata retain distinct provider lookup hints', asyn
     requests.push(String(input)); return json(payload());
   });
   await lookup(source()); await lookup(source(CODE, 'reel')); await lookup(source(CODE, 'reels'));
-  assert.deepEqual(requests, [`https://www.instagram7.com/api/${CODE}`, `https://www.instagram7.com/api/${CODE}?kind=reel`]);
+  assert.deepEqual(requests, [`https://fkinstagram.com/api/${CODE}`, `https://fkinstagram.com/api/${CODE}?kind=reel`]);
   assert.equal((await lookup(source(CODE, 'reels')))?.sourceUrl, source(CODE, 'reels'));
 });
 

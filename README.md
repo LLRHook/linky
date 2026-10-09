@@ -45,7 +45,7 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | Platform | Preview service | Posts |
 | --- | --- | --- |
 | X/Twitter | `fixupx.com`, with `vxtwitter.com` recovery | Post URLs on X and Twitter, including `/i/web/status/` and media paths |
-| Instagram | `www.instagram7.com`, with `oginstagram.com` recovery | Posts, reels and TV links, including resolvable `/share/` links |
+| Instagram | `fkinstagram.com` (Instagram7), with `oginstagram.com` recovery | Posts, reels and TV links, including resolvable `/share/` links |
 | TikTok | `tnktok.com` | Videos, photos and mobile share links |
 | YouTube | Native video preview, optional Data API statistics and public-page community cards | HTTPS watch, `youtu.be`, Shorts, live and embed links; valid start timestamps retained; public `/post/` text and image posts |
 | Bluesky | `bskx.app`, with `fxbsky.app` recovery | Public `/profile/actor/post/id` URLs |
