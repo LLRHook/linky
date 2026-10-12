@@ -113,6 +113,20 @@ test('a cold Instagram media preview arriving after seven seconds is accepted be
   assert.equal((await pending).ok, true);
 });
 
+test('cold TikTok video metadata at 7.5 seconds wakes the verifier without a premature REST check', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+  const source = 'https://www.tiktok.com/@auramonster_67_69/video/7695457160653851935';
+  const fixed = source.replace('www.tiktok.com', 'tnktok.com');
+  let fetches = 0;
+  const pending = watcher.arm(channel, expectedPreviews(source, fixed)).verify(message([], async () => { fetches++; return message(); }));
+  t.mock.timers.tick(7_500);
+  await Promise.resolve();
+  assert.equal(fetches, 0, 'TikTok must still be listening for cold media');
+  raw(client, [{ url: source, video: { url: 'https://cdn.example/video.mp4' } }]);
+  assert.equal((await pending).ok, true);
+});
+
 test('Instagram still confirms immediately and other platforms retain the four-second window', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });

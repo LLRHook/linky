@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EmbedType, type APIEmbed, type Message } from 'discord.js';
-import { expectedPreviews, inspectPreviews, nextProviderContent, PreviewHealth, waitForPreviews } from '../src/services/PreviewRecovery';
+import { expectedPreviews, inspectPreviews, nextProviderContent, PreviewHealth, verifyPublishedPreviews, waitForPreviews } from '../src/services/PreviewRecovery';
 import { translationEmbeds } from '../src/services/TweetPresentation';
 import { formatYouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { formatArticlePreview } from '../src/services/ArticlePreview';
@@ -10,6 +10,64 @@ const source = 'https://www.instagram.com/reel/DdFKS1ABmK4/';
 const fixed = 'https://fkinstagram.com/reel/DdFKS1ABmK4/';
 const expected = expectedPreviews(source, fixed);
 const media: APIEmbed = { url: fixed, video: { url: 'https://cdn.example/video.mp4' } };
+
+test('preview expectations retain source order and choose the last visible provider for each post identity', () => {
+  const first = 'https://x.com/first/status/123#one';
+  const alias = 'https://twitter.com/second/status/123#two';
+  const other = 'https://www.reddit.com/r/test/comments/abc123/post/';
+  const preferred = 'https://vxtwitter.com/third/status/123#last';
+  const rendered = `https://fixupx.com/first/status/123 ${preferred} https://vxreddit.com/comments/abc123 ` +
+    '<https://fixupx.com/hidden/status/123> ||https://vxtwitter.com/hidden/status/123||';
+  assert.deepEqual(expectedPreviews(`${first} ${other} ${alias} ${first}`, rendered), [
+    { source: first, url: preferred, platform: 'x', providerId: 'fixvx' },
+    { source: other, url: 'https://vxreddit.com/comments/abc123', platform: 'reddit', providerId: 'vxreddit' },
+    { source: 'https://x.com/second/status/123#two', url: preferred, platform: 'x', providerId: 'fixvx' },
+  ]);
+  assert.deepEqual(expectedPreviews(`<${first}> ||${other}||`, rendered), []);
+});
+
+test('a full Discord-sized set of distinct links keeps every post identity', () => {
+  const sources = Array.from({ length: 40 }, (_, index) => `https://x.com/user/status/${index + 1000}`);
+  const rendered = sources.map(url => url.replace('x.com', 'fixupx.com'));
+  assert(sources.join(' ').length < 2000);
+  const actual = expectedPreviews(sources.join(' '), rendered.join(' '));
+  assert.deepEqual(actual.map(item => item.source), sources);
+  assert.deepEqual(actual.map(item => item.url), rendered);
+});
+
+test('mixed native and authored previews reconcile once and preserve native provider evidence', async () => {
+  const source = 'https://publisher.example.com/article/test';
+  const cards = formatArticlePreview({ source, url: source, title: 'A public article', publisher: 'Publisher' });
+  const authored = expectedPreviews(source, `<${source}>`, [], [{ source, embeds: cards }]);
+  const requested = [...expected, ...authored];
+  let fetches = 0, verifications = 0;
+  const message = { embeds: [], fetch: async () => {
+    fetches++; return { embeds: cards.map(card => ({ toJSON: () => card })) };
+  } } as unknown as Message;
+  const nativeResult = inspectPreviews([media], expected);
+  const result = await verifyPublishedPreviews(message, requested, { verifyNative: async native => {
+    verifications++; assert.deepEqual(native, expected); return nativeResult;
+  } });
+  assert.equal(result.ok, true); assert.equal(result.videoMetadata, true);
+  assert.deepEqual(result.attributed, nativeResult.attributed);
+  assert.equal(fetches, 1); assert.equal(verifications, 1);
+  message.fetch = async () => { throw new Error('Missing output'); };
+  const failed = await verifyPublishedPreviews(message, requested, { verifyNative: async () => nativeResult });
+  assert.equal(failed.ok, false); assert.deepEqual(failed.missing, authored);
+});
+
+test('authored-only and delivered-text previews do not wait for native media or refetch the message', async () => {
+  const source = 'https://publisher.example.com/article/test';
+  const cards = formatArticlePreview({ source, url: source, title: 'A public article', publisher: 'Publisher' });
+  const requested = expectedPreviews(source, `<${source}>`, [], [{ source, embeds: cards }]);
+  const message = { embeds: cards.map(card => ({ toJSON: () => card })), fetch: async () => {
+    assert.fail('No native reconciliation needed');
+  } } as unknown as Message;
+  const verifyNative = async () => { assert.fail('No native previews requested'); };
+  assert.equal((await verifyPublishedPreviews(message, requested, { verifyNative })).ok, true);
+  assert.equal((await verifyPublishedPreviews(message, [], { verifyNative })).ok, false);
+  assert.equal((await verifyPublishedPreviews(message, [], { verifyNative, contentVerified: true })).ok, true);
+});
 
 test('a provider homepage, error card or unrelated embed does not qualify as a useful preview', () => {
   assert.equal(expected.length, 1);
@@ -296,7 +354,7 @@ test('community cards require exact source, author, text and ordered full images
   assert.match(health.describe(url), /community/i);
 });
 
-test('a TikTok share link accepts the canonical post embed that providers publish', () => {
+test('an unresolved TikTok share cannot accept an arbitrary canonical post embed', () => {
   const canonical = 'https://www.tiktok.com/@e0rik00/video/7686471409861659936';
   for (const [short, fixedShort] of [
     ['https://www.tiktok.com/t/ZTU7oFukc/', 'https://tnktok.com/t/ZTU7oFukc/'],
@@ -304,13 +362,26 @@ test('a TikTok share link accepts the canonical post embed that providers publis
   ]) {
     const items = expectedPreviews(short, fixedShort);
     assert.equal(items.length, 1);
-    assert.equal(inspectPreviews([{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }], items).ok, true);
+    assert.equal(inspectPreviews([{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }], items).ok, false);
+    assert.equal(inspectPreviews([{ url: fixedShort, video: { url: 'https://cdn.example/video.mp4' } }], items).ok, true);
     assert.equal(inspectPreviews([{ url: canonical, title: 'Error', description: 'Try again later' }], items).ok, false);
     assert.equal(inspectPreviews([{ url: 'https://www.tiktok.com/@someone', thumbnail: { url: 'https://cdn.example/a.png' } }], items).ok, false);
   }
   const full = expectedPreviews(canonical, 'https://tnktok.com/@e0rik00/video/7686471409861659936');
+  assert.equal(inspectPreviews([{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }], full).ok, true);
   assert.equal(inspectPreviews([{ url: 'https://www.tiktok.com/@e0rik00/video/1', video: { url: 'https://cdn.example/video.mp4' } }], full).ok, false,
     'a full post link still requires its own ID');
+});
+
+test('two resolved TikTok shares need both exact post IDs and cannot share one matching video', () => {
+  const first = 'https://www.tiktok.com/@auramonster_67_69/video/7695457160653851935';
+  const second = 'https://www.tiktok.com/@nba/video/7111722063571782958';
+  const items = expectedPreviews(`${first} ${second}`, `${first.replace('www.tiktok.com', 'tnktok.com')} ${second.replace('www.tiktok.com', 'tnktok.com')}`);
+  const embed = (url: string): APIEmbed => ({ url, video: { url: 'https://cdn.example/video.mp4' } });
+  assert.equal(items.length, 2);
+  assert.equal(inspectPreviews([embed(first)], items).ok, false);
+  assert.deepEqual(inspectPreviews([embed(first)], items).missing, [items[1]]);
+  assert.equal(inspectPreviews([embed(first), embed(second)], items).ok, true);
 });
 
 test('article confirmations require the exact publisher card and cannot claim native video metadata', () => {

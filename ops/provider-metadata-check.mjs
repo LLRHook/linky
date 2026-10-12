@@ -64,10 +64,13 @@ async function fetchProvider(url, { fetch: fetchImpl = fetch, timeoutMs = 15_000
  */
 export async function assessSource(entry, services, options = {}) {
   const { getProviderCandidates, expectedPreviews, inspectPreviews } = services;
-  const candidates = getProviderCandidates(entry.source);
+  // Exercise the same share-to-post normalization as automatic and manual fixes.
+  const source = services.normalizeMobileLinks
+    ? (await services.normalizeMobileLinks(entry.source, ['instagram', 'reddit', 'tiktok'])).content : entry.source;
+  const candidates = getProviderCandidates(source);
   const results = [];
   for (const candidate of candidates) {
-    const expected = expectedPreviews(entry.source, candidate.url);
+    const expected = expectedPreviews(source, candidate.url);
     const started = Date.now();
     let outcome;
     try {
@@ -157,7 +160,8 @@ export async function runProviderMetadataCheck(args, { write = text => process.s
     }
     const entries = links.length ? links : parseCorpus(await readFile(corpus, 'utf8'));
     const loaded = services ?? {
-      ...(await import('../dist/services/SocialProviders.js')), ...(await import('../dist/services/PreviewRecovery.js')) };
+      ...(await import('../dist/services/SocialProviders.js')), ...(await import('../dist/services/PreviewRecovery.js')),
+      normalizeMobileLinks: (await import('../dist/services/MobileShareLinks.js')).createMobileShareLinkNormalizer() };
     const assessments = [];
     for (const entry of entries) assessments.push(await assessSource(entry, loaded, { timeoutMs, ...(fetchImpl ? { fetch: fetchImpl } : {}) }));
     const report = summarize(assessments);

@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ApplicationIntegrationType, InteractionContextType, MessageFlags, PermissionFlagsBits, PermissionsBitField,
+import { ApplicationIntegrationType, GuildMFALevel, InteractionContextType, MessageFlags, PermissionFlagsBits, PermissionsBitField,
   type ChatInputCommandInteraction } from 'discord.js';
 import type { Config } from '../src/config';
 import { ServerSettings } from '../src/services/ServerSettings';
@@ -37,7 +37,7 @@ function interaction(link: string | null = null, permissions = plain | Permissio
   const input = {
     guildId: SERVER as string | null, channelId: CHANNEL,
     memberPermissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild),
-    guild: { members: { me: { id: 'bot' } } },
+    guild: { mfaLevel: GuildMFALevel.None, members: { me: { id: 'bot' } } },
     channel: { isThread: () => false, parentId: null as string | null, nsfw: false, parent: null as { nsfw: boolean } | null, isSendable: () => true,
       permissionsFor: () => new PermissionsBitField(permissions),
       send: async () => assert.fail('Diagnostics must not send a channel message') },
@@ -56,6 +56,20 @@ test('diagnose is an optional-link guild command limited to Manage Server', () =
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
   assert.equal(command.options?.[0].name, 'link');
   assert.equal(command.options?.[0].required ?? false, false);
+});
+
+test('TikTok share diagnostics identify the resolver requirement without making a lookup', async () => {
+  const servers = new ServerSettings(file());
+  for (const link of ['https://www.tiktok.com/t/ZPLBWgdad/', 'https://vm.tiktok.com/ZPLBWgdad/']) {
+    const f = interaction(link);
+    await execute(f.command, { ...config, rewritePlatforms: ['tiktok'] }, servers,
+      async () => assert.fail('Share diagnostics cannot query a provider'));
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+    const content = f.events.at(-1)!.payload.content;
+    assert.match(content, /recognized TikTok URL/);
+    assert.match(content, /require a public destination/);
+    assert.match(content, /No link was resolved or fetched/);
+  }
 });
 
 test('diagnose rejects DMs and non-admins privately before reading options or provider status', async () => {
@@ -82,6 +96,23 @@ test('diagnose reports disabled scope and exact missing permissions without muta
   assert.match(content, /Attach Files is also needed when copying attachments/);
   assert.equal(servers.get(SERVER), undefined);
   assert.deepEqual(servers.getPreferences(SERVER), {});
+});
+
+test('diagnose flags moderator two-factor requirements only for elevated MFA in replace mode', async () => {
+  for (const mode of ['replace', 'reply'] as const) for (const mfaLevel of [GuildMFALevel.None, GuildMFALevel.Elevated]) {
+    const servers = new ServerSettings(file()), f = interaction();
+    await servers.update(SERVER, { mode });
+    f.input.guild.mfaLevel = mfaLevel;
+    await execute(f.command, config, servers);
+    const content = f.events[1].payload.content;
+    if (mode === 'replace' && mfaLevel === GuildMFALevel.Elevated) {
+      assert.match(content, /This server requires two-factor authentication for moderation/);
+      assert.match(content, /error 60003/);
+      assert.match(content, /bot owner account has 2FA enabled/);
+      assert.match(content, /Linky keeps originals and posts its preview alongside/);
+      assert.match(content, /Enable 2FA on the bot owner account or use \/settings mode:reply\./);
+    } else assert.doesNotMatch(content, /two-factor|60003|2FA/);
+  }
 });
 
 test('reply diagnostics do not require Manage Messages or source attachment copying', async () => {
