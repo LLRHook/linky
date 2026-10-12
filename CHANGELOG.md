@@ -25,6 +25,7 @@ Git history and pull requests, not here.
 ### Fixed
 
 - [BUG-1790270870] Docs named the CI Node matrix as 22 and 24; now 22, 24 and 26, and `SECURITY_AUDIT.md` points at `bugs.md`. [patch]
+- [BUG-1790785731] Discord two-factor or permission refusals while deleting an original now keep the verified preview as a reply with Remove/Details controls and report a permission outcome; /diagnose flags servers that require moderator 2FA. [patch]
 
 ### Removed
 
