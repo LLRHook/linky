@@ -69,14 +69,15 @@ in that maintenance branch and are not re-filed here._
 - **Fix:** Use one vetted FixReddit redirect fallback within the existing network budgets, then verify the canonical vxReddit preview. The reported share automatically replaced in GAMBA in 2.411 seconds and played to completion in Chrome Discord; an unavailable-share control retained its source. Regression, build, worker, dependency-audit and deploy-safeguard checks passed.
 
 ### [BUG-1790785731] Two-factor-protected deletion reports a delivery failure after a useful preview
-- [ ] **Severity:** med
+- [x] **Severity:** med
 - **Area:** bot, previews, commands
 - **File(s):** src/services/SocialLinkService.ts, src/commands/diagnose.ts, tests/social-links.test.ts, tests/diagnose-command.test.ts
 - **Observation:** A sanitized 2026-09-30 inspection found a useful preview logged before an automatic-delivery failure with Discord HTTP 403/code 60003. This code means two-factor authentication is required. The catch labels the attempt discord-failure and the final control edit occurs only after original deletion succeeds, so this condition can leave a useful output without its final Remove/Details controls.
 - **Expected:** A server moderation/authentication restriction is distinguished from a provider preview failure, originals remain safe, and administrators receive actionable diagnostics.
 - **Repro / Notes:** Simulate an original-message delete throwing code 60003 after preview confirmation. Check original/replacement state, durable ownership, final controls and diagnostic classification. The live observation is one current-container failure; it does not establish the cause of older failures or the exact failing Discord request. [Discord.js error enum](https://discord.js.org/docs/packages/discord.js/main/RESTJSONErrorCodes%3AEnum) documents the code.
 - **Bump:** patch
-- **Status:** open
+- **Status:** fixed
+- **Fix:** Atomically downgrade identical replace ownership to reply after Discord refuses source deletion with 60003 or 50013, retain the verified preview with final controls, and report a permission outcome. Details includes server security restrictions and /diagnose flags elevated moderator 2FA requirements in Replace mode.
 
 ---
 
