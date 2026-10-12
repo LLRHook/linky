@@ -18,7 +18,13 @@ const attempt = (changes: Partial<ArchivedDelivery> = {}): ArchivedDelivery => (
 async function fixture(t: TestContext, options: Partial<DeliveryArchiveOptions> = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'linky-archive-'));
   const archive = new DeliveryArchive({ directory, now: () => NOW, ...options });
-  t.after(async () => { await archive.close(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => {
+    await archive.close();
+    // Finish persistence before removing the fixture: close() can time out
+    // while its health write is still running.
+    await archive.flush();
+    await rm(directory, { recursive: true, force: true });
+  });
   await archive.ready; await archive.flush();
   return { directory, archive };
 }
@@ -84,7 +90,7 @@ test('restart deduplicates historical finals and archives persisted unfinished a
   await diagnostics.close(); await archive.close();
   const restartedArchive = new DeliveryArchive({ directory, now: () => NOW });
   const restarted = new DeliveryDiagnostics({ path, archive: restartedArchive, wallNow: () => NOW });
-  await restarted.ready; await restarted.close(); await restartedArchive.close();
+  await restarted.ready; await restarted.close(); await restartedArchive.close(); await restartedArchive.flush();
   const rows = (await readDeliveryArchive(directory)).rows;
   assert.equal(rows.length, 2);
   assert.equal(rows.find(row => row.id === done.id)?.outcome, 'confirmed');
@@ -146,7 +152,7 @@ test('disk capacity evicts whole daily files and startup counts oversized files 
   await archive.close();
   await writeFile(join(directory, '2026-09-16.jsonl'), 'x'.repeat(200 * 1_024));
   const restarted = new DeliveryArchive({ directory, now: () => NOW, maxBytes: 128 * 1_024 });
-  assert(restarted.record(attempt())); await restarted.close();
+  assert(restarted.record(attempt())); await restarted.close(); await restarted.flush();
   assert(!(await readdir(directory)).includes('2026-09-16.jsonl'));
   bytes = 0; for (const name of await readdir(directory)) bytes += (await stat(join(directory, name))).size;
   assert(bytes <= 128 * 1_024);
@@ -161,10 +167,11 @@ test('close has a finite wait and stalled persistence never throws from record o
   assert(archive.record(attempt()));
   while (!release) await new Promise(resolve => setImmediate(resolve));
   const closing = archive.close();
-  assert.equal(await closing, false);
-  assert.equal(archive.snapshot().counters.closeTimeouts, 1);
-  assert.equal(archive.record(attempt()), false);
-  release(); await archive.flush();
+  try {
+    assert.equal(await closing, false);
+    assert.equal(archive.snapshot().counters.closeTimeouts, 1);
+    assert.equal(archive.record(attempt()), false);
+  } finally { release(); await archive.flush(); }
   assert.equal(archive.snapshot().queued, 0);
 });
 
@@ -201,7 +208,7 @@ test('startup cleans only its abandoned atomic health files and preserves unrela
   await writeFile(join(directory, temporary), 'x'.repeat(200 * 1_024));
   await writeFile(join(directory, 'unrelated.tmp'), 'keep');
   const restarted = new DeliveryArchive({ directory, now: () => NOW });
-  await restarted.close();
+  await restarted.close(); await restarted.flush();
   assert(!(await readdir(directory)).includes(temporary));
   assert.equal(await readFile(join(directory, 'unrelated.tmp'), 'utf8'), 'keep');
 });
@@ -229,6 +236,6 @@ test('unsupported community mixtures round-trip through diagnostics and archive 
   await diagnostics.close(); await archive.flush();
   assert.equal((await readDeliveryArchive(directory)).rows[0].outcome, 'unsupported');
   const restarted = new DeliveryDiagnostics({ path: join(directory, 'details-test.json'), wallNow: () => NOW });
-  await restarted.ready; await restarted.close();
+  await restarted.ready; await restarted.close(); await restarted.flush();
   assert.equal(JSON.parse(await readFile(join(directory, 'details-test.json'), 'utf8')).attempts[0].outcome, 'unsupported');
 });

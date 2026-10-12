@@ -58,6 +58,20 @@ test('diagnose is an optional-link guild command limited to Manage Server', () =
   assert.equal(command.options?.[0].required ?? false, false);
 });
 
+test('TikTok share diagnostics identify the resolver requirement without making a lookup', async () => {
+  const servers = new ServerSettings(file());
+  for (const link of ['https://www.tiktok.com/t/ZPLBWgdad/', 'https://vm.tiktok.com/ZPLBWgdad/']) {
+    const f = interaction(link);
+    await execute(f.command, { ...config, rewritePlatforms: ['tiktok'] }, servers,
+      async () => assert.fail('Share diagnostics cannot query a provider'));
+    assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
+    const content = f.events.at(-1)!.payload.content;
+    assert.match(content, /recognized TikTok URL/);
+    assert.match(content, /require a public destination/);
+    assert.match(content, /No link was resolved or fetched/);
+  }
+});
+
 test('diagnose rejects DMs and non-admins privately before reading options or provider status', async () => {
   for (const dm of [true, false]) {
     const servers = new ServerSettings(file(), async () => assert.fail('Read-only command wrote'));

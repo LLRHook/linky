@@ -91,28 +91,30 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** Update only the transitive `fast-copy` lockfile entry from 4.0.2 to the latest stable 4.1.2 after checking the upstream advisory and depth-limit documentation. No dependency ranges or production packages change. `npm audit --audit-level=low` reports zero vulnerabilities; build, worker checks, 1,197 TypeScript tests, 54 script tests (eight environment-dependent skips) and deployment safeguards pass.
 
-### [BUG-1791399501] Archive timeout test intermittently fails during Windows temporary-directory cleanup
-- [ ] **Severity:** low
+### [BUG-1791399501] Archive timeout test intermittently fails during temporary-directory cleanup
+- [x] **Severity:** low
 - **Area:** tests
 - **File(s):** tests/delivery-archive.test.ts
 - **Observation:** On 2026-10-07, a full `npm test` run failed `close has a finite wait and stalled persistence never throws from record or traces` with `ENOTEMPTY` while removing its temporary archive directory. The other 1,191 TypeScript tests passed, and the unchanged archive suite passed all 13 tests when rerun alone. A subsequent full run passed all 1,192 TypeScript tests and 54 script tests (eight environment-dependent skips).
 - **Expected:** The fixture's cleanup reliably completes after pending archive writes on Windows, including during a full concurrent suite run.
 - **Repro / Notes:** `npm test` on Windows; isolate with `npx --no-install tsx --test tests/delivery-archive.test.ts`. The fixture removes its directory after `archive.close()`, and the affected test configures a 10 ms close timeout. Investigate pending writes at teardown; the production root cause is not established by this cleanup failure.
 - **Bump:** patch
-- **Status:** open
+- **Status:** fixed-pending-migration
+- **Fix:** Finish persistence after the deadline-limited close before removing fixture and restarted archive directories, and release the stalled writer even if an assertion fails. The same ENOTEMPTY failure was confirmed in PR #70 Linux Node 22 CI. Focused archive tests and repeated full Windows/Linux suites pass.
 
 ### [BUG-1790322965] Both Instagram providers fail: instagram7.com no longer resolves and OGInstagram returns 403
-- [ ] **Severity:** high
+- [x] **Severity:** high
 - **Area:** providers, previews
 - **File(s):** src/services/SocialProviders.ts, src/services/InstagramTranslation.ts, src/services/InstagramPresentation.ts, ops/preview-corpus.json
 - **Observation:** `npm run check:providers` at SHA 4ae273d (2026-09-25) exits 1: `FAIL instagram expect=video https://www.instagram.com/reel/DdFKS1ABmK4/` with `instagram7: fetch_failed` and `oginstagram: http 403`. `dig @1.1.1.1 instagram7.com SOA` returns `status: NXDOMAIN` (same via 8.8.8.8), so the primary provider domain is gone for every resolver, bot host included. `curl -A 'Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)' https://oginstagram.com/reel/DdFKS1ABmK4/` also returns 403. Instagram caption translation calls `https://www.instagram7.com/api/` and fails as well.
 - **Expected:** At least one catalogued Instagram provider returns a satisfying preview for the corpus Reel, and caption translation has a reachable metadata source.
 - **Repro / Notes:** `npm run build && npm run check:providers`. Every other platform in the corpus passed in the same run. Replace mode keeps the source when no preview is confirmed, so posts are not lost, but Instagram links will show the retry notice instead of a preview. Next step: confirm from the bot host and the delivery archive (`docker exec linky node ops/delivery-archive-report.mjs --days 1`), then evaluate a replacement provider (vetted per `docs/provider-checks.md`) and drop or demote instagram7.
 - **Bump:** patch
-- **Status:** open
+- **Status:** fixed-pending-migration
+- **Fix:** BUG-1791399021 migrated the primary to fkinstagram.com. The October 12 provider corpus confirms its Reel video metadata; caption/presentation regressions pass. The sampled OGInstagram HTTP 403 remains an independent upstream observation, with the primary delivering the required preview.
 
 ### [BUG-1790322966] VERIFICATION.md step 1.4 secret-file check matches the source file LinkTokens.ts
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** docs, tests
 - **File(s):** VERIFICATION.md
 - **Observation:** Step 1.4 expects `git ls-files | grep -iE '\.env$|token|secret|\.pem$'` to print nothing, but it prints `src/services/LinkTokens.ts` (an ordinary source module) on every run, so the step can never pass as written.
@@ -130,10 +132,42 @@ in that maintenance branch and are not re-filed here._
 - **Expected:** A server moderation/authentication restriction is distinguished from a provider preview failure, originals remain safe, and administrators receive actionable diagnostics.
 - **Repro / Notes:** Simulate an original-message delete throwing code 60003 after preview confirmation. Check original/replacement state, durable ownership, final controls and diagnostic classification. The live observation is one current-container failure; it does not establish the cause of older failures or the exact failing Discord request. [Discord.js error enum](https://discord.js.org/docs/packages/discord.js/main/RESTJSONErrorCodes%3AEnum) documents the code.
 - **Bump:** patch
-- **Status:** fixed
+- **Status:** fixed-pending-migration
 - **Fix:** Atomically downgrade identical replace ownership to reply after Discord refuses source deletion with 60003 or 50013, retain the verified preview with final controls, and report a permission outcome. Details includes server security restrictions and /diagnose flags elevated moderator 2FA requirements in Replace mode.
 
 ---
+
+### [BUG-1791830086] TikTok share previews lack an exact post identity and a cold-media wait
+- [x] **Severity:** high
+- **Area:** providers, previews, tests
+- **File(s):** src/services/MobileShareLinks.ts, src/services/PreviewRecovery.ts, src/services/PreviewWatcher.ts, ops/provider-metadata-check.mjs, tests/mobile-share-links.test.ts, tests/preview-recovery.test.ts, tests/preview-watcher.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts, tests/provider-metadata-check.test.mjs
+- **Observation:** The reported `https://www.tiktok.com/t/ZPLBWgdad/` resolves by HTTP 301 to video `7695457160653851935`. Linky sends the unresolved share to the provider and accepts any canonical TikTok post embed for that share, so two short links can both be confirmed by one unrelated video. TikTok also retains the four-second Gateway window despite depending on cold redirect/media preparation. The October 12 GAMBA control successfully rendered and played after provider warm-up; this does not identify the historical failure's exact timing.
+- **Expected:** Resolve public TikTok shares within the existing bounded first-party resolver, verify the resolved post ID, and accept matching cold media through the bounded eight-second Gateway window. Unsafe/unavailable destinations must not permit source deletion based on an unrelated post.
+- **Repro / Notes:** Add an offline two-share wrong-post regression and a 7.5-second delayed TikTok Gateway update. Live first-party resolution initially rejected the reported share with `HPE_HEADER_OVERFLOW`: its HTTP 301 response contained 8,212 header bytes, beyond the resolver's 8 KiB limit. A bounded 16 KiB TikTok-only header cap resolves the exact post. The share and canonical URL return video metadata; Discord Chrome playback advances at 1280x720. Verify again after deployment.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Resolve TikTok shares to their exact public post through the bounded first-party resolver, with a 16 KiB TikTok header limit. Require exact preview identities and extend only the TikTok Gateway window to eight seconds. Automatic/manual, wrong-post, capacity/deadline, suppression and delayed-update regressions pass. The reported share resolves live and its Discord video plays at 1280x720.
+
+### [BUG-1791830959] npm test requires a pre-existing build and can exercise stale provider code
+- [x] **Severity:** med
+- **Area:** tests, ci
+- **File(s):** package.json, tests/provider-metadata-check.test.mjs
+- **Observation:** After `npm ci` in a fresh Linux Node 22 checkout with no `dist/`, `npm test` passed the TypeScript tests but failed with `ERR_MODULE_NOT_FOUND` for `dist/services/SocialProviders.js`. The ESM provider tests import production build output, while the test TypeScript configuration uses `noEmit`. An existing `dist/` can also leave those tests inspecting an older source revision.
+- **Expected:** `npm test` builds the current production code before running either test layer, so a fresh checkout and a changed source revision exercise the same implementation.
+- **Repro / Notes:** `npm ci` then `npm test` in a fresh checkout before `npm run build`; keep `dist/` absent. The existing provider tests prove whether the build output is present and correct.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Build the current production TypeScript as the first step of npm test, before test type-checking and both runners. A fresh-checkout reproduction failed before the fix; the full suite now passes and ESM provider tests use current compiled code.
+
+### [BUG-1791831056] Operations documentation still names old runtime and state paths
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** docs/self-hosting.md, VERIFICATION.md
+- **Observation:** The October 12 branch documentation review found pre-existing claims that the container uses Node 24 and stores delivery-archive/ and repost-registry.json. Dockerfile selects Node 26; src/bot.ts derives delivery-logs and reposts.json. The operator guide already agrees with the current archive path.
+- **Expected:** Current operational instructions identify the actual runtime and state paths; dated historical evidence remains unchanged.
+- **Repro / Notes:** Compare Dockerfile FROM lines, src/bot.ts archive/registry initialization, docs/self-hosting.md container description, and VERIFICATION.md Appendix A. Reported by docs-sync as pre-existing drift; not caused by the TikTok change.
+- **Bump:** patch
+- **Status:** open
 
 ## Migrated to changelog
 

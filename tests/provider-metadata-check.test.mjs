@@ -20,12 +20,21 @@ test('metadata reading accepts either attribute order, decodes entities and keep
 });
 
 test('a TikTok share link is satisfied by the canonical post metadata and a full link still needs its own ID', async () => {
-  const canonical = page({ 'og:url': 'https://www.tiktok.com/@e0rik00/video/7686471409861659936', 'og:title': '@e0rik00',
+  const post = 'https://www.tiktok.com/@e0rik00/video/7686471409861659936';
+  const canonical = page({ 'og:url': post, 'og:title': '@e0rik00',
     'og:video': 'https://offload.example/7686471409861659936.mp4' });
   const fetch = async () => respond(200, canonical);
-  const share = await assessSource({ source: 'https://www.tiktok.com/t/ZTU7oFukc/', expect: 'video' }, services, { fetch });
+  const normalizedServices = { ...services, normalizeMobileLinks: async (source, platforms) => {
+    assert(platforms.includes('tiktok'));
+    assert.equal(source, 'https://www.tiktok.com/t/ZTU7oFukc/');
+    return { content: post, originals: new Map() };
+  } };
+  const share = await assessSource({ source: 'https://www.tiktok.com/t/ZTU7oFukc/', expect: 'video' }, normalizedServices, { fetch });
   assert.equal(share.platform, 'tiktok'); assert.equal(share.ok, true);
   assert.deepEqual(share.providers.map(item => [item.providerId, item.satisfied, item.media, item.expectationMet]), [['tnktok', true, 'video', true]]);
+  assert.equal(share.providers[0].url, post.replace('www.tiktok.com', 'tnktok.com'));
+  const unresolved = await assessSource({ source: 'https://www.tiktok.com/t/ZTU7oFukc/', expect: 'video' }, services, { fetch });
+  assert.equal(unresolved.ok, false, 'unresolved shares cannot treat an arbitrary canonical video as their own');
   const other = await assessSource({ source: 'https://www.tiktok.com/@e0rik00/video/1', expect: 'video' }, services, { fetch });
   assert.equal(other.ok, false); assert.equal(other.providers[0].satisfied, false);
 });
