@@ -447,6 +447,31 @@ test('manual mobile shares acknowledge before network work and verify the resolv
   }
 });
 
+test('manual TikTok share fixes defer before resolving and verify the exact video without changing the source', async () => {
+  const share = 'https://www.tiktok.com/t/ZPLBWgdad/';
+  const source = 'https://www.tiktok.com/@auramonster_67_69/video/7695457160653851935';
+  for (const context of [false, true]) for (const matches of [true, false]) for (const canSend of [true, false]) {
+    const f = command(share, context), preview = previewChecks(f);
+    if (!canSend) f.input.memberPermissions = new PermissionsBitField(0n);
+    const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'],
+      connect: async () => {
+        assert.deepEqual(f.events.map(event => event.name), ['defer']);
+        assert.deepEqual(f.events[0].payload, canSend ? {} : { flags: MessageFlags.Ephemeral });
+        return new Response(null, { status: 301, headers: { location: source + '?_r=1' } });
+      },
+    });
+    f.state.render = () => [{ url: matches ? source : 'https://www.tiktok.com/@other/video/123',
+      video: { url: 'https://cdn.example/video.mp4' } }];
+    await execute(f.interaction, config, { ...preview.dependencies, normalizeMobileLinks });
+    assert.equal(preview.checks[0][0].source, source);
+    assert.equal(f.input.targetMessage.content, share);
+    if (matches) {
+      assert.equal(f.response.content, source.replace('www.tiktok.com', 'tnktok.com'));
+      assert.deepEqual(originalControls(f), [source]);
+    } else assert.match(f.response.content, /could not be confirmed/i);
+  }
+});
+
 test('invalid, hidden, bypassed and disabled mobile shares keep immediate private errors without resolver work', async () => {
   const share = 'https://www.instagram.com/share/p/Mobile123';
   for (const content of ['https://evil.test/share/Mobile123', `<${share}>`, `||${share}||`, `\`${share}\``, `${share} !nolinky`, share]) {

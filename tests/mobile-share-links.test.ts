@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { RequestOptions } from 'node:https';
-import { createMobileShareLinkNormalizer, type MobileShareLinkDependencies } from '../src/services/MobileShareLinks';
+import { createMobileShareLinkNormalizer, hasMobileShareLinks, type MobileShareLinkDependencies } from '../src/services/MobileShareLinks';
 
 const share = 'https://www.instagram.com/share/reel/Share123';
 const post = 'https://www.instagram.com/reel/Post123/';
@@ -17,6 +17,54 @@ const fixture = (connect: NonNullable<MobileShareLinkDependencies['connect']>) =
   });
   return { normalizer, calls };
 };
+
+test('TikTok www, mobile, vm and vt shares resolve to the exact video or photo identity without reading media', async () => {
+  for (const original of ['https://www.tiktok.com/t/ZPLBWgdad/', 'https://m.tiktok.com/t/ZPLBWgdad',
+    'https://vm.tiktok.com/ZPLBWgdad/', 'https://vt.tiktok.com/ZPLBWgdad/']) for (const kind of ['video', 'photo']) {
+    const canonical = `https://www.tiktok.com/@auramonster_67_69/${kind}/7695457160653851935`;
+    const f = fixture(async options => {
+      assert.equal(options.maxHeaderSize, 16_384);
+      return redirect(canonical + '?_r=1&_t=tracking');
+    });
+    const input = original + '?share=tracking#item2';
+    assert.equal(hasMobileShareLinks(input, ['tiktok']), true);
+    const result = await f.normalizer(`See **${input}**.`, ['tiktok']);
+    assert.equal(result.content, `See **${canonical}#item2**.`);
+    assert.deepEqual([...result.originals], [[canonical + '#item2', input]]);
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test('TikTok redirects can cross supported share hosts but cannot escape the platform or mistake another share for a post', async () => {
+  const original = 'https://www.tiktok.com/t/ZPLBWgdad/';
+  const canonical = 'https://www.tiktok.com/@auramonster_67_69/video/7695457160653851935';
+  const f = fixture(async options => redirect(options.hostname === 'www.tiktok.com'
+    ? 'https://vm.tiktok.com/NextShare/' : canonical));
+  assert.equal((await f.normalizer(original, ['tiktok'])).content, canonical);
+  assert.deepEqual(f.calls.map(call => call.hostname), ['www.tiktok.com', 'vm.tiktok.com']);
+  for (const location of ['https://www.tiktok.com/@someone', 'https://www.tiktok.com/login',
+    'https://evil.test/@someone/video/123', 'https://www.instagram.com/p/ABC/',
+    'https://www.tiktok.com:443/@someone/video/123', 'https://user@www.tiktok.com/@someone/video/123',
+    'http://www.tiktok.com/@someone/video/123', 'https://www.tiktok.com/t/ZPLBWgdad/']) {
+    const unsafe = fixture(async () => redirect(location));
+    const result = await unsafe.normalizer(original, ['tiktok']);
+    assert.equal(result.content, original, location);
+    assert.equal(result.originals.size, 0);
+  }
+});
+
+test('disabled, hidden and identity-bearing TikTok links do not trigger share lookups', async () => {
+  const share = 'https://www.tiktok.com/t/ZPLBWgdad/';
+  const f = fixture(async () => assert.fail('No resolver request for an ineligible token'));
+  for (const content of [`<${share}>`, `\`${share}\``, `||${share}||`, `${share} !nolinky`,
+    'https://www.tiktok.com/@auramonster_67_69/video/7695457160653851935']) {
+    assert.equal(hasMobileShareLinks(content, ['tiktok']), false);
+    assert.equal((await f.normalizer(content, ['tiktok'])).content, content);
+  }
+  assert.equal(hasMobileShareLinks(share, ['instagram']), false);
+  assert.equal((await f.normalizer(share, ['instagram'])).content, share);
+  assert.equal(f.calls.length, 0);
+});
 
 test('Instagram bare, post and reel share forms resolve with exact source buttons, text and punctuation intact', async () => {
   for (const path of ['/share/Share123', '/share/p/Share123/', '/share/reel/Share123']) {

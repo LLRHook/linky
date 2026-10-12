@@ -18,7 +18,7 @@ Manual fixes, retries, refreshes, failure notices and progress messages do not a
 
 ## Preview detection and provider recovery
 
-The ordinary-preview watcher subscribes to the existing Discord Gateway before publishing or editing. A useful early update can finish verification immediately. If the update is missed, Linky waits up to four seconds and performs one bounded REST reconciliation. Watchers have capacity and lifetime limits and close on cancellation. This replaces repeated polling; it cannot make a third-party provider render faster.
+The ordinary-preview watcher subscribes to the existing Discord Gateway before publishing or editing. A useful early update can finish verification immediately. If the update is missed, Linky waits up to eight seconds for Instagram or TikTok and up to four seconds for other providers, then performs one bounded REST reconciliation. Watchers have capacity and lifetime limits and close on cancellation. This replaces repeated polling; it cannot make a third-party provider render faster.
 
 Health-based ordering requires three distinct posts for which a provider failed and a catalogued alternative demonstrably succeeded. Repeated retries of one unavailable post do not qualify. Canonical source URLs and delayed embeds from a prior provider can establish useful delivery but do not credit the new provider. Capability modes remain separate, including caption-free translated previews and known video requirements. Deprioritization is temporary, with limited recovery probes; fallback candidates are never removed. Platforms with only one verified provider still have no automatic alternate.
 
