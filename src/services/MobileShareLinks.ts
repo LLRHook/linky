@@ -4,7 +4,7 @@ import { mapLinks, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
 import { parseSocialUrl } from './SocialProviders';
 
-type MobilePlatform = 'instagram' | 'reddit';
+type MobilePlatform = 'instagram' | 'reddit' | 'tiktok';
 export interface NormalizedMobileLinks {
   content: string;
   /** Canonical source URL to the first original share token that fits a link button. */
@@ -43,6 +43,8 @@ function strictUrl(raw: string): URL | null {
 }
 
 function sharePlatform(url: URL): MobilePlatform | null {
+  const tiktok = parseSocialUrl(url.href);
+  if (tiktok?.platform === 'tiktok' && !/^\/@/.test(tiktok.path)) return 'tiktok';
   if (INSTAGRAM_HOSTS.has(url.hostname) && /^\/share\/(?:(?:p|reel)\/)?[A-Za-z0-9_-]{1,64}\/?$/.test(url.pathname)) {
     return 'instagram';
   }
@@ -78,6 +80,8 @@ function canonicalDestination(url: URL, platform: MobilePlatform): string | null
   const raw = platform === 'reddit' ? redditAlias(url) ?? url.href : url.href;
   const canonical = parseSocialUrl(raw);
   if (canonical?.platform !== platform) return null;
+  // A TikTok share is a redirect hop, never evidence of the final post identity.
+  if (platform === 'tiktok' && !/^\/@/.test(canonical.path)) return null;
   return canonical.sourceUrl;
 }
 
@@ -118,7 +122,8 @@ async function resolveShare(url: URL, platform: MobilePlatform, signal: AbortSig
     const response = await regionalAbortable(connect({
       protocol: 'https:', hostname: current.hostname, servername: current.hostname, port: 443,
       path: current.pathname + current.search, method: 'GET', agent: false, family: 4,
-      rejectUnauthorized: true, maxHeaderSize: 8192,
+      // TikTok's public redirect headers can exceed 8 KiB; keep a finite 16 KiB cap there.
+      rejectUnauthorized: true, maxHeaderSize: platform === 'tiktok' ? 16_384 : 8192,
       headers: { accept: 'text/html', 'accept-encoding': 'identity', 'user-agent': 'Mozilla/5.0 (compatible; Linky/1.0)' },
       lookup: (_hostname, options, callback) => {
         if (options.all) callback(null, [{ address, family: 4 }]);

@@ -354,7 +354,7 @@ test('community cards require exact source, author, text and ordered full images
   assert.match(health.describe(url), /community/i);
 });
 
-test('a TikTok share link accepts the canonical post embed that providers publish', () => {
+test('an unresolved TikTok share cannot accept an arbitrary canonical post embed', () => {
   const canonical = 'https://www.tiktok.com/@e0rik00/video/7686471409861659936';
   for (const [short, fixedShort] of [
     ['https://www.tiktok.com/t/ZTU7oFukc/', 'https://tnktok.com/t/ZTU7oFukc/'],
@@ -362,13 +362,26 @@ test('a TikTok share link accepts the canonical post embed that providers publis
   ]) {
     const items = expectedPreviews(short, fixedShort);
     assert.equal(items.length, 1);
-    assert.equal(inspectPreviews([{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }], items).ok, true);
+    assert.equal(inspectPreviews([{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }], items).ok, false);
+    assert.equal(inspectPreviews([{ url: fixedShort, video: { url: 'https://cdn.example/video.mp4' } }], items).ok, true);
     assert.equal(inspectPreviews([{ url: canonical, title: 'Error', description: 'Try again later' }], items).ok, false);
     assert.equal(inspectPreviews([{ url: 'https://www.tiktok.com/@someone', thumbnail: { url: 'https://cdn.example/a.png' } }], items).ok, false);
   }
   const full = expectedPreviews(canonical, 'https://tnktok.com/@e0rik00/video/7686471409861659936');
+  assert.equal(inspectPreviews([{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }], full).ok, true);
   assert.equal(inspectPreviews([{ url: 'https://www.tiktok.com/@e0rik00/video/1', video: { url: 'https://cdn.example/video.mp4' } }], full).ok, false,
     'a full post link still requires its own ID');
+});
+
+test('two resolved TikTok shares need both exact post IDs and cannot share one matching video', () => {
+  const first = 'https://www.tiktok.com/@auramonster_67_69/video/7695457160653851935';
+  const second = 'https://www.tiktok.com/@nba/video/7111722063571782958';
+  const items = expectedPreviews(`${first} ${second}`, `${first.replace('www.tiktok.com', 'tnktok.com')} ${second.replace('www.tiktok.com', 'tnktok.com')}`);
+  const embed = (url: string): APIEmbed => ({ url, video: { url: 'https://cdn.example/video.mp4' } });
+  assert.equal(items.length, 2);
+  assert.equal(inspectPreviews([embed(first)], items).ok, false);
+  assert.deepEqual(inspectPreviews([embed(first)], items).missing, [items[1]]);
+  assert.equal(inspectPreviews([embed(first), embed(second)], items).ok, true);
 });
 
 test('article confirmations require the exact publisher card and cannot claim native video metadata', () => {

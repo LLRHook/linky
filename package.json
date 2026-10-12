@@ -28,7 +28,7 @@
     "check:workers": "tsc --project tsconfig.worker.json",
     "report:deliveries": "node ops/delivery-archive-report.mjs",
     "check:providers": "node ops/provider-metadata-check.mjs",
-    "test": "tsc --project tsconfig.test.json && tsx --test tests/*.test.ts && node --test tests/*.test.mjs",
+    "test": "npm run build && tsc --project tsconfig.test.json && tsx --test tests/*.test.ts && node --test tests/*.test.mjs",
     "start": "node dist/index.js",
     "register-commands": "tsx src/commands/register.ts"
   },

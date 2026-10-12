@@ -1059,6 +1059,86 @@ test('automatic mobile links resolve before translation and media verification, 
   }
 });
 
+test('automatic TikTok shares verify the resolved video before deletion and reject unrelated media', async () => {
+  const share = 'https://www.tiktok.com/t/ZPLBWgdad/';
+  const source = 'https://www.tiktok.com/@auramonster_67_69/video/7695457160653851935';
+  const fixed = source.replace('www.tiktok.com', 'tnktok.com');
+  for (const matches of [true, false]) for (const mode of ['replace', 'reply'] as const) {
+    const f = delivery(share);
+    f.state.preferences.mode = mode;
+    f.state.render = () => [{ url: matches ? source : 'https://www.tiktok.com/@unrelated/video/123',
+      video: { url: 'https://cdn.example/video.mp4' } }];
+    const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'],
+      connect: async () => new Response(null, { status: 301, headers: { location: source + '?_t=tracking' } }),
+    });
+    await f.create({ normalizeMobileLinks })(f.source);
+    assert.equal(f.source.content, share);
+    assert.equal(f.expectedChecks[0][0].source, source);
+    assert.equal(f.expectedChecks[0][0].url, fixed);
+    assert.equal(f.state.originalDeleted, matches && mode === 'replace');
+    if (matches) {
+      assert.equal(f.sent.length, 1);
+      assert.equal(f.sent[0].deleted, false);
+      assert(f.sent[0].message.content.includes(fixed));
+      assert.match(JSON.stringify(f.sent[0].message.components), /linky:remove/);
+      if (mode === 'replace') assert(f.events.indexOf('delete:source') > f.events.indexOf('verify:1:passed'));
+    } else assert(f.sent.some(sent => sent.message.content.includes('could not confirm a preview')));
+  }
+});
+
+test('unresolved TikTok shares preserve the original when Discord returns another canonical video', async () => {
+  const share = 'https://www.tiktok.com/t/ZPLBWgdad/';
+  const f = delivery(share);
+  f.state.render = () => [{ url: 'https://www.tiktok.com/@someone/video/123', video: { url: 'https://cdn.example/video.mp4' } }];
+  await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({ resolve4: async () => ['127.0.0.1'],
+    connect: async () => assert.fail('Private DNS must not connect') }) })(f.source);
+  assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.source.content, share);
+  assert(f.sent.some(sent => sent.message.content.includes('could not confirm a preview')));
+});
+
+test('an unresolved TikTok share still accepts its exact provider share identity', async () => {
+  const share = 'https://www.tiktok.com/t/ZPLBWgdad/';
+  const f = delivery(share);
+  f.state.render = () => [{ url: 'https://tnktok.com/t/ZPLBWgdad/', video: { url: 'https://cdn.example/video.mp4' } }];
+  await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({ resolve4: async () => ['127.0.0.1'],
+    connect: async () => assert.fail('Private DNS must not connect') }) })(f.source);
+  assert.equal(f.state.originalDeleted, true);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].deleted, false);
+});
+
+test('resolver capacity and deadline exhaustion preserve TikTok sources when metadata has no exact identity', async () => {
+  const share = 'https://www.tiktok.com/t/ZPLBWgdad/';
+  const canonical = 'https://www.tiktok.com/@auramonster_67_69/video/7695457160653851935';
+  const controllers = Array.from({ length: 8 }, () => new AbortController());
+  let requests = 0;
+  const normalizer = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'],
+    connect: async () => { requests++; return new Promise<Response>(() => {}); },
+  });
+  const active = controllers.map(controller => normalizer(share, ['tiktok'], controller.signal));
+  while (requests < 8) await new Promise(resolve => setImmediate(resolve));
+  try {
+    const f = delivery(share);
+    f.state.render = () => [{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }];
+    await f.create({ normalizeMobileLinks: normalizer })(f.source);
+    assert.equal(requests, 8, 'over-capacity delivery must not enqueue another request');
+    assert.equal(f.state.originalDeleted, false);
+  } finally {
+    controllers.forEach(controller => controller.abort());
+    await Promise.all(active);
+  }
+  const second = 'https://vm.tiktok.com/SecondShare/';
+  const f = delivery(`${share} ${second}`);
+  f.state.render = () => [{ url: canonical, video: { url: 'https://cdn.example/video.mp4' } }];
+  const stalled = createMobileShareLinkNormalizer({ timeoutMs: 10, resolve4: async () => ['1.1.1.1'],
+    connect: async () => new Promise<Response>(() => {}),
+  });
+  await f.create({ normalizeMobileLinks: stalled })(f.source);
+  assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.source.content, `${share} ${second}`);
+});
+
 test('mobile resolution failure retains the exact original and never publishes an unverified share replacement', async () => {
   const share = 'https://www.instagram.com/share/reel/Mobile123?igsh=original';
   const f = delivery(share);
