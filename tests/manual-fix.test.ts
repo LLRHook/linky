@@ -65,6 +65,20 @@ function previewChecks(fixture: ReturnType<typeof command>) {
   return { checks, observations, dependencies };
 }
 
+test('explicit fixing rejects a vxTwitter service-error fallback and preserves the source', async () => {
+  for (const context of [false, true]) {
+    const f = command('https://x.com/public/status/123', context), checks = previewChecks(f);
+    f.state.render = body => [{ url: body.includes('vxtwitter.com')
+      ? 'https://vxtwitter.com/public/status/123' : 'https://fixupx.com/public/status/123',
+      title: body.includes('vxtwitter.com') ? 'vxTwitter / fixvx' : 'Error',
+      description: body.includes('vxtwitter.com') ? 'Failed to scan your link! This post is unavailable.' : 'Try again later' }];
+    await execute(f.interaction, config, checks.dependencies);
+    assert.equal(checks.checks.length, 2);
+    assert(checks.observations.every(observation => !observation.result.ok));
+    assert.match(f.response.content, /useful preview could not be confirmed/i);
+  }
+});
+
 test('manual preview expiration stops provider retries and cannot record a late confirmation', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   for (const observed of [false, true]) {

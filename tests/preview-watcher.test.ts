@@ -67,6 +67,21 @@ test('a missed Gateway event causes exactly one REST reconciliation', async t =>
   assert.equal(fetches, 1);
 });
 
+test('a vxTwitter service-error event and REST echo cannot wake or confirm a post preview', async t => {
+  const { client, watcher } = fixture(t, { gatewayWaitMs: 0 });
+  const url = 'https://vxtwitter.com/public/status/123';
+  const items = expectedPreviews('https://x.com/public/status/123', url);
+  const error: APIEmbed = { url, title: 'vxTwitter / fixvx', description: 'Failed to scan your link! This post is unavailable.' };
+  const watch = watcher.arm(channel, items);
+  raw(client, [error]);
+  let fetches = 0;
+  const result = await watch.verify(message([], async () => { fetches++; return message([error]); }));
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.missing, items);
+  assert.deepEqual(result.attributed, []);
+  assert.equal(fetches, 1);
+});
+
 test('a stuck REST fetch and explicit cancellation both terminate within the bounded wait', async t => {
   const { watcher } = fixture(t);
   let fetches = 0;
