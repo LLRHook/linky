@@ -169,6 +169,33 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** open
 
+### [BUG-1791837720] Confirmed social previews lose Remove and Details controls in live Discord
+- [ ] **Severity:** med
+- **Area:** previews, ownership
+- **File(s):** src/services/SocialLinkService.ts, src/services/RepostRegistry.ts, tests/social-links.test.ts, tests/repost-sync.test.ts, tests/delivery-recovery.test.ts
+- **Observation:** Fresh-stack GAMBA TikTok, Bluesky and Reddit previews were confirmed and their sources safely deleted, but the resulting Discord messages retained only Original post. The canonical reported TikTok initially displayed Remove and Details, then lost both within seconds. A Bot REST GET confirms this server state; the durable ownership records still exist. X and Instagram controls remain present.
+- **Expected:** A confirmed automatic preview retains the original sharer's Remove action and its delivery Details while its ownership record is valid.
+- **Repro / Notes:** Owned examples: TikTok 1559302634077425725 (canonical), 1559302873437962383 (Retry reply), 1559304300969070615 and 1559304343214231662 (corpus); Bluesky 1559304532083736667; Reddit 1559304570570670212. .vv/discord-fixtures.json, .vv/gui-evidence.json and Hostinger registry/log evidence show the mismatch. No product root cause has been assumed.
+- **Investigation:** Batch A reproduced Original-only controls on Reddit 1559369650746429450 in both the GUI and channel-list REST response. A later Reddit delivery retained all controls in single-message and channel-list REST checks; bound private Details and owner Remove worked. TikTok and a three-minute Bluesky replay also retained controls. Controlled REST probes and the actual Discord.js publication handler without a Gateway connection retained controls. The failure is intermittent; its writer remains unproven. Component fixtures now preserve serialized server state and model cloned edit/fetch results, but this characterization is not a product fix.
+- **Acceptance criteria:** Confirmed automatic and Retry previews retain Original post, owner-only Remove and correctly bound Details after delayed updates; unrelated controls, source-deletion ordering and cleanup remain correct.
+- **Test plan:** Reproduce component-state loss with faithful send/edit/cache and delayed-event behavior; exercise Replace, Reply, Retry, ownership reload, non-owner actions and cancellation against the captured lifecycle.
+- **Bump:** patch
+- **Status:** in-progress
+
+### [BUG-1791838422] vxTwitter error card is accepted as a useful post preview
+- [ ] **Severity:** high
+- **Area:** previews, source-safety
+- **File(s):** src/services/PreviewRecovery.ts, tests/preview-recovery.test.ts, tests/preview-watcher.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts
+- **Observation:** Retrying the current unavailable X fixture produced a vxTwitter / fixvx card whose description begins "Failed to scan your link!" and returned a confirmed preview. A read-only invocation of the committed inspectPreviews matcher against the actual Discord embed returns ok:true with no missing expectation.
+- **Expected:** A provider's unavailable/error card cannot satisfy useful post delivery or permit source deletion.
+- **Repro / Notes:** Owned source 1559305894511116288, retry response 1559306040581816402. .vv/live-fixture-analysis.json captures the real embed and current matcher result. Retry kept the source because it forces Reply; the automatic Replace path shares this matcher and remains at risk. No source loss was observed in this fixture.
+- **Root cause:** The known-error expressions omit the branded vxTwitter service-error signature, allowing its matching URL, title and description to satisfy a text-post preview.
+- **Implementation progress:** Added a narrow branded scan-error rejection before media checks and regression coverage for aliases, logos/video, legitimate quoted text, Gateway/REST observations, automatic Replace/Retry and manual commands. The live REST-backed SDK probe rejected both unavailable providers, retained its source and exposed an owned recovery notice. Integrated sign-off and verification through the normal deployed bot remain pending.
+- **Acceptance criteria:** Recognizable provider service-error cards remain missing and receive no success attribution; automatic failure preserves the source and owned recovery controls; legitimate post/media and useful bounded fallback still pass.
+- **Test plan:** Regress the captured error signature and media/logo variants, legitimate-post positive controls, Gateway/REST rejection, automatic Replace/Retry source safety and explicit manual fixing.
+- **Bump:** patch
+- **Status:** in-progress
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.
