@@ -4,17 +4,23 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Collection, MessageFlagsBitField, MessageType, PermissionsBitField,
-  type Attachment, type Message, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
+  type APIMessageTopLevelComponent, type Attachment, type Message, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
 import { RepostRegistry, type RepostMessage, type RepostRecord } from '../src/services/RepostRegistry';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
 import { inspectPreviews } from '../src/services/PreviewRecovery';
+import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 
 const NOW = Date.UTC(2026, 8, 12);
 const id = (offset: number) => String(BigInt(NOW + offset - 1_420_070_400_000) << 22n);
 const GUILD = id(-10_000), CHANNEL = id(-9_000), AUTHOR = id(-8_000), BOT = id(-7_000), SOURCE = id(-6_000);
 const LINK = 'https://x.com/jack/status/20';
 
-async function fixture(t: TestContext) {
+const components = (rows: MessageCreateOptions['components']) => (rows ?? []).map(row => {
+  const snapshot = structuredClone(('toJSON' in row ? row.toJSON() : row) as APIMessageTopLevelComponent);
+  return { toJSON: () => structuredClone(snapshot) };
+});
+
+async function fixture(t: TestContext, diagnostics?: DeliveryDiagnostics) {
   const directory = await mkdtemp(join(tmpdir(), 'linky-sync-'));
   const path = join(directory, 'reposts.json');
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -27,9 +33,22 @@ async function fixture(t: TestContext) {
     send: async (options: MessageCreateOptions) => {
       const message = { id: id(nextId++), channelId: CHANNEL, guildId: GUILD,
         author: { id: BOT, bot: true }, content: options.content ?? '',
-        attachments: new Collection<string, Attachment>(), embeds: [],
+        attachments: new Collection<string, Attachment>(), embeds: [], components: components(options.components),
         delete: async () => { deleted.push(message.id); messages.delete(message.id); },
-        edit: async (edit: MessageEditOptions) => { if (typeof edit.content === 'string') message.content = edit.content; return message; },
+        // REST edits return a fresh object; the old SDK handle need not be updated in place.
+        edit: async (edit: MessageEditOptions) => {
+          const current = messages.get(message.id);
+          if (!current) throw { code: 10008 };
+          const updated = { ...current, ...(typeof edit.content === 'string' ? { content: edit.content } : {}),
+            ...(edit.components ? { components: components(edit.components) } : {}) } as Message;
+          messages.set(message.id, updated);
+          return { ...updated } as Message;
+        },
+        fetch: async () => {
+          const current = messages.get(message.id);
+          if (!current) throw { code: 10008 };
+          return { ...current } as Message;
+        },
       } as unknown as Message;
       messages.set(message.id, message); return message;
     },
@@ -44,7 +63,7 @@ async function fixture(t: TestContext) {
   } as unknown as Message);
   let registry: RepostRegistry;
   const handler = createLinkRepostHandler([CHANNEL], { info() {}, warn() {}, error() {} }, undefined, {
-    platforms: ['x'], serverPreferences: () => ({ mode: 'reply' }),
+    platforms: ['x'], serverPreferences: () => ({ mode: 'reply' }), diagnostics,
     verifyPreview: async (_message, expected) => {
       await hooks.preview();
       return inspectPreviews(expected.map(item => ({ url: item.url, title: 'Jack', description: 'Public post' })), expected);
@@ -107,4 +126,27 @@ test('an intentionally bypassed edit removes the old reply and completes its ref
   await f.registry.handleSourceUpdate(before, f.edit('!nolinky Latest edit', NOW + 1_000), f.regenerate);
   assert.equal(f.messages.size, 0);
   assert.deepEqual(await f.saved(), { records: [], remove: [], refresh: [] });
+});
+
+test('regenerated replies retain owner controls and bound Details when REST edits return clones', async t => {
+  const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
+    startStage: () => ({ finish() {} }), finish() {} }), bind: async () => true } as unknown as DeliveryDiagnostics;
+  const f = await fixture(t, diagnostics), before = f.source();
+  await f.registry.handleSourceUpdate(before, f.edit('Latest edit', NOW + 1000), f.regenerate);
+  const record = f.registry.findBySource(SOURCE);
+  assert(record);
+  const visible = f.messages.get(record.replacementId);
+  assert(visible);
+  const labels = () => JSON.stringify(f.messages.get(record.replacementId)!.components.map(row => row.toJSON()));
+  assert.match(labels(), /Original post/);
+  assert.match(labels(), /linky:remove/);
+  assert.match(labels(), /linky:details/);
+  const edited = await visible.edit({ content: visible.content + '\nAdditional context.' });
+  assert.notEqual(edited, visible, 'test the real SDK clone boundary');
+  assert.equal(visible.content.endsWith('Additional context.'), false);
+  assert.match(labels(), /linky:remove/);
+  assert.match(labels(), /linky:details/);
+  f.restart();
+  assert.equal(f.registry.findByReplacement(record.replacementId)?.authorId, AUTHOR);
+  assert.match(labels(), /linky:remove/);
 });

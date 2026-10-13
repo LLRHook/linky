@@ -124,6 +124,32 @@ test('a matching X error card cannot authorize deletion of the original', async 
   assert(f.sent[0].deleted, 'discard the unusable replacement');
 });
 
+test('vxTwitter scan-error fallback keeps the source and an owned Retry notice with Details', async () => {
+  for (const reply of [false, true]) {
+    const f = delivery(), outcomes: DeliveryOutcome[] = [];
+    f.state.render = (_round, message) => message.content.includes(ALTERNATE_X)
+      ? [{ url: ALTERNATE_X, title: 'vxTwitter / fixvx', description: 'Failed to scan your link! This post is unavailable.' }]
+      : [{ url: PRIMARY_X, title: 'Error', description: 'Try again later' }];
+    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
+      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
+      bind: async () => true } as unknown as DeliveryDiagnostics;
+    await f.create({ diagnostics })(f.source, reply ? { forceReply: true, manualRetry: true } : undefined);
+    assert.equal(f.state.originalDeleted, false);
+    assert.equal(f.expectedChecks.length, 2);
+    assert(f.sent[0].deleted, 'the unverified provider output is discarded');
+    const notice = f.sent.find(entry => !entry.deleted);
+    assert(notice);
+    const components = JSON.stringify(notice.message.components.map(row => row.toJSON()));
+    assert.match(components, /Original post/);
+    assert.match(components, /linky:retry/);
+    assert.match(components, /linky:remove/);
+    assert.match(components, /linky:details/);
+    assert.equal(f.remembered.at(-1)?.replacementId, notice.message.id);
+    assert.equal(f.remembered.at(-1)?.mode, 'reply');
+    assert.deepEqual(outcomes, ['metadata-unconfirmed']);
+  }
+});
+
 test('a thrown ownership write removes the retry notice as well as the failed replacement', async () => {
   const f = delivery();
   f.state.render = () => [];
