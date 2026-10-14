@@ -2,9 +2,9 @@ import { resolve4 } from 'node:dns/promises';
 import type { request, RequestOptions } from 'node:https';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
-import { parseSocialUrl } from './SocialProviders';
+import { FACEBOOK_HOSTS, parseSocialUrl } from './SocialProviders';
 
-type MobilePlatform = 'instagram' | 'reddit' | 'tiktok';
+type MobilePlatform = 'instagram' | 'reddit' | 'tiktok' | 'facebook';
 export interface NormalizedMobileLinks {
   content: string;
   /** Canonical source URL to the first original share token that fits a link button. */
@@ -52,6 +52,8 @@ function sharePlatform(url: URL): MobilePlatform | null {
       /^\/(?:r\/[A-Za-z0-9_]{1,64}|(?:u|user)\/[A-Za-z0-9_-]{1,64})\/s\/[A-Za-z0-9_-]{1,64}\/?$/.test(url.pathname)) {
     return 'reddit';
   }
+  // Facebook answers mobile Reel/video shares with a 302 to /reel/<id> or /<page>/videos/<id>.
+  if (FACEBOOK_HOSTS.has(url.hostname) && /^\/share\/[rv]\/[A-Za-z0-9_-]{1,64}\/?$/.test(url.pathname)) return 'facebook';
   return null;
 }
 

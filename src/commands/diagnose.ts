@@ -33,6 +33,7 @@ function platformFor(link: string): RewritePlatform | undefined {
   if (parseEromeUrl(link)) return 'erome';
   if (hasMobileShareLinks(link, ['instagram'])) return 'instagram';
   if (hasMobileShareLinks(link, ['reddit'])) return 'reddit';
+  if (hasMobileShareLinks(link, ['facebook'])) return 'facebook';
   return parseSocialUrl(link)?.platform ?? (parseArticleUrl(link) ? 'articles' : undefined);
 }
 

@@ -1,7 +1,7 @@
 import { mapLinks, visibleLink } from './LinkTokens';
 import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
 
-export type SocialPlatform = 'x' | 'instagram' | 'tiktok' | 'bluesky' | 'reddit' | 'twitch';
+export type SocialPlatform = 'x' | 'instagram' | 'tiktok' | 'bluesky' | 'reddit' | 'twitch' | 'facebook';
 
 export interface SocialUrl {
   readonly platform: SocialPlatform;
@@ -37,6 +37,8 @@ export const SOCIAL_PROVIDERS = [
   { id: 'vxreddit', platform: 'reddit', label: 'vxReddit', origin: 'https://vxreddit.com', hosts: ['vxreddit.com'] },
   // https://github.com/seriaati/fxtwitch — this service is unrelated to fxtwitch.tv.
   { id: 'fxtwitch', platform: 'twitch', label: 'fxTwitch', origin: 'https://fxtwitch.seria.moe', hosts: ['fxtwitch.seria.moe'] },
+  // https://github.com/facebed/facebed — accepts the same /reel/ and /<page>/videos/ paths.
+  { id: 'facebed', platform: 'facebook', label: 'Facebed', origin: 'https://facebed.com', hosts: ['facebed.com', 'www.facebed.com'] },
 ] as const;
 export type SocialProvider = typeof SOCIAL_PROVIDERS[number];
 export interface ProviderCandidate { providerId: SocialProvider['id']; platform: SocialPlatform; url: string }
@@ -47,6 +49,7 @@ const TIKTOK_HOSTS = new Set(['tiktok.com', 'www.tiktok.com', 'm.tiktok.com']);
 const TIKTOK_SHARE_HOSTS = new Set(['vm.tiktok.com', 'vt.tiktok.com']);
 const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com']);
 const TWITCH_HOSTS = new Set(['twitch.tv', 'www.twitch.tv', 'm.twitch.tv']);
+export const FACEBOOK_HOSTS = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com', 'web.facebook.com']);
 
 // AT Protocol handle/record-key syntax; only handle and the supported DID forms are accepted.
 const HANDLE = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
@@ -101,6 +104,11 @@ export function parseSocialUrl(raw: string): SocialUrl | null {
       if (!clip || clip === 'embed') return null;
       platform = 'twitch'; sourceHost = 'clips.twitch.tv'; postId = clip;
       path = `/${clip}`;
+    } else if (FACEBOOK_HOSTS.has(url.hostname)) {
+      // Facebed labels the same video as /reel/ or /videos/, so identity is the numeric video ID.
+      const video = /^\/(?:reel|[A-Za-z0-9.]{1,80}\/videos)\/(\d{1,20})\/?$/.exec(path);
+      if (!video) return null;
+      platform = 'facebook'; sourceHost = 'www.facebook.com'; postId = video[1];
     } else return null;
     return { platform, sourceUrl: `https://${sourceHost}${path}${fragment}`, path, fragment,
       ...(statusId ? { statusId } : {}), ...(postId ? { postId } : {}) };
@@ -133,6 +141,7 @@ export function parseProviderUrl(raw: string): (SocialUrl & { providerId: Social
   }
   const sourceHost = provider.platform === 'x' ? 'x.com' : provider.platform === 'instagram' ? 'www.instagram.com'
     : provider.platform === 'bluesky' ? 'bsky.app' : provider.platform === 'reddit' ? 'www.reddit.com'
+    : provider.platform === 'facebook' ? 'www.facebook.com'
     : /^\/[A-Za-z0-9_-]+\/?(?:[?#]|$)/.test(path) ? 'vm.tiktok.com' : 'www.tiktok.com';
   const source = parseSocialUrl(`https://${sourceHost}${path}`);
   return source ? { ...source, providerId: provider.id } : null;

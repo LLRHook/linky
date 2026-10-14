@@ -118,6 +118,23 @@ Priority guide: crit / high / med / low.
 - **Bump:** patch
 - **Status:** open
 
+### [FEAT-1791951567] Facebook Reel and video previews
+- [x] **Priority:** high
+- **Area:** previews, providers
+- **File(s):** src/services/SocialProviders.ts, src/services/MobileShareLinks.ts, src/services/LinkConfiguration.ts, src/services/PreviewRecovery.ts, src/commands/settings.ts, README.md
+- **Why:** A user-reported Facebook mobile share (`https://www.facebook.com/share/r/1DTK3shLVM/?mibextid=wwXIfr`) stays unchanged: Linky has no Facebook support, and Discord's native card for Facebook shows only a thumbnail with no playable video.
+- **Approach:** Add a `facebook` platform for `/reel/<id>` and `/<page>/videos/<id>` URLs, previewed through Facebed (`facebed.com`, https://github.com/facebed/facebed), which serves an `og:video` MP4. Resolve `/share/r/` and `/share/v/` mobile shares with the existing bounded, cookie-free redirect lookup (Facebook answers them with a 302 to `/reel/<id>`). Identify previews by numeric video ID because Facebed's `og:url` varies between `/reel/` and `/videos/` forms; require a playable video before replacement.
+- **Library / dependency notes:** No new dependencies.
+- **Acceptance criteria:**
+  - The reported share link resolves to `https://www.facebook.com/reel/1060921586772217` and is rewritten to `https://facebed.com/reel/1060921586772217`.
+  - Facebed login-wall responses (no video) are not accepted as a preview; the source message is kept.
+  - `/settings facebook:` and the setup Platforms menu control the platform; existing servers inherit it as on.
+- **Test plan:** Unit tests for parsing, rewriting, provider identity, share resolution with injected HTTP, and verification rejecting a video-less embed; live Discord check of the reported link.
+- **Out of scope:** Facebook photo/text posts, `/watch?v=` and `fb.watch` links, private or login-only videos.
+- **Bump:** minor
+- **Implementation:** `facebook` platform and `facebed` provider in `SocialProviders.ts` (video-ID identity, strict hosts); `/share/r|v/` resolution in `MobileShareLinks.ts`; video required and eight-second Gateway window in `PreviewRecovery.ts` / `PreviewWatcher.ts`; `/settings facebook:`, setup menu, diagnostics and archive platform lists; corpus entry and docs. Live: the reported link resolved from Hostinger, Discord built a 720×1280 video embed that Linky's matcher accepted and Chrome Discord played (`docs/provider-checks.md`).
+- **Status:** shipped-pending-migration
+
 ---
 
 ## Shipped
