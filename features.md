@@ -186,6 +186,88 @@ Priority guide: crit / high / med / low.
 - **Bump:** patch
 - **Status:** open
 
+### [FEAT-1791990467] Independent CI jobs behind one required CI gate
+- [ ] **Priority:** high
+- **Area:** ci, docs
+- **File(s):** .github/workflows/ci.yml, ops/prompt-workflow.mjs, tests/prompt-workflow.test.mjs, tests/ci-workflow.test.mjs (new), VERIFICATION.md, CONTRIBUTING.md, README.md, docs/self-hosting.md, docs/discord-prompt.md
+- **Why:** 2026-10-14 workflow review, items 1-2. `npm audit` runs inside each `Build (Node N)` job before build and tests, so an advisory hides every functional result. Branch protection on `main` requires `Build (Node 22)`, `Build (Node 24)` and `Production container` but not `Build (Node 26)`, the version the production `Dockerfile` runs.
+- **Approach:** Split `ci.yml` into independent jobs: `Secret scan` (gitleaks, once), `Dependency audit` (`npm ci` + `npm audit --audit-level=low`, once), `Build (Node N)` matrix 22/24/26 (build, `check:workers`, `npm test`, `deploy.test.sh`) and `Production container`. Add `CI gate` with `needs:` on all of them and `if: always()`, failing unless every needed job concluded `success`. Matrix job names stay `Build (Node N)` so this change merges under the current rules. The Discord prompt publisher's hard-coded required checks become `CI gate` and `PR evidence` (FEAT-1791990468). After merge, switch `main` branch protection required checks to `CI gate` and `PR evidence` via `gh api` (keep strict, enforce-admins and conversation resolution). Deploy keeps triggering on the CI workflow conclusion.
+- **Library / dependency notes:** None; existing pinned actions and tool checksums move unchanged.
+- **Acceptance criteria:**
+  - An audit failure leaves build, test, deploy-safeguard and container results reported.
+  - `CI gate` fails when any needed job fails, is cancelled or is skipped.
+  - `main` requires only `CI gate` and `PR evidence`; strict, enforce-admins and conversation resolution remain on; recorded with `gh api` output.
+  - VERIFICATION, CONTRIBUTING, CLAUDE.md and README name the new job and step names.
+- **Test plan:** `bash tests/deploy.test.sh` plus a static assertion test that `ci.yml` gate `needs:` covers every other job; the PR's own CI run shows all jobs; `gh api .../branches/main/protection` output after the change.
+- **Out of scope:** `linky-web` / Vercel deployment gating (separate repository); changing Deploy's SSH steps.
+- **Bump:** minor
+- **Status:** in-progress
+
+### [FEAT-1791990468] Acceptance evidence required in every pull request
+- [ ] **Priority:** high
+- **Area:** ci, docs
+- **File(s):** .github/pull_request_template.md (new), .github/workflows/pr-evidence.yml (new), ops/pr-evidence-check.mjs (new), tests/pr-evidence-check.test.mjs (new), ops/prompt-workflow.mjs, tests/prompt-workflow.test.mjs, CONTRIBUTING.md, docs/discord-prompt.md
+- **Why:** 2026-10-14 workflow review, item 3. VERIFICATION 2.3 maps tickets to tests only at release; FEAT-1791981014 ticked a structural criterion ("execute reads as named stages") that behaviour tests could not prove.
+- **Approach:** PR template sections: Tickets; Acceptance evidence (criterion, named test or file:function inspection, result); Mutation checks (what was broken, which test failed); Docs affected and checked; Remaining gaps or reduced scope. `ops/pr-evidence-check.mjs` reads the PR body from the event payload and fails when a required section is missing or left as template placeholder. A separate `pr-evidence.yml` workflow (job `PR evidence`) runs it on `pull_request` opened/edited/synchronize/reopened, so body edits do not rerun the full CI; it is a required check beside `CI gate`. The Discord prompt publisher fills every section from the request, the isolated review verdict and the coding-run link. CONTRIBUTING: structural criteria need inspection evidence; partial delivery stays unticked with a follow-up ticket.
+- **Library / dependency notes:** None; Node built-ins only.
+- **Acceptance criteria:**
+  - Opening a PR pre-fills the template.
+  - A PR with an empty or placeholder evidence section fails the required `PR evidence` check.
+  - The prompt publisher's generated body passes the check.
+  - Editing the PR body re-runs the check.
+  - CONTRIBUTING states the structural-criterion and partial-scope rules.
+- **Test plan:** `node --test tests/pr-evidence-check.test.mjs` with complete, missing-section, placeholder-only and push-event bodies; mutation check removing one required section from the checker.
+- **Out of scope:** Judging whether evidence is correct (reviewer responsibility).
+- **Bump:** minor
+- **Status:** in-progress
+
+### [FEAT-1791990469] Documentation consistency test against the provider catalog
+- [ ] **Priority:** med
+- **Area:** tests, docs, providers
+- **File(s):** src/services/MobileShareLinks.ts, tests/docs-consistency.test.ts (new), README.md, .env.example, docs/provider-checks.md, docs/self-hosting.md
+- **Why:** 2026-10-14 workflow review, item 4. Facebook shipped without operator docs (BUG-1791986809) and the `rxddit.com` share-resolution fallback is a hard-coded host outside `SOCIAL_PROVIDERS`.
+- **Approach:** Export the share-resolution fallback hosts from `MobileShareLinks.ts`. A test reads the docs and asserts the `.env.example` comment and `docs/self-hosting.md` `REWRITE_PLATFORMS` lists equal `REWRITE_PLATFORMS`, and every `SOCIAL_PROVIDERS` origin host and share fallback host appears in the README platform table and the `docs/provider-checks.md` table. VERIFICATION has no full platform list, only corpus steps, so it is not checked. Failure messages name the missing doc and value.
+- **Library / dependency notes:** None.
+- **Acceptance criteria:**
+  - Removing `facebook` from any listed doc, or adding a provider/fallback host without documenting it, fails `npm test` with a message naming file and value.
+  - Current docs pass; any drift found is fixed in the same change.
+- **Test plan:** `tests/docs-consistency.test.ts`; mutation checks deleting a platform from one doc and adding an undocumented fallback host.
+- **Out of scope:** Automated review of privacy prose (stays human); generating docs from code.
+- **Bump:** minor
+- **Status:** in-progress
+
+### [FEAT-1791990470] One local validate command, primary Node version and pre-push hook
+- [ ] **Priority:** med
+- **Area:** ci, ops, docs
+- **File(s):** package.json, ops/validate.mjs (new), tests/validate.test.mjs (new), .nvmrc (new), .githooks/pre-push (new), CONTRIBUTING.md, CLAUDE.md, README.md
+- **Why:** 2026-10-14 workflow review, item 6. Contributors and agents copy five commands from CONTRIBUTING/CLAUDE.md; a stop on first failure hides later results; no primary Node version is pinned while production runs Node 26.
+- **Approach:** `npm run validate` runs build, `check:workers`, `npm test`, `npm audit --audit-level=low` and `bash tests/deploy.test.sh` in order, continues after failures, prints a PASS/FAIL table and exits non-zero on any failure. `.nvmrc` = 26 (Dockerfile). `.githooks/pre-push` runs `npm run validate`, enabled with `git config core.hooksPath .githooks` (documented, opt-in per clone). Document a Linux path (Docker `node:26` or WSL) for `deploy.test.sh` on Windows. When FEAT-1790785730 lands, its format check joins the list.
+- **Library / dependency notes:** None; no hook manager dependency.
+- **Acceptance criteria:**
+  - One failing check does not stop later checks; summary lists every result; exit code non-zero.
+  - Command list matches `ci.yml` (asserted by a test).
+  - CONTRIBUTING and CLAUDE.md point to `npm run validate`, `.nvmrc` and the hook.
+- **Test plan:** `tests/validate.test.mjs` with an injected runner (all pass, one fail, list matches CI); manual `npm run validate` run.
+- **Out of scope:** Mandatory hooks; replacing CI.
+- **Bump:** minor
+- **Status:** in-progress
+
+### [FEAT-1791990471] Shared Discord test fixtures and fake-timer timeout boundaries
+- [ ] **Priority:** low
+- **Area:** tests
+- **File(s):** tests/support/discord.ts (new), tests/social-links.test.ts, tests/erome-media-repost.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts, tests/diagnose-command.test.ts, tests/manual-media.test.ts, tests/erome-delivery.test.ts
+- **Why:** 2026-10-14 workflow review, item 5. Each suite builds its own Discord message/channel/interaction fakes, so tests for reposts, /fix, /diagnose, delayed embeds and album registration drift apart and can pass without exercising the intended path (BUG-1791981980).
+- **Approach:** Shared typed fakes for message, channel, interaction and a repost harness, recording forbidden calls by default. Migrate the suites that duplicate these fakes (repost source message: social-links, erome-media-repost, delivery-recovery; command interaction: manual-fix, diagnose-command, manual-media) without weakening assertions. The real 550-1600 ms progress waits in erome-media-repost, manual-media and erome-delivery move to `mock.timers` with just-before and at-deadline cases. preview-watcher and erome-album-sessions already use mocked timers and stay as they are.
+- **Library / dependency notes:** None; `node:test` mock timers.
+- **Acceptance criteria:**
+  - Named suites use the shared fixtures; test count unchanged or higher.
+  - No migrated timeout test relies on wall-clock delay.
+  - One mutation check per migrated path recorded in the PR.
+- **Test plan:** Full `npm test`; per-path mutation checks.
+- **Out of scope:** Migrating every other suite.
+- **Bump:** minor
+- **Status:** in-progress
+
 ---
 
 ## Shipped
