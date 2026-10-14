@@ -22,7 +22,8 @@ services:
       - "127.0.0.1:8092:8092"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
-    stop_grace_period: 15s
+    # The bot waits up to 20 s for running deliveries (src/bot.ts SHUTDOWN_DRAIN_MS) before cleanup.
+    stop_grace_period: 30s
 
 volumes:
   linky-data:
