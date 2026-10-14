@@ -150,7 +150,7 @@ Priority guide: crit / high / med / low.
 - **Out of scope:** Restructuring the closure's state machine, changing delivery behaviour, splitting by platform.
 - **Bump:** patch
 - **Status:** shipped-pending-migration
-- **Implementation:** `bypassLinky`, `canCopy` and `sourceVersion` moved verbatim to `RepostEligibility.ts` (`bypassLinky` still re-exported); `requiredRepostPermissions`, `canonicalRepostLinks`, `instagramShortcodes` and `repostExpectations` in `RepostDelivery.ts`; handler options named `LinkRepostOptions`. `SocialLinkService.ts` 675 to 622 lines with unchanged exports. Eight characterization tests in `tests/repost-eligibility.test.ts` plus a replace-mode Attach Files wiring test in `tests/social-links.test.ts` (mutation-checked); full CI gate green (1,235 TypeScript and 54 script tests, 0 vulnerabilities, deploy tests).
+- **Implementation:** `bypassLinky`, `canCopy` and `sourceVersion` moved verbatim to `RepostEligibility.ts` (`bypassLinky` still re-exported); `requiredRepostPermissions`, `canonicalRepostLinks`, `instagramShortcodes` and `repostExpectations` in `RepostDelivery.ts`; handler options named `LinkRepostOptions`. `SocialLinkService.ts` 675 to 622 lines with unchanged exports. Seven characterization tests in `tests/repost-eligibility.test.ts` plus a replace-mode Attach Files wiring test in `tests/social-links.test.ts` (mutation-checked); full CI gate green (1,235 TypeScript and 54 script tests, 0 vulnerabilities, deploy tests).
 - **Docs:** none affected; no document names the moved internals.
 
 ### [FEAT-1791981014] Split the /fix command's execute into named stages
@@ -158,18 +158,34 @@ Priority guide: crit / high / med / low.
 - **Area:** commands, previews
 - **File(s):** src/commands/fix.ts, src/commands/fixMedia.ts (new), tests/repost-eligibility.test.ts, tests/manual-fix.test.ts
 - **Why:** `execute` in `src/commands/fix.ts` runs from line 71 to 447 as one function covering source resolution, permission checks, presentation, preview verification and recording. Deferred from the 2026-10-14 tightening pass (PR #73).
-- **Approach:** Behaviour-preserving extraction of self-contained pure or single-purpose stages into `fixStages.ts` (for example the preview expectation builder and permission/eligibility checks), reusing `RepostDelivery.ts` helpers from FEAT-1791981013 where the logic is identical. `data`, `contextData`, `manualLinks`, `execute` and `removeManual` keep their exports and signatures. No change to replies, ephemeral flags, ordering or timeouts.
+- **Approach:** Behaviour-preserving extraction of self-contained pure or single-purpose stages into `fixMedia.ts` (for example the preview expectation builder and permission/eligibility checks), reusing `RepostDelivery.ts` helpers from FEAT-1791981013 where the logic is identical. `data`, `contextData`, `manualLinks`, `execute` and `removeManual` keep their exports and signatures. No change to replies, ephemeral flags, ordering or timeouts.
 - **Library / dependency notes:** None.
 - **Acceptance criteria:**
-  - `execute` is materially shorter and reads as a sequence of named stages.
+  - `execute` is shorter, with the hosted Erome publish stage and button builder behind named functions (amended 2026-10-14: the remaining stages are FEAT-1791986813).
   - Existing `manual-fix` tests pass unchanged; extracted helpers have unit tests.
   - Full CI gate passes.
 - **Test plan:** Existing `tests/manual-fix.test.ts` plus characterization tests for extracted helpers.
 - **Out of scope:** Behaviour changes to /fix or Apps → Fix with Linky.
 - **Bump:** patch
 - **Status:** shipped-pending-migration
-- **Implementation:** The hosted-original Erome publish stage moved to `publishHostedErome` and the Original post/Remove buttons to `manualButtons` in `src/commands/fixMedia.ts`; preview expectations reuse `repostExpectations` and `instagramShortcodes` from FEAT-1791981013. `fix.ts` 463 to 389 lines; exports and signatures unchanged; existing `manual-fix` tests pass unchanged, plus a `manualButtons` characterization test and a mutation-checked Instagram image expectation test in `tests/manual-fix.test.ts`.
+- **Implementation:** The hosted-original Erome publish stage moved to `publishHostedErome` and the Original post/Remove buttons to `manualButtons` in `src/commands/fixMedia.ts`; preview expectations reuse `repostExpectations` and `instagramShortcodes` from FEAT-1791981013. `fix.ts` 463 to 389 lines; exports and signatures unchanged; existing `manual-fix` tests pass unchanged, plus a `manualButtons` characterization test in `tests/repost-eligibility.test.ts` and a mutation-checked Instagram image expectation test in `tests/manual-fix.test.ts`.
 - **Docs:** none affected.
+
+### [FEAT-1791986813] Finish splitting the /fix command's execute into named stages
+- [ ] **Priority:** low
+- **Area:** commands, previews
+- **File(s):** src/commands/fix.ts, src/commands/fixMedia.ts, tests/manual-fix.test.ts, tests/manual-media.test.ts
+- **Why:** FEAT-1791981014 extracted only the hosted Erome stage and the button builder; the 2026-10-14 audit measured `execute` at about 300 lines with community/article resolution, Erome attachment preparation and the verify/recovery loop still inline.
+- **Approach:** Behaviour-preserving extraction of those three stages behind named functions, passing the `manualButtons` result instead of separate `buttons`/`buttonRows`, and moving `manualButtons` out of the media module.
+- **Library / dependency notes:** None.
+- **Acceptance criteria:**
+  - `execute` reads as resolve, prepare, publish and verify stages.
+  - Existing manual tests pass unchanged; each extracted stage has a wiring test that fails when mutated.
+- **Test plan:** Existing `manual-fix` and `manual-media` suites plus mutation-checked wiring tests.
+- **Out of scope:** Behaviour changes to /fix.
+- **Bump:** patch
+- **Status:** open
+
 ---
 
 ## Shipped

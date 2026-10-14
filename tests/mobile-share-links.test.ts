@@ -396,6 +396,18 @@ test('Facebook Reel and video shares resolve to the redirected video identity wi
   }
 });
 
+test('mobile Facebook shares resolve through m.facebook.com to the canonical Reel', async () => {
+  const original = 'https://m.facebook.com/share/r/1DTK3shLVM/';
+  const f = fixture(async options => {
+    assert.equal(options.hostname, 'm.facebook.com');
+    return redirect('https://m.facebook.com/reel/1060921586772217/?mibextid=wwXIfr&_rdr');
+  });
+  assert.equal(hasMobileShareLinks(original, ['facebook']), true);
+  const result = await f.normalizer(original, ['facebook']);
+  assert.equal(result.content, 'https://www.facebook.com/reel/1060921586772217/');
+  assert.deepEqual([...result.originals], [['https://www.facebook.com/reel/1060921586772217/', original]]);
+});
+
 test('Facebook shares that redirect to login, other platforms or nowhere keep the original link', async () => {
   const original = 'https://www.facebook.com/share/r/1DTK3shLVM/';
   for (const response of [redirect('https://www.facebook.com/login/?next=x'), redirect('https://www.instagram.com/reel/Post123/'),
