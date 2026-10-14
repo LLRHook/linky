@@ -2,6 +2,7 @@
 *.sh text eol=lf
 *.yml text eol=lf
 Dockerfile text eol=lf
+.githooks/* text eol=lf
 
 # Append-mostly project-cycle trackers: auto-merge concurrent appends instead
 # of conflicting. Ids are UNIX-epoch timestamps and entries are append-only +

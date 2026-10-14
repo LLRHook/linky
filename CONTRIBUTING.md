@@ -1,16 +1,14 @@
 # Contributing to Linky
 
-Use Node.js 22+ and `npm ci`. Tests need no Discord token. For a local bot, copy `.env.example` to `.env`, set its token, then run `npm run dev`. Commands register automatically at startup. Open `/setup` and use the private panel to enable a test server and select its channels, as described in the [README](README.md).
+Use Node.js 22+ (26, pinned in `.nvmrc`, matches the production image; CI also tests 22 and 24) and `npm ci`. Tests need no Discord token. For a local bot, copy `.env.example` to `.env`, set its token, then run `npm run dev`. Commands register automatically at startup. Open `/setup` and use the private panel to enable a test server and select its channels, as described in the [README](README.md).
 
 Before opening a PR, run:
 
 ```bash
-npm test
-npm run build
-npm run check:workers
-npm audit --audit-level=low
-bash tests/deploy.test.sh
+npm run validate
 ```
+
+It runs CI's `npm run build`, `npm run check:workers`, `npm test`, `bash tests/deploy.test.sh` and `npm audit --audit-level=low`, continues after a failure and ends with a PASS/FAIL summary; a test keeps the list equal to `.github/workflows/ci.yml`. The production container checks need Docker and run in CI (or by hand per `VERIFICATION.md` 2.5). `tests/deploy.test.sh` needs Linux-compatible Bash: on Windows run validate from Git Bash with Git's `bash` first on `PATH`, or validate the committed `HEAD` in a clean Linux checkout: `docker run --rm -v "$PWD:/src:ro" node:26 sh -c 'git config --global --add safe.directory /src/.git && git clone -q /src /app && cd /app && npm ci && npm run validate'` (in Git Bash, prefix `MSYS_NO_PATHCONV=1` and use `$(pwd -W)`). To run it before every push, opt in once per clone: `git config core.hooksPath .githooks`.
 
 CI runs the secret scan, dependency audit, Node 22/24/26 builds and production container as independent jobs, so one failure does not hide the others. `CI gate` is the required check on `main` and passes only when every job passes.
 

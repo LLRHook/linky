@@ -97,11 +97,10 @@ The hosted bot is free to add for the seven social platforms above, public artic
 
 ```bash
 npm ci
-npm test
-npm run build
-npm run check:workers
-bash tests/deploy.test.sh
+npm run validate
 ```
+
+`npm run validate` runs CI's build, worker, test, deployment-safeguard and audit commands and reports every result; see [CONTRIBUTING.md](CONTRIBUTING.md) for the Node version and Windows notes.
 
 CI tests Node.js 22, 24 and 26, deployment safeguards and the production container, with the dependency audit and secret scan as separate jobs; the `CI gate` check passes only when every job passes. See [CONTRIBUTING.md](CONTRIBUTING.md) for live checks and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for dependency, secret-scan and supply-chain results. The bot deploys to Hostinger after the tested `main` commit passes CI; website deployment is separate.
 
