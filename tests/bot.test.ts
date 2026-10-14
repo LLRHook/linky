@@ -4,13 +4,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, Collection, Events, GatewayIntentBits, MessageFlags, MessageFlagsBitField, MessageType, Partials, PermissionFlagsBits, PermissionsBitField, Routes, type ClientEvents, type Interaction, type Guild, type Message, type MessageCreateOptions, type InteractionReplyOptions } from 'discord.js';
-import { createBot } from '../src/bot';
+import { createBot, RESTARTING_REPLY, SHUTDOWN_DRAIN_MS } from '../src/bot';
 import type { Config } from '../src/config';
 import { data } from '../src/commands/help';
 import { commandDefinitions, registerCommands } from '../src/commands/register';
 import { ServerSettings, type ServerPreferences } from '../src/services/ServerSettings';
 import { RepostRegistry } from '../src/services/RepostRegistry';
 import { PersonalPreferences } from '../src/services/PersonalPreferences';
+import { CATCH_UP_CLOCK_MARGIN_MS, CATCH_UP_MESSAGE_LIMIT, snowflakeBefore } from '../src/services/ServiceCheckpoint';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-bot-tests-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -821,4 +822,240 @@ test('failed YouTube interactions do not log private response bodies or raw prov
   assert.equal(errors.length, 1);
   assert(!JSON.stringify(errors).includes('secret-comment-and-key'));
   assert(JSON.stringify(errors).includes('10062'));
+});
+
+const restartBotId = '1491240385031311470', restartGuildId = '987654321098765432', restartChannelId = '123456789012345678';
+let replacements = 1000;
+const snowflakeAt = (timestamp: number, sequence = 0) => String((BigInt(timestamp - 1_420_070_400_000) << 22n) + BigInt(sequence));
+
+async function startBot(client: Client) {
+  Object.assign(client, { user: { id: restartBotId } });
+  for (const listener of client.listeners(Events.ClientReady)) await listener({
+    application: { commands: { set: async () => {} } }, user: { id: restartBotId, tag: 'Linky' }, guilds: { cache: new Map() },
+  } as unknown as Client<true>);
+}
+
+/** A replaceable X link whose delivery records its result; `gate` holds the send until released. */
+function linkMessage(client: Client, id: string, createdTimestamp: number, content = 'https://x.com/jack/status/20', gate?: Promise<void>) {
+  const record = { sent: [] as MessageCreateOptions[], deleted: false };
+  let complete!: () => void;
+  const completed = new Promise<void>(resolve => { complete = resolve; });
+  const replacement = {
+    id: snowflakeAt(createdTimestamp, replacements++), guildId: restartGuildId, channelId: restartChannelId, author: { id: restartBotId, bot: true },
+    attachments: new Collection(), embeds: [{ toJSON: () => ({ url: 'https://fixupx.com/jack/status/20', title: 'Jack', description: 'Public tweet' }) }],
+    fetch: async () => replacement, edit: async () => replacement, delete: async () => assert.fail('A verified repost must be retained'),
+  };
+  const source = {
+    id, guildId: restartGuildId, channelId: restartChannelId, client, content, createdTimestamp,
+    author: { id: '777777777777777777', bot: false }, guild: { members: { me: { id: restartBotId } } },
+    type: MessageType.Default, partial: false, webhookId: null, poll: null, pinned: false, hasThread: false, editedTimestamp: null,
+    stickers: new Collection(), components: [], messageSnapshots: new Collection(), flags: new MessageFlagsBitField(),
+    attachments: new Collection(), reference: null, mentions: { repliedUser: null },
+    inGuild: () => true, deletable: true,
+    channel: { isSendable: () => true, isThread: () => false, permissionsFor: () => new PermissionsBitField(PermissionsBitField.All),
+      send: async (options: MessageCreateOptions) => { await gate; record.sent.push(options); return replacement; } },
+    fetch: async () => source,
+    delete: async () => { record.deleted = true; complete(); },
+  };
+  return { source: source as unknown as Message<true>, record, completed };
+}
+
+function restartFixture(caseDirectory: string, overrides: Partial<Config> = {}) {
+  const settingsPath = join(caseDirectory, 'servers.json');
+  return fixture({ settingsPath, channelIds: [restartChannelId], rewritePlatforms: ['x'], translateTweets: false, ...overrides },
+    new ServerSettings(settingsPath));
+}
+
+test('shutdown lets a running delivery finish before cleanup and ignores new work meanwhile', { timeout: 5000 }, async () => {
+  const { client, warnings } = restartFixture(mkdtempSync(join(directory, 'drain-')));
+  await startBot(client);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const running = linkMessage(client, snowflakeAt(Date.now()), Date.now(), undefined, gate);
+  client.emit(Events.MessageCreate, running.source);
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  let closed = false;
+  const closing = client.destroy().then(() => { closed = true; });
+  const late = linkMessage(client, snowflakeAt(Date.now(), 5), Date.now());
+  client.emit(Events.MessageCreate, late.source);
+  const replies: InteractionReplyOptions[] = [];
+  await dispatch(client, { isChatInputCommand: () => true, commandName: 'help', isRepliable: () => true,
+    reply: async (payload: InteractionReplyOptions) => { replies.push(payload); } });
+  assert.deepEqual(replies, [{ content: RESTARTING_REPLY, flags: MessageFlags.Ephemeral }],
+    'An interaction during shutdown gets a private restarting reply instead of running');
+
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(closed, false, 'Shutdown waits for the running delivery');
+  release();
+  await running.completed;
+  await closing;
+  assert.equal(running.record.sent.length, 1);
+  assert.equal(running.record.deleted, true, 'The running delivery completed instead of being cancelled');
+  assert.deepEqual(late.record.sent, [], 'A message arriving during shutdown is not processed');
+  assert.equal(warnings.some(entry => JSON.stringify(entry).includes('did not finish')), false);
+  clients.splice(clients.indexOf(client), 1);
+});
+
+test('shutdown cancels work still running at the drain limit and still completes', { timeout: 5000 }, async () => {
+  const caseDirectory = mkdtempSync(join(directory, 'drain-limit-'));
+  const { client, warnings } = restartFixture(caseDirectory, { shutdownDrainMs: 20 });
+  await startBot(client);
+  const replies: unknown[] = [];
+  void dispatch(client, { isChatInputCommand: () => true, commandName: 'help',
+    reply: (payload: unknown) => { replies.push(payload); return new Promise(() => {}); } });
+  await client.destroy();
+  assert.equal(replies.length, 1);
+  assert.ok(warnings.some(entry => JSON.stringify(entry).includes('{"unfinished":1}')));
+  const saved = JSON.parse(readFileSync(join(caseDirectory, 'service-checkpoint.json'), 'utf8')) as { stoppedAt?: number };
+  assert.equal(typeof saved.stoppedAt, 'number', 'Cleanup after the drain limit still records the stop');
+  clients.splice(clients.indexOf(client), 1);
+});
+
+test('Compose allows the shutdown drain plus cleanup before Docker kills the bot', () => {
+  const compose = readFileSync(join(__dirname, '..', 'docker-compose.yml'), 'utf8');
+  const grace = /^\s+stop_grace_period: (\d+)s\s*$/m.exec(compose);
+  assert.ok(grace, 'docker-compose.yml sets stop_grace_period in seconds');
+  assert.ok(Number(grace[1]) * 1000 >= SHUTDOWN_DRAIN_MS + 10_000);
+});
+
+for (const catchUp of [false, true]) {
+  test(`startup reports the offline time after a clean stop and none after a crash (catch-up ${catchUp ? 'on' : 'off'})`, { timeout: 5000 }, async () => {
+    const caseDirectory = mkdtempSync(join(directory, 'offline-'));
+    const first = restartFixture(caseDirectory, { catchUp });
+    await startBot(first.client);
+    await first.client.destroy();
+    clients.splice(clients.indexOf(first.client), 1);
+
+    const second = restartFixture(caseDirectory, { catchUp });
+    await startBot(second.client);
+    const lines = second.logs.map(entry => JSON.stringify(entry));
+    const offline = lines.findIndex(line => /Back online after \d+\.\d s offline/.test(line));
+    assert.ok(offline >= 0, 'A clean stop is reported on the next startup');
+    assert.ok(offline < lines.findIndex(line => line.includes('Logged in as')), 'The report precedes the readiness lines deploy.sh waits for');
+
+    // `second` keeps running without stopping, so the next process sees a crash.
+    const third = restartFixture(caseDirectory, { catchUp });
+    await startBot(third.client);
+    assert.equal(third.logs.some(entry => JSON.stringify(entry).includes('Back online')), false);
+  });
+}
+
+test('catch-up fixes a link posted while offline in a channel the previous process served', { timeout: 5000 }, async () => {
+  const caseDirectory = mkdtempSync(join(directory, 'catch-up-'));
+  const first = restartFixture(caseDirectory, { catchUp: true, serverIds: [restartGuildId] });
+  await startBot(first.client);
+  // Only served channels where a link was posted are remembered.
+  const chat = linkMessage(first.client, snowflakeAt(Date.now()), Date.now(), 'hello without links');
+  Object.assign(chat.source, { channelId: '223456789012345678' });
+  const elsewhere = linkMessage(first.client, snowflakeAt(Date.now(), 1), Date.now());
+  Object.assign(elsewhere.source, { guildId: '887654321098765432', channelId: '323456789012345678' });
+  first.client.emit(Events.MessageCreate, chat.source);
+  first.client.emit(Events.MessageCreate, elsewhere.source);
+  const served = linkMessage(first.client, snowflakeAt(Date.now(), 7), Date.now());
+  first.client.emit(Events.MessageCreate, served.source);
+  await served.completed;
+  await first.client.destroy();
+  clients.splice(clients.indexOf(first.client), 1);
+  const saved = JSON.parse(readFileSync(join(caseDirectory, 'service-checkpoint.json'), 'utf8')) as { stoppedAt: number; channels: string[] };
+  assert.deepEqual(saved.channels, [restartChannelId]);
+
+  const reposted = snowflakeAt(saved.stoppedAt, 2);
+  const registry = new RepostRegistry({ path: join(caseDirectory, 'reposts.json'), botUserId: restartBotId,
+    fetchMessage: async () => null, canRetry: async () => false });
+  assert.equal(await registry.remember({ guildId: restartGuildId, channelId: restartChannelId, sourceId: reposted,
+    replacementId: snowflakeAt(saved.stoppedAt, 3), authorId: '777777777777777777', mode: 'reply' }), true);
+  registry.stop();
+
+  const second = restartFixture(caseDirectory, { catchUp: true });
+  const missed = linkMessage(second.client, snowflakeAt(saved.stoppedAt, 1), saved.stoppedAt);
+  const already = linkMessage(second.client, reposted, saved.stoppedAt);
+  const accepted = saved.stoppedAt - CATCH_UP_CLOCK_MARGIN_MS - 1;
+  const tooOld = linkMessage(second.client, snowflakeAt(accepted), accepted);
+  const live = linkMessage(second.client, snowflakeAt(saved.stoppedAt + 1), saved.stoppedAt + 1);
+  // The live attempt fails, so only the session's own record stops catch-up from trying again.
+  let liveAttempts = 0;
+  Object.assign(live.source.channel, { send: async () => { liveAttempts++; throw Object.assign(Error('Unavailable'), { status: 503 }); } });
+  const all = [missed, already, tooOld, live];
+  const requests: unknown[] = [];
+  let fetched!: () => void, release!: () => void;
+  const fetching = new Promise<void>(resolve => { fetched = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  Object.assign(second.client.channels, { fetch: async (id: string) => id !== restartChannelId ? null : {
+    isDMBased: () => false, permissionsFor: () => new PermissionsBitField(PermissionsBitField.All),
+    messages: { fetch: async (options: { message?: string }) => {
+      if (options.message) return all.find(item => item.source.id === options.message)?.source;
+      requests.push(options);
+      fetched();
+      await gate;
+      return new Collection(all.map(item => [item.source.id, item.source]));
+    } },
+  } });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await startBot(second.client);
+  await fetching;
+  // The live session receives this gap message while catch-up is still fetching.
+  second.client.emit(Events.MessageCreate, live.source);
+  release();
+  await missed.completed;
+  for (let attempt = 0; attempt < 100 && !second.logs.some(entry => JSON.stringify(entry).includes('Checked for messages')); attempt++)
+    await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(requests, [{ after: snowflakeBefore(saved.stoppedAt - CATCH_UP_CLOCK_MARGIN_MS), limit: CATCH_UP_MESSAGE_LIMIT }]);
+  assert.equal(missed.record.sent.length, 1);
+  assert.equal(liveAttempts, 1, 'A message the live session handled is not delivered again');
+  assert.deepEqual(already.record.sent, [], 'A message Linky already reposted is skipped');
+  assert.deepEqual(tooOld.record.sent, [], 'A message the previous process accepted is skipped');
+  await second.client.destroy();
+  clients.splice(clients.indexOf(second.client), 1);
+  assert.ok(second.logs.some(entry => JSON.stringify(entry).includes('{"channels":1,"unavailable":0,"delivered":1}')));
+});
+
+test('catch-up skips a channel where Linky cannot read message history', { timeout: 5000 }, async () => {
+  const caseDirectory = mkdtempSync(join(directory, 'catch-up-history-'));
+  writeFileSync(join(caseDirectory, 'service-checkpoint.json'), JSON.stringify({ stoppedAt: Date.now() - 1000, channels: [restartChannelId] }));
+  const { client, logs } = restartFixture(caseDirectory, { catchUp: true });
+  let reads = 0;
+  Object.assign(client.channels, { fetch: async () => ({ isDMBased: () => false,
+    permissionsFor: () => new PermissionsBitField([PermissionFlagsBits.ViewChannel]),
+    messages: { fetch: async () => { reads++; return new Collection(); } } }) });
+  await startBot(client);
+  await client.destroy();
+  clients.splice(clients.indexOf(client), 1);
+  assert.equal(reads, 0);
+  assert.ok(logs.some(entry => JSON.stringify(entry).includes('{"channels":0,"unavailable":1,"delivered":0}')));
+});
+
+test('without catch-up no channel IDs are stored and no history is fetched', { timeout: 5000 }, async () => {
+  const caseDirectory = mkdtempSync(join(directory, 'no-catch-up-'));
+  const first = restartFixture(caseDirectory);
+  await startBot(first.client);
+  const served = linkMessage(first.client, snowflakeAt(Date.now()), Date.now());
+  first.client.emit(Events.MessageCreate, served.source);
+  await served.completed;
+  await first.client.destroy();
+  clients.splice(clients.indexOf(first.client), 1);
+  const saved = JSON.parse(readFileSync(join(caseDirectory, 'service-checkpoint.json'), 'utf8')) as { channels: string[] };
+  assert.deepEqual(saved.channels, []);
+
+  writeFileSync(join(caseDirectory, 'service-checkpoint.json'), JSON.stringify({ stoppedAt: Date.now() - 1000, channels: [restartChannelId] }));
+  const second = restartFixture(caseDirectory);
+  let fetches = 0;
+  Object.assign(second.client.channels, { fetch: async () => { fetches++; return null; } });
+  await startBot(second.client);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(fetches, 0);
+});
+
+test('source edits are synchronized while running and ignored once shutdown starts', { timeout: 5000 }, async t => {
+  const updates = t.mock.method(RepostRegistry.prototype, 'handleSourceUpdate', async () => {});
+  const { client } = restartFixture(mkdtempSync(join(directory, 'edit-drain-')));
+  await startBot(client);
+  const edit = () => client.emit(Events.MessageUpdate, ...[{ id: '1' }, { id: '1' }] as unknown as ClientEvents[Events.MessageUpdate]);
+  edit();
+  assert.equal(updates.mock.callCount(), 1);
+  const closing = client.destroy();
+  edit();
+  await closing;
+  assert.equal(updates.mock.callCount(), 1);
+  clients.splice(clients.indexOf(client), 1);
 });

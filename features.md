@@ -186,6 +186,47 @@ Priority guide: crit / high / med / low.
 - **Bump:** patch
 - **Status:** open
 
+### [FEAT-1792002672] Finish in-flight deliveries when the bot shuts down
+- [x] **Priority:** high
+- **Area:** bot, ops
+- **File(s):** src/bot.ts, src/config.ts, src/services/ServiceCheckpoint.ts (new), docker-compose.yml, ops/deploy.sh, tests/bot.test.ts, tests/service-checkpoint.test.ts (new), tests/deploy.test.sh, docs/self-hosting.md
+- **Why:** A deploy recreates the single container. On SIGTERM `client.destroy()` immediately aborts the shared shutdown signal (`src/bot.ts`), so a delivery in progress is cancelled: the source stays, but its link is never fixed. The last production deploy (2026-10-14 15:10 UTC) measured about 1.3 s between the old container stopping and the new one running, and nothing reports that gap.
+- **Approach:** On shutdown, stop accepting new messages, edits and interactions; interactions get a private "restarting" reply instead of a failure. Track every running message and interaction handler and wait for them to settle for up to 20 s before aborting the remainder, then run the existing cleanup. Record the stop time in a small `data/service-checkpoint.json` (time only, no content). After the next login the bot logs how long it was offline, and `deploy.sh` prints that line. Raise `stop_grace_period` from 15 s to 30 s so Docker does not kill the drain.
+- **Library / dependency notes:** None.
+- **Acceptance criteria:**
+  - A delivery that is running when shutdown starts completes and is not cancelled if it finishes within the drain limit.
+  - A delivery still running at the drain limit is cancelled through the existing abort path, and shutdown still completes.
+  - Messages, edits and interactions that arrive after shutdown starts are not processed; a repliable interaction receives a private restarting reply.
+  - Startup after a clean stop logs the offline duration; startup after a crash with no recorded stop logs none.
+  - `docker-compose.yml` `stop_grace_period` exceeds the drain limit plus cleanup.
+  - `deploy.sh` prints the bot's offline-duration line after a successful deploy and still succeeds when the line is absent.
+- **Test plan:** `tests/bot.test.ts` drain cases with controlled delivery promises; checkpoint unit tests with a fake clock; `tests/deploy.test.sh` success case asserts the printed offline line.
+- **Out of scope:** Running two bot processes at once; replaying missed messages (FEAT-1792002673).
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+- **Implementation:** `src/services/InFlightWork.ts` tracks message, edit, interaction and catch-up handlers; `src/bot.ts` stops accepting on `destroy()`, replies privately to interactions with `RESTARTING_REPLY`, waits up to `SHUTDOWN_DRAIN_MS` (20 s) before aborting, and logs `Back online after N s offline` from the `stoppedAt` in `src/services/ServiceCheckpoint.ts`. `docker-compose.yml` `stop_grace_period` is 30s; `ops/deploy.sh` `report_offline_time` prints the line. Tests: `tests/bot.test.ts` (drain, drain limit, Compose grace, offline report with and without catch-up, edits during shutdown), `tests/service-checkpoint.test.ts`, `tests/deploy.test.sh` success case.
+- **Docs:** `docs/self-hosting.md` shutdown paragraph and deployment summary; README Reliability section.
+
+### [FEAT-1792002673] Process messages posted while the bot was offline
+- [x] **Priority:** high
+- **Area:** bot
+- **File(s):** src/bot.ts, src/config.ts, src/services/ServiceCheckpoint.ts, .env.example, tests/bot.test.ts, tests/service-checkpoint.test.ts, tests/config.test.ts, README.md, docs/self-hosting.md
+- **Why:** Discord does not replay messages to a new Gateway session. Links posted during a deploy, restart or crash stay unfixed. Depends on FEAT-1792002672 for the stop time.
+- **Approach:** Opt-in `CATCH_UP_ENABLED` (default `false`; enabled for the public hosted bot, self-hosters choose). When enabled, remember the 20 enabled channels where a link was most recently posted and refresh the checkpoint every 30 s so a crash is covered too. After startup, fetch each remembered channel's messages posted between the checkpoint and the new session (at most 2 minutes old, 50 per channel, one request per channel) and pass them through the normal repost rules. Skip messages Linky already reposted (repost registry) and messages the running session already handles.
+- **Library / dependency notes:** Uses discord.js `channel.messages.fetch({ after, limit })`; requires Read Message History, which the invite already requests.
+- **Acceptance criteria:**
+  - With `CATCH_UP_ENABLED=true`, a link posted in a remembered channel during the offline gap is fixed once after startup, subject to the same scope, opt-out and permission rules as a live message.
+  - Messages older than 2 minutes, beyond 50 per channel, outside the 20 remembered channels, or already recorded in the repost registry are not processed.
+  - A channel that cannot be fetched is skipped without affecting the others or startup.
+  - With the setting off (default), no channel IDs are stored and no history is fetched.
+  - The checkpoint file stores only times and channel IDs.
+- **Test plan:** Checkpoint unit tests (channel cap, window, persistence, validation); `tests/bot.test.ts` catch-up integration with fake channels including a failing channel and an already-reposted message; config parsing test.
+- **Out of scope:** Catch-up for edits and deletions; channels not seen before the restart; configurable limits.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+- **Implementation:** `CATCH_UP_ENABLED` in `src/config.ts`; `ServiceCheckpoint` keeps the 20 enabled channels with the most recent links and an `aliveAt` refreshed every 30 s; `catchUp()` fetches once per channel after `stoppedAt ?? aliveAt` minus 3 s, within 2 minutes and before session start plus 3 s, 50 messages per channel, four channels at a time, in order per channel, skipping registry-recorded and live-seen messages and channels without Read Message History. Enabled on the hosted bot in `/root/linky/.env` (backup `.env.bak-20261014-catchup`). Tests: `tests/service-checkpoint.test.ts`, catch-up cases in `tests/bot.test.ts`, `tests/config.test.ts`.
+- **Docs:** `.env.example`, `docs/self-hosting.md` settings table and catch-up paragraph (including the crash duplicate limitation), README Reliability section.
+
 ---
 
 ## Shipped
