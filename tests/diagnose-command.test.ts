@@ -8,6 +8,7 @@ import { ApplicationIntegrationType, GuildMFALevel, InteractionContextType, Mess
 import type { Config } from '../src/config';
 import { ServerSettings } from '../src/services/ServerSettings';
 import { data, execute } from '../src/commands/diagnose';
+import { commandInteraction, sendableChannel, type InteractionEvent } from './support/discord';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-diagnose-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -33,19 +34,16 @@ test('diagnose identifies operator-blocked Erome without querying providers or s
 });
 
 function interaction(link: string | null = null, permissions = plain | PermissionFlagsBits.ManageMessages) {
-  const events: { name: string; payload: any }[] = [];
-  const input = {
+  const events: InteractionEvent[] = [];
+  const input = commandInteraction(events, {
     guildId: SERVER as string | null, channelId: CHANNEL,
     memberPermissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild),
     guild: { mfaLevel: GuildMFALevel.None, members: { me: { id: 'bot' } } },
-    channel: { isThread: () => false, parentId: null as string | null, nsfw: false, parent: null as { nsfw: boolean } | null, isSendable: () => true,
+    channel: sendableChannel({ parentId: null as string | null, nsfw: false, parent: null as { nsfw: boolean } | null,
       permissionsFor: () => new PermissionsBitField(permissions),
-      send: async () => assert.fail('Diagnostics must not send a channel message') },
+      send: async () => assert.fail('Diagnostics must not send a channel message') }),
     options: { getString: () => link },
-    reply: async (payload: unknown) => { events.push({ name: 'reply', payload }); },
-    deferReply: async (payload: unknown) => { events.push({ name: 'defer', payload }); },
-    editReply: async (payload: unknown) => { events.push({ name: 'edit', payload }); },
-  };
+  });
   return { input, events, command: input as unknown as ChatInputCommandInteraction };
 }
 

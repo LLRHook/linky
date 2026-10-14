@@ -228,6 +228,26 @@ in that maintenance branch and are not re-filed here._
 - **Fix:** Facebook page names must start with a letter or digit, and `FACEBOOK_HOSTS` is typed `ReadonlySet<string>`. Dot-only and dot-leading page names are rejected in tests; restoring the old pattern fails them.
 - **Docs:** none needed (documented URL forms unchanged).
 
+### [BUG-1791990872] Self-hosting guide says the container runs Node.js 24
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** docs/self-hosting.md
+- **Observation:** `docs/self-hosting.md:94` says "The container runs Node.js 24"; both `Dockerfile` stages use `node:26-trixie-slim` (PR #52 moved the runtime to Node 26).
+- **Expected:** The guide names the runtime the `Dockerfile` actually builds.
+- **Repro / Notes:** `grep -n FROM Dockerfile`; found during FEAT-1791990467 recon (pre-existing, not caused by that change).
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1791991450] README counts seven social platforms after Facebook was added
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** README.md
+- **Observation:** README "Self-hosting and development" says the hosted bot is free "for the seven social platforms above"; the platform table lists eight (X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clips, Facebook) since FEAT-1791951567.
+- **Expected:** The count matches the table, or the sentence avoids a number.
+- **Repro / Notes:** Found during FEAT-1791990470 docs update (pre-existing, not caused by that change).
+- **Bump:** patch
+- **Status:** open
+
 
 ## Migrated to changelog
 
