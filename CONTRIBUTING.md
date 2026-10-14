@@ -12,6 +12,8 @@ npm audit --audit-level=low
 bash tests/deploy.test.sh
 ```
 
+CI runs the secret scan, dependency audit, Node 22/24/26 builds and production container as independent jobs, so one failure does not hide the others. `CI gate` is the required check on `main` and passes only when every job passes.
+
 Test observable behavior: channel scope, exact URL matching, attribution, attachment integrity, source edits, permissions and provider failures. Cover preference migration and concurrent writes, operator limits, and `/settings` changing preferences without enabling a server. Use synthetic or non-sensitive translation and YouTube API fixtures. Avoid network calls or bot login in unit tests. Never commit tokens, API keys, `.env` or private chat exports.
 
 For rendering changes, use an authorized Discord test channel. Check X, Instagram and TikTok (including a real `vm.tiktok.com` share link), profile and lookalike URLs, attachments and replies. In Replace mode, missing Manage Messages permission must preserve the original. Reply mode must work without that permission, keep the original and avoid copying its attachments. Check per-platform switches and translation limits. With translation enabled, inspect text/photo cards, playable videos, quoted posts and long text; confirm the language label stays small. Offline tests cannot prove live preview rendering or channel permissions.

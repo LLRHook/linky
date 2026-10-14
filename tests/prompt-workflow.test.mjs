@@ -5,14 +5,14 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { approvedReview, publish, requiredChecksPass, validateRequest } from '../ops/prompt-workflow.mjs';
+import { REQUIRED_CHECKS, approvedReview, publish, requiredChecksPass, validateRequest } from '../ops/prompt-workflow.mjs';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-workflow-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
 const base = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const head = 'a'.repeat(40);
 const merged = 'b'.repeat(40);
-const checkNames = ['Build (Node 22)', 'Build (Node 24)', 'Production container'];
+const checkNames = REQUIRED_CHECKS;
 const checks = () => checkNames.map((name, index) => ({ id: index + 1, name, head_sha: head,
   app: { slug: 'github-actions' }, status: 'completed', conclusion: 'success' }));
 
