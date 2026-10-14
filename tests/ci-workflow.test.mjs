@@ -41,7 +41,8 @@ test('dependency audit runs apart from the functional and container jobs', () =>
 });
 
 test('the Discord prompt publisher waits only for checks that CI workflows define', () => {
-  const names = new Set([...ci.values()].map(job => job.name));
+  const evidence = workflowJobs(readFileSync(new URL('../.github/workflows/pr-evidence.yml', import.meta.url), 'utf8'));
+  const names = new Set([...ci.values(), ...evidence.values()].map(job => job.name));
   for (const check of REQUIRED_CHECKS) assert.ok(names.has(check), `no workflow job is named "${check}"`);
 });
 

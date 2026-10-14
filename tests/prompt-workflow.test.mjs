@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { missingEvidence } from '../ops/pr-evidence-check.mjs';
 import { REQUIRED_CHECKS, approvedReview, publish, requiredChecksPass, validateRequest } from '../ops/prompt-workflow.mjs';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-workflow-'));
@@ -90,6 +91,9 @@ test('publisher creates a PR, requires exact-head checks, uses protected merge a
   assert.deepEqual(merge.body, { sha: head, merge_method: 'squash', commit_title: 'prompt/123456789012345678 (#123)' });
   assert.ok(s.calls.at(-1).path.includes('/actions/runs/456/jobs'));
   assert.ok(!s.calls.some(call => call.path.includes('protection')));
+  const pr = s.calls.find(call => call.path === '/pulls');
+  assert.deepEqual(missingEvidence(pr.body.body), []);
+  assert.match(pr.body.body, /Reviewed\./);
 });
 
 for (const options of [{ reject: true }, { wrongDigest: true }, { changedMain: true }, { changedHead: true }, { failedCheck: true }]) {
