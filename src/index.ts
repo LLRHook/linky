@@ -6,7 +6,7 @@ const client = createBot(config, logger);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, async () => {
-    logger.info({ signal }, 'Disconnecting from Discord');
+    logger.info({ signal }, 'Finishing running deliveries, then disconnecting from Discord');
     await client.destroy();
     process.exit(0);
   });

@@ -24,6 +24,7 @@ function readChannels(overrides: NodeJS.ProcessEnv, field = 'channelIds') {
   delete env['PROMPT_GUILD_IDS'];
   delete env['EROME_GUILD_IDS'];
   delete env['DELIVERY_LOG_RETENTION_DAYS'];
+  delete env['CATCH_UP_ENABLED'];
   const result = spawnSync(process.execPath, [
     '--require', require.resolve('tsx/cjs'), '-e',
     'process.stdout.write(JSON.stringify(require(process.argv[1]).config[process.argv[2]] ?? null))',
@@ -49,6 +50,14 @@ test('Erome server policy remains optional and fails closed on malformed explici
   for (const value of ['', 'all', `${FIRST},invalid`]) {
     const result = readChannels({ EROME_GUILD_IDS: value }, 'eromeGuildIds');
     assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.match(result.stderr, /EROME_GUILD_IDS/);
+  }
+});
+
+test('missed-message catch-up is off unless CATCH_UP_ENABLED is true', () => {
+  assert.equal(JSON.parse(readChannels({}, 'catchUp').stdout), false);
+  for (const [value, expected] of [['true', true], ['TRUE', true], ['false', false], ['1', false], ['', false]] as const) {
+    const result = readChannels({ CATCH_UP_ENABLED: value }, 'catchUp');
+    assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout), expected, value);
   }
 });
 
