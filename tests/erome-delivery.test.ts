@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { AttachmentBuilder, Collection, MessageFlags, MessageFlagsBitField, MessageType, PermissionFlagsBits,
   PermissionsBitField, type Attachment, type ChatInputCommandInteraction, type InteractionEditReplyOptions,
   type Message, type MessageContextMenuCommandInteraction, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
@@ -10,9 +10,9 @@ import { createLinkRepostHandler } from '../src/services/SocialLinkService';
 import { eromeNotice, verifyEromeAttachment, type EromeProgress } from '../src/services/EromeDelivery';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 import { isEromeAvailable } from '../src/services/EromeAvailability';
+import { deferred, diagnosticsStub, mockClock, reached } from './support/discord';
 
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '1700000000000000005';
@@ -23,6 +23,8 @@ const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewrit
 const prepared = () => ({ file: new AttachmentBuilder(Buffer.from('synthetic MP4 test fixture'), { name: 'linky-video.mp4' }), videoCount: 2 });
 type AutoOptions = NonNullable<Parameters<typeof createLinkRepostHandler>[3]>;
 type ManualOptions = NonNullable<Parameters<typeof execute>[2]>;
+// /fix creates its progress reporter with a 500 ms delay (src/commands/fix.ts).
+const FIX_PROGRESS_DELAY_MS = 500;
 
 function ageChannel() {
   return { nsfw: true, parent: { nsfw: false } as { nsfw: boolean } | null, isThread: () => false };
@@ -580,7 +582,8 @@ test('manual mixed-platform failure is still reported when the Erome upload succ
   assert.equal(f.input.targetMessage.content, `${ALBUM} https://x.com/jack/status/20`);
 });
 
-test('manual Erome serializes progress before the final upload and ignores late stage notifications', async () => {
+test('manual Erome serializes progress before the final upload and ignores late stage notifications', async t => {
+  const clock = mockClock(t), staged = deferred(), ready = deferred();
   const f = manual(), started: InteractionEditReplyOptions[] = [];
   let release!: () => void, late: EromeProgress | undefined;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -595,16 +598,24 @@ test('manual Erome serializes progress before the final upload and ignores late 
     void onStage?.('queued');
     void onStage?.('downloading');
     void onStage?.('preparing');
-    await delay(550);
+    staged.resolve();
+    await ready.promise;
     return prepared();
   } });
   try {
-    await delay(600);
+    await reached(staged.promise, pending, 'attachment preparation');
+    await clock.advance(FIX_PROGRESS_DELAY_MS - 1);
+    assert.equal(started.length, 0, 'no progress edit before the delay elapses');
+    await clock.advance(1);
+    assert.equal(started.length, 1, 'the coalesced progress edit starts at the delay');
+    // Preparation finishes while that edit is still in flight; later intervals must not start another.
+    ready.resolve();
+    await clock.advance(FIX_PROGRESS_DELAY_MS * 4);
     assert.equal(started.length, 1, 'Only one progress edit may be in flight');
     assert.match(String(started[0].content), /preparing/i);
     assert.equal(started[0].files, undefined);
     release();
-    await pending;
+    await clock.settle(pending);
     assert.equal(f.edits.length, 2);
     assert.equal(f.edits[1].files?.length, 1);
     assert(f.edits.slice(0, 1).every(edit => !String(edit.content).includes('https://') && !edit.files));
@@ -612,21 +623,32 @@ test('manual Erome serializes progress before the final upload and ignores late 
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(f.edits.length, 2, 'A late progress edit must not replace the uploaded preview');
     assert.match(f.response.content, /Synthetic01/);
-  } finally { release(); await pending; }
+  } finally { release(); ready.resolve(); await clock.settle(pending).catch(() => {}); }
 });
 
-test('manual Erome completes despite rejected progress edits for a deleted or inaccessible reply', async () => {
+test('manual Erome completes despite rejected progress edits for a deleted or inaccessible reply', async t => {
+  const clock = mockClock(t), staged = deferred(), ready = deferred();
   const f = manual(), editReply = f.input.editReply;
   let progressAttempts = 0;
   f.input.editReply = async options => {
     if (!options.files?.length) { progressAttempts++; throw new Error('Unknown message'); }
     return editReply(options);
   };
-  await f.run({ prepareErome: async (_url, onStage) => {
+  const pending = f.run({ prepareErome: async (_url, onStage) => {
     await onStage?.('cached');
-    await delay(550);
+    staged.resolve();
+    await ready.promise;
     return prepared();
   } });
+  try {
+    await reached(staged.promise, pending, 'attachment preparation');
+    await clock.advance(FIX_PROGRESS_DELAY_MS - 1);
+    assert.equal(progressAttempts, 0, 'no progress edit before the delay elapses');
+    await clock.advance(1);
+    assert.equal(progressAttempts, 1, 'the progress edit is attempted at the delay');
+    ready.resolve();
+    await clock.settle(pending);
+  } finally { ready.resolve(); await clock.settle(pending).catch(() => {}); }
   assert.equal(progressAttempts, 1);
   assert.equal(f.edits.length, 1);
   assert.equal(f.edits[0].files?.length, 1);
@@ -652,8 +674,7 @@ test('image attachments use image metadata and do not claim video compression', 
 test('manual Erome does not upload when its deadline expires while a progress edit drains', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = manual(), outcomes: DeliveryOutcome[] = [];
-  const diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
-    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+  const diagnostics = diagnosticsStub({ outcomes });
   let entered!: () => void, release!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -665,11 +686,12 @@ test('manual Erome does not upload when its deadline expires while a progress ed
   };
   const pending = f.run({ diagnostics, prepareErome: async (_source, onStage) => {
     onStage?.('preparing');
-    t.mock.timers.tick(500);
+    t.mock.timers.tick(FIX_PROGRESS_DELAY_MS);
     await started;
     return prepared();
   }, verifyErome: async () => assert.fail('Expired work must not upload or verify a video') });
-  await started;
+  // Fail rather than hang if the progress edit did not start at the delay.
+  await Promise.race([started, nextTurn().then(() => assert.fail('the progress edit starts at the delay'))]);
   await nextTurn();
   t.mock.timers.tick(120_000);
   release();

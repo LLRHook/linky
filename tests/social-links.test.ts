@@ -30,16 +30,14 @@ import { parseProviderUrl } from '../src/services/SocialProviders';
 import { parseYouTubeUrl } from '../src/services/YouTube';
 import type { YouTubeStatistics } from '../src/services/YouTube';
 import type { RepostRecord } from '../src/services/RepostRegistry';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { APIEmbed } from 'discord.js';
+import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
 
 // The repost handler logs and swallows callback errors, so a throwing assertion inside a
 // callback cannot fail a test. Forbidden callbacks are recorded and checked after each test.
-const unexpectedCalls: string[] = [];
-function forbid(message: string): (...args: unknown[]) => Promise<never> {
-  return async () => { unexpectedCalls.push(message); throw new Error(message); };
-}
-afterEach(() => assert.deepEqual(unexpectedCalls.splice(0), []));
+const forbidden = createForbidden();
+const forbid = forbidden.forbid;
+afterEach(() => forbidden.assertNone());
 
 const CHANNEL_ID = '123456789012345678';
 const SECOND_CHANNEL_ID = '223456789012345678';
@@ -321,30 +319,20 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     content?: string; webhookId?: string | null; embeds?: APIEmbed[]; attachments?: Collection<string, Attachment>;
     flags?: MessageFlagsBitField;
   }> => { throw { code: 10008 }; } };
-  const replacement = {
+  const replacement = botMessage({
     id: 'replacement-1', attachments: new Collection<string, Attachment>(),
     embeds: [] as { toJSON(): APIEmbed }[],
     fetch: async () => replacement,
     delete: async () => { events.push('delete replacement'); },
-  };
-  const source = {
+  });
+  const source = repostSource({
     id: '123456789012345679', channelId: CHANNEL_ID, guildId: '987654321098765432',
     content: 'Look https://x.com/user/status/1?q=%2F+ok#part @everyone <@&999> <@888>',
     author: { id: '777777777777777777', bot: false },
     client: { user: { id: LINKY_ID } },
     guild: { members: { me: { id: 'bot-1' } } },
-    partial: false, webhookId: null as string | null, type: MessageType.Default,
-    poll: null as unknown, pinned: false, hasThread: false, editedTimestamp: null as number | null,
-    stickers: new Collection<string, unknown>(), components: [] as unknown[],
-    messageSnapshots: new Collection<string, unknown>(),
-    flags: new MessageFlagsBitField(), attachments: new Collection<string, Attachment>(),
-    reference: null as { messageId: string; channelId?: string; guildId?: string } | null,
-    mentions: { repliedUser: null as { id: string } | null, users: new Collection<string, { id: string }>() },
     fetchReference: async () => { referenceLookup.calls++; return referenceLookup.fetch(); },
-    deletable: true,
-    inGuild: () => true,
-    channel: {
-      isSendable: () => true, isThread: () => false,
+    channel: sendableChannel({
       permissionsFor: () => permissions,
       send: async (options: MessageCreateOptions) => {
         events.push('send'); sent.push(options);
@@ -361,10 +349,10 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
         for (const embed of options.embeds ?? []) replacement.embeds.push({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed });
         return replacement;
       },
-    },
+    }),
     fetch: async (_force: boolean) => { events.push('fetch'); return source; },
     delete: async () => { events.push('delete original'); },
-  };
+  });
   const handler = createLinkRepostHandler(CHANNEL_ID, log, undefined, { translateTweet });
   return { source, replacement, handler, log, logs, permissions, events, sent, referenceLookup,
     run: () => handler(source as unknown as Message) };
@@ -882,7 +870,7 @@ for (const refresh of [false, true]) test(`a source edit during reference lookup
     return { id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID, guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID } };
   };
   const run = f.handler(f.source as unknown as Message, { refresh });
-  await started;
+  await reached(started, run, 'the reference lookup');
   f.source.content = 'An edited source https://x.com/user/status/2';
   f.source.editedTimestamp = Date.now();
   finish();
@@ -1924,11 +1912,10 @@ test('article replies remove stale cards when revocation races Details binding o
         if (phase === 'controls') revoke();
         return f.replacement;
       } });
-      const diagnostics = { begin: () => ({ id: '12345678-1234-4123-8123-123456789abc', setPath() {},
-        startStage: () => ({ finish() {} }), finish() {} }), bind: async () => {
+      const diagnostics = diagnosticsStub({ id: '12345678-1234-4123-8123-123456789abc', bind: async () => {
         if (phase === 'details') revoke();
         return true;
-      } } as unknown as DeliveryDiagnostics;
+      } });
       await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
         platforms: ['articles'], lookupArticle: articleLookup, signal: controller.signal, diagnostics,
         rememberRepost: async () => true, isOptedOut: () => reason === 'opt-out' && changed,
