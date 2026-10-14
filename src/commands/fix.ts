@@ -158,7 +158,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     return;
   }
   if (!links.length) {
-    await reject('No supported post link found. Choose a public article, an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, or a Twitch clip.' +
+    await reject('No supported post link found. Choose a public article, an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, a Facebook Reel or video, or a Twitch clip.' +
       (isEromeAvailable(config, interaction.guildId) ? ' Erome albums also work in allowed server channels.' : '') +
       ' Links inside <angle brackets>, spoilers or code are skipped.');
     return;

@@ -90,6 +90,7 @@ function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   const media = Boolean(embed.video?.url || embed.image?.url || embed.thumbnail?.url);
   const source = parseSocialUrl(expected.source);
   const videoPost = expected.requireVideo || expected.platform === 'youtube' || expected.platform === 'twitch' ||
+    expected.platform === 'facebook' ||
     (source?.platform === 'x' && /\/video\/[1-4]\/?$/.test(source.path)) ||
     (source?.platform === 'instagram' && /^\/reels?\//.test(source.path)) ||
     (source?.platform === 'tiktok' && /\/video\//.test(source.path));
