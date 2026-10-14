@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-export const MAX_ALBUM_ITEMS = 100;
-export const MAX_ALBUM_HTML_BYTES = 1024 * 1024;
+const MAX_ALBUM_ITEMS = 100;
+const MAX_ALBUM_HTML_BYTES = 1024 * 1024;
 export type EromeItem = { kind: 'video' | 'image'; source: string; fingerprint: string; index: number };
 export type EromeAlbum = { album: string; items: EromeItem[]; videoCount: number; truncated: boolean };
 export type EromeSelection = { fingerprint: string } | { index: number };
