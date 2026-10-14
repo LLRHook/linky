@@ -25,6 +25,8 @@ const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com', 
 // https://github.com/MinnDevelopment/fxreddit documents /r|u|user/.../s/... redirects.
 // Resolution only: vxReddit still generates the final preview, checked by post ID.
 const REDDIT_REDIRECT_HOST = 'rxddit.com';
+/** Third-party hosts contacted during share resolution, beyond the platforms' own hosts; documented for operators. */
+export const SHARE_FALLBACK_HOSTS: readonly string[] = Object.freeze([REDDIT_REDIRECT_HOST]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_LINKS = 5;
 const MAX_HOPS = 4;
