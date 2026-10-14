@@ -27,6 +27,20 @@ function urlWithoutSuffix(url: string, prefix: string): string {
   return link;
 }
 
+/**
+ * Parse an HTTPS URL only when URL would not rewrite its authority or path. Comparing the raw
+ * text rejects explicit :443, credentials, dot segments and Unicode lookalikes before inspection.
+ */
+export function strictHttpsUrl(raw: string): URL | null {
+  if (raw.length > 2048 || /[\\\s\u0000-\u001f\u007f]/.test(raw)) return null;
+  const parts = /^https:\/\/([^/?#]+)([^?#]*)(?:\?[^#]*)?(#.*)?$/i.exec(raw);
+  if (!parts) return null;
+  try {
+    const url = new URL(raw);
+    return parts[1].toLowerCase() === url.hostname && parts[2] === url.pathname ? url : null;
+  } catch { return null; }
+}
+
 /** Visit complete URL tokens, preserving surrounding text and nested URLs. */
 export function mapLinks(content: string, transform: (url: string, position: number) => string): string {
   const schemes = /[a-z][a-z\d+.-]*:\/\//gi;

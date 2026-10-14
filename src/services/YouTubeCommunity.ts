@@ -1,7 +1,7 @@
 import { lookup as lookupDns } from 'node:dns/promises';
 import type { RequestOptions } from 'node:https';
 import type { APIEmbed } from 'discord.js';
-import { mapLinks, visibleLink } from './LinkTokens';
+import { mapLinks, strictHttpsUrl, visibleLink } from './LinkTokens';
 import { parseSocialUrl } from './SocialProviders';
 import { parseYouTubeUrl } from './YouTube';
 import { parseEromeUrl } from './EromeAlbum';
@@ -24,15 +24,10 @@ const record = (value: unknown): Record<string, unknown> =>
 
 /** Only post permalinks; channel pages, video links and nested URLs are not posts. */
 export function parseYouTubeCommunityUrl(value: string): YouTubeCommunityLink | null {
-  if (value.length > 2048 || /[\\\s\u0000-\u001f\u007f]/.test(value)) return null;
-  const parts = /^https:\/\/((?:(?:www|m)\.)?youtube\.com)(\/[^?#]*)(?:\?[^#]*)?(?:#.*)?$/i.exec(value);
-  if (!parts) return null;
-  try {
-    const url = new URL(value);
-    if (parts[1].toLowerCase() !== url.hostname || parts[2] !== url.pathname) return null;
-    const id = /^\/post\/(Ug[A-Za-z0-9_-]{10,126})\/?$/.exec(url.pathname)?.[1];
-    return id ? { id, url: `https://www.youtube.com/post/${id}` } : null;
-  } catch { return null; }
+  const url = strictHttpsUrl(value);
+  if (!url || !/^(?:(?:www|m)\.)?youtube\.com$/.test(url.hostname)) return null;
+  const id = /^\/post\/(Ug[A-Za-z0-9_-]{10,126})\/?$/.exec(url.pathname)?.[1];
+  return id ? { id, url: `https://www.youtube.com/post/${id}` } : null;
 }
 
 export function findYouTubeCommunityLinks(content: string, limit = 5): YouTubeCommunityLink[] {

@@ -5,7 +5,11 @@ export type DeliveryPath = typeof DELIVERY_PATHS[number];
 export const DELIVERY_OUTCOMES = ['confirmed', 'partial', 'unsupported', 'unavailable', 'permission', 'disabled', 'busy', 'timeout',
   'discord-failure', 'metadata-unconfirmed', 'cancelled', 'interrupted', 'internal-failure'] as const;
 export type DeliveryOutcome = typeof DELIVERY_OUTCOMES[number];
-export type StageOutcome = 'ok' | 'unavailable' | 'busy' | 'timeout' | 'cancelled' | 'failed';
+export const STAGE_OUTCOMES = ['ok', 'unavailable', 'busy', 'timeout', 'cancelled', 'failed'] as const;
+export type StageOutcome = typeof STAGE_OUTCOMES[number];
+/** Archived/diagnosed platform labels: every rewrite platform plus mixed-platform deliveries. */
+export const DELIVERY_PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'facebook', 'youtube', 'articles', 'erome', 'mixed'] as const;
+export type DeliveryPlatform = typeof DELIVERY_PLATFORMS[number];
 
 export interface DeliveryProgress {
   stage: DeliveryStage;
