@@ -18,6 +18,10 @@ export interface Config {
   eromeMedia?: EromeMediaSettings;
   eromeGuildIds?: readonly string[];
   deliveryLogRetentionDays?: number;
+  /** Process messages posted while the bot was offline. */
+  catchUp?: boolean;
+  /** Longest wait for running deliveries during shutdown; tests shorten it. */
+  shutdownDrainMs?: number;
 }
 
 function requireEnv(name: string): string {
@@ -46,6 +50,7 @@ export const config: Config = {
   settingsPath,
   eromeGuildIds: parseEromeGuildIds(process.env['EROME_GUILD_IDS']),
   deliveryLogRetentionDays: Number(retentionDays),
+  catchUp: process.env['CATCH_UP_ENABLED']?.toLowerCase() === 'true',
   youtubeApiKey,
   prompt: process.env['PROMPT_ENABLED']?.toLowerCase() === 'true' && promptToken ? {
     token: promptToken, guildIds: parseDiscordIds(process.env['PROMPT_GUILD_IDS'], 'Coding server IDs'),
