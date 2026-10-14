@@ -89,7 +89,7 @@ runner prints. A changed count means tests appeared or vanished — investigate 
 
 - [ ] 2.1 Test suite (CI step "Test link fixing and bot startup"): `npm test` exits 0. The tsx run prints `ℹ tests 1190` / `ℹ fail 0`; the node run prints `ℹ tests 62` / `ℹ fail 0` with 8 skipped on a non-Linux host.
 - [ ] 2.2 Deployment safeguards (CI step "Test deployment safeguards"): `bash tests/deploy.test.sh` exits 0 and every line starts with `PASS:`.
-- [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passes. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in § 6.4.
+- [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passes; start from the PR's Acceptance evidence section and re-run, do not copy, its claims. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in § 6.4.
 - [ ] 2.4 **2b — Coverage of the change.** No coverage tool is wired (`c8`/`nyc` absent). Fall back to the 2a mapping and, for each changed `src/` file since the last Verified SHA, name the test file that exercises it (`git diff --stat <sha>..HEAD -- src`). Uncovered changed files block.
 - [ ] 2.5 Production container (CI job "Production container"), run from the repo root with Docker available:
   ```bash
