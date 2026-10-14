@@ -3,12 +3,13 @@ import { EventEmitter } from 'node:events';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
-import { ComponentType, Events, MessageFlags, PermissionFlagsBits, PermissionsBitField,
+import { ButtonStyle, ComponentType, Events, MessageFlags, PermissionFlagsBits, PermissionsBitField,
   type APIMessageTopLevelComponent, type ButtonInteraction, type ChatInputCommandInteraction,
   type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
 import { execute, removeManual } from '../src/commands/fix';
 import type { Config } from '../src/config';
 import type { EromeMedia } from '../src/services/EromeMedia';
+import type { AlbumRegistration, EromeAlbumSessions } from '../src/services/EromeAlbumSessions';
 import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 
@@ -159,6 +160,29 @@ test('requesters without send permission keep their prepared-media reply private
   await execute(f.interaction, config, f.dependencies);
   assert.equal(f.events[0].payload?.flags, MessageFlags.Ephemeral);
   assert.equal(f.events.filter(event => event.name === 'edit').length, 2);
+});
+
+test('public hosted media registers its album controls while private replies never do', async () => {
+  for (const visibility of ['public', 'private'] as const) {
+    const f = fixture(), registrations: AlbumRegistration[] = [];
+    if (visibility === 'private') f.input.memberPermissions = new PermissionsBitField(0n);
+    f.dependencies.albums = { register: (record: AlbumRegistration) => {
+      registrations.push(record);
+      return { type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Secondary,
+        custom_id: 'linky:album:test', label: 'Load next item' }] };
+    } } as unknown as EromeAlbumSessions;
+    await execute(f.interaction, config, f.dependencies);
+    const final = f.events.filter(event => event.name === 'edit').at(-1)!.payload!;
+    if (visibility === 'private') {
+      assert.deepEqual(registrations, []);
+      continue;
+    }
+    assert.equal(registrations.length, 1);
+    assert.equal(registrations[0].media, media);
+    assert.deepEqual({ ...registrations[0], media: undefined }, { media: undefined, source: album, requesterId: OWNER,
+      channelId: 'channel', guildId: 'guild', messageId: MESSAGE, mode: 'manual' });
+    assert.equal(controls(final).at(-1)?.custom_id, 'linky:album:test');
+  }
 });
 
 test('permission and Erome scope checks happen before preparation', async () => {

@@ -49,7 +49,7 @@ const TIKTOK_HOSTS = new Set(['tiktok.com', 'www.tiktok.com', 'm.tiktok.com']);
 const TIKTOK_SHARE_HOSTS = new Set(['vm.tiktok.com', 'vt.tiktok.com']);
 const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com']);
 const TWITCH_HOSTS = new Set(['twitch.tv', 'www.twitch.tv', 'm.twitch.tv']);
-export const FACEBOOK_HOSTS = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com', 'web.facebook.com']);
+export const FACEBOOK_HOSTS: ReadonlySet<string> = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com', 'web.facebook.com']);
 
 // AT Protocol handle/record-key syntax; only handle and the supported DID forms are accepted.
 const HANDLE = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
@@ -100,7 +100,7 @@ export function parseSocialUrl(raw: string): SocialUrl | null {
     path = `/${clip}`;
   } else if (FACEBOOK_HOSTS.has(url.hostname)) {
     // Facebed labels the same video as /reel/ or /videos/, so identity is the numeric video ID.
-    const video = /^\/(?:reel|[A-Za-z0-9.]{1,80}\/videos)\/(\d{1,20})\/?$/.exec(path);
+    const video = /^\/(?:reel|[A-Za-z0-9][A-Za-z0-9.]{0,79}\/videos)\/(\d{1,20})\/?$/.exec(path);
     if (!video) return null;
     platform = 'facebook'; sourceHost = 'www.facebook.com'; postId = video[1];
   } else return null;

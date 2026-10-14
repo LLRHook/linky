@@ -238,9 +238,10 @@ test('mobile redirect shares and direct Reddit aliases are recognized locally wi
     ['https://www.reddit.com/r/example/s/ABCDefghij', 'Reddit'],
     ['https://redd.it/90bu6w', 'Reddit'],
     ['https://m.reddit.com/r/example/comments/90bu6w/title/', 'Reddit'],
+    ['https://www.facebook.com/share/r/1DTK3shLVM/', 'Facebook'],
   ]) {
     const f = interaction(link);
-    await execute(f.command, { ...config, rewritePlatforms: ['instagram', 'reddit'] }, servers,
+    await execute(f.command, { ...config, rewritePlatforms: ['instagram', 'reddit', 'facebook'] }, servers,
       async () => assert.fail('shape-only diagnostics must not request a provider'));
     assert.match(f.events[1].payload.content, new RegExp(`recognized ${platform} URL`));
     assert.match(f.events[1].payload.content, /No link was resolved or fetched/);

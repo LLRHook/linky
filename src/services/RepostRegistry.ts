@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { atomicWrite } from './AtomicWrite';
+import { DISCORD_ID } from './LinkConfiguration';
 import { MessageFlags, type InteractionDeferReplyOptions, type InteractionEditReplyOptions, type InteractionReplyOptions } from 'discord.js';
 
 export const REMOVE_REPOST_CUSTOM_ID = 'linky:remove';
 export const REPOST_RETENTION_MS = 30 * 24 * 60 * 60_000;
-const ID = /^[1-9]\d{16,19}$/;
 const CAPACITY = 10_000;
 const FIELDS = ['guildId', 'channelId', 'sourceId', 'replacementId', 'authorId', 'mode'];
 
@@ -80,7 +80,7 @@ function validRecord(value: unknown): value is RepostRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return Object.keys(record).length === FIELDS.length && Object.keys(record).every(key => FIELDS.includes(key)) &&
-    FIELDS.slice(0, 5).every(key => typeof record[key] === 'string' && ID.test(record[key])) &&
+    FIELDS.slice(0, 5).every(key => typeof record[key] === 'string' && DISCORD_ID.test(record[key])) &&
     record.sourceId !== record.replacementId && (record.mode === 'reply' || record.mode === 'replace');
 }
 
@@ -111,7 +111,7 @@ export class RepostRegistry {
   private readonly now: () => number;
 
   constructor(private readonly options: Options) {
-    if (!ID.test(options.botUserId)) throw new Error('Repost ownership requires a Discord bot ID.');
+    if (!DISCORD_ID.test(options.botUserId)) throw new Error('Repost ownership requires a Discord bot ID.');
     this.path = resolve(options.path);
     this.now = options.now ?? Date.now;
     let saved: unknown;
@@ -233,7 +233,7 @@ export class RepostRegistry {
     const record = this.findByReplacement(interaction.message.id);
     if (!record || !['linky:remove', 'linky:retry'].includes(interaction.customId) ||
       record.guildId !== interaction.guildId || record.channelId !== interaction.channelId ||
-      interaction.message.author.id !== this.options.botUserId || !ID.test(interaction.user.id)) {
+      interaction.message.author.id !== this.options.botUserId || !DISCORD_ID.test(interaction.user.id)) {
       await this.reply(interaction, 'This is not a registered Linky repost.');
       return null;
     }

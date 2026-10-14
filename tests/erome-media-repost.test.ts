@@ -82,6 +82,8 @@ test('automatic original video captures early metadata, binds ownership and keep
   assert(components.some(component => component.type === ComponentType.MediaGallery));
   assert(JSON.stringify(components).includes('linky:remove'));
   assert(!JSON.stringify(f.sends[0].components).includes('linky:remove'));
+  // The hosted gallery owns the media, so the visible album link must not unfurl a second preview.
+  assert(JSON.stringify(components).includes('<https://www.erome.com/a/9f9EJu3q>'));
   assert.equal(f.client.listenerCount(Events.Raw), 0);
 });
 
