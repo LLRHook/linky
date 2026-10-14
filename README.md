@@ -45,11 +45,11 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | Platform | Preview service | Posts |
 | --- | --- | --- |
 | X/Twitter | `fixupx.com`, with `vxtwitter.com` recovery | Post URLs on X and Twitter, including `/i/web/status/` and media paths |
-| Instagram | `fkinstagram.com` (Instagram7), with `oginstagram.com` recovery | Posts, reels and TV links, including resolvable `/share/` links |
+| Instagram | `fkinstagram.com` (Instagram7), with `oginstagram.com` recovery; translated captions use their caption-free `g.fkinstagram.com` and `g.oginstagram.com` galleries | Posts, reels and TV links, including resolvable `/share/` links |
 | TikTok | `tnktok.com` | Videos, photos and mobile share links |
 | YouTube | Native video preview, optional Data API statistics and public-page community cards | HTTPS watch, `youtu.be`, Shorts, live and embed links; valid start timestamps retained; public `/post/` text and image posts |
 | Bluesky | `bskx.app`, with `fxbsky.app` recovery | Public `/profile/actor/post/id` URLs |
-| Reddit | `vxreddit.com` | Public post URLs, `redd.it` links and resolvable `/r/name/s/` or `/u/name/s/` mobile shares; profile and community index pages stay unchanged |
+| Reddit | `vxreddit.com`; `rxddit.com` resolves blocked app-share redirects only | Public post URLs, `redd.it` links and resolvable `/r/name/s/` or `/u/name/s/` mobile shares; profile and community index pages stay unchanged |
 | Twitch clips | `fxtwitch.seria.moe` | Clip URLs, including channel `/clip/` links; streams and VODs stay unchanged |
 | Facebook | `facebed.com` | Public Reel and page video URLs (`/reel/ID`, `/page/videos/ID`) and resolvable `/share/r/` or `/share/v/` mobile shares; photo posts, `/watch` and `fb.watch` links stay unchanged |
 | Articles | Publisher metadata in a Linky card | Public HTTPS pages with Open Graph article metadata or Article JSON-LD; up to three articles together |
@@ -99,13 +99,12 @@ The hosted bot is free to add for the seven social platforms above, public artic
 
 ```bash
 npm ci
-npm test
-npm run build
-npm run check:workers
-bash tests/deploy.test.sh
+npm run validate
 ```
 
-CI tests Node.js 22, 24 and 26, deployment safeguards and the production container. See [CONTRIBUTING.md](CONTRIBUTING.md) for live checks and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for dependency, secret-scan and supply-chain results. The bot deploys to Hostinger after the tested `main` commit passes CI; website deployment is separate.
+`npm run validate` runs CI's build, worker, test, deployment-safeguard and audit commands and reports every result; see [CONTRIBUTING.md](CONTRIBUTING.md) for the Node version and Windows notes.
+
+CI tests Node.js 22, 24 and 26, deployment safeguards and the production container, with the dependency audit and secret scan as separate jobs; the `CI gate` check passes only when every job passes. See [CONTRIBUTING.md](CONTRIBUTING.md) for live checks and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for dependency, secret-scan and supply-chain results. The bot deploys to Hostinger after the tested `main` commit passes CI; website deployment is separate.
 
 [PERFORMANCE_AUDIT.md](PERFORMANCE_AUDIT.md) records measured local CPU costs, the delivery module boundaries and remaining measurement gaps. Its synthetic timings are separate from provider delays and Discord playback checks.
 

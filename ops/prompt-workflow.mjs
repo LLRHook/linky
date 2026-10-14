@@ -7,7 +7,7 @@ import { validateCandidate } from './prompt-candidate.mjs';
 
 const repository = 'LLRHook/linky';
 const api = `https://api.github.com/repos/${repository}`;
-const checks = ['Build (Node 22)', 'Build (Node 24)', 'Production container'];
+export const REQUIRED_CHECKS = ['CI gate', 'PR evidence'];
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
@@ -21,13 +21,38 @@ export function validateRequest(id, request) {
     /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(request)) throw new Error('Invalid feature request');
 }
 
+/** Newest GitHub Actions run of each required check on `head`; superseded (for example cancelled) runs are ignored. */
+function latestRequiredRuns(runs, head) {
+  return REQUIRED_CHECKS.map(name => runs
+    .filter(run => run.name === name && run.head_sha === head && run.app?.slug === 'github-actions')
+    .sort((a, b) => b.id - a.id)[0]);
+}
+
 export function requiredChecksPass(runs, head) {
   if (!sha(head) || !Array.isArray(runs)) return false;
-  return checks.every(name => {
-    const matches = runs.filter(run => run.name === name && run.head_sha === head && run.app?.slug === 'github-actions');
-    const latest = matches.sort((a, b) => b.id - a.id)[0];
-    return latest?.status === 'completed' && latest.conclusion === 'success';
-  });
+  return latestRequiredRuns(runs, head).every(latest => latest?.status === 'completed' && latest.conclusion === 'success');
+}
+
+export function requiredCheckFailed(runs, head) {
+  if (!sha(head) || !Array.isArray(runs)) return false;
+  return latestRequiredRuns(runs, head).some(latest => latest?.status === 'completed' && latest.conclusion !== 'success');
+}
+
+/** Neutralize mentions, HTML and Markdown emphasis/links in untrusted text placed in a PR body. */
+const markdownText = value => value.replace(/\r\n?/g, '\n').trim().replace(/@/g, '@\u200b').replace(/[<>]/g, '').replace(/[`*_\[\]\\]/g, '\\$&');
+const quote = value => value.split('\n').map(line => `> ${line}`).join('\n');
+
+/** PR body for an automated candidate, filling every section that ops/pr-evidence-check.mjs requires. */
+export function pullRequestBody({ id, request, reason, runUrl }) {
+  return [
+    '## Tickets', '', `None: automated Discord prompt job \`${id}\`. The requested behavior below is the acceptance criterion.`, '',
+    '## Acceptance evidence', '', 'Requested behavior:', '', quote(markdownText(request)), '',
+    'An isolated reviewer approved this exact candidate:', '', quote(markdownText(reason.slice(0, 1000))), '',
+    'Automatic merge requires the protected main-branch checks on this exact commit.', '',
+    '## Mutation checks', '', 'None recorded: the automated coding run does not perform mutation checks; the reviewer rejects candidates without meaningful tests.', '',
+    '## Docs checked', '', 'Not separately recorded: the isolated reviewer read the full candidate diff, including any documentation changes.', '',
+    '## Remaining gaps', '', `Automated request without a groomed ticket. Request and validation: [coding run](${runUrl}).`,
+  ].join('\n');
 }
 
 export function approvedReview(review) {
@@ -112,7 +137,8 @@ export async function publish(file, reviewFile, bindingFile) {
   validateRequest(process.env.JOB_ID, process.env.FEATURE_REQUEST);
   const change = candidate(file);
   const binding = read(bindingFile);
-  if (binding.base !== process.env.BASE_SHA || binding.digest !== digest(change) || !approvedReview(read(reviewFile))) {
+  const review = read(reviewFile);
+  if (binding.base !== process.env.BASE_SHA || binding.digest !== digest(change) || !approvedReview(review)) {
     throw new Error('Independent review did not approve this exact candidate');
   }
   const base = process.env.BASE_SHA;
@@ -133,11 +159,10 @@ export async function publish(file, reviewFile, bindingFile) {
   const commit = await post('/git/commits', { message: branch, tree: createdTree.sha, parents: [base],
     author: { name: 'Victor Ivanov', email: 'victor.n.ivanov@gmail.com' } });
   await post('/git/refs', { ref: `refs/heads/${branch}`, sha: commit.sha });
-  const description = process.env.FEATURE_REQUEST.trim().replace(/@/g, '@\u200b').replace(/[<>]/g, '').replace(/[`*_\[\]\\]/g, '\\$&');
+  const description = markdownText(process.env.FEATURE_REQUEST);
   const pr = await post('/pulls', { base: 'main', head: branch, title: `Linky: ${description.split('\n')[0].slice(0, 90)}`,
-    body: `Requested behavior:\n\n${description.split('\n').map(line => `> ${line}`).join('\n')}\n\n` +
-      `An isolated reviewer approved the candidate. Automatic merge requires the protected main-branch checks on this exact commit.\n\n` +
-      `Request and validation: [coding run](https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}).` });
+    body: pullRequestBody({ id, request: process.env.FEATURE_REQUEST, reason: review.reason,
+      runUrl: `https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}` }) });
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `[Pull request #${pr.number}](https://github.com/${repository}/pull/${pr.number})\n`);
   await until(async () => {
     const current = await request(`/pulls/${pr.number}`);
@@ -145,8 +170,7 @@ export async function publish(file, reviewFile, bindingFile) {
       throw new Error('PR head, base, or state changed; refusing automatic merge');
     }
     const result = await request(`/commits/${commit.sha}/check-runs?per_page=100`);
-    if (result.check_runs.some(run => checks.includes(run.name) && run.head_sha === commit.sha &&
-      run.app?.slug === 'github-actions' && run.status === 'completed' && run.conclusion !== 'success')) {
+    if (requiredCheckFailed(result.check_runs, commit.sha)) {
       throw new Error('A required check failed; the PR remains open');
     }
     return requiredChecksPass(result.check_runs, commit.sha) && current.mergeable_state === 'clean';

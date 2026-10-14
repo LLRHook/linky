@@ -5,18 +5,20 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { approvedReview, publish, requiredChecksPass, validateRequest } from '../ops/prompt-workflow.mjs';
+import { missingEvidence } from '../ops/pr-evidence-check.mjs';
+import { REQUIRED_CHECKS, approvedReview, publish, requiredCheckFailed, requiredChecksPass, validateRequest } from '../ops/prompt-workflow.mjs';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-workflow-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
 const base = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const head = 'a'.repeat(40);
 const merged = 'b'.repeat(40);
-const checkNames = ['Build (Node 22)', 'Build (Node 24)', 'Production container'];
+const checkNames = ['CI gate', 'PR evidence'];
 const checks = () => checkNames.map((name, index) => ({ id: index + 1, name, head_sha: head,
   app: { slug: 'github-actions' }, status: 'completed', conclusion: 'success' }));
 
 test('required check evidence must match all names, latest run, app, head and completion', () => {
+  assert.deepEqual(REQUIRED_CHECKS, checkNames);
   assert.equal(requiredChecksPass(checks(), head), true);
   for (const replacement of [{ conclusion: 'failure' }, { status: 'queued' }, { head_sha: merged }, { app: { slug: 'other' } }]) {
     const input = checks();
@@ -25,6 +27,14 @@ test('required check evidence must match all names, latest run, app, head and co
   }
   assert.equal(requiredChecksPass(checks().slice(1), head), false);
   assert.equal(requiredChecksPass([...checks(), { ...checks()[0], id: 99, conclusion: 'failure' }], head), false);
+});
+
+test('a superseded cancelled run does not count as a failed required check', () => {
+  const cancelled = { ...checks()[1], id: 0, conclusion: 'cancelled' };
+  assert.equal(requiredCheckFailed([cancelled, ...checks()], head), false);
+  assert.equal(requiredChecksPass([cancelled, ...checks()], head), true);
+  assert.equal(requiredCheckFailed([...checks(), { ...cancelled, id: 99 }], head), true);
+  assert.equal(requiredCheckFailed([{ ...checks()[0], status: 'in_progress', conclusion: null }], head), false);
 });
 
 test('request validation rejects injection-shaped IDs and oversized/control inputs', () => {
@@ -90,6 +100,9 @@ test('publisher creates a PR, requires exact-head checks, uses protected merge a
   assert.deepEqual(merge.body, { sha: head, merge_method: 'squash', commit_title: 'prompt/123456789012345678 (#123)' });
   assert.ok(s.calls.at(-1).path.includes('/actions/runs/456/jobs'));
   assert.ok(!s.calls.some(call => call.path.includes('protection')));
+  const pr = s.calls.find(call => call.path === '/pulls');
+  assert.deepEqual(missingEvidence(pr.body.body), []);
+  assert.match(pr.body.body, /Reviewed\./);
 });
 
 for (const options of [{ reject: true }, { wrongDigest: true }, { changedMain: true }, { changedHead: true }, { failedCheck: true }]) {

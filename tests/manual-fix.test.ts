@@ -6,20 +6,21 @@ import { ApplicationCommandType, ApplicationIntegrationType, InteractionContextT
 import type { Config } from '../src/config';
 import { data, contextData, execute, manualLinks, removeManual } from '../src/commands/fix';
 import { inspectPreviews, type ExpectedPreview, type PreviewResult } from '../src/services/PreviewRecovery';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { InstagramTranslation } from '../src/services/InstagramTranslation';
 import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import type { ArticlePreview } from '../src/services/ArticlePreview';
+import { buttonInteraction, commandInteraction, diagnosticsStub, type InteractionEvent } from './support/discord';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
+const UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['instagram', 'tiktok', 'x'],
   translateTweets: false, settingsPath: 'unused' };
 
 function command(content = 'https://twitter.com/jack/status/20?s=46', context = false) {
-  const events: { name: string; payload: any }[] = [];
+  const events: InteractionEvent[] = [];
   const state = {
     render: (body: string, _edit: number): APIEmbed[] => (body.match(/https:\/\/\S+/g) ?? []).map(url => ({
       url, title: 'A public post', description: 'The requested post.', video: { url: 'https://media.example/video.mp4' },
@@ -30,16 +31,14 @@ function command(content = 'https://twitter.com/jack/status/20?s=46', context = 
     id: '333333333333333333', content: '', components: [] as any[], embeds: [] as { toJSON(): APIEmbed }[],
     fetch: async () => response,
   };
-  const input = {
-    isChatInputCommand: () => !context, inGuild: () => true,
+  const input = commandInteraction(events, {
+    isChatInputCommand: () => !context,
     guildId: 'guild', channelId: 'channel', user: { id: REQUESTER },
-    channel: { isThread: () => false, messages: { fetch: () => assert.fail('Explicit fixing must not fetch chat history') } },
+    channel: { isThread: (): boolean => false, messages: { fetch: () => assert.fail('Explicit fixing must not fetch chat history') } },
     memberPermissions: new PermissionsBitField(PermissionFlagsBits.SendMessages),
     options: { getString: (name: string, required: boolean) => { assert.equal(name, 'link'); assert.equal(required, true); return content; } },
     targetMessage: { content, author: { id: OTHER }, delete: () => assert.fail('Manual fixing must preserve its source'),
       edit: () => assert.fail('Manual fixing must not edit its source') },
-    reply: async (payload: unknown) => { events.push({ name: 'reply', payload }); },
-    deferReply: async (payload: unknown) => { events.push({ name: 'defer', payload }); },
     editReply: async (payload: any) => {
       events.push({ name: 'edit', payload });
       if (typeof payload.content === 'string') response.content = payload.content;
@@ -47,7 +46,7 @@ function command(content = 'https://twitter.com/jack/status/20?s=46', context = 
       response.embeds = state.render(response.content, ++edits).map(embed => ({ toJSON: () => embed }));
       return response as unknown as Message;
     },
-  };
+  });
   return { input, events, state, response, interaction: input as unknown as ChatInputCommandInteraction | MessageContextMenuCommandInteraction };
 }
 
@@ -68,8 +67,7 @@ test('manual preview expiration stops provider retries and cannot record a late 
   t.mock.timers.enable({ apis: ['setTimeout'] });
   for (const observed of [false, true]) {
     const f = command(), outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ outcomes });
     let checks = 0;
     await execute(f.interaction, config, { diagnostics, verifyPreview: async (_message, expected) => {
       checks++;
@@ -88,9 +86,7 @@ test('manual expiration during Details binding or final controls is recorded wit
   for (const phase of ['binding', 'controls']) {
     const f = command(), outcomes: DeliveryOutcome[] = [];
     const expire = () => t.mock.timers.tick(120_000);
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-    bind: async () => { if (phase === 'binding') expire(); return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, outcomes, bind: async () => { if (phase === 'binding') expire(); return true; } });
     const editReply = f.input.editReply;
     f.input.editReply = async payload => {
       const result = await editReply(payload);
@@ -126,17 +122,13 @@ test('manual preference changes during preview verification clear the stale prev
 });
 
 function button() {
-  const events: { name: string; payload?: any }[] = [];
-  const input = {
-    customId: 'linky:remove-manual', inGuild: () => true,
+  const events: InteractionEvent[] = [];
+  const input = buttonInteraction(events, {
+    customId: 'linky:remove-manual',
     user: { id: REQUESTER }, client: { user: { id: BOT } }, applicationId: BOT,
-    memberPermissions: new PermissionsBitField(0n),
     message: { id: '333333333333333333', author: { id: BOT }, webhookId: BOT as string | null,
       interactionMetadata: { user: { id: REQUESTER } } as { user: { id: string } } | null },
-    reply: async (payload: unknown) => { events.push({ name: 'reply', payload }); },
-    deferUpdate: async () => { events.push({ name: 'defer' }); },
-    deleteReply: async () => { events.push({ name: 'delete' }); },
-  };
+  });
   return { input, events, interaction: input as unknown as ButtonInteraction };
 }
 
@@ -591,9 +583,7 @@ const communityConfig: Config = { ...config, rewritePlatforms: [...config.rewrit
 test('manual community previews work without a video key, expose full images, and retain original and owner controls', async () => {
   for (const context of [false, true]) {
     const f = communityCommand(COMMUNITY_URL, context), paths: string[] = [], outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'community-manual', setPath: (path: string) => paths.push(path),
-      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-    bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: 'community-manual', outcomes, paths });
     await execute(f.interaction, communityConfig, { diagnostics, serverPreferences: () => ({ youtubeDisplay: 'preview' }),
       lookupYouTubeCommunity: async (link, signal) => { assert(signal); return communityPost(typeof link === 'string' ? link : link.url,
         ['https://yt3.ggpht.com/first=s1080', 'https://yt3.ggpht.com/second=s500']); },
@@ -653,8 +643,7 @@ test('manual mixed guidance recognizes mobile and other delivery shapes before a
 test('manual settings changes during Details binding or controls clear stale previews without discarding owner controls', async () => {
   for (const phase of ['binding', 'controls']) {
     const f = command('https://instagram.com/p/ABC/'); let preferences: ServerPreferences = {};
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }), finish() {} }),
-      bind: async () => { if (phase === 'binding') preferences = { platforms: { instagram: false } }; return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, bind: async () => { if (phase === 'binding') preferences = { platforms: { instagram: false } }; return true; } });
     const edit = f.input.editReply;
     f.input.editReply = async payload => {
       const result = await edit(payload);
@@ -672,9 +661,7 @@ test('manual context source edits during Details or final controls remove a prev
   for (const phase of ['binding', 'controls']) {
     const f = communityCommand(COMMUNITY_URL, true), outcomes: DeliveryOutcome[] = [];
     const change = () => { f.input.targetMessage.content = COMMUNITY_URL + ' edited'; };
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-      bind: async () => { if (phase === 'binding') change(); return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, outcomes, bind: async () => { if (phase === 'binding') change(); return true; } });
     const edit = f.input.editReply;
     f.input.editReply = async payload => { const result = await edit(payload);
       if (phase === 'controls' && payload.content === undefined && payload.components) change(); return result; };
@@ -695,8 +682,7 @@ test('five community-only manual posts still render while unrelated and hidden l
 test('manual mixed community guidance is private and skips every lookup without a retry offer', async () => {
   for (const context of [false, true]) {
     const f = communityCommand(`${COMMUNITY_URL} https://x.com/jack/status/20`, context), outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'mixed-guidance', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: 'mixed-guidance', outcomes });
     await execute(f.interaction, communityConfig, { diagnostics,
       lookupYouTubeCommunity: async () => assert.fail('mixed lookup'),
       verifyPreview: async () => assert.fail('mixed verify'), normalizeMobileLinks: async () => assert.fail('mixed normalize') });
@@ -729,9 +715,7 @@ test('manual article parser respects platform settings, hidden links, bypasses a
 test('manual article previews use authored cards without native waits and retain requester controls', async () => {
   for (const context of [false, true]) {
     const f = communityCommand(ARTICLE_URL, context), paths: string[] = [], outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'article-manual', setPath: (path: string) => paths.push(path),
-      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-      bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: 'article-manual', outcomes, paths });
     await execute(f.interaction, articleConfig, { diagnostics,
       lookupArticle: async (source, signal) => { assert(signal); assert.equal(source, ARTICLE_URL); return articlePost(source); },
       verifyPreview: async () => assert.fail('Authored articles must not wait for native unfurls') });
@@ -832,9 +816,7 @@ test('manual article source and settings changes during publication, Details bin
       if (kind === 'preferences') preferences = { platforms: { articles: false } };
       if (kind === 'cancelled') controller.abort();
     };
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
-      startStage: () => ({ finish() {} }), finish() {} }),
-      bind: async () => { if (phase === 'binding') change(); return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, bind: async () => { if (phase === 'binding') change(); return true; } });
     const edit = f.input.editReply;
     f.input.editReply = async payload => {
       const result = await edit(payload);
