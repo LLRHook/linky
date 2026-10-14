@@ -168,6 +168,15 @@ in that maintenance branch and are not re-filed here._
 - **Repro / Notes:** Compare Dockerfile FROM lines, src/bot.ts archive/registry initialization, docs/self-hosting.md container description, and VERIFICATION.md Appendix A. Reported by docs-sync as pre-existing drift; not caused by the TikTok change.
 - **Bump:** patch
 - **Status:** open
+### [BUG-1791981980] Permission tests can pass because the repost handler swallows assertions raised in its callbacks
+- [ ] **Severity:** low
+- **Area:** tests
+- **File(s):** tests/social-links.test.ts
+- **Observation:** On 2026-10-14, a mutation check during FEAT-1791981013 removed the Attach Files requirement for replace-mode attachments and `server scope still requires access, deletion and attachment permissions` still passed. Its `copyAttachment` callback calls `assert.fail`, but `createLinkRepostHandler` catches delivery errors and logs them, so the assertion never reaches the test runner; `f.events` stays empty for the wrong reason.
+- **Expected:** Tests that mean "this callback must not run" count calls (or record a flag) and assert on that after the handler returns.
+- **Repro / Notes:** In `src/services/SocialLinkService.ts`, pass `attachments: false` to `requiredRepostPermissions`, then run `npx tsx --test tests/social-links.test.ts`; the server-scope permission test still passes. The new replace-mode Attach Files test counts copies and fails on that mutant. Other `assert.fail` callbacks passed into the handler should be audited the same way.
+- **Bump:** patch
+- **Status:** open
 
 ## Migrated to changelog
 

@@ -910,6 +910,20 @@ test('reply mode leaves source attachments in place without copying or Attach Fi
   assert.equal(f.source.attachments.size, 1);
 });
 
+test('replace mode with source attachments requires Attach Files before sending', async () => {
+  const f = fixture();
+  f.source.attachments.set('file', makeAttachment());
+  f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.AttachFiles);
+  // The handler catches copy failures, so count calls instead of failing inside the callback.
+  let copies = 0;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, async attachment => {
+    copies++;
+    return new AttachmentBuilder(Buffer.from('x'), { name: attachment.name });
+  })(f.source as unknown as Message);
+  assert.equal(copies, 0);
+  assert.deepEqual(f.events, []);
+});
+
 test('reply mode still requires access, history, embeds and the correct send permission', async () => {
   for (const permission of ['ViewChannel', 'ReadMessageHistory', 'EmbedLinks', 'SendMessagesInThreads'] as const) {
     const f = fixture();

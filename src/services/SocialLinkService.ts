@@ -5,7 +5,6 @@ import {
   AttachmentBuilder,
   Message,
   MessageFlags,
-  MessageType,
   PermissionFlagsBits,
 } from 'discord.js';
 import type { Logger } from 'pino';
@@ -15,14 +14,14 @@ import { parseInstagramUrl, type InstagramTranslation } from './InstagramTransla
 import { addInstagramCaptions } from './InstagramPresentation';
 import type { ServerPreferences } from './ServerSettings';
 import type { StatsPublication } from './YouTubeStats';
-import { findYouTubeLinks, formatYouTubeStatistics, parseYouTubeUrl, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
-import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
+import { findYouTubeLinks, formatYouTubeStatistics, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
+import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from './YouTubeCommunity';
-import { parseSocialUrl, rewriteSocialLinks } from './SocialProviders';
-import { downloadAttachment, isSpoiler, MAX_COPY_ATTACHMENT_BYTES } from './RepostAttachments';
+import { rewriteSocialLinks } from './SocialProviders';
+import { downloadAttachment, MAX_COPY_ATTACHMENT_BYTES } from './RepostAttachments';
 import { evaluateScope } from './ServerScope';
 import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
-import { expectedPreviews, verifyPublishedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
+import { verifyPublishedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
 import { translateRepost } from './TweetPresentation';
 import { findReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
@@ -40,49 +39,50 @@ import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
 import { formatLinkRepost, repostControls } from './RepostPresentation';
 import { sourceMentionUsers } from './SourceMentions';
 import type { MobileShareLinkNormalizer } from './MobileShareLinks';
-import { findArticleLinks, parseArticleUrl, type ArticleLookup } from './ArticlePreview';
+import { findArticleLinks, type ArticleLookup } from './ArticlePreview';
 import { ARTICLE_MIXED_GUIDANCE, articleEmbeds, hasMixedArticleLinks, prepareArticlePosts } from './ArticlePosts';
+import { bypassLinky, canCopy, sourceVersion } from './RepostEligibility';
+import { canonicalRepostLinks, instagramShortcodes, repostExpectations, requiredRepostPermissions } from './RepostDelivery';
 
 export { REWRITE_PLATFORMS, parseRewritePlatforms, parseDiscordIds, type RewritePlatform } from './LinkConfiguration';
 export { rewriteSocialLinks } from './SocialProviders';
 export { downloadAttachment } from './RepostAttachments';
 export { originalPostUrl, formatLinkRepost, repostControls } from './RepostPresentation';
+export { bypassLinky } from './RepostEligibility';
 
 const MAX_CONTENT_LENGTH = 2_000;
 const INSTAGRAM_PREVIEW_NOTICE = '\n-# Instagram preview could not be verified; the original post is still here.';
 const RECENT_MESSAGE_LIMIT = 1_000;
 
-export function bypassLinky(content: string): boolean {
-  return /(?:^|\s)!nolinky(?=\s|$)/i.test(content);
-}
-
-function canCopy(message: Message): boolean {
-  return !message.partial &&
-    !message.author.bot && !message.webhookId &&
-    (message.type === MessageType.Default || message.type === MessageType.Reply) &&
-    !message.poll && !message.pinned && !message.hasThread &&
-    message.stickers.size === 0 && message.components.length === 0 &&
-    message.messageSnapshots.size === 0 &&
-    !message.flags.has(MessageFlags.IsVoiceMessage) &&
-    !message.flags.has(MessageFlags.Crossposted) &&
-    !message.flags.has(MessageFlags.IsCrosspost) &&
-    !message.attachments.some((attachment) => attachment.ephemeral);
-}
-
-function sourceVersion(message: Message): string {
-  // Exclude the SDK's link-warning metadata only from this comparison. Neither
-  // message's actual flags are changed, and all other flags remain guarded.
-  const flags = message.flags.bitfield;
-  const comparisonFlags = flags - (flags & MessageFlags.ShouldShowLinkNotDiscordWarning);
-  return JSON.stringify({
-    content: message.content,
-    editedTimestamp: message.editedTimestamp,
-    flags: comparisonFlags,
-    reference: message.reference,
-    attachments: message.attachments.map((attachment) => [
-      attachment.id, attachment.name, attachment.size, attachment.description, isSpoiler(attachment),
-    ]),
-  });
+export interface LinkRepostOptions {
+  platforms?: readonly RewritePlatform[];
+  translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
+  translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
+  serverIds?: readonly string[];
+  serverEnabled?: (serverId: string) => boolean | undefined;
+  serverPreferences?: (serverId: string) => ServerPreferences;
+  lookupYouTube?: (ids: readonly string[], display?: YouTubeDisplay) => Promise<Map<string, YouTubeStatistics>>;
+  lookupYouTubeCommunity?: YouTubeCommunityLookup;
+  lookupArticle?: ArticleLookup;
+  publishYouTube?: (message: Message, embeds: APIEmbed[]) => Promise<StatsPublication | null>;
+  prepareErome?: EromePreparer;
+  eromeAvailable?: (guildId: string) => boolean;
+  prepareEromeMedia?: EromeMediaPreparer;
+  bindEromeMedia?: EromeMediaBinding;
+  releaseEromeMedia?: (messageId: string) => Promise<void>;
+  cancelMediaReservation?: (reservation: string) => Promise<void>;
+  verifyErome?: typeof verifyEromeAttachment;
+  verifyPreview?: (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult>;
+  observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
+  rememberRepost?: (record: RepostRecord) => Promise<boolean>;
+  findRepost?: (replacementId: string) => RepostRecord | undefined;
+  diagnostics?: DeliveryDiagnostics;
+  armPreview?: PreviewWatcher['arm'];
+  providerHealth?: ProviderHealth;
+  albums?: EromeAlbumSessions;
+  normalizeMobileLinks?: MobileShareLinkNormalizer;
+  isOptedOut?: (guildId: string, userId: string) => boolean;
+  signal?: AbortSignal;
 }
 
 export function createLinkRepostHandler(
@@ -94,36 +94,7 @@ export function createLinkRepostHandler(
     eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
     verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost, diagnostics, armPreview, providerHealth, albums,
-    normalizeMobileLinks, isOptedOut, signal }: {
-    platforms?: readonly RewritePlatform[];
-    translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
-    translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
-    serverIds?: readonly string[];
-    serverEnabled?: (serverId: string) => boolean | undefined;
-    serverPreferences?: (serverId: string) => ServerPreferences;
-    lookupYouTube?: (ids: readonly string[], display?: YouTubeDisplay) => Promise<Map<string, YouTubeStatistics>>;
-    lookupYouTubeCommunity?: YouTubeCommunityLookup;
-    lookupArticle?: ArticleLookup;
-    publishYouTube?: (message: Message, embeds: APIEmbed[]) => Promise<StatsPublication | null>;
-    prepareErome?: EromePreparer;
-    eromeAvailable?: (guildId: string) => boolean;
-    prepareEromeMedia?: EromeMediaPreparer;
-    bindEromeMedia?: EromeMediaBinding;
-    releaseEromeMedia?: (messageId: string) => Promise<void>;
-    cancelMediaReservation?: (reservation: string) => Promise<void>;
-    verifyErome?: typeof verifyEromeAttachment;
-    verifyPreview?: (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult>;
-    observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
-    rememberRepost?: (record: RepostRecord) => Promise<boolean>;
-    findRepost?: (replacementId: string) => RepostRecord | undefined;
-    diagnostics?: DeliveryDiagnostics;
-    armPreview?: PreviewWatcher['arm'];
-    providerHealth?: ProviderHealth;
-    albums?: EromeAlbumSessions;
-    normalizeMobileLinks?: MobileShareLinkNormalizer;
-    isOptedOut?: (guildId: string, userId: string) => boolean;
-    signal?: AbortSignal;
-  } = {}
+    normalizeMobileLinks, isOptedOut, signal }: LinkRepostOptions = {}
 ): (message: Message, options?: { refresh?: boolean; forceReply?: boolean; manualRetry?: boolean }) => Promise<RepostRefreshResult> {
   const allowedChannelIds = typeof channelIds === 'string' ? [channelIds] : channelIds;
   const inFlight = new Set<string>();
@@ -197,15 +168,8 @@ export function createLinkRepostHandler(
       const member = message.guild.members.me;
       if (!member || !channel.isSendable()) return;
       const permissions = channel.permissionsFor(member);
-      const required = [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.ReadMessageHistory,
-        PermissionFlagsBits.EmbedLinks,
-        channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages,
-      ];
-      if (!reply) required.push(PermissionFlagsBits.ManageMessages);
-      if (!reply && message.attachments.size) required.push(PermissionFlagsBits.AttachFiles);
-      if (eromeSource && !mixedCommunity) required.push(PermissionFlagsBits.AttachFiles);
+      const required = requiredRepostPermissions({ reply, thread: channel.isThread(),
+        attachments: message.attachments.size > 0, erome: Boolean(eromeSource) && !mixedCommunity });
       if ((!reply && !message.deletable) || !permissions?.has(required)) {
         delivery.finish('permission');
         log.warn(context, 'Skipping link replacement: missing channel permissions');
@@ -343,15 +307,8 @@ export function createLinkRepostHandler(
             preferences.translateInstagram !== false ? translateInstagram : undefined,
             MAX_CONTENT_LENGTH - INSTAGRAM_PREVIEW_NOTICE.length - (body.length - rewritten.length),
             preferences.instagramPresentation) : tweetPresentation;
-      const canonical = mapLinks(translated.content, (url, position) => {
-        const article = parseArticleUrl(url);
-        if (article && visibleLink(translated.content, position) && articles.some(post => post.source === article)) return `<${article}>`;
-        const communityPost = parseYouTubeCommunityUrl(url);
-        if (communityPost && visibleLink(translated.content, position) && community.some(post => post.source === communityPost.url)) return `<${communityPost.url}>`;
-        if ((erome || originalMedia) && visibleLink(translated.content, position) && parseEromeUrl(url)) return `<${parseEromeUrl(url)!.url}>`;
-        const video = parseYouTubeUrl(url);
-        return video && youtube.has(video.id) && visibleLink(translated.content, position) ? video.url : url;
-      });
+      const canonical = canonicalRepostLinks(translated.content,
+        { articles, community, eromeMedia: Boolean(erome || originalMedia), youtubeIds: youtube });
       const formatted = formatLinkRepost(canonical, message.author.id, replyContext);
       let content = (formatted.length <= MAX_CONTENT_LENGTH ? formatted : body) + (erome ? eromeNotice(erome.videoCount, erome.kind) : '');
       const usedFormatted = content === formatted + (erome ? eromeNotice(erome.videoCount, erome.kind) : '');
@@ -385,21 +342,11 @@ export function createLinkRepostHandler(
       // a verified attachment). Only media and untranslated posts need an embed.
       const textStatusIds = new Set(usedFormatted ? translated.textStatusIds : []);
       const videoStatusIds = new Set(translated.videoStatusIds);
-      const instagramIds = new Set((usedFormatted ? translated.instagramSources ?? [] : [])
-        .map(url => parseInstagramUrl(url)?.shortcode));
-      const instagramVideos = new Set((translated.instagramVideos ?? []).map(url => parseInstagramUrl(url)?.shortcode));
-      const instagramCaptionIds = new Set((usedFormatted ? translated.instagramCaptionSources ?? [] : [])
-        .map(url => parseInstagramUrl(url)?.shortcode));
-      const expectations = () => expectedPreviews(`${inputContent}\n${translated.mediaSources ?? ''}`, content, community, articles)
-        .filter(item => !textStatusIds.has(parseSocialUrl(item.source)?.statusId ?? ''))
-        .map(item => {
-          const instagramId = parseInstagramUrl(item.source)?.shortcode;
-          return { ...item,
-            ...(instagramId && instagramIds.has(instagramId) ? { captionFree: true } : {}),
-            ...(videoStatusIds.has(parseSocialUrl(item.source)?.statusId ?? '') ||
-              (instagramId && instagramVideos.has(instagramId)) ? { requireVideo: true } : {}),
-          };
-        });
+      const instagramIds = instagramShortcodes(usedFormatted ? translated.instagramSources : []);
+      const instagramVideos = instagramShortcodes(translated.instagramVideos);
+      const instagramCaptionIds = instagramShortcodes(usedFormatted ? translated.instagramCaptionSources : []);
+      const expectations = () => repostExpectations(`${inputContent}\n${translated.mediaSources ?? ''}`, content, community, articles,
+        { textStatusIds, videoStatusIds, captionFreeInstagram: instagramIds, videoInstagram: instagramVideos });
       if (providerHealth) {
         const current = expectations();
         const preferred = mapLinks(content, (url, position) => {
