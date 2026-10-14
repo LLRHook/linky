@@ -1,11 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import { atomicWrite } from './AtomicWrite';
-import { DELIVERY_OUTCOMES, DELIVERY_PATHS, DELIVERY_STAGES, type DeliveryOutcome, type DeliveryPath,
-  type DeliveryStage, type DeliveryTrace, type StageOutcome } from './DeliveryContext';
+import { DELIVERY_OUTCOMES, DELIVERY_PATHS, DELIVERY_PLATFORMS, DELIVERY_STAGES, STAGE_OUTCOMES, type DeliveryOutcome, type DeliveryPath,
+  type DeliveryPlatform, type DeliveryStage, type DeliveryTrace, type StageOutcome } from './DeliveryContext';
 
-const PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'facebook', 'youtube', 'articles', 'erome', 'mixed'] as const;
-const STAGE_OUTCOMES: readonly StageOutcome[] = ['ok', 'unavailable', 'busy', 'timeout', 'cancelled', 'failed'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DISCORD_ID = /^\d{17,20}$/;
 const MAX_STAGES = 96;
@@ -16,7 +14,7 @@ export interface DeliveryRequest {
   channelId: string;
   guildId?: string;
   mode: 'automatic' | 'manual';
-  platform: typeof PLATFORMS[number];
+  platform: DeliveryPlatform;
 }
 export interface DeliveryStageRecord { stage: DeliveryStage; durationMs: number; outcome: StageOutcome; itemIndex?: number }
 export interface DeliveryRecord extends DeliveryRequest {
@@ -55,7 +53,7 @@ function bounded(value: number | undefined, fallback: number, min: number, max: 
 function validRequest(value: DeliveryRequest): boolean {
   return DISCORD_ID.test(value.requesterId) && DISCORD_ID.test(value.channelId) &&
     (value.guildId === undefined || DISCORD_ID.test(value.guildId)) &&
-    ['automatic', 'manual'].includes(value.mode) && PLATFORMS.includes(value.platform);
+    ['automatic', 'manual'].includes(value.mode) && DELIVERY_PLATFORMS.includes(value.platform);
 }
 function restore(value: unknown): DeliveryRecord | undefined {
   if (!value || typeof value !== 'object') return undefined;

@@ -8,8 +8,8 @@ export const REGIONAL_SIGNATURE_HEADER = 'x-linky-signature';
 export const MAX_REGIONAL_BYTES = 24 * 1024 * 1024;
 export const MAX_REGIONAL_PART_BYTES = 4 * 1024 * 1024;
 export const REGIONAL_DEADLINE_MS = 8_000;
-export const REGIONAL_JOB_TTL_MS = 30_000;
-export const REGIONAL_CLOCK_SKEW_MS = 5_000;
+const REGIONAL_JOB_TTL_MS = 30_000;
+const REGIONAL_CLOCK_SKEW_MS = 5_000;
 export const MAX_REGIONAL_JOB_BYTES = 4096;
 
 export type RegionalJob = {

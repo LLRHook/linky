@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { atomicWrite } from './AtomicWrite';
+import { DISCORD_ID } from './LinkConfiguration';
 import type { APIActionRowComponent, APIComponentInMessageActionRow, APIEmbed, APIMessageTopLevelComponent, MessageEditOptions } from 'discord.js';
 import { controlsForYouTube, mergeYouTubeControls, removeYouTubeControls } from './YouTubeControls';
 
 export const YOUTUBE_STATS_TTL = 24 * 60 * 60_000;
 const MARKER = /^-# \[YouTube\]\(<https:\/\/www\.youtube\.com\/watch\?v=[\w-]{11}(?:&t=\d+)?>\) · /;
-const DISCORD_ID = /^[1-9]\d{16,19}$/;
 interface LegacyRecord { channelId: string; messageId: string; expiresAt: number; baseLength: number; suffixLength: number; kind?: never }
 interface CardRecord { kind: 'card'; channelId: string; messageId: string; expiresAt: number; baseMessageId?: string }
 interface ControlsRecord { kind: 'controls'; channelId: string; messageId: string; expiresAt: number; videoIds: string[] }

@@ -1,10 +1,10 @@
 import { MessageFlags, type Message } from 'discord.js';
+import { DISCORD_ID } from './LinkConfiguration';
 import { mapLinks } from './LinkTokens';
 import type { RepostRecord } from './RepostRegistry';
 
 const LOOKUP_TIMEOUT_MS = 1_500;
 const MAX_EXCERPT_LENGTH = 160;
-const DISCORD_ID = /^[1-9]\d{16,19}$/;
 const UNAVAILABLE = 'Original message unavailable.';
 const REPOST_CREDIT = /^> \*\*Shared by <@([1-9]\d{16,19})>\*\*( \(reply(?: to [^\r\n]+)?\))?\r?\n/;
 
