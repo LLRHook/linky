@@ -2,13 +2,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, opendir, realpath, rename, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { DISCORD_ID as MESSAGE_ID } from './LinkConfiguration';
 
 const MAX_ASSET_BYTES = 24 * 1024 * 1024;
 const MAX_METADATA_BYTES = 8192;
 const MAX_DIRECTORY_ENTRIES = 16_384;
 const ORPHAN_TTL_MS = 15 * 60_000;
 const ID = /^[a-f0-9]{32}$/;
-const MESSAGE_ID = /^[1-9]\d{16,19}$/;
 
 export type MediaMime = 'video/mp4' | 'image/jpeg' | 'image/png';
 export const mediaExtension = (mime: MediaMime = 'video/mp4'): 'mp4' | 'jpg' | 'png' =>

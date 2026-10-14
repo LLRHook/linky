@@ -307,8 +307,8 @@ test('Facebook Reel and page video URLs share one numeric identity and the Faceb
 test('Facebook shares, photo posts, watch pages and lookalike hosts are not direct Facebook sources', () => {
   for (const url of ['https://www.facebook.com/share/r/1DTK3shLVM/', 'https://www.facebook.com/watch/?v=1060921586772217',
     'https://www.facebook.com/thevarietynerd/posts/pfbid0abc', 'https://www.facebook.com/reel/', 'https://www.facebook.com/reel/abc',
-    'https://www.facebook.com/a/b/videos/1', 'https://fb.watch/abc123/', 'https://facebook.com.evil.test/reel/1',
-    'http://www.facebook.com/reel/1', 'https://www.facebook.com:443/reel/1']) assert.equal(parseSocialUrl(url), null, url);
+    'https://www.facebook.com/a/b/videos/1', 'https://www.facebook.com/.../videos/1', 'https://www.facebook.com/.page/videos/1',
+    'https://fb.watch/abc123/', 'https://facebook.com.evil.test/reel/1', 'http://www.facebook.com/reel/1', 'https://www.facebook.com:443/reel/1']) assert.equal(parseSocialUrl(url), null, url);
   assert.equal(parseProviderUrl('https://facebed.com/'), null);
   assert.equal(parseProviderUrl('https://facebed.com/share/r/1DTK3shLVM/'), null);
 });
@@ -316,7 +316,9 @@ test('Facebook shares, photo posts, watch pages and lookalike hosts are not dire
 test('strict HTTPS parsing rejects anything URL would silently normalize', () => {
   assert.equal(strictHttpsUrl('https://www.facebook.com/reel/1?x=1#y')?.hostname, 'www.facebook.com');
   assert.equal(strictHttpsUrl('https://WWW.Facebook.com/reel/1')?.pathname, '/reel/1');
+  assert.equal(strictHttpsUrl('HTTPS://x.com/a')?.href, 'https://x.com/a');
   for (const raw of ['http://x.com/a', 'https://x.com', 'https://x.com:443/a', 'https://u@x.com/a', 'https://x.com/a/../b',
-    'https://x.com/a b', 'https://x.com\a', `https://x.com/${'a'.repeat(2048)}`, 'https://xn--x-1ga.com/a'.replace('xn--x-1ga', 'ẋ')])
+    'https://x.com/a b', 'https://x.com\\a', 'https://x.com\\@evil.test/a', 'https://x.com/a\\b', 'https://x.com:8443/a',
+    'https://x.com/%2e%2e/a', 'https://x.com/a/./b', 'https://x.com/a\tb', `https://x.com/${'a'.repeat(2048)}`, 'https://ẋ.com/a'])
     assert.equal(strictHttpsUrl(raw), null, raw);
 });

@@ -1308,11 +1308,14 @@ test('unavailable, wrong-identity and missing community lookups preserve a commu
 
 test('community lookup is skipped for disabled platforms, opted-out authors, hidden links and nolinky messages', async () => {
   for (const kind of ['disabled', 'platform', 'optout', 'hidden', 'nolinky']) {
-    const f = delivery(kind === 'hidden' ? `<${COMMUNITY_URL}>` : kind === 'nolinky' ? `${COMMUNITY_URL} nolinky` : COMMUNITY_URL);
+    const f = delivery(kind === 'hidden' ? `<${COMMUNITY_URL}>` : kind === 'nolinky' ? `${COMMUNITY_URL} !nolinky` : COMMUNITY_URL);
     if (kind === 'disabled') f.state.enabled = false;
     if (kind === 'platform') f.state.preferences = { platforms: { youtube: false } };
-    await f.create({ lookupYouTubeCommunity: async () => assert.fail(`${kind} performed a lookup`),
+    // The handler swallows callback errors, so count lookups instead of failing inside the callback.
+    let lookups = 0;
+    await f.create({ lookupYouTubeCommunity: async () => { lookups++; return null; },
       isOptedOut: () => kind === 'optout' })(f.source);
+    assert.equal(lookups, 0, `${kind} performed a lookup`);
     assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
   }
 });

@@ -168,15 +168,66 @@ in that maintenance branch and are not re-filed here._
 - **Repro / Notes:** Compare Dockerfile FROM lines, src/bot.ts archive/registry initialization, docs/self-hosting.md container description, and VERIFICATION.md Appendix A. Reported by docs-sync as pre-existing drift; not caused by the TikTok change.
 - **Bump:** patch
 - **Status:** open
+
 ### [BUG-1791981980] Permission tests can pass because the repost handler swallows assertions raised in its callbacks
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** tests
-- **File(s):** tests/social-links.test.ts
+- **File(s):** tests/social-links.test.ts, tests/delivery-recovery.test.ts
 - **Observation:** On 2026-10-14, a mutation check during FEAT-1791981013 removed the Attach Files requirement for replace-mode attachments and `server scope still requires access, deletion and attachment permissions` still passed. Its `copyAttachment` callback calls `assert.fail`, but `createLinkRepostHandler` catches delivery errors and logs them, so the assertion never reaches the test runner; `f.events` stays empty for the wrong reason.
 - **Expected:** Tests that mean "this callback must not run" count calls (or record a flag) and assert on that after the handler returns.
 - **Repro / Notes:** In `src/services/SocialLinkService.ts`, pass `attachments: false` to `requiredRepostPermissions`, then run `npx tsx --test tests/social-links.test.ts`; the server-scope permission test still passes. The new replace-mode Attach Files test counts copies and fails on that mutant. Other `assert.fail` callbacks passed into the handler should be audited the same way.
 - **Bump:** patch
-- **Status:** open
+- **Status:** fixed-pending-migration
+- **Fix:** `tests/social-links.test.ts` replaces every callback `assert.fail` with a recorded `forbid` callback checked in `afterEach`. This exposed an article test whose permission case kept Administrator, so it never lacked Embed Links; it now removes both. A suite-wide probe of swallowed `assert.fail` calls found one more, in `tests/delivery-recovery.test.ts`, where the community-lookup case used `nolinky` instead of `!nolinky`; it now uses the real bypass and counts lookups. The probe reports no swallowed assertions. Removing the Attach Files or Embed Links requirement now fails the matching test.
+- **Docs:** none needed (tests only).
+### [BUG-1791986809] Operator docs and V&V checklist omit the Facebook platform
+- [x] **Severity:** low
+- **Area:** docs
+- **File(s):** docs/self-hosting.md, .env.example, VERIFICATION.md
+- **Observation:** The 2026-10-14 PR audit found that FEAT-1791951567 (PR #72) left `REWRITE_PLATFORMS` documented as `x,instagram,tiktok,youtube,bluesky,reddit,twitch,articles,erome` in `docs/self-hosting.md` and `.env.example`; the hosted-platform sentence at the top of `docs/self-hosting.md` also omits Facebook. `VERIFICATION.md` step 3.7 covers Bluesky, Reddit and Twitch corpus entries but not the new Facebook share.
+- **Expected:** Operator references list `facebook` wherever they enumerate rewrite platforms, so an explicit list copied from the docs keeps Facebook; step 3.7 includes the Facebook share.
+- **Repro / Notes:** `git grep -n "twitch,articles" -- docs .env.example`; compare with `REWRITE_PLATFORMS` in `src/services/LinkConfiguration.ts`.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** `.env.example` and `docs/self-hosting.md` now list `facebook` in `REWRITE_PLATFORMS`, the hosted-platform sentence names Facebook Reels and videos, and `VERIFICATION.md` step 3.7 includes the Facebook `/share/r/` corpus entry.
+- **Docs:** `.env.example`, `docs/self-hosting.md`, `VERIFICATION.md`.
+
+### [BUG-1791986810] Facebook, Erome and hosted-album wiring paths have no regression tests
+- [x] **Severity:** low
+- **Area:** tests
+- **File(s):** tests/preview-watcher.test.ts, tests/diagnose-command.test.ts, tests/mobile-share-links.test.ts, tests/erome-media-repost.test.ts, tests/manual-media.test.ts
+- **Observation:** The 2026-10-14 PR audit removed each of these conditions and the suite stayed green: Facebook's eight-second Gateway wait (`PreviewWatcher.ts`), the Facebook branch of `/diagnose` share detection (`diagnose.ts`), the automatic-repost Erome link suppression (`eromeMedia` passed to `canonicalRepostLinks`), and album registration in the hosted `/fix` Erome path (`publishHostedErome`). `m.facebook.com` share redirects are handled but untested.
+- **Expected:** Each path has a test that fails when the condition is removed.
+- **Repro / Notes:** Mutate the condition, run the named suite with `npx tsx --test`, observe no failure.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Added a Facebed 7.5-second cold-media watcher test, a Facebook share row in the `/diagnose` shape table, an `m.facebook.com` share redirect test, an assertion that automatic hosted Erome reposts show the album link in angle brackets, and a public/private album-registration test for hosted `/fix`. Each removed condition (the Facebook wait, the diagnose branch, the mobile host, `eromeMedia`, and both halves of the album-registration guard) now fails its suite.
+- **Docs:** none needed (tests only).
+
+### [BUG-1791986811] Strict-URL test case is a no-op and shared ID and platform constants are incomplete
+- [x] **Severity:** low
+- **Area:** tests, security
+- **File(s):** tests/social-providers.test.ts, src/services/RepostRegistry.ts, src/services/MediaAssetStore.ts, src/services/EromeAlbumSessions.ts, src/services/DeliveryDiagnostics.ts, src/services/DeliveryContext.ts
+- **Observation:** The 2026-10-14 audit of PR #73 found: the `strictHttpsUrl` test string `'https://x.com\a'` contains no backslash (JS drops the escape), so the backslash case is never exercised directly; three identical `/^[1-9]\d{16,19}$/` copies remain outside the shared `DISCORD_ID`; `DeliveryDiagnostics` keeps an intentionally looser `DISCORD_ID` under the same name with no explanation; `DELIVERY_PLATFORMS` restates `REWRITE_PLATFORMS` by hand and can drift.
+- **Expected:** Real backslash and other normalisation cases are asserted on `strictHttpsUrl`; every strict snowflake check uses the shared constant; the looser legacy pattern is named and explained; delivery platforms derive from rewrite platforms.
+- **Repro / Notes:** `node -e "console.log('https://x.com\a'.includes('\\'))"` prints false.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** The strict-URL test now asserts real backslash host and path cases, a non-443 port, encoded and single-dot segments, a tab, an uppercase scheme and a literal Unicode lookalike. `RepostRegistry`, `MediaAssetStore` and `EromeAlbumSessions` use the shared `DISCORD_ID`; the looser diagnostics pattern is renamed `LEGACY_SNOWFLAKE` with its reason; `DELIVERY_PLATFORMS` derives from `REWRITE_PLATFORMS`. Build, workers, 1,238 TypeScript tests, 54 script tests (eight environment-dependent skips), audit and deploy safeguards pass.
+- **Docs:** none needed (internal constants and tests).
+
+### [BUG-1791986812] Facebook page-name pattern accepts dot-only names and the host allowlist is exported mutable
+- [x] **Severity:** low
+- **Area:** providers, security
+- **File(s):** src/services/SocialProviders.ts, tests/social-providers.test.ts
+- **Observation:** `/^\/(?:reel|[A-Za-z0-9.]{1,80}\/videos)\/(\d{1,20})\/?$/` accepts `https://www.facebook.com/.../videos/123`, rewriting it to a Facebed URL. `FACEBOOK_HOSTS` is exported as a mutable `Set`, which the share resolver also uses as an allowlist.
+- **Expected:** Page names start with a letter or digit; the shared host set is typed read-only.
+- **Repro / Notes:** `parseSocialUrl('https://www.facebook.com/.../videos/123')` returns a Facebook source. Harmless today (fixed provider host, video required) but outside the documented URL forms.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Facebook page names must start with a letter or digit, and `FACEBOOK_HOSTS` is typed `ReadonlySet<string>`. Dot-only and dot-leading page names are rejected in tests; restoring the old pattern fails them.
+- **Docs:** none needed (documented URL forms unchanged).
+
 
 ## Migrated to changelog
 

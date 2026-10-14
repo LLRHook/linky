@@ -4,6 +4,7 @@ import { ButtonStyle, ComponentType, MessageFlags, type APIActionRowComponent, t
 import type { DeliveryContext } from './DeliveryContext';
 import { createDeliveryProgress } from './DeliveryProgress';
 import { parseEromeUrl } from './EromeAlbum';
+import { DISCORD_ID } from './LinkConfiguration';
 import { messageHasEromeMedia, watchEromeMedia, type EromeMedia, type EromeMediaBinding,
   type EromeMediaPreparer } from './EromeMedia';
 
@@ -148,7 +149,7 @@ export class EromeAlbumSessions {
       const current = await interaction.message.fetch(true);
       // V2 edits rebuild mention metadata. Preserve only Discord's current recipients,
       // including on rollback; visible attribution must never create new recipients.
-      allowedMentions.users = [...current.mentions.users.keys()].filter(id => /^[1-9]\d{16,19}$/.test(id)).slice(0, 100);
+      allowedMentions.users = [...current.mentions.users.keys()].filter(id => DISCORD_ID.test(id)).slice(0, 100);
       before = current.components.map(component => component.toJSON());
       const galleries = before.filter(component => component.type === ComponentType.MediaGallery);
       if (galleries.length !== 1 || galleries[0].items.length !== session.loaded.length ||

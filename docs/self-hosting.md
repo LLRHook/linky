@@ -1,6 +1,6 @@
 # Self-hosting and operations
 
-The public hosted bot runs on Hostinger; the website uses Vercel. It provides X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit and Twitch clip previews, with available tweet and Instagram caption translation and YouTube extras. Members need no keys or hosting. Erome is self-host-only for public users: use your own bot application, server, storage and any media workers. The optional coding integration is disabled on the public bot. Operator settings do not bypass a server administrator's channel choices.
+The public hosted bot runs on Hostinger; the website uses Vercel. It provides X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clip and Facebook Reel and video previews, with available tweet and Instagram caption translation and YouTube extras. Members need no keys or hosting. Erome is self-host-only for public users: use your own bot application, server, storage and any media workers. The optional coding integration is disabled on the public bot. Operator settings do not bypass a server administrator's channel choices.
 
 ## Hosted and self-hosted features
 
@@ -48,7 +48,7 @@ Linky registers its commands automatically at startup. Open `/setup` to enable y
 | `LINK_CHANNEL_IDS` | Optional comma-separated exact channel IDs to enable initially |
 | `LINK_SERVER_IDS` | Optional comma-separated server IDs to enable initially, including accessible threads |
 | `LINK_SETTINGS_PATH` | Saved enablement and preferences; default `data/servers.json` |
-| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube,bluesky,reddit,twitch,articles,erome`; empty enables available platforms, with automatic YouTube statistics requiring its API key and Erome following the server's channel policy; public article metadata needs no key |
+| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube,bluesky,reddit,twitch,facebook,articles,erome`; empty enables available platforms, with automatic YouTube statistics requiring its API key and Erome following the server's channel policy; public article metadata needs no key |
 | `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
 | `TRANSLATE_INSTAGRAM` | `true` enables English Instagram captions when the translation key is available; default `false` |
 | `GOOGLE_TRANSLATE_API_KEY` | Optional dedicated Cloud Translation Basic v2 key; independent of the YouTube key |
