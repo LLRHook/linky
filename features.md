@@ -187,7 +187,7 @@ Priority guide: crit / high / med / low.
 - **Status:** open
 
 ### [FEAT-1791990467] Independent CI jobs behind one required CI gate
-- [ ] **Priority:** high
+- [x] **Priority:** high
 - **Area:** ci, docs
 - **File(s):** .github/workflows/ci.yml, ops/prompt-workflow.mjs, tests/prompt-workflow.test.mjs, tests/ci-workflow.test.mjs (new), VERIFICATION.md, CONTRIBUTING.md, README.md, docs/self-hosting.md, docs/discord-prompt.md
 - **Why:** 2026-10-14 workflow review, items 1-2. `npm audit` runs inside each `Build (Node N)` job before build and tests, so an advisory hides every functional result. Branch protection on `main` requires `Build (Node 22)`, `Build (Node 24)` and `Production container` but not `Build (Node 26)`, the version the production `Dockerfile` runs.
@@ -201,8 +201,8 @@ Priority guide: crit / high / med / low.
 - **Test plan:** `bash tests/deploy.test.sh` plus a static assertion test that `ci.yml` gate `needs:` covers every other job; the PR's own CI run shows all jobs; `gh api .../branches/main/protection` output after the change.
 - **Out of scope:** `linky-web` / Vercel deployment gating (separate repository); changing Deploy's SSH steps.
 - **Bump:** minor
-- **Status:** in-progress
-- **Implementation:** `ci.yml` runs `Secret scan`, `Dependency audit`, `Build (Node 22|24|26)` and `Production container` independently; `CI gate` (`needs` all, `if: always()`) fails unless every result is `success` (gate script exercised with success/failure/skipped/cancelled/empty inputs). The prompt publisher's `REQUIRED_CHECKS` is `CI gate` + `PR evidence`; `tests/ci-workflow.test.mjs` pins the gate's needs and the publisher names (mutation: dropping `audit` from needs fails it). Remaining: switch `main` protection to `CI gate` + `PR evidence` after this branch merges and record the `gh api` output; status stays in-progress until then.
+- **Status:** shipped-pending-migration
+- **Implementation:** `ci.yml` runs `Secret scan`, `Dependency audit`, `Build (Node 22|24|26)` and `Production container` independently; `CI gate` (`needs` all, `if: always()`) fails unless every result is `success` (gate script exercised with success/failure/skipped/cancelled/empty inputs). The prompt publisher's `REQUIRED_CHECKS` is `CI gate` + `PR evidence`; `tests/ci-workflow.test.mjs` pins the gate's needs and the publisher names (mutation: dropping `audit` from needs fails it). After #77 merged (cdc4347), `gh api -X PATCH repos/LLRHook/linky/branches/main/protection/required_status_checks` returned `{"checks":[{"app_id":15368,"context":"CI gate"},{"app_id":15368,"context":"PR evidence"}],"strict":true}`; `GET .../branches/main/protection` then showed `enforce_admins` true, conversation resolution true, 0 required approvals (2026-10-14).
 - **Docs:** VERIFICATION, CONTRIBUTING, README, docs/self-hosting.md, docs/discord-prompt.md.
 
 ### [FEAT-1791990468] Acceptance evidence required in every pull request
