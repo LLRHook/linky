@@ -545,6 +545,17 @@ test('manual Instagram presentation supports translated compact captions and med
   assert(sizes[1] < sizes[0]); assert(sizes[2] < sizes[1]);
 });
 
+test('manual translated Instagram images expect a caption-free preview without requiring video', async () => {
+  const caption: InstagramTranslation = { sourceUrl: 'https://www.instagram.com/p/ABC/', shortcode: 'ABC', username: 'author',
+    text: 'A readable translated caption.', languages: ['et'], mediaOnlyUrl: 'https://g.fkinstagram.com/p/ABC/', mediaTypes: ['GraphImage'] };
+  const f = command(caption.sourceUrl), preview = previewChecks(f);
+  f.state.render = () => [{ url: caption.mediaOnlyUrl, image: { url: 'https://cdn.example/photo.jpg' } }];
+  await execute(f.interaction, config, { ...preview.dependencies, translateInstagram: async () => caption });
+  assert.equal(preview.checks[0][0].captionFree, true);
+  assert.equal(preview.checks[0][0].requireVideo, undefined);
+  assert(preview.observations[0].result.ok);
+});
+
 test('manual media-first failures never claim a partial translated caption', async () => {
   const f = command('https://www.instagram.com/reel/ABC/'), preview = previewChecks(f);
   f.state.render = () => [];
