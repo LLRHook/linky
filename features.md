@@ -135,6 +135,41 @@ Priority guide: crit / high / med / low.
 - **Implementation:** `facebook` platform and `facebed` provider in `SocialProviders.ts` (video-ID identity, strict hosts); `/share/r|v/` resolution in `MobileShareLinks.ts`; video required and eight-second Gateway window in `PreviewRecovery.ts` / `PreviewWatcher.ts`; `/settings facebook:`, setup menu, diagnostics and archive platform lists; corpus entry and docs. Live: the reported link resolved from Hostinger, Discord built a 720×1280 video embed that Linky's matcher accepted and Chrome Discord played (`docs/provider-checks.md`).
 - **Status:** shipped-pending-migration
 
+### [FEAT-1791981013] Extract repost eligibility, permission, link and expectation helpers from SocialLinkService
+- [x] **Priority:** low
+- **Area:** bot, previews
+- **File(s):** src/services/SocialLinkService.ts, src/services/RepostEligibility.ts (new), src/services/RepostDelivery.ts (new), tests/repost-eligibility.test.ts (new)
+- **Why:** `SocialLinkService.ts` is 675 lines, almost all inside one `createLinkRepostHandler` closure. Pure decisions (message copy eligibility, source versioning, required channel permissions, link canonicalization, preview expectations) are inlined between network and Discord calls, so they cannot be read or tested on their own. Deferred from the 2026-10-14 tightening pass (PR #73).
+- **Approach:** Behaviour-preserving extraction only. (1) Move `bypassLinky`, `canCopy` and `sourceVersion` to `RepostEligibility.ts`; keep `bypassLinky` re-exported from `SocialLinkService` for existing imports. (2) Add pure `requiredRepostPermissions({ reply, thread, attachments, erome })` and `canonicalRepostLinks(content, { articles, community, eromeMedia, youtube })` and `repostExpectations(...)` to `RepostDelivery.ts`, called from the closure with the same arguments it computes today. (3) Name the handler's options type `LinkRepostOptions`. No change to message text, ordering of Discord calls, abort checks or retry results.
+- **Library / dependency notes:** None.
+- **Acceptance criteria:**
+  - `SocialLinkService.ts` keeps its public exports and signatures; existing tests pass unchanged.
+  - Each extracted helper has a direct unit test pinning current behaviour.
+  - Full CI gate passes.
+- **Test plan:** Characterization tests for the extracted helpers in `tests/repost-eligibility.test.ts`; existing `social-links`, `repost-sync`, `erome-media-repost` suites as the behaviour net.
+- **Out of scope:** Restructuring the closure's state machine, changing delivery behaviour, splitting by platform.
+- **Bump:** patch
+- **Status:** shipped-pending-migration
+- **Implementation:** `bypassLinky`, `canCopy` and `sourceVersion` moved verbatim to `RepostEligibility.ts` (`bypassLinky` still re-exported); `requiredRepostPermissions`, `canonicalRepostLinks`, `instagramShortcodes` and `repostExpectations` in `RepostDelivery.ts`; handler options named `LinkRepostOptions`. `SocialLinkService.ts` 675 to 622 lines with unchanged exports. Eight characterization tests in `tests/repost-eligibility.test.ts` plus a replace-mode Attach Files wiring test in `tests/social-links.test.ts` (mutation-checked); full CI gate green (1,235 TypeScript and 54 script tests, 0 vulnerabilities, deploy tests).
+- **Docs:** none affected; no document names the moved internals.
+
+### [FEAT-1791981014] Split the /fix command's execute into named stages
+- [x] **Priority:** low
+- **Area:** commands, previews
+- **File(s):** src/commands/fix.ts, src/commands/fixMedia.ts (new), tests/repost-eligibility.test.ts, tests/manual-fix.test.ts
+- **Why:** `execute` in `src/commands/fix.ts` runs from line 71 to 447 as one function covering source resolution, permission checks, presentation, preview verification and recording. Deferred from the 2026-10-14 tightening pass (PR #73).
+- **Approach:** Behaviour-preserving extraction of self-contained pure or single-purpose stages into `fixStages.ts` (for example the preview expectation builder and permission/eligibility checks), reusing `RepostDelivery.ts` helpers from FEAT-1791981013 where the logic is identical. `data`, `contextData`, `manualLinks`, `execute` and `removeManual` keep their exports and signatures. No change to replies, ephemeral flags, ordering or timeouts.
+- **Library / dependency notes:** None.
+- **Acceptance criteria:**
+  - `execute` is materially shorter and reads as a sequence of named stages.
+  - Existing `manual-fix` tests pass unchanged; extracted helpers have unit tests.
+  - Full CI gate passes.
+- **Test plan:** Existing `tests/manual-fix.test.ts` plus characterization tests for extracted helpers.
+- **Out of scope:** Behaviour changes to /fix or Apps → Fix with Linky.
+- **Bump:** patch
+- **Status:** shipped-pending-migration
+- **Implementation:** The hosted-original Erome publish stage moved to `publishHostedErome` and the Original post/Remove buttons to `manualButtons` in `src/commands/fixMedia.ts`; preview expectations reuse `repostExpectations` and `instagramShortcodes` from FEAT-1791981013. `fix.ts` 463 to 389 lines; exports and signatures unchanged; existing `manual-fix` tests pass unchanged, plus a `manualButtons` characterization test and a mutation-checked Instagram image expectation test in `tests/manual-fix.test.ts`.
+- **Docs:** none affected.
 ---
 
 ## Shipped
