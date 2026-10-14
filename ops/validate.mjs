@@ -32,7 +32,7 @@ export function validate({ run = runCommand, log = console.log, now = () => perf
   for (const { command, status, seconds } of results) {
     log(`${status === 0 ? 'PASS' : 'FAIL'}  ${command}  (${seconds.toFixed(1)}s${status === 0 ? '' : `, exit ${status}`})`);
   }
-  log('Not run locally: production container checks (CI job "Production container", VERIFICATION 2.5).');
+  log('Not run locally: Secret scan (gitleaks, CI job "Secret scan") and production container checks (CI job "Production container", VERIFICATION 2.5).');
   const ok = results.every(({ status }) => status === 0);
   log(ok ? 'All checks passed.' : 'One or more checks failed.');
   return { ok, results };

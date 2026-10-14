@@ -25,7 +25,11 @@ function platformTable(path: string): string {
 }
 
 /** Every host Linky sends preview or share-resolution traffic to outside the source platforms. */
-const outboundHosts = [...new Set([...SOCIAL_PROVIDERS.map(provider => new URL(provider.origin).hostname), ...SHARE_FALLBACK_HOSTS])];
+const outboundHosts = [...new Set([
+  ...SOCIAL_PROVIDERS.flatMap(provider => 'captionFreeOrigin' in provider ? [provider.origin, provider.captionFreeOrigin] : [provider.origin])
+    .map(origin => new URL(origin).hostname),
+  ...SHARE_FALLBACK_HOSTS,
+])];
 
 test('operator REWRITE_PLATFORMS lists name every platform, in code order', () => {
   assert.deepEqual(platformList('.env.example', /^# Optional subset of ([a-z,]+)\.$/m), [...REWRITE_PLATFORMS],
@@ -45,5 +49,6 @@ for (const path of ['README.md', 'docs/provider-checks.md']) {
 test('outbound host list covers each provider and fallback exactly once', () => {
   assert.ok(outboundHosts.includes('rxddit.com'));
   assert.ok(outboundHosts.includes('facebed.com'));
+  assert.ok(outboundHosts.includes('g.oginstagram.com'));
   assert.equal(outboundHosts.length, new Set(outboundHosts).size);
 });
