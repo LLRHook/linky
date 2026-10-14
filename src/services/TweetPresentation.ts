@@ -4,7 +4,7 @@ import type { RewritePlatform } from './LinkConfiguration';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { parseSocialUrl, rewriteSocialLinks } from './SocialProviders';
 
-export function tweetParts(tweet: TweetTranslation): TweetTranslation[] {
+function tweetParts(tweet: TweetTranslation): TweetTranslation[] {
   return [tweet, ...(tweet.quote ? tweetParts(tweet.quote) : [])];
 }
 
@@ -12,7 +12,7 @@ function languageLabel(tweet: TweetTranslation): string {
   return tweet.language === 'English' ? '' : `Translated from ${tweet.language}`;
 }
 
-export function translationCaption(tweet: TweetTranslation): string {
+function translationCaption(tweet: TweetTranslation): string {
   return tweetParts(tweet).map((part, index) => {
     const author = index ? `**Quoted post by ${escapeMarkdown(part.author.name)}**\n` : '';
     const label = languageLabel(part);
@@ -21,7 +21,7 @@ export function translationCaption(tweet: TweetTranslation): string {
 }
 
 /** Split at readable boundaries without cutting a generated Markdown link or escape. */
-export function splitDescription(text: string, limit = 4_096): string[] | undefined {
+function splitDescription(text: string, limit = 4_096): string[] | undefined {
   const chunks: string[] = [];
   while (text.length > limit) {
     let cut = Math.max(text.lastIndexOf('\n', limit), text.lastIndexOf(' ', limit));
@@ -67,7 +67,7 @@ export function translationEmbeds(tweet: TweetTranslation, sourceUrl: string): A
   return embeds.length <= 10 && length <= 6_000 ? embeds : undefined;
 }
 
-export function translationAttachment(tweets: TweetTranslation[]): AttachmentBuilder {
+function translationAttachment(tweets: TweetTranslation[]): AttachmentBuilder {
   const text = tweets.map((tweet) => tweetParts(tweet).map((part, index) =>
     `${index ? 'Quoted post: ' : ''}${part.author.name}\n${part.url ?? ''}\n` +
     `${languageLabel(part)}\n\n${part.text}`).join('\n\n')).join('\n\n---\n\n');

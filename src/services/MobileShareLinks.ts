@@ -1,6 +1,6 @@
 import { resolve4 } from 'node:dns/promises';
 import type { request, RequestOptions } from 'node:https';
-import { mapLinks, visibleLink } from './LinkTokens';
+import { mapLinks, strictHttpsUrl as strictUrl, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
 import { FACEBOOK_HOSTS, parseSocialUrl } from './SocialProviders';
 
@@ -30,17 +30,6 @@ const MAX_LINKS = 5;
 const MAX_HOPS = 4;
 const MAX_ACTIVE_RESOLUTIONS = 8;
 const MAX_TIMEOUT_MS = 4_000;
-
-/** Inspect raw authority/path before URL can normalize credentials, ports or dot segments away. */
-function strictUrl(raw: string): URL | null {
-  if (raw.length > 2048 || /[\\\s\u0000-\u001f\u007f]/.test(raw)) return null;
-  const parts = /^https:\/\/([^/?#]+)([^?#]*)(?:\?[^#]*)?(#.*)?$/i.exec(raw);
-  if (!parts) return null;
-  try {
-    const url = new URL(raw);
-    return parts[1].toLowerCase() === url.hostname && parts[2] === url.pathname ? url : null;
-  } catch { return null; }
-}
 
 function sharePlatform(url: URL): MobilePlatform | null {
   const tiktok = parseSocialUrl(url.href);

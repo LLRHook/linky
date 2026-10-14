@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getProviderCandidates, parseProviderUrl, parseSocialUrl } from '../src/services/SocialProviders';
+import { strictHttpsUrl } from '../src/services/LinkTokens';
 
 test('recognizes X and legacy Twitter posts with one status identity and cleaned source URL', () => {
   for (const host of ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com']) {
@@ -310,4 +311,12 @@ test('Facebook shares, photo posts, watch pages and lookalike hosts are not dire
     'http://www.facebook.com/reel/1', 'https://www.facebook.com:443/reel/1']) assert.equal(parseSocialUrl(url), null, url);
   assert.equal(parseProviderUrl('https://facebed.com/'), null);
   assert.equal(parseProviderUrl('https://facebed.com/share/r/1DTK3shLVM/'), null);
+});
+
+test('strict HTTPS parsing rejects anything URL would silently normalize', () => {
+  assert.equal(strictHttpsUrl('https://www.facebook.com/reel/1?x=1#y')?.hostname, 'www.facebook.com');
+  assert.equal(strictHttpsUrl('https://WWW.Facebook.com/reel/1')?.pathname, '/reel/1');
+  for (const raw of ['http://x.com/a', 'https://x.com', 'https://x.com:443/a', 'https://u@x.com/a', 'https://x.com/a/../b',
+    'https://x.com/a b', 'https://x.com\a', `https://x.com/${'a'.repeat(2048)}`, 'https://xn--x-1ga.com/a'.replace('xn--x-1ga', 'ẋ')])
+    assert.equal(strictHttpsUrl(raw), null, raw);
 });

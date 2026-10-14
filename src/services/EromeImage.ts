@@ -4,7 +4,7 @@ import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable }
 import type { RequestOptions } from 'node:https';
 import { isStrongEtag } from './RegionalProtocol';
 
-export const MAX_EROME_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_EROME_IMAGE_BYTES = 8 * 1024 * 1024;
 type Mime = 'image/jpeg' | 'image/png';
 export type EromeImageSource = { bytes: number; etag: string; mimeType: Mime };
 type Dependencies = { dns?: (hostname: string) => Promise<string[]>; connect?: (options: RequestOptions, signal: AbortSignal) => Promise<Response> };
