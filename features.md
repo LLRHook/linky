@@ -202,9 +202,11 @@ Priority guide: crit / high / med / low.
 - **Out of scope:** `linky-web` / Vercel deployment gating (separate repository); changing Deploy's SSH steps.
 - **Bump:** minor
 - **Status:** in-progress
+- **Implementation:** `ci.yml` runs `Secret scan`, `Dependency audit`, `Build (Node 22|24|26)` and `Production container` independently; `CI gate` (`needs` all, `if: always()`) fails unless every result is `success` (gate script exercised with success/failure/skipped/cancelled/empty inputs). The prompt publisher's `REQUIRED_CHECKS` is `CI gate` + `PR evidence`; `tests/ci-workflow.test.mjs` pins the gate's needs and the publisher names (mutation: dropping `audit` from needs fails it). Remaining: switch `main` protection to `CI gate` + `PR evidence` after this branch merges and record the `gh api` output; status stays in-progress until then.
+- **Docs:** VERIFICATION, CONTRIBUTING, README, docs/self-hosting.md, docs/discord-prompt.md.
 
 ### [FEAT-1791990468] Acceptance evidence required in every pull request
-- [ ] **Priority:** high
+- [x] **Priority:** high
 - **Area:** ci, docs
 - **File(s):** .github/pull_request_template.md (new), .github/workflows/pr-evidence.yml (new), ops/pr-evidence-check.mjs (new), tests/pr-evidence-check.test.mjs (new), ops/prompt-workflow.mjs, tests/prompt-workflow.test.mjs, CONTRIBUTING.md, docs/discord-prompt.md
 - **Why:** 2026-10-14 workflow review, item 3. VERIFICATION 2.3 maps tickets to tests only at release; FEAT-1791981014 ticked a structural criterion ("execute reads as named stages") that behaviour tests could not prove.
@@ -219,10 +221,12 @@ Priority guide: crit / high / med / low.
 - **Test plan:** `node --test tests/pr-evidence-check.test.mjs` with complete, missing-section, placeholder-only and push-event bodies; mutation check removing one required section from the checker.
 - **Out of scope:** Judging whether evidence is correct (reviewer responsibility).
 - **Bump:** minor
-- **Status:** in-progress
+- **Status:** shipped-pending-migration
+- **Implementation:** `.github/pull_request_template.md`; `ops/pr-evidence-check.mjs` (comment-stripped sections, linear heading parse, Dependabot exempt) run by `pr-evidence.yml` from the base commit on opened/edited/synchronize/reopened; the publisher's `pullRequestBody` fills every section from the request, review and run link with carriage returns normalized. `tests/pr-evidence-check.test.mjs` (10 tests; four checker mutations each fail) and the publisher test assert the generated body passes.
+- **Docs:** CONTRIBUTING (evidence, structural-criterion and partial-scope rules), VERIFICATION 2.3, docs/discord-prompt.md.
 
 ### [FEAT-1791990469] Documentation consistency test against the provider catalog
-- [ ] **Priority:** med
+- [x] **Priority:** med
 - **Area:** tests, docs, providers
 - **File(s):** src/services/MobileShareLinks.ts, tests/docs-consistency.test.ts (new), README.md, .env.example, docs/provider-checks.md, docs/self-hosting.md
 - **Why:** 2026-10-14 workflow review, item 4. Facebook shipped without operator docs (BUG-1791986809) and the `rxddit.com` share-resolution fallback is a hard-coded host outside `SOCIAL_PROVIDERS`.
@@ -234,10 +238,12 @@ Priority guide: crit / high / med / low.
 - **Test plan:** `tests/docs-consistency.test.ts`; mutation checks deleting a platform from one doc and adding an undocumented fallback host.
 - **Out of scope:** Automated review of privacy prose (stays human); generating docs from code.
 - **Bump:** minor
-- **Status:** in-progress
+- **Status:** shipped-pending-migration
+- **Implementation:** `SHARE_FALLBACK_HOSTS` exported from `MobileShareLinks.ts`; `tests/docs-consistency.test.ts` checks the `.env.example` and self-hosting platform lists against `REWRITE_PLATFORMS` and every provider origin, caption-free origin and fallback host against the README and provider-checks tables. It caught the README omitting `rxddit.com` and both tables omitting the caption-free Instagram hosts; all fixed. Mutations (drop a host from README, drop `facebook` from `.env.example`, add an undocumented fallback) fail it.
+- **Docs:** README and docs/provider-checks.md platform tables, CONTRIBUTING.
 
 ### [FEAT-1791990470] One local validate command, primary Node version and pre-push hook
-- [ ] **Priority:** med
+- [x] **Priority:** med
 - **Area:** ci, ops, docs
 - **File(s):** package.json, ops/validate.mjs (new), tests/validate.test.mjs (new), .nvmrc (new), .githooks/pre-push (new), CONTRIBUTING.md, CLAUDE.md, README.md
 - **Why:** 2026-10-14 workflow review, item 6. Contributors and agents copy five commands from CONTRIBUTING/CLAUDE.md; a stop on first failure hides later results; no primary Node version is pinned while production runs Node 26.
@@ -250,10 +256,12 @@ Priority guide: crit / high / med / low.
 - **Test plan:** `tests/validate.test.mjs` with an injected runner (all pass, one fail, list matches CI); manual `npm run validate` run.
 - **Out of scope:** Mandatory hooks; replacing CI.
 - **Bump:** minor
-- **Status:** in-progress
+- **Status:** shipped-pending-migration
+- **Implementation:** `npm run validate` (`ops/validate.mjs`) runs build, `check:workers`, `npm test`, `deploy.test.sh` and audit, continues after failures and prints a PASS/FAIL summary; `tests/validate.test.mjs` keeps the list equal to the single-line `ci.yml` commands and `.nvmrc` (26) equal to the Dockerfile; `.githooks/pre-push` (LF, executable) runs it after `git config core.hooksPath .githooks`. Verified green on Windows Node 24 and in a clean `node:26` Linux clone via `git bundle`.
+- **Docs:** CONTRIBUTING, README, local CLAUDE.md (gitignored).
 
 ### [FEAT-1791990471] Shared Discord test fixtures and fake-timer timeout boundaries
-- [ ] **Priority:** low
+- [x] **Priority:** low
 - **Area:** tests
 - **File(s):** tests/support/discord.ts (new), tests/social-links.test.ts, tests/erome-media-repost.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts, tests/diagnose-command.test.ts, tests/manual-media.test.ts, tests/erome-delivery.test.ts
 - **Why:** 2026-10-14 workflow review, item 5. Each suite builds its own Discord message/channel/interaction fakes, so tests for reposts, /fix, /diagnose, delayed embeds and album registration drift apart and can pass without exercising the intended path (BUG-1791981980).
@@ -266,7 +274,9 @@ Priority guide: crit / high / med / low.
 - **Test plan:** Full `npm test`; per-path mutation checks.
 - **Out of scope:** Migrating every other suite.
 - **Bump:** minor
-- **Status:** in-progress
+- **Status:** shipped-pending-migration
+- **Implementation:** `tests/support/discord.ts` (source message and channel, bot message, command/button interactions, diagnostics stub, fake clock, forbidden-call recorder) used by social-links, erome-media-repost, delivery-recovery, manual-fix, diagnose-command, manual-media and erome-delivery. Progress waits (500/1500 ms) and a 10 s send deadline are fake-clock checks one millisecond before and at the deadline. The seven suites run 430 tests in under 1 s (was about 17 s); delay mutations in `fix.ts` and `DeliveryProgress.ts` fail 4 tests each, and skipping the `canCopy` gate fails delivery-recovery only through the recorder.
+- **Docs:** none affected.
 
 ---
 
