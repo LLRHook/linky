@@ -49,7 +49,7 @@ Put `!nolinky` in a message to skip automatic fixing. Links inside `<angle brack
 | TikTok | `tnktok.com` | Videos, photos and mobile share links |
 | YouTube | Native video preview, optional Data API statistics and public-page community cards | HTTPS watch, `youtu.be`, Shorts, live and embed links; valid start timestamps retained; public `/post/` text and image posts |
 | Bluesky | `bskx.app`, with `fxbsky.app` recovery | Public `/profile/actor/post/id` URLs |
-| Reddit | `vxreddit.com` | Public post URLs, `redd.it` links and resolvable `/r/name/s/` or `/u/name/s/` mobile shares; profile and community index pages stay unchanged |
+| Reddit | `vxreddit.com`; `rxddit.com` resolves blocked app-share redirects only | Public post URLs, `redd.it` links and resolvable `/r/name/s/` or `/u/name/s/` mobile shares; profile and community index pages stay unchanged |
 | Twitch clips | `fxtwitch.seria.moe` | Clip URLs, including channel `/clip/` links; streams and VODs stay unchanged |
 | Facebook | `facebed.com` | Public Reel and page video URLs (`/reel/ID`, `/page/videos/ID`) and resolvable `/share/r/` or `/share/v/` mobile shares; photo posts, `/watch` and `fb.watch` links stay unchanged |
 | Articles | Publisher metadata in a Linky card | Public HTTPS pages with Open Graph article metadata or Article JSON-LD; up to three articles together |
