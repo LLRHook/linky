@@ -238,6 +238,16 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** open
 
+### [BUG-1791991450] README counts seven social platforms after Facebook was added
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** README.md
+- **Observation:** README "Self-hosting and development" says the hosted bot is free "for the seven social platforms above"; the platform table lists eight (X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clips, Facebook) since FEAT-1791951567.
+- **Expected:** The count matches the table, or the sentence avoids a number.
+- **Repro / Notes:** Found during FEAT-1791990470 docs update (pre-existing, not caused by that change).
+- **Bump:** patch
+- **Status:** open
+
 
 ## Migrated to changelog
 
