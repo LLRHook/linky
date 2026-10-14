@@ -57,6 +57,7 @@ Linky registers its commands automatically at startup. Open `/setup` to enable y
 | `EROME_WORKER_KEY`, `EROME_WORKER_BASE_URL` | Shared worker HMAC secret and the dedicated Vercel worker project's HTTPS origin |
 | `EROME_MEDIA_BASE_URL` | Public HTTPS media origin, without a path, query or credentials |
 | `EROME_MEDIA_PATH`, `EROME_MEDIA_PORT` | Persistent media directory and listener port; `.env.example` uses `data/media` and `8092` |
+| `CATCH_UP_ENABLED` | `true` fixes links posted while the bot was offline after a restart; default `false` |
 | `LOG_LEVEL` | Logging level; default `info` |
 | `PROMPT_ENABLED` | Explicitly enables the optional coding integration after worker setup; default `false` |
 | `PROMPT_GUILD_IDS` | Separate operator list of servers whose Administrators may request code changes |
@@ -93,6 +94,8 @@ docker compose logs -f
 
 The container runs Node.js 24 as a non-root user on Debian 13, with a read-only root filesystem, no Linux capabilities and no privilege escalation. Writable state belongs in `/app/data`; preparation uses the bounded `/tmp` mount. npm and other package managers are only available during the image build. Back up the `linky-data` volume and server's `.env`. Keep one running instance per bot token. Restart after changing environment settings; `/setup` and `/settings` take effect immediately.
 
+When the container stops, Linky stops taking new messages and lets running deliveries finish for up to 20 seconds, then cancels the rest. Commands and buttons used meanwhile get a private "restarting" reply. Keep Compose's `stop_grace_period` (30 seconds) above that limit. `data/service-checkpoint.json` records when the bot stopped, so the next startup logs `Back online after N s offline`; nothing is logged after a crash. With `CATCH_UP_ENABLED=true` it also keeps the IDs of the 20 enabled channels where a link was posted most recently, plus a time refreshed every 30 seconds. After a restart or crash, Linky reads up to 50 messages per channel posted since then and at most two minutes ago, four channels at a time, and handles them like new messages. It skips messages it already reposted. Messages in other channels, older ones, and channels without **Read Message History** stay unchanged. After a crash, a link whose repost was sent but not yet recorded can be reposted again. The file never contains message text.
+
 This version reads both legacy `{ "serverId": true }` settings and records with optional enablement and preferences. Once preferences are saved, older images cannot read those records. Keep a compatible settings backup before upgrading; a rollback to an older image also needs its compatible settings file. Restoring an image alone does not migrate the data volume.
 
 ## Checks and deployment
@@ -106,7 +109,7 @@ bash tests/deploy.test.sh
 
 CI tests Node.js 22, 24 and 26, deployment safeguards, and the production container, with the dependency audit and secret scan as separate jobs; the `CI gate` check passes only when every job passes. See [contribution guide](../CONTRIBUTING.md) for live preview checks.
 
-The hosted bot deploys after CI passes for a push to `main`. Deployment accepts only the current tested commit, builds before replacing the bot, and checks its Discord connection. Failed startup restores the previous image and deployed Compose configuration. The server's `.env` and data volume are preserved.
+The hosted bot deploys after CI passes for a push to `main`. Deployment accepts only the current tested commit, builds before replacing the bot, checks its Discord connection, and prints how long the bot was offline. Failed startup restores the previous image and deployed Compose configuration. The server's `.env` and data volume are preserved.
 
 Operators use `/root/linky`, configure `LINKY_DEPLOY_HOST`, `LINKY_SSH_KEY` and `LINKY_SSH_KNOWN_HOSTS`, and install `ops/ssh-deploy.sh` as `/usr/local/sbin/linky-deploy` with a restricted SSH key and pinned host key. After the first successful manual deployment, run `git rev-parse HEAD > .git/linky-deployed-revision` to initialize the rollback marker. Connection establishment retries automatically; for a failed deployment, inspect its logs and rerun the failed Deploy job. Disable Deploy in GitHub Actions to pause updates.
 
