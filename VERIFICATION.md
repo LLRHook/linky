@@ -34,7 +34,7 @@ server is available.
 - **Host** — the developer machine running this protocol (Windows 11 with Git Bash, or Linux).
 - **Bot host** — the Hostinger server running the `linky` container; only the operator can reach it over SSH.
 - **Test server** — an authorised Discord server where a self-hosted or staging bot token is enabled with `/setup`.
-- **CI** — `.github/workflows/ci.yml` (jobs `Build (Node 22|24|26)` and `Production container`).
+- **CI** — `.github/workflows/ci.yml` (independent jobs `Secret scan`, `Dependency audit`, `Build (Node 22|24|26)` and `Production container`, aggregated by `CI gate`, the required check on `main`).
 - **Deploy** — `.github/workflows/deploy.yml`, triggered by a green CI run on a `main` push.
 
 ---
@@ -61,8 +61,8 @@ server is available.
 
 - [ ] 1.1 Strict production build (CI step "TypeScript build (strict)"): `npm run build` exits 0. `tsconfig.json` has `strict`, `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noFallthroughCasesInSwitch`.
 - [ ] 1.2 Regional worker type-check (CI step "Check regional video workers"): `npm run check:workers` exits 0.
-- [ ] 1.3 Dependency audit (CI step "Audit dependencies"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
-- [ ] 1.4 Secrets: CI runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966).
+- [ ] 1.3 Dependency audit (CI job "Dependency audit"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
+- [ ] 1.4 Secrets: CI job "Secret scan" runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966).
 - [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|CaptionTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `SocialLinkService.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding.
 - [ ] 1.6 Bounded network I/O: every outbound fetch has a timeout, redirect policy and byte cap (`BoundedJson.ts`, `ArticlePreview.ts`, `MobileShareLinks.ts`, `RegionalHttp.ts`). New fetch sites must reuse those helpers.
 - [ ] 1.7 Performance anti-pattern scan of the message hot path (`src/bot.ts` message handler → `SocialLinkService`): no per-message disk read in the loop, no unbounded regex on message bodies, no await per link before detection completes. Record any finding as a `BUG` (area `perf`).

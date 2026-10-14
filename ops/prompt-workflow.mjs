@@ -7,7 +7,7 @@ import { validateCandidate } from './prompt-candidate.mjs';
 
 const repository = 'LLRHook/linky';
 const api = `https://api.github.com/repos/${repository}`;
-const checks = ['Build (Node 22)', 'Build (Node 24)', 'Production container'];
+export const REQUIRED_CHECKS = ['CI gate'];
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
@@ -23,7 +23,7 @@ export function validateRequest(id, request) {
 
 export function requiredChecksPass(runs, head) {
   if (!sha(head) || !Array.isArray(runs)) return false;
-  return checks.every(name => {
+  return REQUIRED_CHECKS.every(name => {
     const matches = runs.filter(run => run.name === name && run.head_sha === head && run.app?.slug === 'github-actions');
     const latest = matches.sort((a, b) => b.id - a.id)[0];
     return latest?.status === 'completed' && latest.conclusion === 'success';
@@ -145,7 +145,7 @@ export async function publish(file, reviewFile, bindingFile) {
       throw new Error('PR head, base, or state changed; refusing automatic merge');
     }
     const result = await request(`/commits/${commit.sha}/check-runs?per_page=100`);
-    if (result.check_runs.some(run => checks.includes(run.name) && run.head_sha === commit.sha &&
+    if (result.check_runs.some(run => REQUIRED_CHECKS.includes(run.name) && run.head_sha === commit.sha &&
       run.app?.slug === 'github-actions' && run.status === 'completed' && run.conclusion !== 'success')) {
       throw new Error('A required check failed; the PR remains open');
     }
