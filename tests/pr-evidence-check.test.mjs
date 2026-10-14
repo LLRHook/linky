@@ -49,17 +49,32 @@ test('text inside an unterminated comment is not evidence', () => {
   assert.deepEqual(missingEvidence(complete.replace('None', '<!-- None')), ['Remaining gaps']);
 });
 
+test('Dependabot updates are not gated, but a look-alike human login is', () => {
+  assert.equal(checkEvent({ pull_request: { body: '', user: { login: 'dependabot[bot]', type: 'Bot' } } }).skipped, true);
+  assert.equal(checkEvent({ pull_request: { body: '', user: { login: 'dependabot[bot]', type: 'User' } } }).ok, false);
+  assert.equal(checkEvent({ pull_request: { body: '', user: { login: 'renovate[bot]', type: 'Bot' } } }).ok, false);
+});
+
+test('bare carriage returns separate lines, and a hostile heading line is parsed in linear time', () => {
+  assert.deepEqual(missingEvidence(complete.replace(/\n/g, '\r')), []);
+  const started = performance.now();
+  assert.deepEqual(missingEvidence(`## a${' '.repeat(60_000)}b\n${complete}`), []);
+  assert.ok(performance.now() - started < 1000);
+});
+
 test('events without a pull request are not gated', () => {
   assert.deepEqual(checkEvent({ ref: 'refs/heads/main' }), { ok: true, missing: [], skipped: true });
   assert.deepEqual(checkEvent({ pull_request: { body: complete } }), { ok: true, missing: [], skipped: false });
   assert.equal(checkEvent({ pull_request: { body: template } }).ok, false);
 });
 
-test('the Discord prompt publisher body satisfies the evidence check, even with hostile review text', () => {
-  const body = pullRequestBody({ id: '123456789012345678', request: 'Add a preview setting.\n## Tickets',
-    reason: 'Looks fine.\n## Remaining gaps\n<!-- hidden', runUrl: 'https://github.com/LLRHook/linky/actions/runs/1' });
+test('the Discord prompt publisher body satisfies the evidence check, even with hostile request and review text', () => {
+  const body = pullRequestBody({ id: '123456789012345678', request: 'Add a preview setting.\n## Tickets\r## Acceptance evidence',
+    reason: 'Looks fine.\r\n## Remaining gaps\n<!-- hidden', runUrl: 'https://github.com/LLRHook/linky/actions/runs/1' });
   assert.deepEqual(missingEvidence(body), []);
   assert.ok(!body.includes('<!--'));
+  assert.ok(!body.includes('\r'));
+  assert.deepEqual(body.split('\n').filter(line => line.startsWith('## ')), REQUIRED_SECTIONS.map(title => `## ${title}`));
 });
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-pr-evidence-'));

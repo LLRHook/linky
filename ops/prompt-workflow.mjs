@@ -21,17 +21,25 @@ export function validateRequest(id, request) {
     /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(request)) throw new Error('Invalid feature request');
 }
 
+/** Newest GitHub Actions run of each required check on `head`; superseded (for example cancelled) runs are ignored. */
+function latestRequiredRuns(runs, head) {
+  return REQUIRED_CHECKS.map(name => runs
+    .filter(run => run.name === name && run.head_sha === head && run.app?.slug === 'github-actions')
+    .sort((a, b) => b.id - a.id)[0]);
+}
+
 export function requiredChecksPass(runs, head) {
   if (!sha(head) || !Array.isArray(runs)) return false;
-  return REQUIRED_CHECKS.every(name => {
-    const matches = runs.filter(run => run.name === name && run.head_sha === head && run.app?.slug === 'github-actions');
-    const latest = matches.sort((a, b) => b.id - a.id)[0];
-    return latest?.status === 'completed' && latest.conclusion === 'success';
-  });
+  return latestRequiredRuns(runs, head).every(latest => latest?.status === 'completed' && latest.conclusion === 'success');
+}
+
+export function requiredCheckFailed(runs, head) {
+  if (!sha(head) || !Array.isArray(runs)) return false;
+  return latestRequiredRuns(runs, head).some(latest => latest?.status === 'completed' && latest.conclusion !== 'success');
 }
 
 /** Neutralize mentions, HTML and Markdown emphasis/links in untrusted text placed in a PR body. */
-const markdownText = value => value.trim().replace(/@/g, '@​').replace(/[<>]/g, '').replace(/[`*_\[\]\\]/g, '\\$&');
+const markdownText = value => value.replace(/\r\n?/g, '\n').trim().replace(/@/g, '@\u200b').replace(/[<>]/g, '').replace(/[`*_\[\]\\]/g, '\\$&');
 const quote = value => value.split('\n').map(line => `> ${line}`).join('\n');
 
 /** PR body for an automated candidate, filling every section that ops/pr-evidence-check.mjs requires. */
@@ -162,8 +170,7 @@ export async function publish(file, reviewFile, bindingFile) {
       throw new Error('PR head, base, or state changed; refusing automatic merge');
     }
     const result = await request(`/commits/${commit.sha}/check-runs?per_page=100`);
-    if (result.check_runs.some(run => REQUIRED_CHECKS.includes(run.name) && run.head_sha === commit.sha &&
-      run.app?.slug === 'github-actions' && run.status === 'completed' && run.conclusion !== 'success')) {
+    if (requiredCheckFailed(result.check_runs, commit.sha)) {
       throw new Error('A required check failed; the PR remains open');
     }
     return requiredChecksPass(result.check_runs, commit.sha) && current.mergeable_state === 'clean';

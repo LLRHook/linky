@@ -1,4 +1,4 @@
 #!/bin/sh
 # Opt in once per clone: git config core.hooksPath .githooks
-# Runs the same checks as CI (except the Docker container job) before every push.
+# Runs CI's build, test, deploy-safeguard and audit commands before every push (not the secret scan or Docker container job).
 exec npm run validate
