@@ -49,7 +49,7 @@ jobs:
       - name: Install baseline dependencies before coding
         run: npm ci --ignore-scripts
       - name: Implement with Astra Ultra
-        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675
         with:
           openai-api-key: ${{ secrets.LINKY_OPENAI_API_KEY }}
           model: gpt-6-astra
@@ -90,7 +90,7 @@ jobs:
           REVIEW_BINDING: ${{ runner.temp }}/review-binding.json
         run: node ops/prompt-workflow.mjs review "$RUNNER_TEMP/candidate/candidate.json"
       - name: Independent Astra Ultra review
-        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675
         with:
           openai-api-key: ${{ secrets.LINKY_OPENAI_API_KEY }}
           model: gpt-6-astra
