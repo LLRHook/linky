@@ -1041,7 +1041,7 @@ test('automatic mobile links resolve before translation and media verification, 
       if (blocked && options.hostname === 'www.reddit.com') return new Response(null, { status: 403 });
       return new Response(null, { status: 302, headers: { location: canonical + '?tracking=removed' } });
     } });
-    const provider = platform === 'instagram' ? 'https://fkinstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/';
+    const provider = platform === 'instagram' ? 'https://fkinstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/?legacy';
     f.state.render = () => [{ url: provider, image: { url: 'https://cdn.example/post.jpg' } }];
     await f.create({ normalizeMobileLinks })(f.source);
     assert.equal(calls, blocked ? 2 : 1); assert.equal(f.state.originalDeleted, true);
@@ -1049,6 +1049,36 @@ test('automatic mobile links resolve before translation and media verification, 
     assert.equal(f.expectedChecks[0][0].url, provider);
     assert.equal(f.expectedChecks[0].length, 1);
     assert(JSON.stringify(f.sent[0].message.components).includes(canonical));
+  }
+});
+
+test('Reddit legacy previews confirm canonical media before replacement and preserve unconfirmed sources', async () => {
+  const source = 'https://www.reddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/#lightbox';
+  const fixed = 'https://vxreddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/?legacy#lightbox';
+  for (const mode of ['replace', 'reply'] as const) for (const kind of ['image', 'video', 'unrelated', 'missing'] as const) {
+    const f = delivery(source);
+    f.state.preferences.mode = mode;
+    f.state.render = (_round, message) => {
+      if (!message.content.includes(fixed) || kind === 'missing') return [];
+      return [{ url: `https://www.reddit.com/comments/${kind === 'unrelated' ? 'other' : '1x3j1s3'}`,
+        ...(kind === 'video' ? { video: { url: 'https://cdn.example/video.mp4' } }
+          : { image: { url: 'https://i.redd.it/example.jpeg' } }) }];
+    };
+    await f.create()(f.source);
+    const confirmed = kind === 'image' || kind === 'video';
+    assert.equal(f.expectedChecks[0][0].url, fixed);
+    assert.equal(f.state.originalDeleted, confirmed && mode === 'replace', `${mode}/${kind}`);
+    if (confirmed) {
+      assert.equal(f.sent.length, 1);
+      assert.equal(f.sent[0].deleted, false);
+      assert.match(JSON.stringify(f.sent[0].message.components), /linky:remove/);
+      assert(JSON.stringify(f.sent[0].message.components).includes(source.replace('#lightbox', '')),
+        'original-post control retains the Reddit URL without the client fragment');
+      if (mode === 'replace') assert(f.events.indexOf('delete:source') > f.events.indexOf('verify:1:passed'));
+    } else {
+      assert(f.sent[0].deleted);
+      assert(f.sent.some(entry => /could not confirm a preview/.test(entry.message.content)));
+    }
   }
 });
 
