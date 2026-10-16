@@ -115,7 +115,9 @@ export function getProviderCandidates(source: string | SocialUrl, { captionFree 
     (!captionFree || 'captionFreeOrigin' in provider)).map(provider => ({
     providerId: provider.id, platform: parsed.platform,
     url: (captionFree && 'captionFreeOrigin' in provider ? provider.captionFreeOrigin : provider.origin) +
-      (parsed.platform === 'twitch' ? '/clip' : '') + parsed.path + parsed.fragment,
+      // vxReddit defaults to component embeds; our Gateway/REST verifier needs conventional embeds.
+      // https://github.com/dylanpdx/vxReddit#extras documents the legacy query switch.
+      (parsed.platform === 'twitch' ? '/clip' : '') + parsed.path + (provider.id === 'vxreddit' ? '?legacy' : '') + parsed.fragment,
   })) : [];
 }
 

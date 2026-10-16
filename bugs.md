@@ -249,6 +249,29 @@ in that maintenance branch and are not re-filed here._
 - **Status:** open
 
 
+### [BUG-1792164365] Reddit component previews cannot be confirmed by Linky's embed verifier
+- [x] **Severity:** high
+- **Area:** providers, previews
+- **File(s):** src/services/SocialProviders.ts, tests/social-providers.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts, ops/preview-corpus.json
+- **Observation:** The reported ColumbiaMD image post produced a Retry preview failure notice. vxReddit now advertises a `discord:component-embed` payload by default, while Linky's Gateway/REST verifier checks conventional embeds. The same post returns usable canonical image metadata with vxReddit's documented `?legacy` option, without the component payload.
+- **Expected:** Automatic and manual Reddit previews request a format Linky can verify, retain post identity and controls, and preserve the source whenever confirmation fails.
+- **Repro / Notes:** Compare Discord-crawler responses for `https://vxreddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/` with and without `?legacy`. Upstream documentation: https://github.com/dylanpdx/vxReddit#extras. Production logged two vxReddit confirmation failures for the reported source.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** The shared provider builder requests `?legacy` before fragments for automatic, manual and resolved-share previews. Regression fixtures cover canonical image/video confirmation, Replace/Reply modes, missing/unrelated metadata, original-post controls and source preservation. Node 26 validation passes (1,273 TypeScript tests, 74 script tests, 24 deployment safeguards; eight expected container-only skips). Local and Hostinger probes confirm HTTP 200, matching image metadata and no component payload for the reported legacy URL; a live Discord render was not exercised.
+- **Docs:** docs/provider-checks.md records the format requirement and observation limits.
+
+### [BUG-1792164560] PR template assertion fails on Windows CRLF checkouts
+- [x] **Severity:** low
+- **Area:** tests, ci
+- **File(s):** tests/pr-evidence-check.test.mjs
+- **Observation:** `npm run validate` on Node 26 failed because the template-heading test searches for a literal LF immediately after each heading, but `core.autocrlf=true` checks out the Markdown template with CRLF. The evidence parser itself already handles both line endings.
+- **Expected:** Template structure assertions accept the repository's Windows checkout and Linux CI line endings.
+- **Repro / Notes:** Run `node --test tests/pr-evidence-check.test.mjs` in a CRLF checkout; the unedited-template test fails on its first heading.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Assert exact heading lines after splitting LF, CRLF or CR line endings. The original assertion failed in this Windows checkout; all ten PR evidence tests and full Node 26 validation now pass.
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.
