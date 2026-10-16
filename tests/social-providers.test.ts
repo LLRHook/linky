@@ -216,13 +216,26 @@ test('Reddit post links retain paths while canonical and old-host aliases share 
     assert.deepEqual(parsed, { platform: 'reddit', sourceUrl: `https://www.reddit.com${path}#comment`,
       path, fragment: '#comment', postId: '90bu6w' });
     assert.deepEqual(getProviderCandidates(`https://${host}${path}?share=1`),
-      [{ providerId: 'vxreddit', platform: 'reddit', url: `https://vxreddit.com${path}` }]);
+      [{ providerId: 'vxreddit', platform: 'reddit', url: `https://vxreddit.com${path}?legacy` }]);
   }
   assert.equal(parseSocialUrl('https://www.reddit.com/comments/90bu6w')?.postId, '90bu6w');
   assert.equal(parseSocialUrl('https://www.reddit.com/r/aww/comments/90bu6w/comment/abc123/')?.postId, '90bu6w');
   assert.equal(parseSocialUrl('https://www.reddit.com/user/SomeUser/comments/90bu6w/a_post/')?.postId, '90bu6w');
   assert.equal(parseProviderUrl(`https://vxreddit.com${path}`)?.postId, '90bu6w');
   assert.equal(parseProviderUrl('https://vxreddit.com/comments/90bu6w')?.sourceUrl, 'https://www.reddit.com/comments/90bu6w');
+});
+
+test('Reddit requests verifiable legacy embeds before fragments and drops source query parameters', () => {
+  for (const path of ['/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/',
+    '/comments/1x3j1s3', '/user/example/comments/1x3j1s3/title/']) {
+    const source = `https://www.reddit.com${path}?utm_source=share&legacy=false#lightbox`;
+    const [candidate] = getProviderCandidates(source);
+    assert.equal(candidate.url, `https://vxreddit.com${path}?legacy#lightbox`);
+    assert.equal(new URL(candidate.url).search, '?legacy', 'legacy must reach the provider, outside the fragment');
+    assert.equal(parseProviderUrl(candidate.url)?.postId, '1x3j1s3');
+    assert.equal(parseProviderUrl(candidate.url)?.sourceUrl, `https://www.reddit.com${path}#lightbox`);
+    assert.deepEqual(getProviderCandidates(candidate.url), [], 'provider links are never rewritten again');
+  }
 });
 
 test('Reddit short-share, feeds, profiles, galleries and invalid post paths remain untouched', () => {

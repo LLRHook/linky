@@ -21,6 +21,12 @@ Sources: [FxEmbed documentation](https://docs.fxembed.com/guide/getting-started/
 
 On September 18, a public Instagram mobile share resolved from Hostinger through HTTP 302. A Reddit app share returned HTTP 403 and stayed unchanged; its canonical `/comments/` URL and deterministic `redd.it` form avoid that resolution step. Tests reject unsafe redirects, non-public DNS answers, loops, excess hops and expired requests. These observations do not guarantee all mobile shares resolve.
 
+### Reddit conventional embeds
+
+Linky adds vxReddit's documented `?legacy` switch to every Reddit preview URL, before any fragment. vxReddit's default response now advertises a Discord component preview; Linky's Gateway and REST confirmation path inspects conventional embeds. The legacy switch requests that verifiable format from the same provider. Original-post buttons still open Reddit, and a missing or unrelated preview still preserves the source.
+
+On October 16, 2026, local and Hostinger probes of the reported ColumbiaMD image post (`1x3j1s3`, including its `#lightbox` fragment) returned HTTP 200 with a `discord:component-embed` payload by default. Adding `?legacy` omitted that payload while retaining the canonical post URL and image metadata. Linky's provider control accepted the legacy image metadata. Automatic Replace/Reply and manual command fixtures cover the same URL, source preservation and controls. These observations establish provider metadata and offline delivery behavior; they do not establish a live Discord render. The reported post is retained in `ops/preview-corpus.json`. See the [vxReddit legacy option at 990860a](https://github.com/dylanpdx/vxReddit/blob/990860a01ca865774b0e77b5de9af76b54947900/README.md#extras).
+
 ### Reddit app-share recovery
 
 On September 29, the reported `/r/nflMenace_com/s/fJmIbjYad6` share reproduced the HTTP 403 on Hostinger. Changing GET to HEAD or using an explicit LinkyBot user agent did not resolve it. [FixReddit's documented share route](https://github.com/MinnDevelopment/fxreddit#example-embeds) returned a canonical post redirect, while [vxReddit's implementation](https://github.com/dylanpdx/vxReddit/blob/main/vxreddit.py) resolves shares before retrieving Reddit media and generating previews. The direct vxReddit control for this post played to completion in GAMBA's Chrome Discord client.

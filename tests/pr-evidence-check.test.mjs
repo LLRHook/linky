@@ -25,7 +25,7 @@ test('a complete PR body passes', () => {
 
 test('the unedited template fails every section, including its commented example table', () => {
   assert.deepEqual(missingEvidence(template), REQUIRED_SECTIONS);
-  for (const title of REQUIRED_SECTIONS) assert.ok(template.includes(`## ${title}\n`), `template has "## ${title}"`);
+  for (const title of REQUIRED_SECTIONS) assert.ok(template.split(/\r\n|\r|\n/).includes(`## ${title}`), `template has "## ${title}"`);
 });
 
 test('a missing, empty or table-framing-only section is reported by name', () => {

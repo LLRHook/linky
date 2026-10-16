@@ -419,7 +419,7 @@ test('manual mobile shares acknowledge before network work and verify the resolv
     const share = platform === 'reddit' ? 'https://www.reddit.com/r/aww/s/Mobile123'
       : 'https://www.instagram.com/share/p/Mobile123?igsh=original';
     const source = platform === 'reddit' ? 'https://www.reddit.com/comments/abc123' : 'https://www.instagram.com/p/ABC/';
-    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123' : 'https://fkinstagram.com/p/ABC/';
+    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123?legacy' : 'https://fkinstagram.com/p/ABC/';
     const f = command(share, context), preview = previewChecks(f);
     if (!canSend) f.input.memberPermissions = new PermissionsBitField(0n);
     const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async options => {
@@ -436,6 +436,22 @@ test('manual mobile shares acknowledge before network work and verify the resolv
     assert.equal(preview.checks[0][0].source, source);
     assert.deepEqual(originalControls(f), [source]);
     assert.equal(f.input.targetMessage.content, share);
+  }
+});
+
+test('manual Reddit fixes request legacy previews and retain source controls for canonical image metadata', async () => {
+  const source = 'https://www.reddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/#lightbox';
+  const fixed = 'https://vxreddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/?legacy';
+  for (const context of [false, true]) {
+    const f = command(source, context), preview = previewChecks(f);
+    f.state.render = body => body.includes(fixed) ? [{ url: 'https://www.reddit.com/comments/1x3j1s3',
+      image: { url: 'https://i.redd.it/example.jpeg' } }] : [];
+    await execute(f.interaction, { ...config, rewritePlatforms: [...config.rewritePlatforms, 'reddit'] }, preview.dependencies);
+    assert.equal(f.response.content, fixed);
+    assert.equal(preview.checks.length, 1);
+    assert.equal(preview.observations[0].result.ok, true);
+    assert.deepEqual(originalControls(f), [source.replace('#lightbox', '')]);
+    assert.equal(f.input.targetMessage.content, source);
   }
 });
 
