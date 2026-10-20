@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ApplicationCommandType, ApplicationIntegrationType, InteractionContextType, MessageFlags,
+import { ApplicationCommandType, ApplicationIntegrationType, AttachmentBuilder, InteractionContextType, MessageFlags,
   PermissionFlagsBits, PermissionsBitField, type ButtonInteraction, type ChatInputCommandInteraction,
   type APIEmbed, type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../src/config';
@@ -10,6 +10,7 @@ import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { InstagramTranslation } from '../src/services/InstagramTranslation';
+import type { TweetTranslation } from '../src/services/TweetTranslation';
 import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import type { ArticlePreview } from '../src/services/ArticlePreview';
 import { buttonInteraction, commandInteraction, diagnosticsStub, type InteractionEvent } from './support/discord';
@@ -22,7 +23,7 @@ const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewrit
 function command(content = 'https://twitter.com/jack/status/20?s=46', context = false) {
   const events: InteractionEvent[] = [];
   const state = {
-    render: (body: string, _edit: number): APIEmbed[] => (body.match(/https:\/\/\S+/g) ?? []).map(url => ({
+    render: (body: string, _edit: number, embeds?: APIEmbed[]): APIEmbed[] => embeds?.length ? embeds : (body.match(/https:\/\/\S+/g) ?? []).map(url => ({
       url, title: 'A public post', description: 'The requested post.', video: { url: 'https://media.example/video.mp4' },
     })),
   };
@@ -33,17 +34,18 @@ function command(content = 'https://twitter.com/jack/status/20?s=46', context = 
   };
   const input = commandInteraction(events, {
     isChatInputCommand: () => !context,
-    guildId: 'guild', channelId: 'channel', user: { id: REQUESTER },
+    guildId: 'guild' as string | null, channelId: 'channel', user: { id: REQUESTER },
     channel: { isThread: (): boolean => false, messages: { fetch: () => assert.fail('Explicit fixing must not fetch chat history') } },
     memberPermissions: new PermissionsBitField(PermissionFlagsBits.SendMessages),
+    appPermissions: new PermissionsBitField(PermissionFlagsBits.AttachFiles), attachmentSizeLimit: 20 * 1024 * 1024,
     options: { getString: (name: string, required: boolean) => { assert.equal(name, 'link'); assert.equal(required, true); return content; } },
-    targetMessage: { content, author: { id: OTHER }, delete: () => assert.fail('Manual fixing must preserve its source'),
+    targetMessage: { content, editedTimestamp: null as number | null, author: { id: OTHER }, delete: () => assert.fail('Manual fixing must preserve its source'),
       edit: () => assert.fail('Manual fixing must not edit its source') },
     editReply: async (payload: any) => {
       events.push({ name: 'edit', payload });
       if (typeof payload.content === 'string') response.content = payload.content;
       if (payload.components) response.components = payload.components;
-      response.embeds = state.render(response.content, ++edits).map(embed => ({ toJSON: () => embed }));
+      response.embeds = state.render(response.content, ++edits, payload.embeds).map(embed => ({ toJSON: () => embed }));
       return response as unknown as Message;
     },
   });
@@ -228,6 +230,182 @@ test('manual response content and original-post buttons stay within Discord payl
   assert.ok(response.content.length <= 2000);
   for (const row of response.components ?? []) {
     for (const control of row.toJSON().components) if (control.url) assert.ok(control.url.length <= 512);
+  }
+});
+
+const JAPANESE_TWEET: TweetTranslation = {
+  text: 'The English translation.', language: 'Japanese', url: 'https://x.com/jack/status/20',
+  author: { name: 'An author', url: 'https://x.com/jack' }, photos: [], hasMedia: false, hasVideo: false,
+};
+
+test('manual tweet translation renders English cards in server and private contexts for both commands', async () => {
+  for (const contextMenu of [false, true]) for (const guildId of ['guild', null]) for (const photos of [[], ['https://media.example/one.jpg', 'https://media.example/two.jpg']]) {
+    const f = command(undefined, contextMenu), preview = previewChecks(f), lookups: string[] = [];
+    f.input.guildId = guildId;
+    await execute(f.interaction, { ...config, translateTweets: true }, {
+      ...preview.dependencies, translateTweet: async id => { lookups.push(id); return { ...JAPANESE_TWEET, photos, hasMedia: photos.length > 0 }; },
+    });
+    assert.deepEqual(lookups, ['20']);
+    assert.equal(f.response.content, 'https://fixupx.com/jack/status/20');
+    assert.equal(f.response.embeds[0].toJSON().description, JAPANESE_TWEET.text);
+    assert.equal(f.response.embeds[0].toJSON().footer?.text, 'Translated from Japanese');
+    assert.deepEqual(f.response.embeds.flatMap(embed => embed.toJSON().image?.url ?? []), photos);
+    assert.equal(preview.observations.at(-1)?.result.ok, true);
+    const published = f.events.find(event => event.name === 'edit')!.payload;
+    assert.deepEqual(published.allowedMentions, { parse: [] });
+    assert.equal(published.components[0].toJSON().components[0].url, JAPANESE_TWEET.url);
+    assert.equal(published.components[0].toJSON().components[1].custom_id, 'linky:remove-manual');
+  }
+});
+
+test('manual tweet translation honors operator and server switches and keeps native previews after lookup failures', async () => {
+  for (const scenario of ['operator-off', 'server-off', 'platform-off', 'unavailable', 'throws', 'missing-translator']) {
+    const f = command(), preview = previewChecks(f);
+    let lookups = 0;
+    await execute(f.interaction, { ...config, translateTweets: scenario !== 'operator-off' }, {
+      ...preview.dependencies,
+      serverPreferences: () => ({ translateTweets: scenario !== 'server-off', platforms: { x: scenario !== 'platform-off' } }),
+      ...(scenario === 'missing-translator' ? {} : { translateTweet: async () => {
+        lookups++;
+        if (scenario === 'throws') throw new Error('Translation unavailable');
+        return null;
+      } }),
+    });
+    assert.equal(lookups, ['unavailable', 'throws'].includes(scenario) ? 1 : 0, scenario);
+    if (scenario === 'platform-off') assert.match(f.events.at(-1)!.payload.content, /No supported post link/);
+    else {
+      assert.equal(f.response.content, 'https://fixupx.com/jack/status/20', scenario);
+      assert.equal(preview.observations.at(-1)?.result.ok, true, scenario);
+    }
+  }
+});
+
+test('manual translation preserves textless outer photos and videos while translating their quoted text', async () => {
+  for (const media of ['photo', 'video', 'none']) {
+    const f = command(), preview = previewChecks(f);
+    const tweet: TweetTranslation = { ...JAPANESE_TWEET, text: '', language: null,
+      photos: media === 'photo' ? ['https://media.example/root.jpg'] : [],
+      hasMedia: media !== 'none', hasVideo: media === 'video',
+      quote: { ...JAPANESE_TWEET, url: 'https://x.com/quoted/status/21' },
+    };
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies, translateTweet: async () => tweet });
+    assert.equal(preview.observations.at(-1)?.result.ok, true);
+    const published = f.events.find(event => event.name === 'edit')!.payload;
+    assert.doesNotMatch(JSON.stringify(published), /Translated from null/);
+    if (media === 'photo') {
+      assert.equal(published.embeds[0].image.url, tweet.photos[0]);
+      assert.equal(published.embeds[0].description, undefined);
+      assert.equal(published.embeds[0].footer, undefined);
+      assert.equal(published.embeds[1].description, JAPANESE_TWEET.text);
+      assert.equal(published.embeds[1].footer.text, 'Translated from Japanese');
+    } else {
+      assert.match(published.content, /Quoted post by An author/);
+      assert.match(published.content, /The English translation\./);
+      if (media === 'video') assert.equal(preview.checks[0][0].requireVideo, true);
+      else assert.deepEqual(preview.checks, []);
+    }
+  }
+});
+
+test('manual translated videos and quoted videos require video metadata and retain captions through recovery', async () => {
+  for (const quoted of [false, true]) {
+    const f = command(undefined, true), preview = previewChecks(f);
+    const source = quoted ? 'https://x.com/quoted/status/21' : JAPANESE_TWEET.url!;
+    const video = { ...JAPANESE_TWEET, url: source, text: 'The translated video.', hasMedia: true, hasVideo: true };
+    const tweet = quoted ? { ...JAPANESE_TWEET, quote: video } : video;
+    f.state.render = body => [{ url: source.replace('https://x.com/', body.includes('vxtwitter.com') ? 'https://vxtwitter.com/' : 'https://g.fixupx.com/'),
+      title: 'A video', image: { url: 'https://media.example/thumbnail.jpg' },
+      ...(body.includes('vxtwitter.com') ? { video: { url: 'https://media.example/video.mp4' } } : {}),
+    }];
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies, translateTweet: async () => tweet });
+    assert.deepEqual(preview.checks.map(items => items.map(item => ({ source: item.source, requireVideo: item.requireVideo }))),
+      [[{ source, requireVideo: true }], [{ source, requireVideo: true }]]);
+    assert.deepEqual(preview.observations.map(item => item.result.ok), [false, true]);
+    assert.match(f.response.content, /vxtwitter\.com/);
+    assert.match(f.response.content, /The translated video\./);
+    assert.match(f.response.content, /Translated from Japanese/);
+    if (quoted) {
+      assert.match(f.response.content, /Quoted post by An author/);
+      assert.match(f.response.content, /The English translation\./);
+    }
+    assert(f.events.filter(event => event.name === 'edit').every(event => event.payload.content.includes('The translated video.')));
+  }
+});
+
+test('manual mixed translations cover selected links only and confirm delivered text without a native X card', async () => {
+  const f = command('https://x.com/jack/status/20 https://www.instagram.com/p/ABC/ https://vm.tiktok.com/ABC/ https://x.com/other/status/21 ||https://x.com/hidden/status/22||');
+  const preview = previewChecks(f), lookups: string[] = [];
+  await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies,
+    translateTweet: async id => { lookups.push(id); return JAPANESE_TWEET; },
+  });
+  assert.deepEqual(lookups, ['20']);
+  assert.match(f.response.content, /<https:\/\/fixupx\.com\/jack\/status\/20>/);
+  assert.match(f.response.content, /fkinstagram\.com\/p\/ABC\//);
+  assert.match(f.response.content, /tnktok\.com\/ABC\//);
+  assert.doesNotMatch(f.response.content, /status\/(?:21|22)/);
+  assert.deepEqual(preview.checks[0].map(item => item.platform), ['instagram', 'tiktok']);
+  assert.equal(preview.observations.at(-1)?.result.ok, true);
+});
+
+test('long manual tweet translations attach the full text in servers and DMs without waiting for a suppressed preview', async () => {
+  const text = 'A complete English paragraph. '.repeat(400);
+  for (const guildId of ['guild', null]) {
+    const f = command(), preview = previewChecks(f);
+    f.input.guildId = guildId;
+    if (!guildId) f.input.appPermissions = new PermissionsBitField(0n);
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies,
+      translateTweet: async () => ({ ...JAPANESE_TWEET, text }),
+    });
+    const published = f.events.find(event => event.name === 'edit')!.payload;
+    assert.match(published.content, /Full English translation attached/);
+    assert.ok(published.content.length <= 1800);
+    const file = (published.files as AttachmentBuilder[])[0];
+    assert.equal(file.name, 'translation.txt');
+    assert.ok(Buffer.isBuffer(file.attachment) && file.attachment.toString().includes(text));
+    assert.deepEqual(preview.checks, []);
+    assert.equal(preview.observations.at(-1)?.result.ok, true);
+  }
+});
+
+test('manual tweet attachment permission and upload limits fall back to the native preview', async () => {
+  for (const reason of ['permission', 'upload-limit']) {
+    const f = command(), preview = previewChecks(f);
+    if (reason === 'permission') f.input.appPermissions = new PermissionsBitField(0n);
+    else f.input.attachmentSizeLimit = 1;
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies,
+      translateTweet: async () => ({ ...JAPANESE_TWEET, text: 'A complete English paragraph. '.repeat(400) }),
+    });
+    const published = f.events.find(event => event.name === 'edit')!.payload;
+    assert.equal(published.content, 'https://fixupx.com/jack/status/20');
+    assert.equal(published.files, undefined);
+    assert.equal(preview.observations.at(-1)?.result.ok, true);
+  }
+});
+
+test('manual translation cancels stale output after source edits, settings changes or cancellation', async () => {
+  for (const stage of ['lookup', 'preview']) for (const change of ['source', 'settings', 'cancel']) {
+    const f = command(undefined, true), preview = previewChecks(f), controller = new AbortController();
+    let preferences: ServerPreferences = {};
+    const mutate = () => {
+      if (change === 'source') f.input.targetMessage.editedTimestamp = 1;
+      else if (change === 'settings') preferences = { translateTweets: false };
+      else controller.abort();
+    };
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies,
+      signal: controller.signal, serverPreferences: () => preferences,
+      translateTweet: async () => { if (stage === 'lookup') mutate(); return JAPANESE_TWEET; },
+      verifyPreview: async (message, expected) => {
+        const result = await preview.dependencies.verifyPreview!(message, expected);
+        if (stage === 'preview') mutate();
+        return result;
+      },
+    });
+    const last = f.events.at(-1)!.payload;
+    assert.doesNotMatch(last.content, /The English translation\./, `${stage}: ${change}`);
+    assert.match(last.content, /changed|cancelled|unavailable/);
+    if (stage === 'lookup') assert(f.events.every(event => !event.payload?.embeds?.length));
+    else assert.deepEqual(last.embeds, []);
+    assert.equal(f.input.targetMessage.content, 'https://twitter.com/jack/status/20?s=46');
   }
 });
 
