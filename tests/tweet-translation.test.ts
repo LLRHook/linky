@@ -239,6 +239,31 @@ test('translates a foreign quote under an English root and skips an entirely Eng
   }))), null);
 });
 
+test('translates quoted text beneath an empty post without a detected language and preserves its media', async () => {
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    text: '', lang: null, translation: null,
+    media: { all: [{ type: 'photo', url: 'https://pbs.twimg.com/root.jpg' }] },
+    quote: payload({ id: '21' }).status,
+  })));
+  assert.equal(result?.text, '');
+  assert.equal(result?.language, null);
+  assert.deepEqual(result?.photos, ['https://pbs.twimg.com/root.jpg']);
+  assert.equal(result?.quote?.text, 'An English announcement.');
+  assert.equal(result?.quote?.language, 'Japanese');
+});
+
+test('empty posts do not authorize unknown-language prose, malformed quotes or untranslated chains', async () => {
+  const empty = { text: '', lang: null, translation: null };
+  for (const status of [
+    empty,
+    { ...empty, media: { all: [{ type: 'photo', url: 'https://pbs.twimg.com/root.jpg' }] } },
+    { ...empty, quote: payload({ id: '21', lang: 'en', text: 'English context.', translation: null }).status },
+    { ...empty, quote: payload({ id: '21', lang: null }).status },
+    { ...empty, quote: { type: 'tombstone' } },
+    { ...empty, text: 'Unknown language prose', quote: payload({ id: '21' }).status },
+  ]) assert.equal(await fetchTweetTranslation('20', jsonFetch(payload(status))), null);
+});
+
 test('preserves two nested quotes and rejects deeper chains without dropping their context', async () => {
   const leaf = payload({ id: '22' }).status;
   const result = await fetchTweetTranslation('20', jsonFetch(payload({

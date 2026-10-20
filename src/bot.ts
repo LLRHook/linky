@@ -138,7 +138,8 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
   });
   const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums,
-    normalizeMobileLinks, translateInstagram, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
+    normalizeMobileLinks, translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
+    translateInstagram, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
   const destroy = client.destroy.bind(client);
   client.destroy = () => {
     if (closing) return closing;
@@ -169,7 +170,6 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     serverIds: settings.serverIds,
     platforms: settings.rewritePlatforms,
     eromeAvailable: guildId => isEromeAvailable(settings, guildId),
-    translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
     lookupYouTube,
     prepareErome,
     ...mediaOptions,
