@@ -272,6 +272,30 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** Assert exact heading lines after splitting LF, CRLF or CR line endings. The original assertion failed in this Windows checkout; all ten PR evidence tests and full Node 26 validation now pass.
 
+### [BUG-1792536754] Manual X fixes never request tweet translation in servers or DMs
+- [x] **Severity:** med
+- **Area:** commands, previews
+- **File(s):** src/commands/fix.ts, src/bot.ts, tests/manual-fix.test.ts, tests/bot.test.ts
+- **Observation:** `/fix` and Apps → Fix with Linky rewrite X links but never call the tweet translator. An offline reproduction with translation enabled made zero translation calls in both server and DM contexts; the reported group-DM preview retained a Japanese quoted post.
+- **Expected:** Both manual entry points use the existing English tweet presentation, including quoted text and media, honor server opt-outs, and use the operator translation setting in DMs. Failed lookups retain the native preview.
+- **Repro / Notes:** Exercise both commands with translation enabled in a server and without a guild. Cover translated cards, quoted videos, long-text attachments, provider recovery, disabled settings, and source/settings changes during preparation.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Share the enabled tweet adapter with both manual commands and reuse tweet cards, quote/video captions, long-text files and delivery expectations. Respect operator/server switches, retain native previews when translation or attachment delivery is unavailable, and clear stale output after source/settings changes. Node 26 `npm run validate` passes; targeted mutation checks reject missing command wiring and missing video requirements. Live Discord rendering/playback was not exercised.
+- **Docs:** README.md, CONTRIBUTING.md.
+
+### [BUG-1792537162] Empty outer posts discard usable quoted-post translations
+- [x] **Severity:** med
+- **Area:** providers, previews
+- **File(s):** src/services/TweetTranslation.ts, src/services/TweetPresentation.ts, tests/tweet-translation.test.ts, tests/bot.test.ts
+- **Observation:** The reported X post returns a successful FxEmbed response with empty outer text, a null outer language, a photo, and a Japanese quote with an English translation. The parser rejects the outer post before inspecting the quote, so the usable translation is lost even after manual command wiring is repaired.
+- **Expected:** Preserve an empty post's supported media and translate usable quoted text without inventing a source-language label. Unknown-language prose, malformed quotes, and wholly untranslated chains must still keep native previews.
+- **Repro / Notes:** A bounded live lookup confirmed the response shape. Regression fixtures use synthetic text and media and must cover parsing, manual dispatch, image preservation, and textless video captions.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Parse empty posts only with usable media or valid quoted context, retain their null language, preserve photo cards and video galleries, and show only the quoted text's translation label. Synthetic parser/command/bot regressions and the full Node 26 validation pass. A post-fix live lookup of the reported post produced one preserved photo and one English quote card; removing the empty-post photo rendering fails its regression.
+- **Docs:** README.md, CONTRIBUTING.md.
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.
