@@ -3,7 +3,7 @@ import { after, afterEach, test, type TestContext } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client, Collection, Events, GatewayIntentBits, MessageFlags, MessageFlagsBitField, MessageType, Partials, PermissionFlagsBits, PermissionsBitField, Routes, type ClientEvents, type Interaction, type Guild, type Message, type MessageCreateOptions, type InteractionReplyOptions } from 'discord.js';
+import { Client, Collection, Events, GatewayIntentBits, MessageFlags, MessageFlagsBitField, MessageType, Partials, PermissionFlagsBits, PermissionsBitField, Routes, type APIEmbed, type ClientEvents, type Interaction, type Guild, type Message, type MessageCreateOptions, type InteractionReplyOptions } from 'discord.js';
 import { createBot, RESTARTING_REPLY, SHUTDOWN_DRAIN_MS } from '../src/bot';
 import type { Config } from '../src/config';
 import { data } from '../src/commands/help';
@@ -660,7 +660,7 @@ test('/help respects selected channel restrictions instead of reporting an exclu
 
 test('explicit slash and context-menu fixes dispatch without changing automatic server enablement', async () => {
   const servers = new ServerSettings(join(directory, 'manual-dispatch.json'), async () => assert.fail('Manual fixing must not write server settings'));
-  const { client, errors } = fixture({}, servers);
+  const { client, errors } = fixture({ translateTweets: false }, servers);
   Object.assign(client, { user: { id: '222222222222222222' } });
   for (const contextMenu of [false, true]) {
     const events: any[] = [];
@@ -689,6 +689,58 @@ test('explicit slash and context-menu fixes dispatch without changing automatic 
     assert.deepEqual(errors, [], 'default manual preview verification must complete without a caught dispatch error');
   }
   assert.deepEqual(errors, []);
+});
+
+test('both manual command dispatches use the real tweet translation adapter in servers and DMs', async t => {
+  const requests: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (url: string | URL | Request) => {
+    requests.push(String(url));
+    return new Response(JSON.stringify({ code: 200, status: {
+      type: 'status', lang: null, text: '', url: 'https://x.com/jack/status/20', translation: null,
+      author: { name: 'An author', url: 'https://x.com/jack' },
+      media: { all: [{ type: 'photo', url: 'https://media.example/root.jpg' }] },
+      quote: { type: 'status', id: '21', lang: 'ja', text: 'Original quoted text',
+        author: { name: 'Quoted author', url: 'https://x.com/quoted' }, media: {},
+        translation: { text: 'The translated dispatch.', source_lang: 'ja', target_lang: 'en' } },
+    } }));
+  });
+  const servers = new ServerSettings(join(directory, 'translated-manual-dispatch.json'), async () => assert.fail('Manual fixing must not write server settings'));
+  const { client, errors } = fixture({}, servers), botId = '222222222222222222';
+  Object.assign(client, { user: { id: botId } });
+  for (const contextMenu of [false, true]) for (const guildId of ['444444444444444444', null]) {
+    const events: InteractionReplyOptions[] = [];
+    const response = {
+      id: String(333333333333333330n + BigInt(requests.length)), channelId: '555555555555555555',
+      author: { id: botId }, content: '',
+      embeds: [{ toJSON: (): APIEmbed => ({ url: 'https://fixupx.com/jack/status/20', title: 'Native post',
+        description: 'Original caption', image: { url: 'https://media.example/root.jpg' } }) }],
+      fetch: async () => response,
+    };
+    await dispatch(client, {
+      isChatInputCommand: () => !contextMenu, isMessageContextMenuCommand: () => contextMenu,
+      commandName: contextMenu ? 'Fix with Linky' : 'fix', inGuild: () => guildId !== null,
+      guildId, channelId: response.channelId, user: { id: '111111111111111111' },
+      memberPermissions: new PermissionsBitField(PermissionFlagsBits.SendMessages), channel: { isThread: () => false },
+      options: { getString: () => 'https://x.com/jack/status/20' }, targetMessage: { content: 'https://x.com/jack/status/20' },
+      deferReply: async () => {},
+      editReply: async (payload: InteractionReplyOptions) => {
+        events.push(payload);
+        if (typeof payload.content === 'string') response.content = payload.content;
+        if (payload.embeds) response.embeds = payload.embeds.map(embed => ({
+          toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed,
+        }));
+        return response;
+      },
+    });
+    assert.equal(response.embeds[0]?.toJSON().image?.url, 'https://media.example/root.jpg');
+    assert.equal(response.embeds[0]?.toJSON().footer, undefined);
+    assert.equal(response.embeds[1]?.toJSON().description, 'The translated dispatch.');
+    assert.equal(response.embeds[1]?.toJSON().footer?.text, 'Translated from Japanese');
+    assert(events.some(payload => JSON.stringify(payload.components).includes('linky:remove-manual')));
+    assert.deepEqual(errors, []);
+  }
+  assert.deepEqual(requests, Array(4).fill('https://api.fxtwitter.com/2/status/20?lang=en'));
+  assert.equal(servers.get('444444444444444444'), undefined);
 });
 
 test('setup component and diagnose dispatch retain private admin checks', async () => {

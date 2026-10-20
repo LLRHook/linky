@@ -27,6 +27,9 @@ Git history and pull requests, not here.
 - [BUG-1790270870] Docs named the CI Node matrix as 22 and 24; now 22, 24 and 26, and `SECURITY_AUDIT.md` points at `bugs.md`. [patch]
 - [BUG-1790785731] Discord two-factor or permission refusals while deleting an original now keep the verified preview as a reply with Remove/Details controls and report a permission outcome; /diagnose flags servers that require moderator 2FA. [patch]
 
+- [BUG-1792536754] Manual `/fix` and Apps → Fix with Linky now translate tweets and quotes in servers and DMs, honor translation settings, and preserve native previews when translation or required attachments are unavailable. [patch]
+- [BUG-1792537162] Empty outer X posts now preserve their media while showing usable English translations of quoted text without an invented source-language label. [patch]
+
 ### Removed
 
 ### Security
