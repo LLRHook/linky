@@ -80,7 +80,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   }
   const lookupYouTube = settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined;
   const lookupYouTubeCommunity = createYouTubeCommunityLookup();
-  const lookupArticle = createArticleLookup();
+  const lookupArticle = createArticleLookup(settings.truthSocialRelay ? { truthSocialRelay: settings.truthSocialRelay } : {});
   let translateInstagram: ReturnType<typeof createInstagramLookup> | undefined;
   if (settings.translateInstagram && settings.captionApiKey) {
     try {
@@ -219,6 +219,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     platforms: settings.rewritePlatforms,
     translateTweets: settings.translateTweets,
     translateInstagram: Boolean(translateInstagram),
+    truthSocialRelay: Boolean(settings.truthSocialRelay),
   }, 'Social link replacement ready for configured and opted-in servers');
 
   client.on(Events.InteractionCreate, interaction => accepting ? work.track(interact(interaction)) : restarting(interaction));
