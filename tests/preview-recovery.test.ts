@@ -81,6 +81,35 @@ test('a provider homepage, error card or unrelated embed does not qualify as a u
   assert.equal(inspectPreviews([{ ...media, url: source }], expected).ok, true);
 });
 
+test('branded vxTwitter scan failures cannot count as post content, media or provider success', () => {
+  const source = 'https://x.com/public/status/999999999999999999';
+  const alternate = 'https://vxtwitter.com/public/status/999999999999999999';
+  for (const requested of [alternate, alternate.replace('vxtwitter.com', 'fixupx.com')]) {
+    const items = expectedPreviews(source, requested);
+    for (const url of [alternate, alternate.replace('vxtwitter.com', 'fixvx.com'), source]) {
+      for (const extra of [{}, { thumbnail: { url: 'https://cdn.example/logo.png' } },
+        { video: { url: 'https://cdn.example/error.mp4' } }]) {
+        const result = inspectPreviews([{ url, title: '  vxTwitter / fixvx  ',
+          description: '  Failed to scan your link! This post may be private or deleted.', ...extra }], items);
+        assert.equal(result.ok, false);
+        assert.deepEqual(result.missing, items);
+        assert.equal(result.videoMetadata, false);
+        assert.deepEqual(result.attributed, []);
+      }
+    }
+  }
+});
+
+test('a real post may quote scan-failure text without becoming a provider service error', () => {
+  const source = 'https://x.com/public/status/123';
+  const url = 'https://vxtwitter.com/public/status/123';
+  const items = expectedPreviews(source, url);
+  for (const card of [
+    { title: 'Public author', description: 'Failed to scan your link! Here is how we fixed that bug.' },
+    { title: 'vxTwitter / fixvx', description: 'We fixed a bug reported as: Failed to scan your link!' },
+  ]) assert.equal(inspectPreviews([{ url, ...card }], items).ok, true);
+});
+
 test('every visible rewritten post requires its own preview and hidden posts are excluded', () => {
   const original = `${source} https://instagram.com/p/Another/ <https://instagram.com/p/Hidden/>`;
   const rendered = `${fixed} https://fkinstagram.com/p/Another/ <https://instagram.com/p/Hidden/>`;
