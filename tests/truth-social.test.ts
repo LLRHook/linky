@@ -4,7 +4,7 @@ import type { RequestOptions } from 'node:https';
 import { createArticleLookup, findArticleLinks, formatArticlePreview, type ArticleLookupOptions } from '../src/services/ArticlePreview';
 import { prepareArticlePosts } from '../src/services/ArticlePosts';
 import { expectedPreviews, inspectPreviews } from '../src/services/PreviewRecovery';
-import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialStatus,
+import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialRelay, parseTruthSocialStatus,
   parseTruthSocialUrl } from '../src/services/TruthSocial';
 
 const id = '117497314507062631';
@@ -22,9 +22,9 @@ const status = (overrides: Record<string, unknown> = {}) => ({
 const link = parseTruthSocialUrl(source)!;
 const json = (body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), {
   headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
-const fixture = (connect: NonNullable<ArticleLookupOptions['connect']>) => {
+const fixture = (connect: NonNullable<ArticleLookupOptions['connect']>, extra: ArticleLookupOptions = {}) => {
   const calls: RequestOptions[] = [];
-  const lookup = createArticleLookup({ resolve4: async () => ['1.1.1.1'], pageRetryMs: 0,
+  const lookup = createArticleLookup({ resolve4: async () => ['1.1.1.1'], pageRetryMs: 0, ...extra,
     connect: async (settings, signal) => { calls.push(settings); return connect(settings, signal); } });
   return { lookup, calls };
 };
@@ -76,7 +76,10 @@ test('image-only, video, link-card, quote and ReTruth posts keep their context',
   const video = formatTruthSocialPost(parseTruthSocialStatus(status({ content: '', media_attachments: [
     { type: 'video', url: asset('media_attachments/files/1/original/clip.mp4'), preview_url: poster }] }), link)!)[0];
   assert.deepEqual(video.image, { url: poster });
-  assert.match(video.description!, /Video: open the post to play it/);
+  assert.equal(video.description, `**[▶ Play video](${asset('media_attachments/files/1/original/clip.mp4')})**`);
+  const foreignVideo = formatTruthSocialPost(parseTruthSocialStatus(status({ content: '', media_attachments: [
+    { type: 'video', url: 'https://evil.example/clip.mp4', preview_url: poster }] }), link)!)[0];
+  assert.match(foreignVideo.description!, /Video: open the post to play it/);
 
   const cardImage = asset('cache/preview_cards/images/078/original/6daa042738f6a693.jpg');
   const linked = formatTruthSocialPost(parseTruthSocialStatus(status({ media_attachments: [],
@@ -218,4 +221,73 @@ test('other accounts fall back to Truth Social page metadata after the warming v
   assert.equal(card.image, undefined);
   assert.equal(parseTruthSocialPage({ url: other, title: 'Truth Social', description: 'x' }, parseTruthSocialUrl(other)!), null);
   assert.equal(parseTruthSocialPage({ url: source, title: 't', description: 'x' }, parseTruthSocialUrl(other)!), null);
+});
+
+const relay = { hostname: 'relay.example.workers.dev', token: 'r'.repeat(40) };
+
+test("when the status API blocks this host, a configured relay serves any account's status, video included", async () => {
+  const videoId = '117507817818004689', other = `https://truthsocial.com/@WhiteHouse/${videoId}`;
+  const clip = asset('media_attachments/files/117/507/original/bea9456685d25a9d.mp4');
+  const poster = asset('media_attachments/thumbnails/117/507/original/b07222c171ec6af7.jpg');
+  const f = fixture(async settings => settings.hostname === relay.hostname ? json(status({ id: videoId,
+    account: account('WhiteHouse', 'The White House'), content: '<p>Watch</p>',
+    media_attachments: [{ type: 'video', url: clip, preview_url: poster }] })) : blocked(), { truthSocialRelay: relay });
+  const [card] = (await prepareArticlePosts([other], f.lookup))![0].embeds;
+  assert.deepEqual(f.calls.map(call => `${call.hostname}${call.path}`), [`truthsocial.com/api/v1/statuses/${videoId}`,
+    `${relay.hostname}/status/${videoId}`]);
+  assert.equal((f.calls[0].headers as Record<string, string>).authorization, undefined);
+  assert.equal((f.calls[1].headers as Record<string, string>).authorization, `Bearer ${relay.token}`);
+  assert.equal(card.author?.name, 'The White House (@WhiteHouse)');
+  assert.deepEqual(card.image, { url: poster });
+  assert.equal(card.description, `Watch\n\n**[▶ Play video](${clip})**`);
+  assert.equal(card.footer?.text, 'Truth Social · 1.8K replies · 5.2K ReTruths · 17.7K likes');
+});
+
+test('a reachable status API skips the relay; a failing relay falls through; a relay never answers for a different post', async () => {
+  const direct = fixture(async () => json(status()), { truthSocialRelay: relay });
+  assert.equal((await direct.lookup(source))?.truthSocial?.via, 'api');
+  assert.deepEqual(direct.calls.map(call => call.hostname), ['truthsocial.com']);
+  const down = fixture(async settings => settings.hostname === relay.hostname
+    ? new Response('upstream 403', { status: 502, headers: { 'content-type': 'text/plain' } }) : blocked(), { truthSocialRelay: relay });
+  assert.equal(await down.lookup(source), null);
+  assert.deepEqual(down.calls.slice(0, 2).map(call => call.hostname), ['truthsocial.com', relay.hostname]);
+  assert.ok(down.calls.some(call => call.hostname === 'www.trumpstruth.org'), 'the archive and page fallbacks still run');
+  const wrong = fixture(async settings => settings.hostname === relay.hostname ? json(status({ id: '1' })) : blocked(),
+    { truthSocialRelay: relay });
+  assert.equal(await wrong.lookup(source), null);
+  // The relay token goes only to the relay.
+  assert.ok(wrong.calls.filter(call => call.hostname !== relay.hostname)
+    .every(call => !('authorization' in (call.headers as Record<string, string>))));
+});
+
+test("image-only posts by any account use the page's original first image when every API route is blocked", async () => {
+  const other = 'https://truthsocial.com/@WhiteHouse/117496479654563409';
+  const files = asset('media_attachments/files/117/496/479/500/000/001');
+  let visits = 0;
+  const f = fixture(async settings => {
+    if (settings.path === '/@WhiteHouse/117496479654563409') {
+      return ++visits === 1 ? placeholder(other) : new Response(`<html><head>
+        <meta property="og:image" content="${files}/small/a1b2c3.jpg"><meta property="og:url" content="${other}"></head></html>`,
+      { headers: { 'content-type': 'text/html' } });
+    }
+    return blocked();
+  });
+  const [card] = (await prepareArticlePosts([other], f.lookup))![0].embeds;
+  assert.deepEqual(card.image, { url: `${files}/original/a1b2c3.jpg` });
+  assert.equal(card.description, undefined);
+  assert.deepEqual(card.author, { name: 'WhiteHouse (@WhiteHouse)', url: 'https://truthsocial.com/@WhiteHouse' });
+  // An avatar is not post media, and a page with neither text nor media is not a post.
+  assert.equal(parseTruthSocialPage({ url: other, image: avatar }, parseTruthSocialUrl(other)!), null);
+  assert.equal(parseTruthSocialPage({ url: other, image: `${files}/small/../a.jpg` }, parseTruthSocialUrl(other)!), null);
+});
+
+test('relay settings need both an https origin and a long token', () => {
+  assert.equal(parseTruthSocialRelay(undefined, ' '), undefined);
+  assert.deepEqual(parseTruthSocialRelay('https://Relay.Example.workers.dev/', relay.token), relay);
+  for (const [url, token] of [['https://relay.example.workers.dev', undefined], [undefined, relay.token],
+    ['https://relay.example.workers.dev', 'short'], ['http://relay.example.workers.dev', relay.token],
+    ['https://relay.example.workers.dev/status', relay.token], ['https://user@relay.example.workers.dev', relay.token],
+    ['https://relay.example.workers.dev:8443', relay.token], ['https://1.2.3.4', relay.token], ['https://localhost', relay.token]]) {
+    assert.throws(() => parseTruthSocialRelay(url, token), /TRUTH_SOCIAL_RELAY/, `${url} ${token}`);
+  }
 });

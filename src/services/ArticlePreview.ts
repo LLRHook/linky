@@ -27,10 +27,14 @@ export interface ArticleLookupOptions {
   timeoutMs?: number;
   /** Wait before revisiting a Truth Social page that served its placeholder. */
   pageRetryMs?: number;
+  /** Operator relay for Truth Social's status API when its bot protection blocks this host (see docs/truth-social-relay.md). */
+  truthSocialRelay?: TruthSocialRelay;
 }
+export interface TruthSocialRelay { hostname: string; token: string }
 
 const MAX_BYTES = 512 * 1024;
-// Truth Social's bot protection rejects generic and bare product user agents but accepts this identified browser-style one.
+// Truth Social's bot protection rejects generic and bare product user agents but accepts this identified browser-style one
+// from Node's HTTPS client, even on datacenter hosts; curl and fetch() clients with the same agent are rejected there.
 const USER_AGENT = 'Mozilla/5.0 (compatible; Linky/1.0; +https://linkybot.dev/)';
 // Discord's own domains; its invites, messages and gifts render first-party cards.
 const DISCORD_HOSTS = ['discord.com', 'discordapp.com', 'discord.gg', 'discordapp.net', 'discord.media', 'discord.new',
@@ -303,12 +307,12 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
   }
   /** One pinned, cookie-free GET on a fixed host; redirects and unexpected types are misses. */
   async function fetchText(hostname: string, path: string, accept: string, type: RegExp, signal: AbortSignal,
-    maxBytes = MAX_BYTES): Promise<string | null> {
+    maxBytes = MAX_BYTES, authorization?: string): Promise<string | null> {
     const [address] = await publicAddresses(hostname, signal);
     const response = await regionalAbortable(connect({
       protocol: 'https:', hostname, servername: hostname, port: 443,
       method: 'GET', path, family: 4, agent: false, rejectUnauthorized: true, maxHeaderSize: 8192,
-      headers: { accept, 'accept-encoding': 'identity', 'user-agent': USER_AGENT },
+      headers: { accept, 'accept-encoding': 'identity', 'user-agent': USER_AGENT, ...(authorization ? { authorization } : {}) },
       lookup: (_hostname, lookupOptions, callback) => {
         if (lookupOptions.all) callback(null, [{ address, family: 4 }]);
         else callback(null, address, 4);
@@ -338,16 +342,21 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     }
     return regionalAbortable(archiveFeed.promise, signal);
   }
+  const relay = options.truthSocialRelay;
+  const statusJson = (hostname: string, path: string, signal: AbortSignal, authorization?: string) =>
+    attempt(async () => {
+      const json = await fetchText(hostname, path, 'application/json', /^application\/json(?:\s*;|$)/i, signal, MAX_BYTES, authorization);
+      return json ? JSON.parse(json) as unknown : null;
+    }, signal);
   /**
-   * Truth Social's status API, then (when its bot protection blocks this host) the @realDonaldTrump
-   * archive, then Truth Social's own crawler metadata. Every source is public and signed out.
+   * Truth Social's status API, then (when its bot protection blocks this host) the operator's relay for that
+   * API, the @realDonaldTrump archive and Truth Social's own crawler metadata. Every source is public and
+   * signed out.
    */
   async function requestTruthSocial(source: string, link: TruthSocialLink, signal: AbortSignal): Promise<ArticlePreview | null> {
-    const post = await attempt(async () => {
-      const json = await fetchText(TRUTH_SOCIAL_HOST, `/api/v1/statuses/${link.id}`, 'application/json',
-        /^application\/json(?:\s*;|$)/i, signal);
-      return json ? parseTruthSocialStatus(JSON.parse(json) as unknown, link) : null;
-    }, signal) ?? await attempt(async () => {
+    const fromStatus = (value: unknown) => value === null ? null : parseTruthSocialStatus(value, link);
+    const post = fromStatus(await statusJson(TRUTH_SOCIAL_HOST, `/api/v1/statuses/${link.id}`, signal)) ??
+      (relay ? fromStatus(await statusJson(relay.hostname, `/status/${link.id}`, signal, `Bearer ${relay.token}`)) : null) ?? await attempt(async () => {
       const xml = link.handle.toLowerCase() === TRUTH_ARCHIVE.handle ? await readArchiveFeed(signal) : null;
       return xml ? parseTruthArchiveFeed(xml, link) : null;
     }, signal) ?? await attempt(async () => {
@@ -364,9 +373,8 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
         if (visit) await delay(pageRetry, undefined, { signal });
         const html = await fetchText(TRUTH_SOCIAL_HOST, `/@${link.handle}/${link.id}`, 'text/html', /^text\/html(?:\s*;|$)/i, signal);
         const head = html ? headMetadata(html) : null, get = (key: string) => head?.meta.get(key);
-        if (!head || !get('og:description') || get('og:title')?.trim() === 'Truth Social') continue;
-        return parseTruthSocialPage({ url: get('og:url'), title: get('og:title'), description: get('og:description'),
-          image: get('og:image') }, link, await author ?? undefined);
+        const meta = head && { url: get('og:url'), title: get('og:title'), description: get('og:description'), image: get('og:image') };
+        if (meta && parseTruthSocialPage(meta, link)) return parseTruthSocialPage(meta, link, await author ?? undefined);
       }
       return null;
     }, signal);
