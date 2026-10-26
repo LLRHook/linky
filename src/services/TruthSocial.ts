@@ -3,6 +3,11 @@ import type { APIEmbed } from 'discord.js';
 export interface TruthSocialLink { id: string; handle: string; url: string }
 /** Where the post data came from; the status API is preferred, the others serve hosts its bot protection blocks. */
 export type TruthSocialSource = 'api' | 'archive' | 'page';
+/**
+ * A post image or avatar the bot host downloaded. Discord's image proxy cannot fetch Truth Social's media hosts,
+ * so the card shows an uploaded copy (`attachment://name`) instead of the original address.
+ */
+export interface TruthSocialFile { name: string; url: string; data: Uint8Array }
 /** Display data for one post; the article pipeline carries it as an authored card. */
 export interface TruthSocialPost {
   url: string;
@@ -20,6 +25,8 @@ export interface TruthSocialPost {
   counts?: { replies: number; reposts: number; likes: number };
   publishedAt?: string;
   via?: TruthSocialSource;
+  /** Uploaded copies of `image` and the author's avatar. */
+  files?: TruthSocialFile[];
 }
 
 export const TRUTH_SOCIAL_HOST = 'truthsocial.com';
@@ -28,6 +35,14 @@ export const TRUTH_ARCHIVE = { host: 'www.trumpstruth.org', feed: '/feed', handl
 const HOSTS = new Set([TRUTH_SOCIAL_HOST, 'www.truthsocial.com']);
 const HANDLE = /^[A-Za-z0-9_]{1,30}$/;
 const STATUS_ID = /^\d{1,20}$/;
+const FILE_NAME = /^truth-\d{1,20}(?:-avatar)?\.(?:jpg|png|webp|gif)$/;
+const FILE_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
+
+/** Upload name for a post's image or its author's avatar, from the downloaded content type. */
+export function truthSocialFileName(id: string, kind: 'image' | 'avatar', contentType: string): string | null {
+  const extension = FILE_TYPES[contentType.split(';')[0].trim().toLowerCase()];
+  return STATUS_ID.test(id) && extension ? `truth-${id}${kind === 'avatar' ? '-avatar' : ''}.${extension}` : null;
+}
 // Truth Social's own media hosts; no queries, ports, credentials or dot segments reach Discord's image proxy.
 const ASSET = /^https:\/\/static-assets(?:-\d{1,2})?\.truthsocial\.com\/[A-Za-z0-9_:-]+(?:\/[A-Za-z0-9_:-]+)*\.(?:jpe?g|png|webp|gif)$/i;
 const VIDEO_ASSET = /^https:\/\/static-assets(?:-\d{1,2})?\.truthsocial\.com\/[A-Za-z0-9_:-]+(?:\/[A-Za-z0-9_:-]+)*\.mp4$/i;
@@ -224,6 +239,13 @@ export function formatTruthSocialPost(post: TruthSocialPost): APIEmbed[] {
       typeof post.text !== 'string' || (post.image !== undefined && truthSocialImage(post.image) !== post.image) ||
       (post.videoUrl !== undefined && truthSocialVideo(post.videoUrl) !== post.videoUrl) ||
       (post.author.avatar !== undefined && truthSocialAsset(post.author.avatar) !== post.author.avatar)) return [];
+  const files = post.files ?? [];
+  if (!Array.isArray(files) || files.length > 2 || files.some(file => !FILE_NAME.test(file?.name ?? '') ||
+      !(file.data instanceof Uint8Array) || !file.data.byteLength || ![post.image, post.author.avatar].includes(file.url))) return [];
+  const shown = (url: string) => {
+    const file = files.find(item => item.url === url);
+    return file ? `attachment://${file.name}` : url;
+  };
   const name = plain(post.author.name, 200) || post.author.handle;
   const parts = [literal(post.text, 2800)];
   if (post.quote && HANDLE.test(post.quote.handle)) {
@@ -247,8 +269,8 @@ export function formatTruthSocialPost(post: TruthSocialPost): APIEmbed[] {
   return [{
     title: post.repostedBy ? literal(`ReTruthed by ${post.repostedBy}`, 256) : 'Truth Social post', url: link.url, color: 0x5448ee,
     author: { name: `${name} (@${post.author.handle})`, url: `https://${TRUTH_SOCIAL_HOST}/@${post.author.handle}`,
-      ...(post.author.avatar ? { icon_url: post.author.avatar } : {}) },
-    ...(description ? { description } : {}), ...(post.image ? { image: { url: post.image } } : {}),
+      ...(post.author.avatar ? { icon_url: shown(post.author.avatar) } : {}) },
+    ...(description ? { description } : {}), ...(post.image ? { image: { url: shown(post.image) } } : {}),
     footer: { text: footer },
     ...(date ? { timestamp: date } : {}),
   }];

@@ -333,6 +333,17 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** `npm audit fix` updated only package-lock.json to undici 6.29.1; `npm audit` reports 0 vulnerabilities and the full test suite passes.
 
+### [BUG-1793035756] Truth Social card images and avatars do not render in Discord
+- [x] **Severity:** high
+- **Area:** previews, providers
+- **File(s):** src/services/TruthSocial.ts, src/services/ArticlePreview.ts, src/services/ArticlePosts.ts, src/services/PreviewRecovery.ts, src/services/SocialLinkService.ts, src/commands/fix.ts, tests/truth-social.test.ts, tests/social-links.test.ts, tests/manual-fix.test.ts, docs/article-previews.md
+- **Observation:** After FEAT-1793034185 deployed, Truth Social cards in GAMBA showed text, counts and Play video links but no post image or author icon. Discord's image proxy answers `404 Invalid resource` for every `static-assets.truthsocial.com` address; Truth Social refuses Discord's fetchers, Vercel, Cloudflare Workers and wsrv.nl, while the bot host receives the same images with HTTP 200.
+- **Expected:** Truth Social cards show the post's first image and the author's avatar for any account.
+- **Repro / Notes:** A REST probe from the bot host posted a card with an `attachment://` image plus avatar; Discord rendered both (517x800 image). Referenced uploads are hidden from `message.attachments` and reported at their `cdn.discordapp.com/attachments/...` address in the echoed embed.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** The bot host downloads the post image (8 MiB cap) and avatar (1 MiB cap) from the validated media hosts and uploads them with the card as `attachment://truth-<id>[-avatar].<ext>`; preview confirmation accepts the matching Discord CDN address. Without Attach Files, or past six files or 16 MiB per message, cards link the originals. An unconfirmed `/fix` card removes its hidden uploads with it. Downloads are cached with the lookup (32 MiB total).
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.

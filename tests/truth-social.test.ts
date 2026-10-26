@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RequestOptions } from 'node:https';
 import { createArticleLookup, findArticleLinks, formatArticlePreview, type ArticleLookupOptions } from '../src/services/ArticlePreview';
-import { prepareArticlePosts } from '../src/services/ArticlePosts';
+import { articleAttachments, fitArticleFiles, prepareArticlePosts, withoutArticleFiles } from '../src/services/ArticlePosts';
 import { expectedPreviews, inspectPreviews } from '../src/services/PreviewRecovery';
 import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialRelay, parseTruthSocialStatus,
   parseTruthSocialUrl } from '../src/services/TruthSocial';
@@ -28,6 +28,9 @@ const fixture = (connect: NonNullable<ArticleLookupOptions['connect']>, extra: A
     connect: async (settings, signal) => { calls.push(settings); return connect(settings, signal); } });
   return { lookup, calls };
 };
+const assetHost = (settings: RequestOptions) => /^static-assets(?:-\d{1,2})?\.truthsocial\.com$/.test(settings.hostname ?? '');
+const pageCalls = (calls: RequestOptions[]) => calls.filter(call => !assetHost(call));
+const picture = (type = 'image/jpeg', bytes = 4) => new Response(new Uint8Array(bytes).fill(7), { headers: { 'content-type': type } });
 const blocked = () => new Response('<!DOCTYPE html><title>Attention Required! | Cloudflare</title>', {
   status: 403, headers: { 'content-type': 'text/html; charset=UTF-8' } });
 const placeholder = (url = source) => new Response(`<html><head><title>Truth Social</title><meta property="og:title" content="Truth Social">
@@ -126,21 +129,72 @@ test('mismatched, private, sensitive, warned, empty or foreign-media statuses ar
   assert.equal(hidden.quote, undefined);
 });
 
-test('the article lookup requests the public status API and prepares a confirmable card', async () => {
-  const f = fixture(async () => json(status()));
+test('the article lookup requests the public status API and prepares a confirmable card with uploaded media', async () => {
+  const f = fixture(async settings => assetHost(settings) ? picture(settings.path!.includes('avatars') ? 'image/png' : 'image/jpeg') : json(status()));
   const prepared = await prepareArticlePosts([`https://truthsocial.com/@realDonaldTrump/posts/${id}`], f.lookup);
-  assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].hostname, 'truthsocial.com');
   assert.equal(f.calls[0].path, `/api/v1/statuses/${id}`);
   assert.equal((f.calls[0].headers as Record<string, string>).accept, 'application/json');
+  // Discord cannot fetch Truth Social's media hosts, so the bot downloads the image and avatar once each.
+  assert.deepEqual(f.calls.slice(1).map(call => call.path).sort(), [new URL(avatar).pathname, new URL(photo).pathname].sort());
   assert.equal(prepared?.length, 1);
   const [card] = prepared![0].embeds;
   assert.equal(card.url, source);
+  assert.deepEqual(card.image, { url: `attachment://truth-${id}.jpg` });
+  assert.equal(card.author?.icon_url, `attachment://truth-${id}-avatar.png`);
+  assert.deepEqual(articleAttachments(prepared!).map(file => file.name), [`truth-${id}.jpg`, `truth-${id}-avatar.png`]);
   const original = `https://truthsocial.com/@realDonaldTrump/posts/${id}`;
   const expected = expectedPreviews(original, `<${original}>`, [], prepared!);
   assert.equal(expected.length, 1);
+  // Discord reports each upload at its own CDN address.
+  const cdn = (name: string) => `https://cdn.discordapp.com/attachments/123456789012345678/223456789012345678/${name}?ex=1&is=2&hm=3`;
+  const delivered = { ...card, image: { url: cdn(`truth-${id}.jpg`) }, author: { ...card.author!, icon_url: cdn(`truth-${id}-avatar.png`) } };
+  assert.equal(inspectPreviews([delivered], expected).ok, true);
   assert.equal(inspectPreviews([{ ...card }], expected).ok, true);
-  assert.equal(inspectPreviews([{ ...card, description: 'changed' }], expected).ok, false);
+  assert.equal(inspectPreviews([{ ...delivered, description: 'changed' }], expected).ok, false);
+  for (const url of [cdn(`truth-${id}-avatar.png`), photo, `https://cdn.discordapp.com.evil.com/attachments/123456789012345678/223456789012345678/truth-${id}.jpg`,
+    `https://evil.example/attachments/123456789012345678/223456789012345678/truth-${id}.jpg`]) {
+    assert.equal(inspectPreviews([{ ...delivered, image: { url } }], expected).ok, false, url);
+  }
+  // Repeated lookups reuse the cached download.
+  await f.lookup(original);
+  assert.equal(f.calls.length, 3);
+});
+
+test('media that cannot be downloaded or attached keeps its original address', async () => {
+  for (const respond of [() => blocked(), () => picture('text/html'), () => picture('image/svg+xml'), () => picture('image/jpeg', 0),
+    () => picture('image/jpeg', 9 * 1024 * 1024), () => { throw new Error('reset'); }]) {
+    const f = fixture(async settings => assetHost(settings) ? respond() : json(status()));
+    const [card] = (await prepareArticlePosts([source], f.lookup))![0].embeds;
+    assert.deepEqual(card.image, { url: photo });
+    assert.equal(card.author?.icon_url, avatar);
+  }
+  // A download still running near the lookup deadline is abandoned; the card keeps its original addresses.
+  const slow = fixture((settings, signal) => assetHost(settings) ? new Promise<Response>((_, reject) =>
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })) : Promise.resolve(json(status())), { timeoutMs: 400 });
+  const [late] = (await prepareArticlePosts([source], slow.lookup))![0].embeds;
+  assert.deepEqual(late.image, { url: photo });
+  // An oversized avatar is dropped on its own; the post image is still uploaded.
+  const big = fixture(async settings => assetHost(settings)
+    ? picture('image/jpeg', settings.path!.includes('avatars') ? 2 * 1024 * 1024 : 4) : json(status()));
+  const prepared = (await prepareArticlePosts([source], big.lookup))!;
+  assert.deepEqual(prepared[0].embeds[0].image, { url: `attachment://truth-${id}.jpg` });
+  assert.equal(prepared[0].embeds[0].author?.icon_url, avatar);
+  // Without Attach Files, or past the per-message budget, the card links the originals and uploads nothing.
+  for (const fitted of [fitArticleFiles(prepared, false), withoutArticleFiles(prepared)]) {
+    assert.deepEqual(fitted[0].embeds[0].image, { url: photo });
+    assert.equal(fitted[0].files, undefined);
+    assert.equal(articleAttachments(fitted).length, 0);
+  }
+  assert.deepEqual(fitArticleFiles(prepared, true), prepared);
+  const crowded = Array.from({ length: 7 }, (_, index) => ({ ...prepared[0], files: [{ ...prepared[0].files![0], name: `truth-${index}.jpg` }] }));
+  assert.equal(articleAttachments(fitArticleFiles(crowded, true)).length, 0);
+  // The formatter refuses files that do not belong to the post.
+  const post = parseTruthSocialStatus(status(), link)!;
+  for (const files of [[{ name: 'evil.jpg', url: photo, data: new Uint8Array(1) }], [{ name: `truth-${id}.jpg`, url: 'https://evil.example/a.jpg', data: new Uint8Array(1) }],
+    [{ name: `truth-${id}.jpg`, url: photo, data: new Uint8Array(0) }]]) {
+    assert.deepEqual(formatTruthSocialPost({ ...post, files }), []);
+  }
 });
 
 test('placeholder pages, redirects, non-JSON and oversized bodies from every source leave the original', async () => {
@@ -233,7 +287,7 @@ test("when the status API blocks this host, a configured relay serves any accoun
     account: account('WhiteHouse', 'The White House'), content: '<p>Watch</p>',
     media_attachments: [{ type: 'video', url: clip, preview_url: poster }] })) : blocked(), { truthSocialRelay: relay });
   const [card] = (await prepareArticlePosts([other], f.lookup))![0].embeds;
-  assert.deepEqual(f.calls.map(call => `${call.hostname}${call.path}`), [`truthsocial.com/api/v1/statuses/${videoId}`,
+  assert.deepEqual(pageCalls(f.calls).map(call => `${call.hostname}${call.path}`), [`truthsocial.com/api/v1/statuses/${videoId}`,
     `${relay.hostname}/status/${videoId}`]);
   assert.equal((f.calls[0].headers as Record<string, string>).authorization, undefined);
   assert.equal((f.calls[1].headers as Record<string, string>).authorization, `Bearer ${relay.token}`);
@@ -246,7 +300,7 @@ test("when the status API blocks this host, a configured relay serves any accoun
 test('a reachable status API skips the relay; a failing relay falls through; a relay never answers for a different post', async () => {
   const direct = fixture(async () => json(status()), { truthSocialRelay: relay });
   assert.equal((await direct.lookup(source))?.truthSocial?.via, 'api');
-  assert.deepEqual(direct.calls.map(call => call.hostname), ['truthsocial.com']);
+  assert.deepEqual(pageCalls(direct.calls).map(call => call.hostname), ['truthsocial.com']);
   const down = fixture(async settings => settings.hostname === relay.hostname
     ? new Response('upstream 403', { status: 502, headers: { 'content-type': 'text/plain' } }) : blocked(), { truthSocialRelay: relay });
   assert.equal(await down.lookup(source), null);

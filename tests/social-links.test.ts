@@ -1872,6 +1872,42 @@ test('unrelated or incomplete Discord article cards cannot authorize source dele
   }
 });
 
+const TRUTH_URL = 'https://truthsocial.com/@realDonaldTrump/117497314507062631';
+const truthImage = 'https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/media_attachments/files/117/497/original/d2c8ca4d0b00e832.jpg';
+const truthLookup = async (source: string) => ({ source, url: source, title: 'Truth Social post', publisher: 'Truth Social', truthSocial: {
+  url: source, author: { name: 'Donald J. Trump', handle: 'realDonaldTrump' }, text: 'Hello', image: truthImage, video: false, mediaCount: 1,
+  files: [{ name: 'truth-117497314507062631.jpg', url: truthImage, data: new Uint8Array([1, 2, 3]) }] } });
+
+test('Truth Social cards upload their image, and the echo at its Discord CDN address authorizes the replacement', async () => {
+  const f = fixture(); f.source.content = TRUTH_URL;
+  const send = f.source.channel.send;
+  f.source.channel.send = async options => {
+    const result = await send(options);
+    // Discord hides uploads an embed references and reports them at their CDN address.
+    result.attachments = new Collection();
+    const card = result.embeds[0].toJSON();
+    result.embeds = [{ toJSON: () => ({ ...card, image: { url:
+      'https://cdn.discordapp.com/attachments/123456789012345678/223456789012345678/truth-117497314507062631.jpg?ex=1' } }) }];
+    return result;
+  };
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: truthLookup })(f.source as unknown as Message);
+  assert.equal(f.sent.length, 1);
+  assert.deepEqual(f.sent[0].files?.map(file => (file as { name?: string }).name), ['truth-117497314507062631.jpg']);
+  const embed = f.sent[0].embeds![0];
+  assert.equal(('toJSON' in embed ? embed.toJSON() : embed).image?.url, 'attachment://truth-117497314507062631.jpg');
+  assert(f.events.includes('delete original'));
+
+  // Without Attach Files the card links the original image and uploads nothing.
+  const plain = fixture(); plain.source.content = TRUTH_URL;
+  plain.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.AttachFiles);
+  await createLinkRepostHandler(CHANNEL_ID, plain.log, undefined, { platforms: ['articles'], lookupArticle: truthLookup })(plain.source as unknown as Message);
+  assert.equal(plain.sent.length, 1);
+  assert.equal(plain.sent[0].files?.length ?? 0, 0);
+  const linked = plain.sent[0].embeds![0];
+  assert.equal(('toJSON' in linked ? linked.toJSON() : linked).image?.url, truthImage);
+  assert(plain.events.includes('delete original'));
+});
+
 test('article reply mode keeps originals without Manage Messages permission', async () => {
   const f = fixture(); f.source.content = ARTICLE_URL;
   f.permissions.remove(PermissionFlagsBits.ManageMessages);
