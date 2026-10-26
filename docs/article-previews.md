@@ -13,6 +13,16 @@ The card contains a publisher-labelled headline, an excerpt of up to 300 charact
 - `/settings articles:false` or the setup Platforms menu disables articles. Server enablement, channel scope, personal `/autofix` choices, `!nolinky`, hidden links, source-edit checks and owner-only Remove still apply. Original post and Details remain available to viewers.
 - No API key is required. Operators using an explicit `REWRITE_PLATFORMS` list must add `articles`; an empty list enables available platforms. Social/provider and Erome URLs cannot fall back through articles to bypass their own settings.
 
+## Truth Social posts
+
+Truth Social serves the same placeholder metadata for every post, so Discord and the article reader see no post content. For public post links (`https://truthsocial.com/@user/ID` or `/@user/posts/ID`) Linky tries three signed-out public sources in order and uses the first that returns the requested post:
+
+1. Truth Social's status API (`/api/v1/statuses/ID`): author name, handle and avatar, text, the first image or video poster, link-preview title, quoted text, ReTruth credit, reply/ReTruth/like counts and post time. Truth Social's bot protection rejects this API from datacenter addresses, including the hosted bot's (checked October 26, 2026), so it mainly serves self-hosted instances on other networks.
+2. For `@realDonaldTrump`, the [Trump's Truth](https://www.trumpstruth.org) archive feed, which lists his latest 100 posts with text and archived media. Image posts show the image; video posts show the poster and a **Play video** link to the archived MP4. The footer credits the archive; counts and the avatar are unavailable. One feed request is cached for 30 seconds across lookups.
+3. Truth Social's own post page metadata, which carries the full text of most posts with text, plus the author's name from Truth Social's oEmbed endpoint and the avatar. Truth Social renders that metadata only after a page has been visited once, so Linky revisits the page after 1.2 seconds when the first visit returns the placeholder. Images and videos are not in this metadata.
+
+Videos and additional images otherwise stay on Truth Social; the card says so. Private, direct, sensitive and content-warning posts, IDs that do not match the link, removed archive entries and responses that are not the expected type leave the original unchanged. A media-only post by another account, or one older than the archive feed with no text, has no usable public source from the hosted bot and stays unchanged. Links inside post text show as `[link]`. Images come only from Truth Social's `static-assets` hosts or the archive's storage. These cards follow the Articles setting and every rule above; all requests share the five-second limit and rate limits below.
+
 ## Request limits and privacy
 
 Linky requests only public HTTPS pages, with no cookies or user credentials. DNS results must be public IPv4 addresses and the connection is pinned to a validated address while retaining normal TLS verification. Each redirect is checked again. Literal IPs, local hostnames, credentials, explicit ports, common account/API paths and known social-provider endpoints are rejected. Some otherwise public pages therefore remain unsupported.

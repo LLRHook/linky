@@ -318,6 +318,24 @@ Priority guide: crit / high / med / low.
 - **Implementation:** `CATCH_UP_ENABLED` in `src/config.ts`; `ServiceCheckpoint` keeps the 20 enabled channels with the most recent links and an `aliveAt` refreshed every 30 s; `catchUp()` fetches once per channel after `stoppedAt ?? aliveAt` minus 3 s, within 2 minutes and before session start plus 3 s, 50 messages per channel, four channels at a time, in order per channel, skipping registry-recorded and live-seen messages and channels without Read Message History. Enabled on the hosted bot in `/root/linky/.env` (backup `.env.bak-20261014-catchup`). Tests: `tests/service-checkpoint.test.ts`, catch-up cases in `tests/bot.test.ts`, `tests/config.test.ts`.
 - **Docs:** `.env.example`, `docs/self-hosting.md` settings table and catch-up paragraph (including the crash duplicate limitation), README Reliability section.
 
+### [FEAT-1793013312] Truth Social post previews
+- [ ] **Priority:** high
+- **Area:** previews
+- **File(s):** src/services/TruthSocial.ts, src/services/ArticlePreview.ts, src/commands/diagnose.ts, tests/truth-social.test.ts, docs/article-previews.md, README.md
+- **Why:** Truth Social serves the same placeholder head (`og:title` "Truth Social", `og:type=website`) for every post, so Discord shows no post content and Linky's article path answers `/fix` with "Public article metadata is required" (reported 2026-10-26 for `https://truthsocial.com/@realDonaldTrump/117497314507062631`). No maintained embed-fixer service exists for Truth Social.
+- **Approach:** Truth Social post permalinks (`/@user/ID`, `/@user/posts/ID`) stay article candidates, so the existing authored-card pipeline (Replace/Reply, `/fix`, mixed-link guidance, exact-card confirmation, `articles` setting) applies unchanged. The article lookup recognises them and requests the public Mastodon-compatible `GET /api/v1/statuses/{id}` JSON from `truthsocial.com` with the same pinned public DNS, cookie-free request, five-second timeout, shared rate limit and cache. The status must match the requested ID, be public or unlisted, not sensitive, and have text or media. Linky renders one card: author display name and handle with avatar, post text (ReTruths credit the reposter, quotes add the quoted text), the first image or video poster from Truth Social's asset hosts, counts, and the post time. Truth Social's Cloudflare protection returns 403 for the status API from datacenter addresses (Hostinger and Vercel both checked 2026-10-26), so the lookup falls back to signed-out public sources reachable from the hosted bot: for `@realDonaldTrump`, the Trump's Truth archive RSS feed (`www.trumpstruth.org/feed`, latest 100 posts with archived images and MP4s, cached 30 s); otherwise Truth Social's own post-page metadata (rendered only after a first warming visit, so Linky revisits once after 1.2 s) with the oEmbed author name.
+- **Library / dependency notes:** None; reuses `RegionalHttp.connectHttps`.
+- **Acceptance criteria:**
+  - The reported post produces a Truth Social card instead of the metadata-required notice.
+  - Mismatched IDs, private/direct/sensitive posts, malformed JSON, oversized bodies, non-JSON responses, redirects and non-asset image hosts leave the original unchanged.
+  - Text cannot inject mentions, markdown or links; images come only from Truth Social asset hosts.
+  - Other article behaviour is unchanged.
+- **Test plan:** `tests/truth-social.test.ts` URL parsing, status parsing and card formatting; lookup request shape and rejection cases through the article lookup fixture.
+- **Out of scope:** Inline video playback in the card; multi-image galleries; a separate `truthsocial` platform setting; header spoofing, residential proxies or other evasion of Truth Social's bot protection; media for other accounts' posts when the status API is blocked; signed ActivityPub fetches.
+- **Bump:** minor
+- **Status:** in-progress
+- **Implementation:** `src/services/TruthSocial.ts` parses permalinks, the status API JSON, the archive feed item for the requested ID and page metadata, and formats one card (author, text, image or poster, link title, quote, ReTruth credit, archive Play video link, counts or source footer, time). `createArticleLookup` tries API, archive, then page+oEmbed within the article time and rate limits; `formatArticlePreview` never renders Truth Social placeholder metadata. `/diagnose` names Truth Social posts. Tests: `tests/truth-social.test.ts`. On 2026-10-26 local lookups with the API forced to 403 rendered the reported image post and a video post (archive) and @TeamTrump text posts (page); from the Hostinger host the API returned 403 while the archive feed, post page (after warming) and oEmbed returned 200. Pending: confirmation in live Discord after deployment.
+
 ---
 
 ## Shipped
