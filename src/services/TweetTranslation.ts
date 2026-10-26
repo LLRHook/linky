@@ -3,7 +3,8 @@ import { readBoundedJson } from './BoundedJson';
 
 export interface TweetTranslation {
   text: string;
-  language: string;
+  /** Empty posts can carry translated quotes and media without having a source language. */
+  language: string | null;
   url?: string;
   quote?: TweetTranslation;
   author: { name: string; url: string; icon_url?: string };
@@ -81,16 +82,17 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTrans
   const status = record(value);
   const mediaPayload = record(status.media);
   const language = languageCode(status.lang)?.split('-')[0];
-  if (status.type !== 'status' || !language || status.poll ||
+  const empty = typeof status.text === 'string' && !status.text.trim();
+  if (status.type !== 'status' || (!language && !empty) || status.poll ||
       mediaPayload.broadcast || mediaPayload.external) return null;
 
   const translation = record(status.translation);
-  const prose = language === 'en' ? status.text : translation.text;
-  if (language !== 'en' && (
+  const prose = empty ? '' : language === 'en' ? status.text : translation.text;
+  if (!empty && language !== 'en' && (
     languageCode(translation.source_lang)?.split('-')[0] !== language ||
     languageCode(translation.target_lang)?.split('-')[0] !== 'en'
   )) return null;
-  if (typeof prose !== 'string' || !prose.trim() || prose.length > 100_000) return null;
+  if (typeof prose !== 'string' || (!empty && !prose.trim()) || prose.length > 100_000) return null;
   const text = formatTranslation(prose.trim());
   if (text.length > 100_000) return null;
 
@@ -104,12 +106,13 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTrans
   const all = mediaPayload.all;
   const media = (Array.isArray(all) ? all : []).map(record)
     .filter((item) => httpsUrl(item.url) && ['photo', 'video', 'gif'].includes(String(item.type)));
+  if (empty && !media.length && !quote) return null;
   const photos = [...new Set(media.filter((item) => item.type === 'photo')
     .map((item) => httpsUrl(item.url)!))].slice(0, 4);
   const icon = httpsUrl(author.avatar_url);
   return {
     text, url,
-    language: languageNames.of(language) ?? language,
+    language: !empty && language ? languageNames.of(language) ?? language : null,
     author: {
       name: author.name.trim().slice(0, 256),
       url: authorUrl,
@@ -137,7 +140,7 @@ export async function fetchTweetTranslation(
     const json = record(await readBoundedJson(response, 1024 * 1024, signal));
     const result = json.code === 200 ? parseStatus(json.status, statusId) : null;
     for (let post = result; post; post = post.quote ?? null) {
-      if (post.language !== 'English') return result;
+      if (post.language && post.language !== 'English') return result;
     }
     return null;
   } catch {

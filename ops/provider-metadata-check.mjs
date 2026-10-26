@@ -66,7 +66,7 @@ export async function assessSource(entry, services, options = {}) {
   const { getProviderCandidates, expectedPreviews, inspectPreviews } = services;
   // Exercise the same share-to-post normalization as automatic and manual fixes.
   const source = services.normalizeMobileLinks
-    ? (await services.normalizeMobileLinks(entry.source, ['instagram', 'reddit', 'tiktok'])).content : entry.source;
+    ? (await services.normalizeMobileLinks(entry.source, ['instagram', 'reddit', 'tiktok', 'facebook'])).content : entry.source;
   const candidates = getProviderCandidates(source);
   const results = [];
   for (const candidate of candidates) {

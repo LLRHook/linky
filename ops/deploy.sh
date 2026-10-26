@@ -14,6 +14,14 @@ bot_ready() {
   [[ "$logs" == *'Logged in as '* && "$logs" == *'Serving '* ]]
 }
 
+# Prints the bot's own measurement of how long it was offline, when it logged one.
+report_offline_time() {
+  local state started
+  state=$(docker inspect --format '{{.State.Running}} {{.RestartCount}} {{.State.StartedAt}}' linky 2>/dev/null) || return 0
+  read -r _ _ started <<< "$state"
+  docker logs --since "$started" linky 2>&1 | grep -o 'Back online after [0-9.]* s offline' | tail -n 1 || true
+}
+
 wait_for_bot() {
   local attempt
   for ((attempt = 0; attempt < 30; attempt++)); do
@@ -99,6 +107,7 @@ main() {
     return 1
   fi
   printf '%s\n' "$revision" > "$repo_dir/.git/linky-deployed-revision"
+  report_offline_time
   printf 'Deployed %s; Discord connection verified.\n' "$revision"
   printf 'LINKY_DEPLOYED_SHA=%s\n' "$revision"
 }

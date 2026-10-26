@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Collection, MessageFlags, MessageFlagsBitField, MessageType, PermissionsBitField,
-  type APIEmbed, type APIMessageTopLevelComponent, type Attachment, type Message, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
+import { Collection, MessageFlags, MessageType, PermissionsBitField,
+  type APIEmbed, type APIMessageTopLevelComponent, type Message, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
 import { expectedPreviews, inspectPreviews, type ExpectedPreview } from '../src/services/PreviewRecovery';
 import { ProviderHealth } from '../src/services/ProviderHealth';
 import { getProviderCandidates } from '../src/services/SocialProviders';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
+import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { TweetTranslation } from '../src/services/TweetTranslation';
@@ -18,8 +18,10 @@ import type { InstagramTranslation } from '../src/services/InstagramTranslation'
 import { YouTubeStats, YOUTUBE_STATS_TTL } from '../src/services/YouTubeStats';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import { type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
+import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
 
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
+const UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '1700000000000000005';
 const ORIGINAL_X = 'https://twitter.com/jack/status/20?s=46';
 const PRIMARY_X = 'https://fixupx.com/jack/status/20', ALTERNATE_X = 'https://vxtwitter.com/jack/status/20';
@@ -34,6 +36,10 @@ interface SentMessage { message: Message; options: MessageCreateOptions; edits: 
 const storeComponents = (rows: MessageEditOptions['components']) => (rows ?? []).map(row => ({
   toJSON: () => ('toJSON' in row ? row.toJSON() : row) as APIMessageTopLevelComponent,
 }));
+
+// The handler logs and swallows callback errors; forbidden callbacks are recorded and checked here.
+const forbidden = createForbidden();
+afterEach(() => forbidden.assertNone());
 
 /** Independent Discord boundary: durable writes and visible side effects are observable. */
 function delivery(content = ORIGINAL_X) {
@@ -50,15 +56,14 @@ function delivery(content = ORIGINAL_X) {
     remember: async (_record: RepostRecord): Promise<boolean> => true,
   };
   let sequence = 100;
-  const channel = {
-    id: CHANNEL, isThread: () => false, isSendable: () => true,
-    permissionsFor: () => new PermissionsBitField(PermissionsBitField.All),
+  const channel = sendableChannel({
+    id: CHANNEL,
     send: async (options: MessageCreateOptions) => {
       const id = String(1_700_000_000_000_000_000n + BigInt(sequence++));
       const entry = { options, edits: [], deleted: false } as unknown as SentMessage;
-      const output = {
+      const output = botMessage({
         id, channelId: CHANNEL, guildId: GUILD, author: { id: BOT, bot: true },
-        content: options.content ?? '', attachments: new Collection<string, Attachment>(),
+        content: options.content ?? '',
         embeds: (options.embeds ?? []).map(embed => ({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed })),
         components: storeComponents(options.components),
         delete: async () => { entry.deleted = true; events.push(`delete:${id}`); },
@@ -71,28 +76,24 @@ function delivery(content = ORIGINAL_X) {
           await state.duringEdit(edit);
           return output;
         },
-        fetch: async () => output,
-      };
+      });
       entry.message = output as unknown as Message;
       sent.push(entry); events.push(`send:${id}`);
       return entry.message;
     },
-  };
-  const source = {
+  });
+  const source = repostSource({
     id: SOURCE, channelId: CHANNEL, guildId: GUILD, content,
-    author: { id: AUTHOR, bot: false }, guild: { members: { me: { id: BOT } } }, channel,
-    partial: false, webhookId: null, type: MessageType.Default, poll: null, pinned: false, hasThread: false,
-    stickers: new Collection(), components: [], messageSnapshots: new Collection(),
-    attachments: new Collection<string, Attachment>(), flags: new MessageFlagsBitField(), mentions,
-    editedTimestamp: null, reference: null, deletable: true, inGuild: () => true,
+    author: { id: AUTHOR, bot: false }, guild: { members: { me: { id: BOT } } }, channel, mentions,
+    fetchReference: forbidden.forbid('A source without a reply reference must not look one up'),
     delete: async () => { await state.deleteSource(); state.originalDeleted = true; events.push('delete:source'); },
     fetch: async () => {
       events.push('fetch:source');
       return { ...source, content: state.remoteContent, editedTimestamp: state.editedTimestamp } as unknown as Message;
     },
-  };
+  });
   const create = (options: HandlerOptions = {}) => createLinkRepostHandler([], { info() {}, warn() {}, error() {} },
-    async () => assert.fail('this fixture never requests attachment downloads'), {
+    forbidden.forbid('this fixture never requests attachment downloads'), {
       serverEnabled: () => state.enabled, serverPreferences: () => state.preferences,
       verifyPreview: async (message, expected) => {
         expectedChecks.push(expected.map(item => ({ ...item })));
@@ -187,9 +188,7 @@ test('definitive deletion refusals keep a verified reply copy with finished cont
   for (const code of [60003, 50013]) {
     const f = delivery(), outcomes: DeliveryOutcome[] = [];
     f.state.deleteSource = async () => { throw { code }; };
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
-      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-      bind: async () => true } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, outcomes, bind: async () => true });
     await f.create({ diagnostics })(f.source);
     assert.equal(f.state.originalDeleted, false);
     assert.equal(f.sent.length, 1);
@@ -208,9 +207,7 @@ test('definitive deletion refusals keep a verified reply copy with finished cont
 test('ambiguous deletion failures keep the replacement without final controls', async () => {
   const f = delivery(), outcomes: DeliveryOutcome[] = [];
   f.state.deleteSource = async () => { throw { status: 500 }; };
-  const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
-    startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-    bind: async () => true } as unknown as DeliveryDiagnostics;
+  const diagnostics = diagnosticsStub({ id: UUID, outcomes, bind: async () => true });
   await f.create({ diagnostics })(f.source);
   assert.equal(f.state.originalDeleted, false);
   assert.equal(f.sent.length, 1);
@@ -230,9 +227,7 @@ test('a refused or thrown reply downgrade removes the preview after a definitive
       if (failure === 'thrown') throw new Error('disk unavailable');
       return false;
     };
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
-      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-      bind: async () => true } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, outcomes, bind: async () => true });
     await f.create({ diagnostics })(f.source);
     assert.equal(f.state.originalDeleted, false);
     assert.equal(f.sent.length, 1);
@@ -413,8 +408,7 @@ test('automatic deadlines stop retries and source deletion, but preserve an alre
   t.mock.timers.enable({ apis: ['setTimeout'] });
   for (const phase of ['preview-missing', 'preview-confirmed', 'ownership', 'source-recheck', 'delete', 'controls'] as const) {
     const f = delivery(), outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ outcomes });
     const expire = () => t.mock.timers.tick(120_000);
     f.state.duringPreview = async () => { if (phase.startsWith('preview-')) expire(); };
     if (phase === 'preview-missing') f.state.render = () => [];
@@ -536,7 +530,7 @@ test('a busy refresh rejects without duplicating delivery and a later refresh co
   };
   const handle = f.create();
   const initial = handle(f.source);
-  await started;
+  await reached(started, initial, 'the first preview check');
   try {
     f.state.remoteContent = `Corrected context ${ORIGINAL_X}`;
     f.state.editedTimestamp = 123;
@@ -611,9 +605,9 @@ test('explicit bypass, hidden links and Discord preview suppression cause no del
     const f = delivery(content);
     if (content === ORIGINAL_X) f.source.flags.add(MessageFlags.SuppressEmbeds);
     await f.create({
-      translateTweet: async () => assert.fail('hidden or bypassed text must not be translated'),
-      lookupYouTube: async () => assert.fail('hidden or bypassed text must not be enriched'),
-      publishYouTube: async () => assert.fail('nothing should be published'),
+      translateTweet: forbidden.forbid('hidden or bypassed text must not be translated'),
+      lookupYouTube: forbidden.forbid('hidden or bypassed text must not be enriched'),
+      publishYouTube: forbidden.forbid('nothing should be published'),
     })(f.source);
     assert.deepEqual(f.events, [], content);
     assert.equal(f.state.originalDeleted, false, content);
@@ -624,8 +618,8 @@ test('a visible post does not reveal or require previews for adjacent hidden soc
   const hidden = '||https://x.com/jack/status/999|| `<https://youtu.be/dQw4w9WgXcQ>`';
   const f = delivery(`${ORIGINAL_X} ${hidden}`);
   await f.create({
-    lookupYouTube: async () => assert.fail('the only YouTube link is hidden'),
-    publishYouTube: async () => assert.fail('the only YouTube link is hidden'),
+    lookupYouTube: forbidden.forbid('the only YouTube link is hidden'),
+    publishYouTube: forbidden.forbid('the only YouTube link is hidden'),
   })(f.source);
   assert.equal(f.state.originalDeleted, true);
   assert(f.sent[0].message.content.includes(hidden));
@@ -680,7 +674,7 @@ test('YouTube statistics cannot substitute for a native video preview or publish
   f.state.render = () => [{ url: NATIVE_YOUTUBE, title: 'YouTube stats', fields: [{ name: 'Views', value: '42' }] }];
   await f.create({
     lookupYouTube: async () => new Map([[YOUTUBE_ID, { viewCount: '42' }]]),
-    publishYouTube: async () => assert.fail('counts must wait for the native video preview'),
+    publishYouTube: forbidden.forbid('counts must wait for the native video preview'),
   })(f.source);
   assert.equal(f.state.originalDeleted, false);
   assert(f.sent[0].deleted);
@@ -742,7 +736,7 @@ const translatedText: TweetTranslation = {
 
 test('multiple translated text posts are delivered without requiring intentionally suppressed embeds', async () => {
   const f = delivery(`${ORIGINAL_X} https://x.com/author/status/21`);
-  f.state.render = () => assert.fail('translated captions do not ask Discord for an embed');
+  f.state.render = forbidden.forbidSync('translated captions do not ask Discord for an embed');
   await f.create({ translateTweet: async () => translatedText })(f.source);
   assert.equal(f.state.originalDeleted, true);
   assert.equal(f.sent.length, 1);
@@ -1074,7 +1068,7 @@ test('automatic mobile links resolve before translation and media verification, 
       if (blocked && options.hostname === 'www.reddit.com') return new Response(null, { status: 403 });
       return new Response(null, { status: 302, headers: { location: canonical + '?tracking=removed' } });
     } });
-    const provider = platform === 'instagram' ? 'https://fkinstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/';
+    const provider = platform === 'instagram' ? 'https://fkinstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/?legacy';
     f.state.render = () => [{ url: provider, image: { url: 'https://cdn.example/post.jpg' } }];
     await f.create({ normalizeMobileLinks })(f.source);
     assert.equal(calls, blocked ? 2 : 1); assert.equal(f.state.originalDeleted, true);
@@ -1082,6 +1076,36 @@ test('automatic mobile links resolve before translation and media verification, 
     assert.equal(f.expectedChecks[0][0].url, provider);
     assert.equal(f.expectedChecks[0].length, 1);
     assert(JSON.stringify(f.sent[0].message.components).includes(canonical));
+  }
+});
+
+test('Reddit legacy previews confirm canonical media before replacement and preserve unconfirmed sources', async () => {
+  const source = 'https://www.reddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/#lightbox';
+  const fixed = 'https://vxreddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/?legacy#lightbox';
+  for (const mode of ['replace', 'reply'] as const) for (const kind of ['image', 'video', 'unrelated', 'missing'] as const) {
+    const f = delivery(source);
+    f.state.preferences.mode = mode;
+    f.state.render = (_round, message) => {
+      if (!message.content.includes(fixed) || kind === 'missing') return [];
+      return [{ url: `https://www.reddit.com/comments/${kind === 'unrelated' ? 'other' : '1x3j1s3'}`,
+        ...(kind === 'video' ? { video: { url: 'https://cdn.example/video.mp4' } }
+          : { image: { url: 'https://i.redd.it/example.jpeg' } }) }];
+    };
+    await f.create()(f.source);
+    const confirmed = kind === 'image' || kind === 'video';
+    assert.equal(f.expectedChecks[0][0].url, fixed);
+    assert.equal(f.state.originalDeleted, confirmed && mode === 'replace', `${mode}/${kind}`);
+    if (confirmed) {
+      assert.equal(f.sent.length, 1);
+      assert.equal(f.sent[0].deleted, false);
+      assert.match(JSON.stringify(f.sent[0].message.components), /linky:remove/);
+      assert(JSON.stringify(f.sent[0].message.components).includes(source.replace('#lightbox', '')),
+        'original-post control retains the Reddit URL without the client fragment');
+      if (mode === 'replace') assert(f.events.indexOf('delete:source') > f.events.indexOf('verify:1:passed'));
+    } else {
+      assert(f.sent[0].deleted);
+      assert(f.sent.some(entry => /could not confirm a preview/.test(entry.message.content)));
+    }
   }
 });
 
@@ -1117,7 +1141,7 @@ test('unresolved TikTok shares preserve the original when Discord returns anothe
   const f = delivery(share);
   f.state.render = () => [{ url: 'https://www.tiktok.com/@someone/video/123', video: { url: 'https://cdn.example/video.mp4' } }];
   await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({ resolve4: async () => ['127.0.0.1'],
-    connect: async () => assert.fail('Private DNS must not connect') }) })(f.source);
+    connect: forbidden.forbid('Private DNS must not connect') }) })(f.source);
   assert.equal(f.state.originalDeleted, false);
   assert.equal(f.source.content, share);
   assert(f.sent.some(sent => sent.message.content.includes('could not confirm a preview')));
@@ -1128,7 +1152,7 @@ test('an unresolved TikTok share still accepts its exact provider share identity
   const f = delivery(share);
   f.state.render = () => [{ url: 'https://tnktok.com/t/ZPLBWgdad/', video: { url: 'https://cdn.example/video.mp4' } }];
   await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({ resolve4: async () => ['127.0.0.1'],
-    connect: async () => assert.fail('Private DNS must not connect') }) })(f.source);
+    connect: forbidden.forbid('Private DNS must not connect') }) })(f.source);
   assert.equal(f.state.originalDeleted, true);
   assert.equal(f.sent.length, 1);
   assert.equal(f.sent[0].deleted, false);
@@ -1169,7 +1193,7 @@ test('mobile resolution failure retains the exact original and never publishes a
   const share = 'https://www.instagram.com/share/reel/Mobile123?igsh=original';
   const f = delivery(share);
   await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({ resolve4: async () => ['127.0.0.1'],
-    connect: async () => assert.fail('Private DNS must not connect') }) })(f.source);
+    connect: forbidden.forbid('Private DNS must not connect') }) })(f.source);
   assert.equal(f.source.content, share); assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
 });
 
@@ -1195,7 +1219,7 @@ test('automatic scope, bypass and copying gates run before an injected mobile re
     if (gate === 'bypass') Object.assign(f.source, { content: f.source.content + ' !nolinky' });
     if (gate === 'suppressed') f.source.flags.add(MessageFlags.SuppressEmbeds);
     await f.create({ isOptedOut: () => gate === 'optout',
-      normalizeMobileLinks: async () => assert.fail('Do not resolve blocked automatic work') })(f.source);
+      normalizeMobileLinks: forbidden.forbid('Do not resolve blocked automatic work') })(f.source);
     assert.equal(f.sent.length, 0, gate); assert.equal(f.state.originalDeleted, false, gate);
   }
   for (const content of ['||https://www.instagram.com/share/Mobile123||', '<https://www.instagram.com/share/Mobile123>',
@@ -1203,7 +1227,7 @@ test('automatic scope, bypass and copying gates run before an injected mobile re
     const f = delivery(content);
     if (!content.startsWith('||') && !content.startsWith('<') && !content.startsWith('`')) f.state.preferences.platforms = { instagram: false };
     await f.create({ normalizeMobileLinks: createMobileShareLinkNormalizer({
-      resolve4: async () => assert.fail('Hidden and disabled platforms cannot resolve'),
+      resolve4: forbidden.forbid('Hidden and disabled platforms cannot resolve'),
     }) })(f.source);
     assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
   }
@@ -1271,7 +1295,7 @@ test('Instagram media-first runs without translation and cannot claim a translat
     const f = delivery('https://www.instagram.com/reel/ABC/');
     f.state.preferences = { instagramPresentation: 'media-first', translateInstagram: false };
     f.state.render = () => playable ? [instagramVideo()] : [];
-    await f.create({ translateInstagram: async () => assert.fail('Media-first must not translate') })(f.source);
+    await f.create({ translateInstagram: forbidden.forbid('Media-first must not translate') })(f.source);
     assert.equal(f.state.originalDeleted, playable);
     assert(f.expectedChecks.flat().every(item => item.captionFree && item.requireVideo));
     assert.equal(f.sent[0].deleted, !playable);
@@ -1306,13 +1330,12 @@ test('automatic public community image and text previews need no video API and f
   for (const mode of ['replace', 'reply'] as const) for (const images of [[], communityPost().images]) {
     const f = delivery(COMMUNITY_URL), observations: any[] = [], paths: string[] = [];
     f.state.preferences = { mode, youtubeDisplay: 'preview' };
-    const diagnostics = { begin: () => ({ id: 'community-attempt', setPath: (path: string) => paths.push(path),
-      startStage: () => ({ finish() {} }), finish() {} }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: 'community-attempt', paths });
     await f.create({ lookupYouTubeCommunity: async (_link, signal) => {
       assert(signal); return communityPost({ images });
     }, diagnostics, observePreview: (expected, result) => observations.push({ expected, result }),
-    lookupYouTube: async () => assert.fail('community must not need video statistics'),
-    armPreview: () => assert.fail('explicit community cards must not arm a native observation watcher') })(f.source);
+    lookupYouTube: forbidden.forbid('community must not need video statistics'),
+    armPreview: forbidden.forbidSync('explicit community cards must not arm a native observation watcher') })(f.source);
     assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
     assert.equal(f.state.originalDeleted, mode === 'replace');
     assert.equal(f.sent[0].options.embeds?.length, Math.max(1, images.length));
@@ -1334,11 +1357,14 @@ test('unavailable, wrong-identity and missing community lookups preserve a commu
 
 test('community lookup is skipped for disabled platforms, opted-out authors, hidden links and nolinky messages', async () => {
   for (const kind of ['disabled', 'platform', 'optout', 'hidden', 'nolinky']) {
-    const f = delivery(kind === 'hidden' ? `<${COMMUNITY_URL}>` : kind === 'nolinky' ? `${COMMUNITY_URL} nolinky` : COMMUNITY_URL);
+    const f = delivery(kind === 'hidden' ? `<${COMMUNITY_URL}>` : kind === 'nolinky' ? `${COMMUNITY_URL} !nolinky` : COMMUNITY_URL);
     if (kind === 'disabled') f.state.enabled = false;
     if (kind === 'platform') f.state.preferences = { platforms: { youtube: false } };
-    await f.create({ lookupYouTubeCommunity: async () => assert.fail(`${kind} performed a lookup`),
+    // The handler swallows callback errors, so count lookups instead of failing inside the callback.
+    let lookups = 0;
+    await f.create({ lookupYouTubeCommunity: async () => { lookups++; return null; },
       isOptedOut: () => kind === 'optout' })(f.source);
+    assert.equal(lookups, 0, `${kind} performed a lookup`);
     assert.equal(f.sent.length, 0); assert.equal(f.state.originalDeleted, false);
   }
 });
@@ -1361,9 +1387,9 @@ test('mixed community guidance covers supported video, media and mobile shapes w
     'https://www.instagram.com/share/ABCDefghi/', 'https://www.reddit.com/r/example/s/ABCDefghij']) {
     const f = delivery(`${COMMUNITY_URL} ${other}`); f.state.preferences = { eromeChannels: 'all' };
     Object.assign(f.source.channel, { nsfw: false });
-    await f.create({ lookupYouTubeCommunity: async () => assert.fail('mixed lookup'),
-      prepareErome: async () => assert.fail('mixed media preparation'), verifyPreview: async () => assert.fail('mixed verification'),
-      normalizeMobileLinks: async () => assert.fail('mixed mobile normalization') })(f.source);
+    await f.create({ lookupYouTubeCommunity: forbidden.forbid('mixed lookup'),
+      prepareErome: forbidden.forbid('mixed media preparation'), verifyPreview: forbidden.forbid('mixed verification'),
+      normalizeMobileLinks: forbidden.forbid('mixed mobile normalization') })(f.source);
     assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1, other);
     assert.match(f.sent[0].message.content, /separate messages/); assert.equal(f.sent[0].deleted, false);
     assert.doesNotMatch(JSON.stringify(f.sent[0].message.components), /linky:retry/);
@@ -1373,7 +1399,7 @@ test('mixed community guidance covers supported video, media and mobile shapes w
 test('community source and embed caps preserve the original instead of dropping posts or gallery images', async () => {
   const six = Array.from({ length: 6 }, (_, i) => `${COMMUNITY_URL}${i}`).join(' ');
   const tooMany = delivery(six);
-  await tooMany.create({ lookupYouTubeCommunity: async () => assert.fail('six sources must be rejected before lookup') })(tooMany.source);
+  await tooMany.create({ lookupYouTubeCommunity: forbidden.forbid('six sources must be rejected before lookup') })(tooMany.source);
   assert.equal(tooMany.sent.length, 0);
   for (const content of [`${COMMUNITY_URL} ${COMMUNITY_URL}2`]) {
     const f = delivery(content);
@@ -1391,7 +1417,7 @@ test('mixed guidance rechecks source and preferences, requires ownership, and de
     if (kind === 'changed') f.state.remoteContent += ' edited';
     if (kind === 'disabled') f.source.fetch = async () => { f.state.enabled = false; return f.source as Awaited<ReturnType<Message['fetch']>>; };
     if (kind === 'ownership') f.state.remember = async () => false;
-    await f.create({ lookupYouTubeCommunity: async () => assert.fail('mixed lookup') })(f.source);
+    await f.create({ lookupYouTubeCommunity: forbidden.forbid('mixed lookup') })(f.source);
     assert.equal(f.state.originalDeleted, false); assert(f.sent.every(entry => entry.deleted), kind);
   }
   const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`), handler = f.create();
@@ -1401,12 +1427,11 @@ test('mixed guidance rechecks source and preferences, requires ownership, and de
 
 test('mixed community guidance skips every lookup and keeps an owned original without Retry or mentions', async () => {
   const f = delivery(`${COMMUNITY_URL} ${ORIGINAL_X}`), outcomes: DeliveryOutcome[] = [];
-  const diagnostics = { begin: () => ({ id: 'mixed-guidance', setPath() {}, startStage: () => ({ finish() {} }),
-    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
-  await f.create({ diagnostics, lookupYouTubeCommunity: async () => assert.fail('mixed community lookup'),
-    translateTweet: async () => assert.fail('mixed translation lookup'),
-    verifyPreview: async () => assert.fail('mixed native verification'),
-    normalizeMobileLinks: async () => assert.fail('mixed normalization lookup') })(f.source);
+  const diagnostics = diagnosticsStub({ id: 'mixed-guidance', outcomes });
+  await f.create({ diagnostics, lookupYouTubeCommunity: forbidden.forbid('mixed community lookup'),
+    translateTweet: forbidden.forbid('mixed translation lookup'),
+    verifyPreview: forbidden.forbid('mixed native verification'),
+    normalizeMobileLinks: forbidden.forbid('mixed normalization lookup') })(f.source);
   assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
   assert.match(f.sent[0].message.content, /separate messages/);
   assert.doesNotMatch(JSON.stringify(f.sent[0].message.components), /linky:retry/);
@@ -1435,7 +1460,7 @@ test('mixed community guidance needs sending permission but no attachment or sou
   Object.assign(f.source.channel, { nsfw: false, permissionsFor: () => new PermissionsBitField(
     PermissionsBitField.All & ~PermissionsBitField.Flags.AttachFiles & ~PermissionsBitField.Flags.ManageMessages) });
   Object.assign(f.source, { deletable: false });
-  await f.create({ prepareErome: async () => assert.fail('no media lookup'), lookupYouTubeCommunity: async () => assert.fail('no community lookup') })(f.source);
+  await f.create({ prepareErome: forbidden.forbid('no media lookup'), lookupYouTubeCommunity: forbidden.forbid('no community lookup') })(f.source);
   assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1);
   assert.match(f.sent[0].message.content, /separate messages/); assert.equal(f.remembered[0].mode, 'reply');
 });
@@ -1449,11 +1474,10 @@ test('mixed guidance removes stale owned notices after Details binding or final 
       if (revoke === 'settings') f.state.enabled = false;
       if (revoke === 'optout') optedOut = true;
     };
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }), finish() {} }),
-      bind: async () => { if (phase === 'binding') change(); return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, bind: async () => { if (phase === 'binding') change(); return true; } });
     if (phase === 'controls') f.state.duringEdit = async () => change();
     await f.create({ diagnostics, isOptedOut: () => optedOut,
-      lookupYouTubeCommunity: async () => assert.fail('no lookup for mixed guidance') })(f.source);
+      lookupYouTubeCommunity: forbidden.forbid('no lookup for mixed guidance') })(f.source);
     assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1);
     assert.equal(f.sent[0].deleted, true, `${phase}/${revoke}`);
   }

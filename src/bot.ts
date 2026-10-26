@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits, type Message } from 'discord.js';
+import { Client, Events, GatewayIntentBits, MessageFlags, Partials, PermissionFlagsBits, type Interaction, type Message } from 'discord.js';
 import { dirname, join } from 'node:path';
 import type { Config } from './config';
 import type { logger } from './logger';
@@ -43,6 +43,12 @@ import { EROME_UNAVAILABLE, isEromeAvailable } from './services/EromeAvailabilit
 import { findEromeLinks } from './services/EromeDelivery';
 import type { EromeMediaPreparer } from './services/EromeMedia';
 import { bindDeliveryDetails } from './services/DeliveryAttempt';
+import { InFlightWork } from './services/InFlightWork';
+import { catchUp, ServiceCheckpoint } from './services/ServiceCheckpoint';
+
+/** Running deliveries get this long to finish when the bot stops; Compose `stop_grace_period` must exceed it. */
+export const SHUTDOWN_DRAIN_MS = 20_000;
+export const RESTARTING_REPLY = 'Linky is restarting. Try again in a few seconds.';
 
 export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
   servers = new ServerSettings(settings.settingsPath),
@@ -61,13 +67,20 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   let prompts: PromptService | undefined;
   const shutdown = new AbortController();
   let closing: Promise<void> | undefined;
+  // Shutdown stops accepting new work first, then lets running work finish before aborting `shutdown`.
+  let accepting = true;
+  const work = new InFlightWork(() => log.error('Link handling stopped unexpectedly'));
+  const checkpoint = new ServiceCheckpoint({ path: join(dirname(settings.settingsPath), 'service-checkpoint.json'),
+    trackChannels: Boolean(settings.catchUp), onError: () => log.warn('Restart checkpoint could not be saved') });
+  // Messages the live session received while catch-up runs, so catch-up does not deliver them twice.
+  let seenLive: Set<string> | undefined;
   if (settings.prompt) {
     try { prompts = new PromptService(settings.prompt, join(dirname(settings.settingsPath), 'prompt-jobs.json')); }
     catch { log.warn('Coding requests are unavailable because their job history could not be loaded'); }
   }
   const lookupYouTube = settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined;
   const lookupYouTubeCommunity = createYouTubeCommunityLookup();
-  const lookupArticle = createArticleLookup();
+  const lookupArticle = createArticleLookup(settings.truthSocialRelay ? { truthSocialRelay: settings.truthSocialRelay } : {});
   let translateInstagram: ReturnType<typeof createInstagramLookup> | undefined;
   if (settings.translateInstagram && settings.captionApiKey) {
     try {
@@ -125,16 +138,22 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
   });
   const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums,
-    normalizeMobileLinks, translateInstagram, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
+    normalizeMobileLinks, translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
+    translateInstagram, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
   const destroy = client.destroy.bind(client);
   client.destroy = () => {
     if (closing) return closing;
-    shutdown.abort();
+    accepting = false;
+    const stoppedAt = Date.now();
     registry?.stop(); youtubeStats?.stop();
-    albums?.close(); previews.close();
     closing = (async () => {
       try {
-        const results = await Promise.allSettled([scheduler.close(), mediaReady.then(media => media?.close()), personal.flush()]);
+        const saved = checkpoint.stop(stoppedAt);
+        if (!await work.settle(settings.shutdownDrainMs ?? SHUTDOWN_DRAIN_MS))
+          log.warn({ unfinished: work.size }, 'Shutdown cancelled deliveries that did not finish in time');
+        shutdown.abort();
+        albums?.close(); previews.close();
+        const results = await Promise.allSettled([scheduler.close(), mediaReady.then(media => media?.close()), personal.flush(), saved]);
         const historySaved = await diagnostics.close();
         const archiveSaved = await archive.close();
         if (!historySaved || !archiveSaved) log.warn('Delivery history shutdown could not be confirmed');
@@ -151,7 +170,6 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     serverIds: settings.serverIds,
     platforms: settings.rewritePlatforms,
     eromeAvailable: guildId => isEromeAvailable(settings, guildId),
-    translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
     lookupYouTube,
     prepareErome,
     ...mediaOptions,
@@ -161,7 +179,20 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     findRepost: id => registry?.findByReplacement(id),
     publishYouTube: (message, embeds) => youtubeStats?.publish(message, embeds) ?? Promise.resolve(null),
   });
-  client.on(Events.MessageCreate, message => { if (!shutdown.signal.aborted) void repost(message); });
+  client.on(Events.MessageCreate, message => {
+    if (!accepting) return;
+    if (message.inGuild() && !message.author.bot) {
+      seenLive?.add(message.id);
+      // Catch-up only revisits channels where Linky could act on a link.
+      if (settings.catchUp && /https?:\/\//i.test(message.content) && evaluateScope({
+        guildId: message.guildId, channelId: message.channelId,
+        threadParentId: message.channel.isThread() ? message.channel.parentId : undefined,
+        serverEnabled: servers.get(message.guildId), preferences: servers.getPreferences(message.guildId),
+        operatorChannelIds: settings.channelIds, operatorServerIds: settings.serverIds,
+      }).enabled) checkpoint.observe(message.channelId);
+    }
+    void work.track(repost(message));
+  });
   client.on(Events.GuildDelete, guild => {
     void personal.removeGuild(guild.id).catch(() => log.warn('Could not remove departed server personal preferences'));
   });
@@ -178,9 +209,9 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     }
   });
   client.on(Events.MessageUpdate, (before, after) => {
-    if (shutdown.signal.aborted) return;
-    void registry?.handleSourceUpdate(before, after, source => repost(source as Message, { refresh: true, forceReply: true }))
-      .catch(() => log.warn('Source edit synchronization will be retried'));
+    if (!accepting || !registry) return;
+    void work.track(registry.handleSourceUpdate(before, after, source => repost(source as Message, { refresh: true, forceReply: true }))
+      .catch(() => log.warn('Source edit synchronization will be retried')));
   });
   log.info({
     channelIds: settings.channelIds,
@@ -188,10 +219,16 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     platforms: settings.rewritePlatforms,
     translateTweets: settings.translateTweets,
     translateInstagram: Boolean(translateInstagram),
+    truthSocialRelay: Boolean(settings.truthSocialRelay),
   }, 'Social link replacement ready for configured and opted-in servers');
 
-  client.on(Events.InteractionCreate, async (interaction) => {
-    if (shutdown.signal.aborted) return;
+  client.on(Events.InteractionCreate, interaction => accepting ? work.track(interact(interaction)) : restarting(interaction));
+  const restarting = async (interaction: Interaction) => {
+    try {
+      if (interaction.isRepliable()) await interaction.reply({ content: RESTARTING_REPLY, flags: MessageFlags.Ephemeral });
+    } catch { /* The interaction may already have expired. */ }
+  };
+  const interact = async (interaction: Interaction) => {
     try {
       if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'help') await help(interaction, settings, servers);
@@ -257,10 +294,14 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         ...(typeof failure?.status === 'number' ? { status: failure.status } : {}),
       }, 'Could not complete Linky interaction');
     }
-  });
+  };
 
   // Readiness logs are also checked by the deployment script. Joining a guild sends nothing.
   client.once(Events.ClientReady, async (readyClient) => {
+    const readyAt = Date.now();
+    const previous = checkpoint.previous;
+    const since = previous?.stoppedAt ?? previous?.aliveAt;
+    if (settings.catchUp && since !== undefined) seenLive = new Set();
     try {
       await readyClient.application.commands.set(commandDefinitions);
       await personal.retainGuilds(readyClient.guilds.cache.keys());
@@ -292,8 +333,31 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         onError: () => log.warn('Repost ownership cleanup will be retried'),
       });
       registry.start();
+      await checkpoint.start();
+      // Only a clean stop is reported; after a crash the time it stopped is unknown.
+      if (previous?.stoppedAt !== undefined) {
+        const offlineMs = Math.max(0, readyAt - previous.stoppedAt);
+        log.info({ offlineMs }, `Back online after ${(offlineMs / 1000).toFixed(1)} s offline`);
+      }
       log.info(`Logged in as ${readyClient.user.tag}`);
       log.info(`Serving ${readyClient.guilds.cache.size} guild(s).`);
+      if (seenLive && previous && since !== undefined) {
+        const reposts = registry;
+        void work.track(catchUp<Message>({
+          channels: previous.channels, since, until: readyAt, now: Date.now(),
+          fetchAfter: async (channelId, after, limit) => {
+            const channel = await client.channels.fetch(channelId);
+            // Without Read Message History Discord returns an empty list rather than an error.
+            if (!channel || !('messages' in channel) || channel.isDMBased() || !channel.permissionsFor(readyClient.user)
+              ?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) return null;
+            return (await channel.messages.fetch({ after, limit })).values();
+          },
+          handled: id => Boolean(seenLive?.has(id) || reposts.findBySource(id)),
+          deliver: message => work.track(repost(message)),
+          stopped: () => !accepting,
+        }).then(result => log.info(result, 'Checked for messages posted while offline'))
+          .finally(() => { seenLive = undefined; }));
+      }
     } catch (err) {
       log.error({ err }, 'Command registration failed; disconnecting');
       await client.destroy();

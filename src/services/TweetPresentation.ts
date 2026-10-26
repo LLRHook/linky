@@ -4,24 +4,25 @@ import type { RewritePlatform } from './LinkConfiguration';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { parseSocialUrl, rewriteSocialLinks } from './SocialProviders';
 
-export function tweetParts(tweet: TweetTranslation): TweetTranslation[] {
+function tweetParts(tweet: TweetTranslation): TweetTranslation[] {
   return [tweet, ...(tweet.quote ? tweetParts(tweet.quote) : [])];
 }
 
 function languageLabel(tweet: TweetTranslation): string {
-  return tweet.language === 'English' ? '' : `Translated from ${tweet.language}`;
+  return tweet.language && tweet.language !== 'English' ? `Translated from ${tweet.language}` : '';
 }
 
-export function translationCaption(tweet: TweetTranslation): string {
+function translationCaption(tweet: TweetTranslation): string {
   return tweetParts(tweet).map((part, index) => {
+    if (!part.text) return '';
     const author = index ? `**Quoted post by ${escapeMarkdown(part.author.name)}**\n` : '';
     const label = languageLabel(part);
     return `${author}${part.text}${label ? `\n-# ${label}` : ''}`;
-  }).join('\n\n');
+  }).filter(Boolean).join('\n\n');
 }
 
 /** Split at readable boundaries without cutting a generated Markdown link or escape. */
-export function splitDescription(text: string, limit = 4_096): string[] | undefined {
+function splitDescription(text: string, limit = 4_096): string[] | undefined {
   const chunks: string[] = [];
   while (text.length > limit) {
     let cut = Math.max(text.lastIndexOf('\n', limit), text.lastIndexOf(' ', limit));
@@ -46,13 +47,15 @@ export function translationEmbeds(tweet: TweetTranslation, sourceUrl: string): A
   for (const [partIndex, part] of tweetParts(tweet).entries()) {
     const chunks = splitDescription(part.text);
     if (!chunks) return undefined;
+    // An empty outer post still contributes its first photo and author before its quoted cards.
+    if (!chunks.length && part.photos.length) chunks.push('');
     const url = partIndex ? part.url! : sourceUrl;
     const label = languageLabel(part);
     for (const [index, description] of chunks.entries()) {
       const continuation = new URL(url);
       continuation.hash = `translation-${index + 1}`;
       embeds.push({
-        url: index ? continuation.href : url, description, color: 0x637dff,
+        url: index ? continuation.href : url, ...(description ? { description } : {}), color: 0x637dff,
         ...(index === 0 ? {
           author: { ...part.author, name: `${partIndex ? 'Quoted: ' : ''}${part.author.name}`.slice(0, 256) },
           ...(part.photos[0] ? { image: { url: part.photos[0] } } : {}),
@@ -67,7 +70,7 @@ export function translationEmbeds(tweet: TweetTranslation, sourceUrl: string): A
   return embeds.length <= 10 && length <= 6_000 ? embeds : undefined;
 }
 
-export function translationAttachment(tweets: TweetTranslation[]): AttachmentBuilder {
+function translationAttachment(tweets: TweetTranslation[]): AttachmentBuilder {
   const text = tweets.map((tweet) => tweetParts(tweet).map((part, index) =>
     `${index ? 'Quoted post: ' : ''}${part.author.name}\n${part.url ?? ''}\n` +
     `${languageLabel(part)}\n\n${part.text}`).join('\n\n')).join('\n\n---\n\n');
@@ -100,7 +103,7 @@ export async function translateRepost(
   const translations = new Map(results.filter((entry): entry is readonly [string, TweetTranslation] => entry[1] !== null));
   if (!translations.size) return { content };
   const [id, translation] = translations.entries().next().value!;
-  if (linkCount === 1 && !tweetParts(translation).some((part) => part.hasVideo)) {
+  if (linkCount === 1 && (translation.text || translation.hasMedia) && !tweetParts(translation).some((part) => part.hasVideo)) {
     const embeds = translationEmbeds(translation, links.get(id)!);
     if (embeds) return { content, embeds };
   }

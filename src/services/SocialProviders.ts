@@ -1,7 +1,7 @@
-import { mapLinks, visibleLink } from './LinkTokens';
+import { mapLinks, strictHttpsUrl, visibleLink } from './LinkTokens';
 import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
 
-export type SocialPlatform = 'x' | 'instagram' | 'tiktok' | 'bluesky' | 'reddit' | 'twitch';
+export type SocialPlatform = 'x' | 'instagram' | 'tiktok' | 'bluesky' | 'reddit' | 'twitch' | 'facebook';
 
 export interface SocialUrl {
   readonly platform: SocialPlatform;
@@ -37,6 +37,8 @@ export const SOCIAL_PROVIDERS = [
   { id: 'vxreddit', platform: 'reddit', label: 'vxReddit', origin: 'https://vxreddit.com', hosts: ['vxreddit.com'] },
   // https://github.com/seriaati/fxtwitch — this service is unrelated to fxtwitch.tv.
   { id: 'fxtwitch', platform: 'twitch', label: 'fxTwitch', origin: 'https://fxtwitch.seria.moe', hosts: ['fxtwitch.seria.moe'] },
+  // https://github.com/facebed/facebed — accepts the same /reel/ and /<page>/videos/ paths.
+  { id: 'facebed', platform: 'facebook', label: 'Facebed', origin: 'https://facebed.com', hosts: ['facebed.com', 'www.facebed.com'] },
 ] as const;
 export type SocialProvider = typeof SOCIAL_PROVIDERS[number];
 export interface ProviderCandidate { providerId: SocialProvider['id']; platform: SocialPlatform; url: string }
@@ -47,6 +49,7 @@ const TIKTOK_HOSTS = new Set(['tiktok.com', 'www.tiktok.com', 'm.tiktok.com']);
 const TIKTOK_SHARE_HOSTS = new Set(['vm.tiktok.com', 'vt.tiktok.com']);
 const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com']);
 const TWITCH_HOSTS = new Set(['twitch.tv', 'www.twitch.tv', 'm.twitch.tv']);
+export const FACEBOOK_HOSTS: ReadonlySet<string> = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com', 'web.facebook.com']);
 
 // AT Protocol handle/record-key syntax; only handle and the supported DID forms are accepted.
 const HANDLE = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
@@ -59,52 +62,50 @@ function blueskyActor(value: string): string | null {
 
 /** Parse a complete source URL; never follow redirects or extract a nested URL. */
 export function parseSocialUrl(raw: string): SocialUrl | null {
-  if (raw.length > 2048 || /[\\\s\u0000-\u001f\u007f]/.test(raw)) return null;
-  const parts = /^https:\/\/([^/?#]+)([^?#]*)(?:\?[^#]*)?(#.*)?$/i.exec(raw);
-  if (!parts) return null;
-  try {
-    const url = new URL(raw);
-    // Comparing the raw authority also rejects explicit :443, credentials and
-    // Unicode lookalikes that URL would otherwise normalize before inspection.
-    if (parts[1].toLowerCase() !== url.hostname || parts[2] !== url.pathname) return null;
-    let path = url.pathname;
-    const fragment = url.hash;
-    let platform: SocialPlatform, sourceHost: string, statusId: string | undefined, postId: string | undefined;
-    if (X_HOSTS.has(url.hostname)) {
-      const post = /^\/(?:[A-Za-z0-9_]{1,15}\/status|i\/web\/status)\/(\d{1,20})(?:\/(?:photo|video)\/[1-4])?\/?$/.exec(path);
-      if (!post) return null;
-      platform = 'x'; sourceHost = 'x.com'; statusId = post[1];
-    } else if (INSTAGRAM_HOSTS.has(url.hostname)) {
-      if (!/^\/(?:p|reels?|tv)\/[A-Za-z0-9_-]{1,64}\/?$/.test(path)) return null;
-      platform = 'instagram'; sourceHost = 'www.instagram.com';
-    } else if (TIKTOK_HOSTS.has(url.hostname)) {
-      if (!/^\/(?:@[\w.-]{1,64}\/(?:video|photo)\/\d{1,20}|t\/[A-Za-z0-9_-]{1,64})\/?$/.test(path)) return null;
-      platform = 'tiktok'; sourceHost = 'www.tiktok.com';
-    } else if (TIKTOK_SHARE_HOSTS.has(url.hostname)) {
-      if (!/^\/[A-Za-z0-9_-]{1,64}\/?$/.test(path)) return null;
-      platform = 'tiktok'; sourceHost = url.hostname;
-    } else if (url.hostname === 'bsky.app') {
-      const post = /^\/profile\/([^/]+)\/post\/([A-Za-z0-9._:~-]{1,512})\/?$/.exec(path);
-      const actor = post && blueskyActor(post[1]);
-      if (!post || !actor || post[2] === '.' || post[2] === '..') return null;
-      platform = 'bluesky'; sourceHost = 'bsky.app'; postId = `${actor}/${post[2]}`;
-      path = `/profile/${actor}/post/${post[2]}`;
-      // Preserve complete source links within Discord's original-post button limit.
-      if (`https://${sourceHost}${path}`.length > 500) return null;
-    } else if (REDDIT_HOSTS.has(url.hostname)) {
-      const post = /^\/(?:(?:r\/[A-Za-z0-9_.]{1,64}|(?:u|user)\/[A-Za-z0-9_-]{1,64})\/)?comments\/([A-Za-z0-9]{1,13})(?:\/[A-Za-z0-9_~-]{1,300})?(?:\/[A-Za-z0-9]{1,13})?\/?$/.exec(path);
-      if (!post) return null;
-      platform = 'reddit'; sourceHost = 'www.reddit.com'; postId = post[1].toLowerCase();
-    } else if (url.hostname === 'clips.twitch.tv' || TWITCH_HOSTS.has(url.hostname)) {
-      const clip = url.hostname === 'clips.twitch.tv' ? /^\/([A-Za-z0-9_-]{1,100})\/?$/.exec(path)?.[1]
-        : /^\/[A-Za-z0-9_]{1,25}\/clip\/([A-Za-z0-9_-]{1,100})\/?$/.exec(path)?.[1];
-      if (!clip || clip === 'embed') return null;
-      platform = 'twitch'; sourceHost = 'clips.twitch.tv'; postId = clip;
-      path = `/${clip}`;
-    } else return null;
-    return { platform, sourceUrl: `https://${sourceHost}${path}${fragment}`, path, fragment,
-      ...(statusId ? { statusId } : {}), ...(postId ? { postId } : {}) };
-  } catch { return null; }
+  const url = strictHttpsUrl(raw);
+  if (!url) return null;
+  let path = url.pathname;
+  const fragment = url.hash;
+  let platform: SocialPlatform, sourceHost: string, statusId: string | undefined, postId: string | undefined;
+  if (X_HOSTS.has(url.hostname)) {
+    const post = /^\/(?:[A-Za-z0-9_]{1,15}\/status|i\/web\/status)\/(\d{1,20})(?:\/(?:photo|video)\/[1-4])?\/?$/.exec(path);
+    if (!post) return null;
+    platform = 'x'; sourceHost = 'x.com'; statusId = post[1];
+  } else if (INSTAGRAM_HOSTS.has(url.hostname)) {
+    if (!/^\/(?:p|reels?|tv)\/[A-Za-z0-9_-]{1,64}\/?$/.test(path)) return null;
+    platform = 'instagram'; sourceHost = 'www.instagram.com';
+  } else if (TIKTOK_HOSTS.has(url.hostname)) {
+    if (!/^\/(?:@[\w.-]{1,64}\/(?:video|photo)\/\d{1,20}|t\/[A-Za-z0-9_-]{1,64})\/?$/.test(path)) return null;
+    platform = 'tiktok'; sourceHost = 'www.tiktok.com';
+  } else if (TIKTOK_SHARE_HOSTS.has(url.hostname)) {
+    if (!/^\/[A-Za-z0-9_-]{1,64}\/?$/.test(path)) return null;
+    platform = 'tiktok'; sourceHost = url.hostname;
+  } else if (url.hostname === 'bsky.app') {
+    const post = /^\/profile\/([^/]+)\/post\/([A-Za-z0-9._:~-]{1,512})\/?$/.exec(path);
+    const actor = post && blueskyActor(post[1]);
+    if (!post || !actor || post[2] === '.' || post[2] === '..') return null;
+    platform = 'bluesky'; sourceHost = 'bsky.app'; postId = `${actor}/${post[2]}`;
+    path = `/profile/${actor}/post/${post[2]}`;
+    // Preserve complete source links within Discord's original-post button limit.
+    if (`https://${sourceHost}${path}`.length > 500) return null;
+  } else if (REDDIT_HOSTS.has(url.hostname)) {
+    const post = /^\/(?:(?:r\/[A-Za-z0-9_.]{1,64}|(?:u|user)\/[A-Za-z0-9_-]{1,64})\/)?comments\/([A-Za-z0-9]{1,13})(?:\/[A-Za-z0-9_~-]{1,300})?(?:\/[A-Za-z0-9]{1,13})?\/?$/.exec(path);
+    if (!post) return null;
+    platform = 'reddit'; sourceHost = 'www.reddit.com'; postId = post[1].toLowerCase();
+  } else if (url.hostname === 'clips.twitch.tv' || TWITCH_HOSTS.has(url.hostname)) {
+    const clip = url.hostname === 'clips.twitch.tv' ? /^\/([A-Za-z0-9_-]{1,100})\/?$/.exec(path)?.[1]
+      : /^\/[A-Za-z0-9_]{1,25}\/clip\/([A-Za-z0-9_-]{1,100})\/?$/.exec(path)?.[1];
+    if (!clip || clip === 'embed') return null;
+    platform = 'twitch'; sourceHost = 'clips.twitch.tv'; postId = clip;
+    path = `/${clip}`;
+  } else if (FACEBOOK_HOSTS.has(url.hostname)) {
+    // Facebed labels the same video as /reel/ or /videos/, so identity is the numeric video ID.
+    const video = /^\/(?:reel|[A-Za-z0-9][A-Za-z0-9.]{0,79}\/videos)\/(\d{1,20})\/?$/.exec(path);
+    if (!video) return null;
+    platform = 'facebook'; sourceHost = 'www.facebook.com'; postId = video[1];
+  } else return null;
+  return { platform, sourceUrl: `https://${sourceHost}${path}${fragment}`, path, fragment,
+    ...(statusId ? { statusId } : {}), ...(postId ? { postId } : {}) };
 }
 
 /** Build only vetted provider authorities from a freshly validated source URL. */
@@ -114,9 +115,14 @@ export function getProviderCandidates(source: string | SocialUrl, { captionFree 
     (!captionFree || 'captionFreeOrigin' in provider)).map(provider => ({
     providerId: provider.id, platform: parsed.platform,
     url: (captionFree && 'captionFreeOrigin' in provider ? provider.captionFreeOrigin : provider.origin) +
-      (parsed.platform === 'twitch' ? '/clip' : '') + parsed.path + parsed.fragment,
+      // vxReddit defaults to component embeds; our Gateway/REST verifier needs conventional embeds.
+      // https://github.com/dylanpdx/vxReddit#extras documents the legacy query switch.
+      (parsed.platform === 'twitch' ? '/clip' : '') + parsed.path + (provider.id === 'vxreddit' ? '?legacy' : '') + parsed.fragment,
   })) : [];
 }
+
+const SOURCE_HOSTS = { x: 'x.com', instagram: 'www.instagram.com', bluesky: 'bsky.app', reddit: 'www.reddit.com',
+  facebook: 'www.facebook.com' } as const;
 
 /** Identify a provider's observed embed URL without accepting arbitrary mirrors. */
 export function parseProviderUrl(raw: string): (SocialUrl & { providerId: SocialProvider['id'] }) | null {
@@ -131,8 +137,7 @@ export function parseProviderUrl(raw: string): (SocialUrl & { providerId: Social
     const source = parseSocialUrl(`https://${clipPath ? 'clips.twitch.tv' : 'www.twitch.tv'}${path}`);
     return source ? { ...source, providerId: provider.id } : null;
   }
-  const sourceHost = provider.platform === 'x' ? 'x.com' : provider.platform === 'instagram' ? 'www.instagram.com'
-    : provider.platform === 'bluesky' ? 'bsky.app' : provider.platform === 'reddit' ? 'www.reddit.com'
+  const sourceHost = provider.platform !== 'tiktok' ? SOURCE_HOSTS[provider.platform]
     : /^\/[A-Za-z0-9_-]+\/?(?:[?#]|$)/.test(path) ? 'vm.tiktok.com' : 'www.tiktok.com';
   const source = parseSocialUrl(`https://${sourceHost}${path}`);
   return source ? { ...source, providerId: provider.id } : null;

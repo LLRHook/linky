@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
-import { REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
+import { resolve } from 'node:path';
+import { atomicWrite } from './AtomicWrite';
+import { DISCORD_ID, REWRITE_PLATFORMS, type RewritePlatform } from './LinkConfiguration';
 
 export interface ServerPreferences {
   mode?: 'replace' | 'reply';
@@ -18,7 +17,6 @@ export interface ServerPreferences {
 }
 
 type ServerRecord = ServerPreferences & { enabled?: boolean };
-const DISCORD_ID = /^[1-9]\d{16,19}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' &&
@@ -82,17 +80,6 @@ function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
     result.platforms = { ...platforms };
   }
   return result;
-}
-
-async function atomicWrite(path: string, data: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, data, { flag: 'wx', mode: 0o600 });
-    await rename(temporary, path);
-  } finally {
-    await unlink(temporary).catch(() => {});
-  }
 }
 
 /** Explicit server choices override the operator's channel/server allowlists. */

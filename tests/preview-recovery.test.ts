@@ -185,6 +185,19 @@ test('new platform previews match canonical post identities and reject unrelated
   }
 });
 
+test('Facebook previews match either Facebed URL form by video ID and require playable video', () => {
+  const source = 'https://www.facebook.com/reel/1060921586772217';
+  const items = expectedPreviews(source, 'https://facebed.com/reel/1060921586772217');
+  assert.equal(items.length, 1);
+  const video = { video: { url: 'https://video.fbcdn.example/clip.mp4' }, title: 'thevarietynerd' };
+  assert.equal(inspectPreviews([{ url: 'https://www.facebook.com/reel/1060921586772217', ...video }], items).ok, true);
+  assert.equal(inspectPreviews([{ url: 'https://www.facebook.com/61582221823407/videos/1060921586772217/', ...video }], items).ok, true);
+  assert.equal(inspectPreviews([{ url: 'https://www.facebook.com/reel/1060921586772218', ...video }], items).ok, false);
+  // Facebed's login-wall page has a title and image but no video.
+  assert.equal(inspectPreviews([{ url: 'https://facebed.com/reel/1060921586772217', title: 'Log in or sign up to view',
+    description: 'See posts, photos and more on Facebook.', thumbnail: { url: 'https://static.example/fb.png' } }], items).ok, false);
+});
+
 test('an unavailable message aborts the preview wait instead of manufacturing success', async () => {
   const message = { embeds: [], fetch: async () => { throw { code: 10008 }; } } as unknown as Message;
   await assert.rejects(waitForPreviews(message, expected, { intervals: [1], sleep: async () => {} }));

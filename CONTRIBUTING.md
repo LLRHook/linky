@@ -1,20 +1,24 @@
 # Contributing to Linky
 
-Use Node.js 22+ and `npm ci`. Tests need no Discord token. For a local bot, copy `.env.example` to `.env`, set its token, then run `npm run dev`. Commands register automatically at startup. Open `/setup` and use the private panel to enable a test server and select its channels, as described in the [README](README.md).
+Use Node.js 22+ (26, pinned in `.nvmrc`, matches the production image; CI also tests 22 and 24) and `npm ci`. Tests need no Discord token. For a local bot, copy `.env.example` to `.env`, set its token, then run `npm run dev`. Commands register automatically at startup. Open `/setup` and use the private panel to enable a test server and select its channels, as described in the [README](README.md).
 
 Before opening a PR, run:
 
 ```bash
-npm test
-npm run build
-npm run check:workers
-npm audit --audit-level=low
-bash tests/deploy.test.sh
+npm run validate
 ```
+
+It runs CI's `npm run build`, `npm run check:workers`, `npm test`, `bash tests/deploy.test.sh` and `npm audit --audit-level=low`, continues after a failure and ends with a PASS/FAIL summary; a test keeps the list equal to `.github/workflows/ci.yml`. The production container checks need Docker and run in CI (or by hand per `VERIFICATION.md` 2.5). `tests/deploy.test.sh` needs Linux-compatible Bash: on Windows run validate from Git Bash with Git's `bash` first on `PATH`, or validate the committed `HEAD` in a clean Linux checkout (works from worktrees too): `git bundle create - HEAD | docker run --rm -i node:26 sh -c 'cat > /tmp/head.bundle && git clone -q /tmp/head.bundle /app && cd /app && npm ci && npm run validate'`. To run it before every push, opt in once per clone: `git config core.hooksPath .githooks`.
+
+CI runs the secret scan, dependency audit, Node 22/24/26 builds and production container as independent jobs, so one failure does not hide the others. `CI gate` is the required check on `main` and passes only when every job passes.
+
+Every PR description fills the [template](.github/pull_request_template.md) sections Tickets, Acceptance evidence, Mutation checks, Docs checked and Remaining gaps; the required `PR evidence` check fails while any is empty and reruns when the description is edited. Map each acceptance criterion to a named test, or to the `file:function` you inspected when the criterion is structural ("execute reads as named stages"): passing behaviour tests do not prove structure. A criterion delivered only in part stays unticked, is stated under Remaining gaps and gets a follow-up ticket. For each critical new assertion, break the code it guards and record which test failed.
 
 Test observable behavior: channel scope, exact URL matching, attribution, attachment integrity, source edits, permissions and provider failures. Cover preference migration and concurrent writes, operator limits, and `/settings` changing preferences without enabling a server. Use synthetic or non-sensitive translation and YouTube API fixtures. Avoid network calls or bot login in unit tests. Never commit tokens, API keys, `.env` or private chat exports.
 
 For rendering changes, use an authorized Discord test channel. Check X, Instagram and TikTok (including a real `vm.tiktok.com` share link), profile and lookalike URLs, attachments and replies. In Replace mode, missing Manage Messages permission must preserve the original. Reply mode must work without that permission, keep the original and avoid copying its attachments. Check per-platform switches and translation limits. With translation enabled, inspect text/photo cards, playable videos, quoted posts and long text; confirm the language label stays small. Offline tests cannot prove live preview rendering or channel permissions.
+
+For tweet translation, exercise both `/fix` and **Apps → Fix with Linky** in a server and a DM, including a textless outer photo or video that quotes foreign-language text. Check the server opt-out, the operator switch, long-text attachments and native-preview fallback when the attachment cannot be sent.
 
 Instagram caption translation has a separate operator flag and key. Follow the [translation activation checks](docs/instagram-translation.md): mixed-language captions, hard-wrapped paragraphs, literal handles/links, English-only posts, working image and Reel media, unavailable previews, source edits and server opt-outs. Verify native media actually plays and the original caption is absent. A translation fixture proves code behavior, not the provider's language accuracy or a live Discord render.
 
@@ -24,7 +28,7 @@ The bot must remain silent when joining a server. `/help`, `/setup`, `/settings`
 
 Verify missing, delayed, unrelated and provider-error embeds before source deletion. Video metadata is evidence of an embedded player, not proof of actual playback. Test automatic fallback on one output, `!nolinky`, hidden URLs, disabled features and source changes during every awaited operation. Preserve original messages whenever replacement cannot be verified and disable mention notifications.
 
-Use current public Bluesky, Reddit and Twitch clip examples for new-provider checks. Profiles, indexes, lookalike hosts and unsupported share forms must stay unchanged. A successful HTTP status alone is not a usable preview. Record first-party provider sources and the actual metadata observed, including failures.
+Use current public Bluesky, Reddit and Twitch clip examples for new-provider checks. Profiles, indexes, lookalike hosts and unsupported share forms must stay unchanged. A successful HTTP status alone is not a usable preview. Record first-party provider sources and the actual metadata observed, including failures. `tests/docs-consistency.test.ts` fails until a new platform appears in the operator `REWRITE_PLATFORMS` lists and every preview provider or share-resolution fallback host appears in the README and `docs/provider-checks.md` platform tables; privacy wording about what each host receives still needs a human check against the request flow.
 
 Test `/fix` and **Apps → Fix with Linky** in guild and user installation contexts. They must never alter the source or enable passive DM processing. Reject forged Remove/Retry actions; test source edits/deletes and manually deleted bot output across registry restarts. Registry records contain ownership IDs and cleanup intent, never message content. Keep legacy settings readable and document rollback compatibility.
 

@@ -61,6 +61,7 @@ case "$1" in
       exit 0
     fi
     if [[ "$MOCK_CASE" != *startup || -f "$MOCK_DIR/rolled-back" ]]; then
+      [[ "$MOCK_CASE" != success ]] || printf '{"offlineMs":1300,"msg":"Back online after 1.3 s offline"}\n'
       printf 'Logged in as Linky#0805\nServing 2 guild(s).\n'
     fi ;;
   tag) [[ "$3" != linky:latest ]] || touch "$MOCK_DIR/rolled-back" ;;
@@ -124,6 +125,12 @@ run_case() {
     [[ $(tail -n 1 "$MOCK_DIR/output") == "LINKY_DEPLOYED_SHA=$MOCK_SHA" ]]
   else
     ! grep -q '^LINKY_DEPLOYED_SHA=' "$MOCK_DIR/output"
+  fi
+  # The bot's offline-time line is reported when present and never required.
+  if [[ "$name" == success ]]; then
+    grep -qx 'Back online after 1.3 s offline' "$MOCK_DIR/output"
+  else
+    ! grep -q 'Back online' "$MOCK_DIR/output"
   fi
   case "$name" in
     invalid) [[ ! -e "$MOCK_DIR/events" ]] ;;

@@ -1,6 +1,6 @@
 # Self-hosting and operations
 
-The public hosted bot runs on Hostinger; the website uses Vercel. It provides X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit and Twitch clip previews, with available tweet and Instagram caption translation and YouTube extras. Members need no keys or hosting. Erome is self-host-only for public users: use your own bot application, server, storage and any media workers. The optional coding integration is disabled on the public bot. Operator settings do not bypass a server administrator's channel choices.
+The public hosted bot runs on Hostinger; the website uses Vercel. It provides X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clip and Facebook Reel and video previews, with available tweet and Instagram caption translation and YouTube extras. Members need no keys or hosting. Erome is self-host-only for public users: use your own bot application, server, storage and any media workers. The optional coding integration is disabled on the public bot. Operator settings do not bypass a server administrator's channel choices.
 
 ## Hosted and self-hosted features
 
@@ -48,15 +48,17 @@ Linky registers its commands automatically at startup. Open `/setup` to enable y
 | `LINK_CHANNEL_IDS` | Optional comma-separated exact channel IDs to enable initially |
 | `LINK_SERVER_IDS` | Optional comma-separated server IDs to enable initially, including accessible threads |
 | `LINK_SETTINGS_PATH` | Saved enablement and preferences; default `data/servers.json` |
-| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube,bluesky,reddit,twitch,articles,erome`; empty enables available platforms, with automatic YouTube statistics requiring its API key and Erome following the server's channel policy; public article metadata needs no key |
+| `REWRITE_PLATFORMS` | Subset of `x,instagram,tiktok,youtube,bluesky,reddit,twitch,facebook,articles,erome`; empty enables available platforms, with automatic YouTube statistics requiring its API key and Erome following the server's channel policy; public article metadata needs no key |
 | `TRANSLATE_TWEETS` | `true` enables English translation; default `false` |
 | `TRANSLATE_INSTAGRAM` | `true` enables English Instagram captions when the translation key is available; default `false` |
 | `GOOGLE_TRANSLATE_API_KEY` | Optional dedicated Cloud Translation Basic v2 key; independent of the YouTube key |
 | `YOUTUBE_API_KEY` | Optional operator key for YouTube Data API v3; absent leaves native videos untouched; public community text/image posts need no key |
+| `TRUTH_SOCIAL_RELAY_URL`, `TRUTH_SOCIAL_RELAY_TOKEN` | Optional [Truth Social relay](truth-social-relay.md) HTTPS origin and its 32–512 character bearer secret; set both or neither. Used only when Truth Social's status API refuses the host; without either, other accounts' posts fall back to page text and first images |
 | `EROME_MEDIA_ENABLED` | Enables optional regional original-video delivery after hosting is configured; default `false` |
 | `EROME_WORKER_KEY`, `EROME_WORKER_BASE_URL` | Shared worker HMAC secret and the dedicated Vercel worker project's HTTPS origin |
 | `EROME_MEDIA_BASE_URL` | Public HTTPS media origin, without a path, query or credentials |
 | `EROME_MEDIA_PATH`, `EROME_MEDIA_PORT` | Persistent media directory and listener port; `.env.example` uses `data/media` and `8092` |
+| `CATCH_UP_ENABLED` | `true` fixes links posted while the bot was offline after a restart; default `false` |
 | `LOG_LEVEL` | Logging level; default `info` |
 | `PROMPT_ENABLED` | Explicitly enables the optional coding integration after worker setup; default `false` |
 | `PROMPT_GUILD_IDS` | Separate operator list of servers whose Administrators may request code changes |
@@ -93,6 +95,8 @@ docker compose logs -f
 
 The container runs Node.js 26 as a non-root user on Debian 13, with a read-only root filesystem, no Linux capabilities and no privilege escalation. Writable state belongs in `/app/data`; preparation uses the bounded `/tmp` mount. npm and other package managers are only available during the image build. Back up the `linky-data` volume and server's `.env`. Keep one running instance per bot token. Restart after changing environment settings; `/setup` and `/settings` take effect immediately.
 
+When the container stops, Linky stops taking new messages and lets running deliveries finish for up to 20 seconds, then cancels the rest. Commands and buttons used meanwhile get a private "restarting" reply. Keep Compose's `stop_grace_period` (30 seconds) above that limit. `data/service-checkpoint.json` records when the bot stopped, so the next startup logs `Back online after N s offline`; nothing is logged after a crash. With `CATCH_UP_ENABLED=true` it also keeps the IDs of the 20 enabled channels where a link was posted most recently, plus a time refreshed every 30 seconds. After a restart or crash, Linky reads up to 50 messages per channel posted since then and at most two minutes ago, four channels at a time, and handles them like new messages. It skips messages it already reposted. Messages in other channels, older ones, and channels without **Read Message History** stay unchanged. After a crash, a link whose repost was sent but not yet recorded can be reposted again. The file never contains message text.
+
 This version reads both legacy `{ "serverId": true }` settings and records with optional enablement and preferences. Once preferences are saved, older images cannot read those records. Keep a compatible settings backup before upgrading; a rollback to an older image also needs its compatible settings file. Restoring an image alone does not migrate the data volume.
 
 ## Checks and deployment
@@ -104,9 +108,9 @@ npm run check:workers # regional worker entrypoints
 bash tests/deploy.test.sh
 ```
 
-CI tests Node.js 22, 24 and 26, deployment safeguards, and the production container. See [contribution guide](../CONTRIBUTING.md) for live preview checks.
+CI tests Node.js 22, 24 and 26, deployment safeguards, and the production container, with the dependency audit and secret scan as separate jobs; the `CI gate` check passes only when every job passes. See [contribution guide](../CONTRIBUTING.md) for live preview checks.
 
-The hosted bot deploys after CI passes for a push to `main`. Deployment accepts only the current tested commit, builds before replacing the bot, and checks its Discord connection. Failed startup restores the previous image and deployed Compose configuration. The server's `.env` and data volume are preserved.
+The hosted bot deploys after CI passes for a push to `main`. Deployment accepts only the current tested commit, builds before replacing the bot, checks its Discord connection, and prints how long the bot was offline. Failed startup restores the previous image and deployed Compose configuration. The server's `.env` and data volume are preserved.
 
 Operators use `/root/linky`, configure `LINKY_DEPLOY_HOST`, `LINKY_SSH_KEY` and `LINKY_SSH_KNOWN_HOSTS`, and install `ops/ssh-deploy.sh` as `/usr/local/sbin/linky-deploy` with a restricted SSH key and pinned host key. After the first successful manual deployment, run `git rev-parse HEAD > .git/linky-deployed-revision` to initialize the rollback marker. Connection establishment retries automatically; for a failed deployment, inspect its logs and rerun the failed Deploy job. Disable Deploy in GitHub Actions to pause updates.
 

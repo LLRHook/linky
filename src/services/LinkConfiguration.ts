@@ -1,7 +1,8 @@
-export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome'] as const;
+export const REWRITE_PLATFORMS = ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'facebook', 'articles', 'erome'] as const;
 export type RewritePlatform = typeof REWRITE_PLATFORMS[number];
 
-const DISCORD_ID = /^[1-9]\d{16,19}$/;
+/** Discord snowflake: 17-20 digits without a leading zero. */
+export const DISCORD_ID = /^[1-9]\d{16,19}$/;
 
 /** Reject an unknown name instead of silently leaving that platform unrewritten. */
 export function parseRewritePlatforms(value: string | undefined): readonly RewritePlatform[] {

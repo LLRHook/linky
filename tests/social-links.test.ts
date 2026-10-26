@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import {
   Attachment,
   AttachmentBuilder,
@@ -30,10 +30,16 @@ import { parseProviderUrl } from '../src/services/SocialProviders';
 import { parseYouTubeUrl } from '../src/services/YouTube';
 import type { YouTubeStatistics } from '../src/services/YouTube';
 import type { RepostRecord } from '../src/services/RepostRegistry';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { APIEmbed } from 'discord.js';
 import { createArticleLookup } from '../src/services/ArticlePreview';
 import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
+import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
+
+// The repost handler logs and swallows callback errors, so a throwing assertion inside a
+// callback cannot fail a test. Forbidden callbacks are recorded and checked after each test.
+const forbidden = createForbidden();
+const forbid = forbidden.forbid;
+afterEach(() => forbidden.assertNone());
 
 const CHANNEL_ID = '123456789012345678';
 const SECOND_CHANNEL_ID = '223456789012345678';
@@ -259,8 +265,8 @@ test('platform names select which hosts are rewritten', () => {
 });
 
 test('platform configuration defaults to every platform and rejects unknown names', () => {
-  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome']);
-  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'articles', 'erome']);
+  assert.deepEqual(parseRewritePlatforms(undefined), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'facebook', 'articles', 'erome']);
+  assert.deepEqual(parseRewritePlatforms('  '), ['x', 'instagram', 'tiktok', 'youtube', 'bluesky', 'reddit', 'twitch', 'facebook', 'articles', 'erome']);
   assert.deepEqual(parseRewritePlatforms(' tiktok , x '), ['tiktok', 'x']);
   assert.deepEqual(parseRewritePlatforms('x,x'), ['x']);
   for (const invalid of ['twitter', 'x,', ',x', 'x,,tiktok', 'X', 'all']) {
@@ -315,30 +321,20 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     content?: string; webhookId?: string | null; embeds?: APIEmbed[]; attachments?: Collection<string, Attachment>;
     flags?: MessageFlagsBitField;
   }> => { throw { code: 10008 }; } };
-  const replacement = {
+  const replacement = botMessage({
     id: 'replacement-1', attachments: new Collection<string, Attachment>(),
     embeds: [] as { toJSON(): APIEmbed }[],
     fetch: async () => replacement,
     delete: async () => { events.push('delete replacement'); },
-  };
-  const source = {
+  });
+  const source = repostSource({
     id: '123456789012345679', channelId: CHANNEL_ID, guildId: '987654321098765432',
     content: 'Look https://x.com/user/status/1?q=%2F+ok#part @everyone <@&999> <@888>',
     author: { id: '777777777777777777', bot: false },
     client: { user: { id: LINKY_ID } },
     guild: { members: { me: { id: 'bot-1' } } },
-    partial: false, webhookId: null as string | null, type: MessageType.Default,
-    poll: null as unknown, pinned: false, hasThread: false, editedTimestamp: null as number | null,
-    stickers: new Collection<string, unknown>(), components: [] as unknown[],
-    messageSnapshots: new Collection<string, unknown>(),
-    flags: new MessageFlagsBitField(), attachments: new Collection<string, Attachment>(),
-    reference: null as { messageId: string; channelId?: string; guildId?: string } | null,
-    mentions: { repliedUser: null as { id: string } | null, users: new Collection<string, { id: string }>() },
     fetchReference: async () => { referenceLookup.calls++; return referenceLookup.fetch(); },
-    deletable: true,
-    inGuild: () => true,
-    channel: {
-      isSendable: () => true, isThread: () => false,
+    channel: sendableChannel({
       permissionsFor: () => permissions,
       send: async (options: MessageCreateOptions) => {
         events.push('send'); sent.push(options);
@@ -355,10 +351,10 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
         for (const embed of options.embeds ?? []) replacement.embeds.push({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed });
         return replacement;
       },
-    },
+    }),
     fetch: async (_force: boolean) => { events.push('fetch'); return source; },
     delete: async () => { events.push('delete original'); },
-  };
+  });
   const handler = createLinkRepostHandler(CHANNEL_ID, log, undefined, { translateTweet });
   return { source, replacement, handler, log, logs, permissions, events, sent, referenceLookup,
     run: () => handler(source as unknown as Message) };
@@ -666,7 +662,7 @@ test('persisted cross-channel ownership retains attribution without copying anot
   f.source.reference = { messageId: PARENT_MESSAGE_ID, channelId: SECOND_CHANNEL_ID };
   const record: RepostRecord = { guildId: f.source.guildId, channelId: SECOND_CHANNEL_ID,
     sourceId: '333333333333333333', replacementId: PARENT_MESSAGE_ID, authorId: PARENT_AUTHOR_ID, mode: 'reply' };
-  f.referenceLookup.fetch = async () => assert.fail('A cross-channel parent must not be fetched for an excerpt');
+  f.referenceLookup.fetch = forbid('A cross-channel parent must not be fetched for an excerpt');
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { findRepost: () => record })(f.source as unknown as Message);
   assert.equal(f.referenceLookup.calls, 0);
   assert.equal(f.sent[0].content!.split('\n')[0], `${QUOTED_CREDIT} (reply to <@${PARENT_AUTHOR_ID}>)`);
@@ -820,7 +816,7 @@ test('a stalled reference lookup times out after 1500ms and contains a late reje
 test('a message without a reference never fetches or invents a parent author', async () => {
   const f = fixture();
   f.source.mentions.users.set(OTHER_MENTION_ID, { id: OTHER_MENTION_ID });
-  f.referenceLookup.fetch = async () => assert.fail('No parent reference was supplied');
+  f.referenceLookup.fetch = forbid('No parent reference was supplied');
   await f.run();
   assert.equal(f.referenceLookup.calls, 0);
   assert.equal(f.sent[0].content!.split('\n')[0], QUOTED_CREDIT);
@@ -830,7 +826,7 @@ test('cross-channel references without known ownership never copy text or fetch 
   const f = fixture();
   f.source.type = MessageType.Reply;
   f.source.reference = { messageId: PARENT_MESSAGE_ID, channelId: SECOND_CHANNEL_ID, guildId: f.source.guildId };
-  f.referenceLookup.fetch = async () => assert.fail('The original channel may be private to readers here');
+  f.referenceLookup.fetch = forbid('The original channel may be private to readers here');
   await f.run();
   assert.equal(f.referenceLookup.calls, 0);
   assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *Original message unavailable.*`));
@@ -857,7 +853,7 @@ test('a declared cross-guild reference cannot provide a known or fetched parent 
   f.source.type = MessageType.Reply;
   f.source.reference = { messageId: PARENT_MESSAGE_ID, guildId: '887654321098765432' };
   f.source.mentions.repliedUser = { id: PARENT_AUTHOR_ID };
-  f.referenceLookup.fetch = async () => assert.fail('Cross-guild author lookup is not allowed');
+  f.referenceLookup.fetch = forbid('Cross-guild author lookup is not allowed');
   await f.run();
   assert.equal(f.referenceLookup.calls, 0);
   assert(f.sent[0].content!.startsWith(`${QUOTED_CREDIT} (reply)\n-# *`));
@@ -876,7 +872,7 @@ for (const refresh of [false, true]) test(`a source edit during reference lookup
     return { id: PARENT_MESSAGE_ID, channelId: CHANNEL_ID, guildId: f.source.guildId, author: { id: PARENT_AUTHOR_ID } };
   };
   const run = f.handler(f.source as unknown as Message, { refresh });
-  await started;
+  await reached(started, run, 'the reference lookup');
   f.source.content = 'An edited source https://x.com/user/status/2';
   f.source.editedTimestamp = Date.now();
   finish();
@@ -904,12 +900,25 @@ test('reply mode leaves source attachments in place without copying or Attach Fi
   const f = fixture();
   f.source.attachments.set('large-file', makeAttachment({ size: 50 * 1024 * 1024 }));
   f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.AttachFiles);
-  await createLinkRepostHandler(CHANNEL_ID, f.log, async () => {
-    assert.fail('Reply mode must not download original attachments');
-  }, { serverPreferences: () => ({ mode: 'reply' }) })(f.source as unknown as Message);
+  await createLinkRepostHandler(CHANNEL_ID, f.log, forbid('Reply mode must not download original attachments'),
+    { serverPreferences: () => ({ mode: 'reply' }) })(f.source as unknown as Message);
   assert.deepEqual(f.events, ['send', 'fetch']);
   assert.deepEqual(f.sent[0].files, []);
   assert.equal(f.source.attachments.size, 1);
+});
+
+test('replace mode with source attachments requires Attach Files before sending', async () => {
+  const f = fixture();
+  f.source.attachments.set('file', makeAttachment());
+  f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.AttachFiles);
+  // The handler catches copy failures, so count calls instead of failing inside the callback.
+  let copies = 0;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, async attachment => {
+    copies++;
+    return new AttachmentBuilder(Buffer.from('x'), { name: attachment.name });
+  })(f.source as unknown as Message);
+  assert.equal(copies, 0);
+  assert.deepEqual(f.events, []);
 });
 
 test('reply mode still requires access, history, embeds and the correct send permission', async () => {
@@ -974,7 +983,7 @@ test('a server can disable translation while retaining plain link fixing', async
   const f = fixture();
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
     serverPreferences: () => ({ translateTweets: false }),
-    translateTweet: async () => { assert.fail('Translation was disabled for this server'); },
+    translateTweet: forbid('Translation was disabled for this server'),
   })(f.source as unknown as Message);
   assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
   assert.equal(f.sent[0].embeds, undefined);
@@ -1023,7 +1032,7 @@ test('YouTube leaves its original alone when lookup or durable publication fails
 test('YouTube outage does not prevent Instagram replacement in a mixed message', async () => {
   const f = fixture(); f.source.content = `https://instagram.com/reel/abc/ https://youtu.be/${YOUTUBE_ID}?si=test`;
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
-    lookupYouTube: async () => new Map(), publishYouTube: async () => assert.fail('No statistics are available'),
+    lookupYouTube: async () => new Map(), publishYouTube: forbid('No statistics are available'),
   })(f.source as unknown as Message);
   assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
   assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://fkinstagram.com/reel/abc/ https://youtu.be/${YOUTUBE_ID}?si=test`);
@@ -1037,8 +1046,8 @@ test('hidden, disabled, inaccessible or unconfigured YouTube links make no API r
     if (kind === 'permission') f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.EmbedLinks);
     await createLinkRepostHandler(kind === 'scope' ? [] : CHANNEL_ID, f.log, undefined, {
       serverPreferences: () => kind === 'platform' ? { platforms: { youtube: false } } : {},
-      lookupYouTube: async () => assert.fail('YouTube lookup is not permitted'),
-      publishYouTube: async () => assert.fail('YouTube publication is not permitted'),
+      lookupYouTube: forbid('YouTube lookup is not permitted'),
+      publishYouTube: forbid('YouTube publication is not permitted'),
     })(f.source as unknown as Message);
     assert.deepEqual(f.events, []);
   }
@@ -1222,9 +1231,8 @@ test('server scope still requires access, deletion and attachment permissions', 
     const f = fixture();
     f.source.attachments.set('file-1', makeAttachment());
     f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits[permission]);
-    await createLinkRepostHandler([], f.log, async () => {
-      assert.fail('An inaccessible message must not download attachments.');
-    }, { serverIds: [f.source.guildId] })(f.source as unknown as Message);
+    await createLinkRepostHandler([], f.log, forbid('An inaccessible message must not download attachments.'),
+      { serverIds: [f.source.guildId] })(f.source as unknown as Message);
     assert.deepEqual(f.events, []);
   }
 });
@@ -1572,7 +1580,7 @@ test('disabled X or translation never requests a translation', async () => {
     f.source.content = 'https://x.com/u/status/123?s=20 https://instagram.com/p/abc/?igsh=1';
     const handler = createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
       platforms,
-      ...(platforms ? { translateTweet: async () => { assert.fail('disabled X lookup'); } } : {}),
+      ...(platforms ? { translateTweet: forbid('disabled X lookup') } : {}),
     });
     await handler(f.source as unknown as Message);
     assert.equal(f.sent[0].embeds, undefined);
@@ -1597,12 +1605,12 @@ test('suppressed, code and spoiler links never expose translated text', async ()
     '||https://x.com/u/status/123||',
     '\\\\||https://x.com/u/status/123||',
   ]) {
-    const f = fixture(async () => { assert.fail('hidden link lookup'); });
+    const f = fixture(forbid('hidden link lookup'));
     f.source.content = content;
     await f.run();
     assert.deepEqual(f.sent, []);
   }
-  const f = fixture(async () => { assert.fail('suppressed message lookup'); });
+  const f = fixture(forbid('suppressed message lookup'));
   f.source.flags.add(MessageFlags.SuppressEmbeds);
   await f.run();
   assert.deepEqual(f.sent, []);
@@ -1781,7 +1789,7 @@ test('articles replace only after the complete authored card is echoed and prese
   const f = fixture();
   f.source.content = `Read this ${ARTICLE_URL}`;
   const handler = createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: articleLookup,
-    verifyPreview: async () => { assert.fail('Article cards must not wait for native unfurls'); } });
+    verifyPreview: forbid('Article cards must not wait for native unfurls') });
   await handler(f.source as unknown as Message);
   assert.equal(f.sent.length, 1);
   assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nRead this <${ARTICLE_URL}>`);
@@ -1807,7 +1815,7 @@ test('automatic MyAnimeList previews use bounded metadata and require an echoed 
       connect: async () => new Response(myAnimeListHtml, { headers: { 'content-type': 'text/html' } }) });
     await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle,
       serverPreferences: () => ({ mode }),
-      verifyPreview: async () => assert.fail('MyAnimeList must not wait for native player metadata') })(f.source as unknown as Message);
+      verifyPreview: forbid('MyAnimeList must not wait for native player metadata') })(f.source as unknown as Message);
     assert.equal(f.sent.length, 1);
     const embed = f.sent[0].embeds?.[0]; assert(embed);
     const card = 'toJSON' in embed ? embed.toJSON() : embed;
@@ -1835,7 +1843,7 @@ test('article lookup respects scope, permissions, bypass and platform preference
   const cases = ['scope', 'permission', 'disabled', 'operator', 'optout', 'angles', 'code', 'spoiler', 'nolinky', 'social'] as const;
   for (const scenario of cases) {
     const f = fixture(); f.source.content = ARTICLE_URL;
-    if (scenario === 'permission') f.permissions.remove(PermissionFlagsBits.EmbedLinks);
+    if (scenario === 'permission') f.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.EmbedLinks);
     if (scenario === 'angles') f.source.content = `<${ARTICLE_URL}>`;
     if (scenario === 'code') f.source.content = '`' + ARTICLE_URL + '`';
     if (scenario === 'spoiler') f.source.content = `||${ARTICLE_URL}||`;
@@ -1845,7 +1853,7 @@ test('article lookup respects scope, permissions, bypass and platform preference
       platforms: scenario === 'operator' ? ['x'] : ['articles'],
       isOptedOut: () => scenario === 'optout',
       serverPreferences: () => scenario === 'disabled' ? { platforms: { articles: false } } : {},
-      lookupArticle: async () => { assert.fail(`No request expected: ${scenario}`); },
+      lookupArticle: forbid(`No request expected: ${scenario}`),
     })(f.source as unknown as Message);
     assert.equal(f.sent.length, 0, scenario);
     assert(!f.events.includes('delete original'), scenario);
@@ -1891,6 +1899,42 @@ test('unrelated or incomplete Discord article cards cannot authorize source dele
   }
 });
 
+const TRUTH_URL = 'https://truthsocial.com/@realDonaldTrump/117497314507062631';
+const truthImage = 'https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/media_attachments/files/117/497/original/d2c8ca4d0b00e832.jpg';
+const truthLookup = async (source: string) => ({ source, url: source, title: 'Truth Social post', publisher: 'Truth Social', truthSocial: {
+  url: source, author: { name: 'Donald J. Trump', handle: 'realDonaldTrump' }, text: 'Hello', image: truthImage, video: false, mediaCount: 1,
+  files: [{ name: 'truth-117497314507062631.jpg', url: truthImage, data: new Uint8Array([1, 2, 3]) }] } });
+
+test('Truth Social cards upload their image, and the echo at its Discord CDN address authorizes the replacement', async () => {
+  const f = fixture(); f.source.content = TRUTH_URL;
+  const send = f.source.channel.send;
+  f.source.channel.send = async options => {
+    const result = await send(options);
+    // Discord hides uploads an embed references and reports them at their CDN address.
+    result.attachments = new Collection();
+    const card = result.embeds[0].toJSON();
+    result.embeds = [{ toJSON: () => ({ ...card, image: { url:
+      'https://cdn.discordapp.com/attachments/123456789012345678/223456789012345678/truth-117497314507062631.jpg?ex=1' } }) }];
+    return result;
+  };
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: truthLookup })(f.source as unknown as Message);
+  assert.equal(f.sent.length, 1);
+  assert.deepEqual(f.sent[0].files?.map(file => (file as { name?: string }).name), ['truth-117497314507062631.jpg']);
+  const embed = f.sent[0].embeds![0];
+  assert.equal(('toJSON' in embed ? embed.toJSON() : embed).image?.url, 'attachment://truth-117497314507062631.jpg');
+  assert(f.events.includes('delete original'));
+
+  // Without Attach Files the card links the original image and uploads nothing.
+  const plain = fixture(); plain.source.content = TRUTH_URL;
+  plain.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.AttachFiles);
+  await createLinkRepostHandler(CHANNEL_ID, plain.log, undefined, { platforms: ['articles'], lookupArticle: truthLookup })(plain.source as unknown as Message);
+  assert.equal(plain.sent.length, 1);
+  assert.equal(plain.sent[0].files?.length ?? 0, 0);
+  const linked = plain.sent[0].embeds![0];
+  assert.equal(('toJSON' in linked ? linked.toJSON() : linked).image?.url, truthImage);
+  assert(plain.events.includes('delete original'));
+});
+
 test('article reply mode keeps originals without Manage Messages permission', async () => {
   const f = fixture(); f.source.content = ARTICLE_URL;
   f.permissions.remove(PermissionFlagsBits.ManageMessages);
@@ -1931,11 +1975,10 @@ test('article replies remove stale cards when revocation races Details binding o
         if (phase === 'controls') revoke();
         return f.replacement;
       } });
-      const diagnostics = { begin: () => ({ id: '12345678-1234-4123-8123-123456789abc', setPath() {},
-        startStage: () => ({ finish() {} }), finish() {} }), bind: async () => {
+      const diagnostics = diagnosticsStub({ id: '12345678-1234-4123-8123-123456789abc', bind: async () => {
         if (phase === 'details') revoke();
         return true;
-      } } as unknown as DeliveryDiagnostics;
+      } });
       await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
         platforms: ['articles'], lookupArticle: articleLookup, signal: controller.signal, diagnostics,
         rememberRepost: async () => true, isOptedOut: () => reason === 'opt-out' && changed,

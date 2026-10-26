@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { setTimeout as delay } from 'node:timers/promises';
-import { Client, Collection, ComponentType, Events, MessageFlags, MessageFlagsBitField, MessageType, PermissionFlagsBits,
+import { afterEach, test, type TestContext } from 'node:test';
+import { Client, Collection, ComponentType, Events, MessageFlags, PermissionFlagsBits,
   PermissionsBitField, type Message, type MessageCreateOptions, type APIMessageTopLevelComponent } from 'discord.js';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
 import type { EromeMedia } from '../src/services/EromeMedia';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { AlbumRegistration, EromeAlbumSessions } from '../src/services/EromeAlbumSessions';
+import { botMessage, createForbidden, deferred, mockClock, reached, repostSource, sendableChannel } from './support/discord';
 
 type AutoOptions = NonNullable<Parameters<typeof createLinkRepostHandler>[3]>;
 type InvocationOptions = NonNullable<Parameters<ReturnType<typeof createLinkRepostHandler>>[1]>;
@@ -15,29 +15,33 @@ const bot = '1491240385031311470', channelId = '123456789012345678';
 const media: EromeMedia = { id: 'a'.repeat(32), size: 20, sha256: 'b'.repeat(64), videoCount: 1,
   url: `https://media.example.test/media/${'a'.repeat(32)}.mp4`,
   metadata: { width: 1280, height: 720, duration: 160, fps: 24 } };
+// SocialLinkService starts automatic Erome progress after DeliveryProgress's default 1500 ms delay.
+const PROGRESS_DELAY_MS = 1500;
+// sendEromeMedia reconciles an uncertain send against channel history after 10 s.
+const RECONCILE_DELAY_MS = 10_000;
+
+// The handler logs and swallows callback errors; forbidden callbacks are recorded and checked here.
+const forbidden = createForbidden();
+afterEach(() => forbidden.assertNone());
 
 function fixture(prepared = media, observed = { width: prepared.metadata.width, height: prepared.metadata.height }) {
   const client = new Client({ intents: [] }); Object.assign(client, { user: { id: bot } });
   const events: string[] = [], sends: MessageCreateOptions[] = [], errors: unknown[] = [];
   let preferences: ServerPreferences = { eromeChannels: 'all' };
   let components: APIMessageTopLevelComponent[] = [];
-  const replacement = {
-    id: '123456789012345680', channelId, author: { id: bot }, attachments: new Collection(), embeds: [],
+  const replacement = botMessage({
+    id: '123456789012345680', channelId, author: { id: bot },
     get components() { return components.map(component => ({ toJSON: () => component })); },
     fetch: async () => replacement,
     edit: async (payload: { components: APIMessageTopLevelComponent[] }) => { events.push('controls'); components = payload.components; return replacement; },
     delete: async () => { events.push('delete preview'); },
-  };
-  const source = {
+  });
+  const source = repostSource({
     id: '123456789012345679', channelId, guildId: '987654321098765432', client,
     content: 'Music https://www.erome.com/a/9f9EJu3q', author: { id: '777777777777777777', bot: false },
-    guild: { members: { me: { id: bot } }, premiumTier: 0 }, partial: false, webhookId: null,
-    type: MessageType.Default, poll: null, pinned: false, hasThread: false, editedTimestamp: null,
-    stickers: new Collection(), components: [], messageSnapshots: new Collection(),
-    flags: new MessageFlagsBitField(), attachments: new Collection(), reference: null,
-    inGuild: () => true, deletable: true,
-    channel: { isSendable: () => true, isThread: () => false, nsfw: true,
-      permissionsFor: () => new PermissionsBitField(PermissionsBitField.All),
+    guild: { members: { me: { id: bot } }, premiumTier: 0 },
+    fetchReference: forbidden.forbid('A source without a reply reference must not look one up'),
+    channel: sendableChannel({ nsfw: true,
       send: async (payload: MessageCreateOptions) => {
         events.push('send'); sends.push(payload);
         components = (payload.components ?? []).map(component => 'toJSON' in component ? component.toJSON() : component) as APIMessageTopLevelComponent[];
@@ -47,10 +51,9 @@ function fixture(prepared = media, observed = { width: prepared.metadata.width, 
         client.emit(Events.Raw, { t: 'MESSAGE_UPDATE', d: { id: replacement.id, channel_id: channelId, author: { id: bot }, components: ready } });
         return replacement;
       },
-    },
-    fetch: async () => source,
+    }),
     delete: async () => { events.push('delete original'); },
-  };
+  });
   const options = {
     platforms: ['erome'] as const, serverPreferences: () => preferences,
     prepareErome: async () => { events.push('legacy'); return null; },
@@ -69,6 +72,25 @@ function fixture(prepared = media, observed = { width: prepared.metadata.width, 
   };
 }
 
+/**
+ * Runs the handler with preparation held open, proving no progress is sent one millisecond before
+ * the progress delay and exactly one progress message is sent at it, then lets preparation finish.
+ */
+async function runSlow(t: TestContext, f: ReturnType<typeof fixture>, invocation: InvocationOptions = {}) {
+  const clock = mockClock(t), started = deferred(), ready = deferred<EromeMedia>();
+  const pending = f.run({ prepareEromeMedia: async () => { f.events.push('prepare'); started.resolve(); return ready.promise; } }, invocation);
+  try {
+    await reached(started.promise, pending, 'hosted preparation'); // no virtual time has passed yet
+    await clock.advance(PROGRESS_DELAY_MS - 1);
+    assert.equal(f.sends.length, 0, 'no progress before the delay elapses');
+    await clock.advance(1);
+    assert.equal(f.sends.length, 1, 'progress appears at the delay');
+    assert.match(String(f.sends[0].content), /Preparing your Erome preview/);
+    ready.resolve(media);
+    await clock.settle(pending);
+  } finally { ready.resolve(media); await clock.settle(pending).catch(() => {}); }
+}
+
 test('automatic original video captures early metadata, binds ownership and keeps gallery when adding Remove', async () => {
   const f = fixture(); await f.run();
   assert.deepEqual(f.errors, []);
@@ -82,6 +104,8 @@ test('automatic original video captures early metadata, binds ownership and keep
   assert(components.some(component => component.type === ComponentType.MediaGallery));
   assert(JSON.stringify(components).includes('linky:remove'));
   assert(!JSON.stringify(f.sends[0].components).includes('linky:remove'));
+  // The hosted gallery owns the media, so the visible album link must not unfurl a second preview.
+  assert(JSON.stringify(components).includes('<https://www.erome.com/a/9f9EJu3q>'));
   assert.equal(f.client.listenerCount(Events.Raw), 0);
 });
 
@@ -99,7 +123,7 @@ test('Replace mode removes the source after confirming and retaining its hosted 
   assert(JSON.stringify(f.replacement.components).includes('https://www.erome.com/a/9f9EJu3q'));
 });
 
-test('a slow silent refresh keeps progress silent when converting it into its gallery', async () => {
+test('a slow silent refresh keeps progress silent when converting it into its gallery', async t => {
   const f = fixture(), edits: unknown[] = [], edit = f.replacement.edit;
   f.source.flags.add(MessageFlags.SuppressNotifications);
   f.replacement.edit = async payload => {
@@ -113,7 +137,7 @@ test('a slow silent refresh keeps progress silent when converting it into its ga
       author: { id: bot }, components } });
     return result;
   };
-  await f.run({ prepareEromeMedia: async () => { await delay(1600); return media; } }, { refresh: true });
+  await runSlow(t, f, { refresh: true });
   assert.deepEqual(f.errors, []);
   assert.equal(f.sends.length, 1);
   assert.match(String(f.sends[0].content), /Preparing your Erome preview/);
@@ -195,7 +219,7 @@ test('hosted Erome Reply retains its source dependency while Replace preserves t
   }
 });
 
-test('a tagged slow Replace sends its gallery separately from quiet progress and cleans progress up', async () => {
+test('a tagged slow Replace sends its gallery separately from quiet progress and cleans progress up', async t => {
   const f = fixture(), target = '444444444444444444', send = f.source.channel.send;
   const mentions = { parse: [], users: [f.source.author.id, target], roles: [], repliedUser: false };
   f.source.content = `<@${target}> ${f.source.content}`;
@@ -206,12 +230,12 @@ test('a tagged slow Replace sends its gallery separately from quiet progress and
     if (payload.content?.startsWith('Preparing')) {
       f.sends.push(payload);
       return { ...f.replacement, id: '123456789012345681',
-        edit: async () => assert.fail('A tagged final gallery must use a new send'),
+        edit: forbidden.forbid('A tagged final gallery must use a new send'),
         delete: async () => { progressDeleted = true; } };
     }
     return send(payload);
   };
-  await f.run({ prepareEromeMedia: async () => { await delay(1600); return media; } });
+  await runSlow(t, f);
   assert.deepEqual(f.errors, []);
   assert.equal(f.sends.length, 2);
   assert.deepEqual(f.sends[0].allowedMentions, { parse: [], repliedUser: false });
@@ -225,8 +249,8 @@ test('a tagged slow Replace sends its gallery separately from quiet progress and
   assert(!f.events.includes('delete preview'));
 });
 
-test('an author-only slow gallery sends a fresh author notification after quiet progress in Replace and Reply', async () => {
-  for (const mode of ['replace', 'reply'] as const) {
+for (const mode of ['replace', 'reply'] as const) {
+  test(`an author-only slow gallery sends a fresh author notification after quiet progress in ${mode}`, async t => {
     const f = fixture(), send = f.source.channel.send;
     f.preferences({ mode, eromeChannels: 'all' });
     let progressDeleted = false;
@@ -234,12 +258,12 @@ test('an author-only slow gallery sends a fresh author notification after quiet 
       if (payload.content?.startsWith('Preparing')) {
         f.sends.push(payload);
         return { ...f.replacement, id: '123456789012345681',
-          edit: async () => assert.fail('The author notification requires a fresh gallery send'),
+          edit: forbidden.forbid('The author notification requires a fresh gallery send'),
           delete: async () => { progressDeleted = true; } };
       }
       return send(payload);
     };
-    await f.run({ prepareEromeMedia: async () => { await delay(1600); return media; } });
+    await runSlow(t, f);
     assert.deepEqual(f.errors, [], mode);
     assert.equal(f.sends.length, 2, mode);
     assert.deepEqual(f.sends[0].allowedMentions, { parse: [], repliedUser: false }, mode);
@@ -253,8 +277,8 @@ test('an author-only slow gallery sends a fresh author notification after quiet 
     assert.equal(f.events.includes('delete original'), mode === 'replace', mode);
     assert(progressDeleted, mode);
     assert(!f.events.includes('delete preview'), mode);
-  }
-});
+  });
+}
 
 test('hosted Replace requires Manage Messages before preparation while Reply does not', async () => {
   for (const mode of ['reply', 'replace'] as const) {
@@ -277,17 +301,31 @@ test('a failed final control edit after Replace keeps the sole gallery and its a
   assert(!f.events.includes('delete preview') && !f.events.includes('release'));
 });
 
-test('a lost hosted Replace send response reconciles the exact nonce without a reply reference', async () => {
+test('a lost hosted Replace send response reconciles the exact nonce without a reply reference', async t => {
+  const clock = mockClock(t);
   const f = fixture(), send = f.source.channel.send;
-  Object.assign(f.source.channel, { messages: { fetch: async () => new Collection([
+  let lookups = 0;
+  Object.assign(f.source.channel, { messages: { fetch: async () => { lookups++; return new Collection([
     ['unrelated', { ...f.replacement, id: 'unrelated', nonce: 'another-source' } as unknown as Message],
     [f.replacement.id, Object.assign(f.replacement, { nonce: f.source.id }) as unknown as Message],
-  ]) } });
+  ]); } } });
+  const lost = deferred();
   f.source.channel.send = async payload => {
     await send(payload);
+    lost.resolve();
     throw Error('Response lost after Discord accepted the message');
   };
-  await f.run();
+  const pending = f.run();
+  // sendEromeMedia waits 10 s for Discord to settle before reconciling an uncertain send.
+  try {
+    await reached(lost.promise, pending, 'the uncertain send');
+    await clock.advance(RECONCILE_DELAY_MS - 1);
+    assert.equal(lookups, 0, 'no history lookup before the reconciliation delay');
+    await clock.advance(1);
+    assert.equal(lookups, 1, 'one history lookup at the reconciliation delay');
+    await clock.settle(pending);
+  } finally { await clock.settle(pending).catch(() => {}); }
+  assert.equal(lookups, 1, 'no further history lookup after reconciliation');
   assert.deepEqual(f.errors, []);
   assert.equal(f.sends.length, 1);
   assert.equal(f.sends[0].reply, undefined);

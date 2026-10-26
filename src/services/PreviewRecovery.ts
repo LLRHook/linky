@@ -94,6 +94,7 @@ function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   const media = Boolean(embed.video?.url || embed.image?.url || embed.thumbnail?.url);
   const source = parseSocialUrl(expected.source);
   const videoPost = expected.requireVideo || expected.platform === 'youtube' || expected.platform === 'twitch' ||
+    expected.platform === 'facebook' ||
     (source?.platform === 'x' && /\/video\/[1-4]\/?$/.test(source.path)) ||
     (source?.platform === 'instagram' && /^\/reels?\//.test(source.path)) ||
     (source?.platform === 'tiktok' && /\/video\//.test(source.path));
@@ -124,6 +125,18 @@ function sameTimestamp(actual: string | undefined, expected: string | undefined)
   return Boolean(actual && expected && Number.isFinite(Date.parse(expected)) && Date.parse(actual) === Date.parse(expected));
 }
 
+/** An `attachment://name` card image becomes the message's own Discord CDN address for that upload. */
+function sameMedia(actual: string | undefined, expected: string | undefined): boolean {
+  if (actual === expected) return true;
+  const name = expected?.startsWith('attachment://') ? expected.slice('attachment://'.length) : '';
+  if (!actual || !/^[a-z0-9-]{1,80}\.[a-z]{3,4}$/.test(name)) return false;
+  try {
+    const url = new URL(actual);
+    return url.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname) && !url.port &&
+      /^\/attachments\/\d{17,20}\/\d{17,20}\/[^/]+$/.test(url.pathname) && url.pathname.endsWith(`/${name}`);
+  } catch { return false; }
+}
+
 function matchesArticle(embeds: readonly APIEmbed[], expected: ExpectedPreview): boolean {
   const cards = expected.explicitEmbeds;
   if (expected.providerId !== 'article-metadata' || !parseArticleUrl(expected.source) ||
@@ -136,7 +149,7 @@ function matchesArticle(embeds: readonly APIEmbed[], expected: ExpectedPreview):
   return (!actual.type || actual.type === 'rich') && actual.title === card.title &&
     actual.description === card.description && actual.color === card.color &&
     actual.author?.name === card.author?.name && actual.author?.url === card.author?.url &&
-    actual.author?.icon_url === card.author?.icon_url && actual.image?.url === card.image?.url &&
+    sameMedia(actual.author?.icon_url, card.author?.icon_url) && sameMedia(actual.image?.url, card.image?.url) &&
     actual.footer?.text === card.footer?.text && actual.footer?.icon_url === card.footer?.icon_url &&
     sameTimestamp(actual.timestamp, card.timestamp) && !actual.video && !actual.thumbnail &&
     !actual.fields?.length && !actual.provider;
