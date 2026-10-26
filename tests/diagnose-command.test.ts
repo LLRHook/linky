@@ -8,6 +8,7 @@ import { ApplicationIntegrationType, GuildMFALevel, InteractionContextType, Mess
 import type { Config } from '../src/config';
 import { ServerSettings } from '../src/services/ServerSettings';
 import { data, execute } from '../src/commands/diagnose';
+import { commandInteraction, sendableChannel, type InteractionEvent } from './support/discord';
 
 const directory = mkdtempSync(join(tmpdir(), 'linky-diagnose-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -33,19 +34,16 @@ test('diagnose identifies operator-blocked Erome without querying providers or s
 });
 
 function interaction(link: string | null = null, permissions = plain | PermissionFlagsBits.ManageMessages) {
-  const events: { name: string; payload: any }[] = [];
-  const input = {
+  const events: InteractionEvent[] = [];
+  const input = commandInteraction(events, {
     guildId: SERVER as string | null, channelId: CHANNEL,
     memberPermissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild),
     guild: { mfaLevel: GuildMFALevel.None, members: { me: { id: 'bot' } } },
-    channel: { isThread: () => false, parentId: null as string | null, nsfw: false, parent: null as { nsfw: boolean } | null, isSendable: () => true,
+    channel: sendableChannel({ parentId: null as string | null, nsfw: false, parent: null as { nsfw: boolean } | null,
       permissionsFor: () => new PermissionsBitField(permissions),
-      send: async () => assert.fail('Diagnostics must not send a channel message') },
+      send: async () => assert.fail('Diagnostics must not send a channel message') }),
     options: { getString: () => link },
-    reply: async (payload: unknown) => { events.push({ name: 'reply', payload }); },
-    deferReply: async (payload: unknown) => { events.push({ name: 'defer', payload }); },
-    editReply: async (payload: unknown) => { events.push({ name: 'edit', payload }); },
-  };
+  });
   return { input, events, command: input as unknown as ChatInputCommandInteraction };
 }
 
@@ -238,9 +236,10 @@ test('mobile redirect shares and direct Reddit aliases are recognized locally wi
     ['https://www.reddit.com/r/example/s/ABCDefghij', 'Reddit'],
     ['https://redd.it/90bu6w', 'Reddit'],
     ['https://m.reddit.com/r/example/comments/90bu6w/title/', 'Reddit'],
+    ['https://www.facebook.com/share/r/1DTK3shLVM/', 'Facebook'],
   ]) {
     const f = interaction(link);
-    await execute(f.command, { ...config, rewritePlatforms: ['instagram', 'reddit'] }, servers,
+    await execute(f.command, { ...config, rewritePlatforms: ['instagram', 'reddit', 'facebook'] }, servers,
       async () => assert.fail('shape-only diagnostics must not request a provider'));
     assert.match(f.events[1].payload.content, new RegExp(`recognized ${platform} URL`));
     assert.match(f.events[1].payload.content, /No link was resolved or fetched/);

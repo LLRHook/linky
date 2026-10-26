@@ -34,7 +34,7 @@ server is available.
 - **Host** — the developer machine running this protocol (Windows 11 with Git Bash, or Linux).
 - **Bot host** — the Hostinger server running the `linky` container; only the operator can reach it over SSH.
 - **Test server** — an authorised Discord server where a self-hosted or staging bot token is enabled with `/setup`.
-- **CI** — `.github/workflows/ci.yml` (jobs `Build (Node 22|24|26)` and `Production container`).
+- **CI** — `.github/workflows/ci.yml` (independent jobs `Secret scan`, `Dependency audit`, `Build (Node 22|24|26)` and `Production container`, aggregated by `CI gate`, the required check on `main`).
 - **Deploy** — `.github/workflows/deploy.yml`, triggered by a green CI run on a `main` push.
 
 ---
@@ -72,8 +72,8 @@ server is available.
 
 - [ ] 1.1 Strict production build (CI step "TypeScript build (strict)"): `npm run build` exits 0. `tsconfig.json` has `strict`, `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noFallthroughCasesInSwitch`.
 - [ ] 1.2 Regional worker type-check (CI step "Check regional video workers"): `npm run check:workers` exits 0.
-- [ ] 1.3 Dependency audit (CI step "Audit dependencies"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
-- [ ] 1.4 Secrets: CI runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966).
+- [ ] 1.3 Dependency audit (CI job "Dependency audit"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
+- [ ] 1.4 Secrets: CI job "Secret scan" runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966).
 - [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|CaptionTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `TweetPresentation.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding.
 - [ ] 1.6 Bounded network I/O: every outbound fetch has a timeout, redirect policy and byte cap (`BoundedJson.ts`, `ArticlePreview.ts`, `MobileShareLinks.ts`, `RegionalHttp.ts`). New fetch sites must reuse those helpers.
 - [ ] 1.7 Performance anti-pattern scan of the message hot path (`src/bot.ts` message handler → `SocialLinkService`): no per-message disk read in the loop, no unbounded regex on message bodies, no await per link before detection completes. Record any finding as a `BUG` (area `perf`).
@@ -100,7 +100,7 @@ runner prints. A changed count means tests appeared or vanished — investigate 
 
 - [ ] 2.1 Test suite (CI step "Test link fixing and bot startup"): `npm test` exits 0. The tsx run prints `ℹ tests 1190` / `ℹ fail 0`; the node run prints `ℹ tests 62` / `ℹ fail 0` with 8 skipped on a non-Linux host.
 - [ ] 2.2 Deployment safeguards (CI step "Test deployment safeguards"): `bash tests/deploy.test.sh` exits 0 and every line starts with `PASS:`.
-- [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passes. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in `.vv/last-run.md` (§ 6.4).
+- [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passes; start from the PR's Acceptance evidence section and re-run, do not copy, its claims. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in `.vv/last-run.md` (§ 6.4).
 - [ ] 2.4 **2b — Coverage of the change.** No coverage tool is wired (`c8`/`nyc` absent). Fall back to the 2a mapping and, for each changed `src/` file since the last Verified SHA, name the test file that exercises it (`git diff --stat <sha>..HEAD -- src`). Uncovered changed files block.
 - [ ] 2.5 Production container (CI job "Production container"), run from the repo root with Docker available:
   ```bash
@@ -135,7 +135,7 @@ observation in a Discord client.
 - [ ] 3.4 X text post (`https://x.com/jack/status/20`): preview appears in under 4 s; Replace mode removes the source and credits the sharer; **Original post** and owner-only **Remove** work.
 - [ ] 3.5 TikTok share link (`https://www.tiktok.com/t/ZTU7oFukc/`) and long URL: share resolves to the exact video/photo ID; preview confirmed (no "Discord preview metadata was not confirmed" notice), including a delayed matching Gateway update within the eight-second window. Verify actual playback separately in the client; keep the source when an unrelated preview is returned.
 - [ ] 3.6 Instagram Reel `DdFKS1ABmK4`: preview within 8 s; note separately whether the video plays in the client (metadata is not playback).
-- [ ] 3.7 Bluesky, Reddit `/comments/` video, Twitch clip from `ops/preview-corpus.json`: each previews once.
+- [ ] 3.7 Bluesky, Reddit `/comments/` video, Twitch clip and Facebook `/share/r/` Reel from `ops/preview-corpus.json`: each previews once.
 - [ ] 3.8 Public article (Open Graph `article` page): card shows publisher label, headline, excerpt; a Tenor GIF link keeps Discord's native player (PR #58); `/settings articles:false` disables it.
 - [ ] 3.9 Manual path: `/fix link:` and **Apps → Fix with Linky** keep the source message.
 - [ ] 3.10 Failure path: an unavailable post keeps the original and shows **Retry preview** owned by the sharer.

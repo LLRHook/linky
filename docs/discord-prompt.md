@@ -37,9 +37,10 @@ value to send directly to the Responses API. There is no automatic model fallbac
    administration, workflow editing, secret management, or branch-protection bypass.
    App tokens need a renewal mechanism; a manually stored short-lived installation
    token alone is not a durable setup. A fine-grained token needs an expiry/rotation plan.
-3. Keep main protected with strict required checks `Build (Node 22)`,
-   `Build (Node 24)`, and `Production container`, administrator enforcement, and
-   conversation resolution. The publisher uses GitHub's normal merge endpoint;
+3. Keep main protected with the strict required checks `CI gate` (it passes only
+   when every CI job passes) and `PR evidence`, administrator enforcement, and
+   conversation resolution. The publisher writes every PR evidence section from
+   the request, the isolated review and the coding run, waits for both checks and uses GitHub's normal merge endpoint;
    it never edits these rules. The default `GITHUB_TOKEN` cannot replace the
    publishing credential because its pushes do not start the ordinary CI workflows.
    See [GitHub's workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).

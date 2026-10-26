@@ -1,28 +1,30 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ApplicationCommandType, ApplicationIntegrationType, InteractionContextType, MessageFlags,
+import { ApplicationCommandType, ApplicationIntegrationType, AttachmentBuilder, Collection, InteractionContextType, MessageFlags,
   PermissionFlagsBits, PermissionsBitField, type ButtonInteraction, type ChatInputCommandInteraction,
   type APIEmbed, type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../src/config';
 import { data, contextData, execute, manualLinks, removeManual } from '../src/commands/fix';
 import { inspectPreviews, type ExpectedPreview, type PreviewResult } from '../src/services/PreviewRecovery';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { InstagramTranslation } from '../src/services/InstagramTranslation';
+import type { TweetTranslation } from '../src/services/TweetTranslation';
 import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { createArticleLookup, type ArticlePreview } from '../src/services/ArticlePreview';
 import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
+import { buttonInteraction, commandInteraction, diagnosticsStub, type InteractionEvent } from './support/discord';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
+const UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['instagram', 'tiktok', 'x'],
   translateTweets: false, settingsPath: 'unused' };
 
 function command(content = 'https://twitter.com/jack/status/20?s=46', context = false) {
-  const events: { name: string; payload: any }[] = [];
+  const events: InteractionEvent[] = [];
   const state = {
-    render: (body: string, _edit: number): APIEmbed[] => (body.match(/https:\/\/\S+/g) ?? []).map(url => ({
+    render: (body: string, _edit: number, embeds?: APIEmbed[]): APIEmbed[] => embeds?.length ? embeds : (body.match(/https:\/\/\S+/g) ?? []).map(url => ({
       url, title: 'A public post', description: 'The requested post.', video: { url: 'https://media.example/video.mp4' },
     })),
   };
@@ -31,24 +33,23 @@ function command(content = 'https://twitter.com/jack/status/20?s=46', context = 
     id: '333333333333333333', content: '', components: [] as any[], embeds: [] as { toJSON(): APIEmbed }[],
     fetch: async () => response,
   };
-  const input = {
-    isChatInputCommand: () => !context, inGuild: () => true,
-    guildId: 'guild', channelId: 'channel', user: { id: REQUESTER },
-    channel: { isThread: () => false, messages: { fetch: () => assert.fail('Explicit fixing must not fetch chat history') } },
+  const input = commandInteraction(events, {
+    isChatInputCommand: () => !context,
+    guildId: 'guild' as string | null, channelId: 'channel', user: { id: REQUESTER },
+    channel: { isThread: (): boolean => false, messages: { fetch: () => assert.fail('Explicit fixing must not fetch chat history') } },
     memberPermissions: new PermissionsBitField(PermissionFlagsBits.SendMessages),
+    appPermissions: new PermissionsBitField(PermissionFlagsBits.AttachFiles), attachmentSizeLimit: 20 * 1024 * 1024,
     options: { getString: (name: string, required: boolean) => { assert.equal(name, 'link'); assert.equal(required, true); return content; } },
-    targetMessage: { content, author: { id: OTHER }, delete: () => assert.fail('Manual fixing must preserve its source'),
+    targetMessage: { content, editedTimestamp: null as number | null, author: { id: OTHER }, delete: () => assert.fail('Manual fixing must preserve its source'),
       edit: () => assert.fail('Manual fixing must not edit its source') },
-    reply: async (payload: unknown) => { events.push({ name: 'reply', payload }); },
-    deferReply: async (payload: unknown) => { events.push({ name: 'defer', payload }); },
     editReply: async (payload: any) => {
       events.push({ name: 'edit', payload });
       if (typeof payload.content === 'string') response.content = payload.content;
       if (payload.components) response.components = payload.components;
-      response.embeds = state.render(response.content, ++edits).map(embed => ({ toJSON: () => embed }));
+      response.embeds = state.render(response.content, ++edits, payload.embeds).map(embed => ({ toJSON: () => embed }));
       return response as unknown as Message;
     },
-  };
+  });
   return { input, events, state, response, interaction: input as unknown as ChatInputCommandInteraction | MessageContextMenuCommandInteraction };
 }
 
@@ -83,8 +84,7 @@ test('manual preview expiration stops provider retries and cannot record a late 
   t.mock.timers.enable({ apis: ['setTimeout'] });
   for (const observed of [false, true]) {
     const f = command(), outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ outcomes });
     let checks = 0;
     await execute(f.interaction, config, { diagnostics, verifyPreview: async (_message, expected) => {
       checks++;
@@ -103,9 +103,7 @@ test('manual expiration during Details binding or final controls is recorded wit
   for (const phase of ['binding', 'controls']) {
     const f = command(), outcomes: DeliveryOutcome[] = [];
     const expire = () => t.mock.timers.tick(120_000);
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-    bind: async () => { if (phase === 'binding') expire(); return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, outcomes, bind: async () => { if (phase === 'binding') expire(); return true; } });
     const editReply = f.input.editReply;
     f.input.editReply = async payload => {
       const result = await editReply(payload);
@@ -141,17 +139,13 @@ test('manual preference changes during preview verification clear the stale prev
 });
 
 function button() {
-  const events: { name: string; payload?: any }[] = [];
-  const input = {
-    customId: 'linky:remove-manual', inGuild: () => true,
+  const events: InteractionEvent[] = [];
+  const input = buttonInteraction(events, {
+    customId: 'linky:remove-manual',
     user: { id: REQUESTER }, client: { user: { id: BOT } }, applicationId: BOT,
-    memberPermissions: new PermissionsBitField(0n),
     message: { id: '333333333333333333', author: { id: BOT }, webhookId: BOT as string | null,
       interactionMetadata: { user: { id: REQUESTER } } as { user: { id: string } } | null },
-    reply: async (payload: unknown) => { events.push({ name: 'reply', payload }); },
-    deferUpdate: async () => { events.push({ name: 'defer' }); },
-    deleteReply: async () => { events.push({ name: 'delete' }); },
-  };
+  });
   return { input, events, interaction: input as unknown as ButtonInteraction };
 }
 
@@ -251,6 +245,182 @@ test('manual response content and original-post buttons stay within Discord payl
   assert.ok(response.content.length <= 2000);
   for (const row of response.components ?? []) {
     for (const control of row.toJSON().components) if (control.url) assert.ok(control.url.length <= 512);
+  }
+});
+
+const JAPANESE_TWEET: TweetTranslation = {
+  text: 'The English translation.', language: 'Japanese', url: 'https://x.com/jack/status/20',
+  author: { name: 'An author', url: 'https://x.com/jack' }, photos: [], hasMedia: false, hasVideo: false,
+};
+
+test('manual tweet translation renders English cards in server and private contexts for both commands', async () => {
+  for (const contextMenu of [false, true]) for (const guildId of ['guild', null]) for (const photos of [[], ['https://media.example/one.jpg', 'https://media.example/two.jpg']]) {
+    const f = command(undefined, contextMenu), preview = previewChecks(f), lookups: string[] = [];
+    f.input.guildId = guildId;
+    await execute(f.interaction, { ...config, translateTweets: true }, {
+      ...preview.dependencies, translateTweet: async id => { lookups.push(id); return { ...JAPANESE_TWEET, photos, hasMedia: photos.length > 0 }; },
+    });
+    assert.deepEqual(lookups, ['20']);
+    assert.equal(f.response.content, 'https://fixupx.com/jack/status/20');
+    assert.equal(f.response.embeds[0].toJSON().description, JAPANESE_TWEET.text);
+    assert.equal(f.response.embeds[0].toJSON().footer?.text, 'Translated from Japanese');
+    assert.deepEqual(f.response.embeds.flatMap(embed => embed.toJSON().image?.url ?? []), photos);
+    assert.equal(preview.observations.at(-1)?.result.ok, true);
+    const published = f.events.find(event => event.name === 'edit')!.payload;
+    assert.deepEqual(published.allowedMentions, { parse: [] });
+    assert.equal(published.components[0].toJSON().components[0].url, JAPANESE_TWEET.url);
+    assert.equal(published.components[0].toJSON().components[1].custom_id, 'linky:remove-manual');
+  }
+});
+
+test('manual tweet translation honors operator and server switches and keeps native previews after lookup failures', async () => {
+  for (const scenario of ['operator-off', 'server-off', 'platform-off', 'unavailable', 'throws', 'missing-translator']) {
+    const f = command(), preview = previewChecks(f);
+    let lookups = 0;
+    await execute(f.interaction, { ...config, translateTweets: scenario !== 'operator-off' }, {
+      ...preview.dependencies,
+      serverPreferences: () => ({ translateTweets: scenario !== 'server-off', platforms: { x: scenario !== 'platform-off' } }),
+      ...(scenario === 'missing-translator' ? {} : { translateTweet: async () => {
+        lookups++;
+        if (scenario === 'throws') throw new Error('Translation unavailable');
+        return null;
+      } }),
+    });
+    assert.equal(lookups, ['unavailable', 'throws'].includes(scenario) ? 1 : 0, scenario);
+    if (scenario === 'platform-off') assert.match(f.events.at(-1)!.payload.content, /No supported post link/);
+    else {
+      assert.equal(f.response.content, 'https://fixupx.com/jack/status/20', scenario);
+      assert.equal(preview.observations.at(-1)?.result.ok, true, scenario);
+    }
+  }
+});
+
+test('manual translation preserves textless outer photos and videos while translating their quoted text', async () => {
+  for (const media of ['photo', 'video', 'none']) {
+    const f = command(), preview = previewChecks(f);
+    const tweet: TweetTranslation = { ...JAPANESE_TWEET, text: '', language: null,
+      photos: media === 'photo' ? ['https://media.example/root.jpg'] : [],
+      hasMedia: media !== 'none', hasVideo: media === 'video',
+      quote: { ...JAPANESE_TWEET, url: 'https://x.com/quoted/status/21' },
+    };
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies, translateTweet: async () => tweet });
+    assert.equal(preview.observations.at(-1)?.result.ok, true);
+    const published = f.events.find(event => event.name === 'edit')!.payload;
+    assert.doesNotMatch(JSON.stringify(published), /Translated from null/);
+    if (media === 'photo') {
+      assert.equal(published.embeds[0].image.url, tweet.photos[0]);
+      assert.equal(published.embeds[0].description, undefined);
+      assert.equal(published.embeds[0].footer, undefined);
+      assert.equal(published.embeds[1].description, JAPANESE_TWEET.text);
+      assert.equal(published.embeds[1].footer.text, 'Translated from Japanese');
+    } else {
+      assert.match(published.content, /Quoted post by An author/);
+      assert.match(published.content, /The English translation\./);
+      if (media === 'video') assert.equal(preview.checks[0][0].requireVideo, true);
+      else assert.deepEqual(preview.checks, []);
+    }
+  }
+});
+
+test('manual translated videos and quoted videos require video metadata and retain captions through recovery', async () => {
+  for (const quoted of [false, true]) {
+    const f = command(undefined, true), preview = previewChecks(f);
+    const source = quoted ? 'https://x.com/quoted/status/21' : JAPANESE_TWEET.url!;
+    const video = { ...JAPANESE_TWEET, url: source, text: 'The translated video.', hasMedia: true, hasVideo: true };
+    const tweet = quoted ? { ...JAPANESE_TWEET, quote: video } : video;
+    f.state.render = body => [{ url: source.replace('https://x.com/', body.includes('vxtwitter.com') ? 'https://vxtwitter.com/' : 'https://g.fixupx.com/'),
+      title: 'A video', image: { url: 'https://media.example/thumbnail.jpg' },
+      ...(body.includes('vxtwitter.com') ? { video: { url: 'https://media.example/video.mp4' } } : {}),
+    }];
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies, translateTweet: async () => tweet });
+    assert.deepEqual(preview.checks.map(items => items.map(item => ({ source: item.source, requireVideo: item.requireVideo }))),
+      [[{ source, requireVideo: true }], [{ source, requireVideo: true }]]);
+    assert.deepEqual(preview.observations.map(item => item.result.ok), [false, true]);
+    assert.match(f.response.content, /vxtwitter\.com/);
+    assert.match(f.response.content, /The translated video\./);
+    assert.match(f.response.content, /Translated from Japanese/);
+    if (quoted) {
+      assert.match(f.response.content, /Quoted post by An author/);
+      assert.match(f.response.content, /The English translation\./);
+    }
+    assert(f.events.filter(event => event.name === 'edit').every(event => event.payload.content.includes('The translated video.')));
+  }
+});
+
+test('manual mixed translations cover selected links only and confirm delivered text without a native X card', async () => {
+  const f = command('https://x.com/jack/status/20 https://www.instagram.com/p/ABC/ https://vm.tiktok.com/ABC/ https://x.com/other/status/21 ||https://x.com/hidden/status/22||');
+  const preview = previewChecks(f), lookups: string[] = [];
+  await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies,
+    translateTweet: async id => { lookups.push(id); return JAPANESE_TWEET; },
+  });
+  assert.deepEqual(lookups, ['20']);
+  assert.match(f.response.content, /<https:\/\/fixupx\.com\/jack\/status\/20>/);
+  assert.match(f.response.content, /fkinstagram\.com\/p\/ABC\//);
+  assert.match(f.response.content, /tnktok\.com\/ABC\//);
+  assert.doesNotMatch(f.response.content, /status\/(?:21|22)/);
+  assert.deepEqual(preview.checks[0].map(item => item.platform), ['instagram', 'tiktok']);
+  assert.equal(preview.observations.at(-1)?.result.ok, true);
+});
+
+test('long manual tweet translations attach the full text in servers and DMs without waiting for a suppressed preview', async () => {
+  const text = 'A complete English paragraph. '.repeat(400);
+  for (const guildId of ['guild', null]) {
+    const f = command(), preview = previewChecks(f);
+    f.input.guildId = guildId;
+    if (!guildId) f.input.appPermissions = new PermissionsBitField(0n);
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies,
+      translateTweet: async () => ({ ...JAPANESE_TWEET, text }),
+    });
+    const published = f.events.find(event => event.name === 'edit')!.payload;
+    assert.match(published.content, /Full English translation attached/);
+    assert.ok(published.content.length <= 1800);
+    const file = (published.files as AttachmentBuilder[])[0];
+    assert.equal(file.name, 'translation.txt');
+    assert.ok(Buffer.isBuffer(file.attachment) && file.attachment.toString().includes(text));
+    assert.deepEqual(preview.checks, []);
+    assert.equal(preview.observations.at(-1)?.result.ok, true);
+  }
+});
+
+test('manual tweet attachment permission and upload limits fall back to the native preview', async () => {
+  for (const reason of ['permission', 'upload-limit']) {
+    const f = command(), preview = previewChecks(f);
+    if (reason === 'permission') f.input.appPermissions = new PermissionsBitField(0n);
+    else f.input.attachmentSizeLimit = 1;
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies,
+      translateTweet: async () => ({ ...JAPANESE_TWEET, text: 'A complete English paragraph. '.repeat(400) }),
+    });
+    const published = f.events.find(event => event.name === 'edit')!.payload;
+    assert.equal(published.content, 'https://fixupx.com/jack/status/20');
+    assert.equal(published.files, undefined);
+    assert.equal(preview.observations.at(-1)?.result.ok, true);
+  }
+});
+
+test('manual translation cancels stale output after source edits, settings changes or cancellation', async () => {
+  for (const stage of ['lookup', 'preview']) for (const change of ['source', 'settings', 'cancel']) {
+    const f = command(undefined, true), preview = previewChecks(f), controller = new AbortController();
+    let preferences: ServerPreferences = {};
+    const mutate = () => {
+      if (change === 'source') f.input.targetMessage.editedTimestamp = 1;
+      else if (change === 'settings') preferences = { translateTweets: false };
+      else controller.abort();
+    };
+    await execute(f.interaction, { ...config, translateTweets: true }, { ...preview.dependencies,
+      signal: controller.signal, serverPreferences: () => preferences,
+      translateTweet: async () => { if (stage === 'lookup') mutate(); return JAPANESE_TWEET; },
+      verifyPreview: async (message, expected) => {
+        const result = await preview.dependencies.verifyPreview!(message, expected);
+        if (stage === 'preview') mutate();
+        return result;
+      },
+    });
+    const last = f.events.at(-1)!.payload;
+    assert.doesNotMatch(last.content, /The English translation\./, `${stage}: ${change}`);
+    assert.match(last.content, /changed|cancelled|unavailable/);
+    if (stage === 'lookup') assert(f.events.every(event => !event.payload?.embeds?.length));
+    else assert.deepEqual(last.embeds, []);
+    assert.equal(f.input.targetMessage.content, 'https://twitter.com/jack/status/20?s=46');
   }
 });
 
@@ -442,7 +612,7 @@ test('manual mobile shares acknowledge before network work and verify the resolv
     const share = platform === 'reddit' ? 'https://www.reddit.com/r/aww/s/Mobile123'
       : 'https://www.instagram.com/share/p/Mobile123?igsh=original';
     const source = platform === 'reddit' ? 'https://www.reddit.com/comments/abc123' : 'https://www.instagram.com/p/ABC/';
-    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123' : 'https://fkinstagram.com/p/ABC/';
+    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123?legacy' : 'https://fkinstagram.com/p/ABC/';
     const f = command(share, context), preview = previewChecks(f);
     if (!canSend) f.input.memberPermissions = new PermissionsBitField(0n);
     const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async options => {
@@ -459,6 +629,22 @@ test('manual mobile shares acknowledge before network work and verify the resolv
     assert.equal(preview.checks[0][0].source, source);
     assert.deepEqual(originalControls(f), [source]);
     assert.equal(f.input.targetMessage.content, share);
+  }
+});
+
+test('manual Reddit fixes request legacy previews and retain source controls for canonical image metadata', async () => {
+  const source = 'https://www.reddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/#lightbox';
+  const fixed = 'https://vxreddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/?legacy';
+  for (const context of [false, true]) {
+    const f = command(source, context), preview = previewChecks(f);
+    f.state.render = body => body.includes(fixed) ? [{ url: 'https://www.reddit.com/comments/1x3j1s3',
+      image: { url: 'https://i.redd.it/example.jpeg' } }] : [];
+    await execute(f.interaction, { ...config, rewritePlatforms: [...config.rewritePlatforms, 'reddit'] }, preview.dependencies);
+    assert.equal(f.response.content, fixed);
+    assert.equal(preview.checks.length, 1);
+    assert.equal(preview.observations[0].result.ok, true);
+    assert.deepEqual(originalControls(f), [source.replace('#lightbox', '')]);
+    assert.equal(f.input.targetMessage.content, source);
   }
 });
 
@@ -560,6 +746,17 @@ test('manual Instagram presentation supports translated compact captions and med
   assert(sizes[1] < sizes[0]); assert(sizes[2] < sizes[1]);
 });
 
+test('manual translated Instagram images expect a caption-free preview without requiring video', async () => {
+  const caption: InstagramTranslation = { sourceUrl: 'https://www.instagram.com/p/ABC/', shortcode: 'ABC', username: 'author',
+    text: 'A readable translated caption.', languages: ['et'], mediaOnlyUrl: 'https://g.fkinstagram.com/p/ABC/', mediaTypes: ['GraphImage'] };
+  const f = command(caption.sourceUrl), preview = previewChecks(f);
+  f.state.render = () => [{ url: caption.mediaOnlyUrl, image: { url: 'https://cdn.example/photo.jpg' } }];
+  await execute(f.interaction, config, { ...preview.dependencies, translateInstagram: async () => caption });
+  assert.equal(preview.checks[0][0].captionFree, true);
+  assert.equal(preview.checks[0][0].requireVideo, undefined);
+  assert(preview.observations[0].result.ok);
+});
+
 test('manual media-first failures never claim a partial translated caption', async () => {
   const f = command('https://www.instagram.com/reel/ABC/'), preview = previewChecks(f);
   f.state.render = () => [];
@@ -595,9 +792,7 @@ const communityConfig: Config = { ...config, rewritePlatforms: [...config.rewrit
 test('manual community previews work without a video key, expose full images, and retain original and owner controls', async () => {
   for (const context of [false, true]) {
     const f = communityCommand(COMMUNITY_URL, context), paths: string[] = [], outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'community-manual', setPath: (path: string) => paths.push(path),
-      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-    bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: 'community-manual', outcomes, paths });
     await execute(f.interaction, communityConfig, { diagnostics, serverPreferences: () => ({ youtubeDisplay: 'preview' }),
       lookupYouTubeCommunity: async (link, signal) => { assert(signal); return communityPost(typeof link === 'string' ? link : link.url,
         ['https://yt3.ggpht.com/first=s1080', 'https://yt3.ggpht.com/second=s500']); },
@@ -657,8 +852,7 @@ test('manual mixed guidance recognizes mobile and other delivery shapes before a
 test('manual settings changes during Details binding or controls clear stale previews without discarding owner controls', async () => {
   for (const phase of ['binding', 'controls']) {
     const f = command('https://instagram.com/p/ABC/'); let preferences: ServerPreferences = {};
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }), finish() {} }),
-      bind: async () => { if (phase === 'binding') preferences = { platforms: { instagram: false } }; return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, bind: async () => { if (phase === 'binding') preferences = { platforms: { instagram: false } }; return true; } });
     const edit = f.input.editReply;
     f.input.editReply = async payload => {
       const result = await edit(payload);
@@ -676,9 +870,7 @@ test('manual context source edits during Details or final controls remove a prev
   for (const phase of ['binding', 'controls']) {
     const f = communityCommand(COMMUNITY_URL, true), outcomes: DeliveryOutcome[] = [];
     const change = () => { f.input.targetMessage.content = COMMUNITY_URL + ' edited'; };
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-      bind: async () => { if (phase === 'binding') change(); return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, outcomes, bind: async () => { if (phase === 'binding') change(); return true; } });
     const edit = f.input.editReply;
     f.input.editReply = async payload => { const result = await edit(payload);
       if (phase === 'controls' && payload.content === undefined && payload.components) change(); return result; };
@@ -699,8 +891,7 @@ test('five community-only manual posts still render while unrelated and hidden l
 test('manual mixed community guidance is private and skips every lookup without a retry offer', async () => {
   for (const context of [false, true]) {
     const f = communityCommand(`${COMMUNITY_URL} https://x.com/jack/status/20`, context), outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'mixed-guidance', setPath() {}, startStage: () => ({ finish() {} }),
-      finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: 'mixed-guidance', outcomes });
     await execute(f.interaction, communityConfig, { diagnostics,
       lookupYouTubeCommunity: async () => assert.fail('mixed lookup'),
       verifyPreview: async () => assert.fail('mixed verify'), normalizeMobileLinks: async () => assert.fail('mixed normalize') });
@@ -733,9 +924,7 @@ test('manual article parser respects platform settings, hidden links, bypasses a
 test('manual article previews use authored cards without native waits and retain requester controls', async () => {
   for (const context of [false, true]) {
     const f = communityCommand(ARTICLE_URL, context), paths: string[] = [], outcomes: DeliveryOutcome[] = [];
-    const diagnostics = { begin: () => ({ id: 'article-manual', setPath: (path: string) => paths.push(path),
-      startStage: () => ({ finish() {} }), finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }),
-      bind: async () => false } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: 'article-manual', outcomes, paths });
     await execute(f.interaction, articleConfig, { diagnostics,
       lookupArticle: async (source, signal) => { assert(signal); assert.equal(source, ARTICLE_URL); return articlePost(source); },
       verifyPreview: async () => assert.fail('Authored articles must not wait for native unfurls') });
@@ -825,6 +1014,42 @@ test('three manual articles allow hidden social links and require an exact echoe
   assert.deepEqual(originalControls(mismatch), [ARTICLE_URL]);
 });
 
+const TRUTH_URL = 'https://truthsocial.com/@realDonaldTrump/117497314507062631';
+const truthImage = 'https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/media_attachments/files/117/497/original/d2c8ca4d0b00e832.jpg';
+const truthPost = (source: string): ArticlePreview => ({ source, url: source, title: 'Truth Social post', publisher: 'Truth Social', truthSocial: {
+  url: source, author: { name: 'Donald J. Trump', handle: 'realDonaldTrump' }, text: 'Hello', image: truthImage, video: false, mediaCount: 1,
+  files: [{ name: 'truth-117497314507062631.jpg', url: truthImage, data: new Uint8Array([1, 2, 3]) }] } });
+
+test('manual Truth Social cards upload their image, confirm at the Discord CDN address and drop the upload when unconfirmed', async () => {
+  const cdn = 'https://cdn.discordapp.com/attachments/123456789012345678/223456789012345678/truth-117497314507062631.jpg?ex=1';
+  for (const scenario of ['confirmed', 'unconfirmed', 'no-attach'] as const) {
+    const f = communityCommand(TRUTH_URL), edit = f.input.editReply;
+    Object.assign(f.response, { attachments: new Collection() });
+    if (scenario === 'no-attach') f.input.appPermissions = new PermissionsBitField(0n);
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      const card = f.response.embeds[0]?.toJSON();
+      if (card?.image?.url?.startsWith('attachment://')) f.response.embeds = [{ toJSON: () => ({ ...card,
+        ...(scenario === 'unconfirmed' ? { title: 'Wrong post' } : {}), image: { url: cdn } }) }];
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => truthPost(source) });
+    const published = f.events.find(event => event.name === 'edit' && event.payload.embeds?.length)!.payload;
+    const image = published.embeds[0].toJSON?.().image?.url ?? published.embeds[0].image?.url;
+    if (scenario === 'no-attach') {
+      assert.equal(image, truthImage);
+      assert.equal(published.files?.length ?? 0, 0);
+    } else {
+      assert.equal(image, 'attachment://truth-117497314507062631.jpg');
+      assert.deepEqual(published.files.map((file: AttachmentBuilder) => file.name), ['truth-117497314507062631.jpg']);
+    }
+    if (scenario === 'unconfirmed') {
+      assert.match(f.response.content, /preview could not be confirmed/);
+      assert.deepEqual(f.events.at(-1)?.payload.attachments, [], 'the hidden upload is removed with its card');
+    } else assert.doesNotMatch(f.response.content, /could not/, scenario);
+  }
+});
+
 test('manual article source edits, deletions, shutdown and preference changes prevent publication', async () => {
   for (const kind of ['edited', 'deleted', 'cancelled', 'preferences'] as const) {
     const f = communityCommand(ARTICLE_URL, true), controller = new AbortController();
@@ -855,9 +1080,7 @@ test('manual article source and settings changes during publication, Details bin
       if (kind === 'preferences') preferences = { platforms: { articles: false } };
       if (kind === 'cancelled') controller.abort();
     };
-    const diagnostics = { begin: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', setPath() {},
-      startStage: () => ({ finish() {} }), finish() {} }),
-      bind: async () => { if (phase === 'binding') change(); return true; } } as unknown as DeliveryDiagnostics;
+    const diagnostics = diagnosticsStub({ id: UUID, bind: async () => { if (phase === 'binding') change(); return true; } });
     const edit = f.input.editReply;
     f.input.editReply = async payload => {
       const result = await edit(payload);

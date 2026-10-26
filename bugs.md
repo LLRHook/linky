@@ -249,6 +249,154 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** open
 
+### [BUG-1791981980] Permission tests can pass because the repost handler swallows assertions raised in its callbacks
+- [x] **Severity:** low
+- **Area:** tests
+- **File(s):** tests/social-links.test.ts, tests/delivery-recovery.test.ts
+- **Observation:** On 2026-10-14, a mutation check during FEAT-1791981013 removed the Attach Files requirement for replace-mode attachments and `server scope still requires access, deletion and attachment permissions` still passed. Its `copyAttachment` callback calls `assert.fail`, but `createLinkRepostHandler` catches delivery errors and logs them, so the assertion never reaches the test runner; `f.events` stays empty for the wrong reason.
+- **Expected:** Tests that mean "this callback must not run" count calls (or record a flag) and assert on that after the handler returns.
+- **Repro / Notes:** In `src/services/SocialLinkService.ts`, pass `attachments: false` to `requiredRepostPermissions`, then run `npx tsx --test tests/social-links.test.ts`; the server-scope permission test still passes. The new replace-mode Attach Files test counts copies and fails on that mutant. Other `assert.fail` callbacks passed into the handler should be audited the same way.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** `tests/social-links.test.ts` replaces every callback `assert.fail` with a recorded `forbid` callback checked in `afterEach`. This exposed an article test whose permission case kept Administrator, so it never lacked Embed Links; it now removes both. A suite-wide probe of swallowed `assert.fail` calls found one more, in `tests/delivery-recovery.test.ts`, where the community-lookup case used `nolinky` instead of `!nolinky`; it now uses the real bypass and counts lookups. The probe reports no swallowed assertions. Removing the Attach Files or Embed Links requirement now fails the matching test.
+- **Docs:** none needed (tests only).
+### [BUG-1791986809] Operator docs and V&V checklist omit the Facebook platform
+- [x] **Severity:** low
+- **Area:** docs
+- **File(s):** docs/self-hosting.md, .env.example, VERIFICATION.md
+- **Observation:** The 2026-10-14 PR audit found that FEAT-1791951567 (PR #72) left `REWRITE_PLATFORMS` documented as `x,instagram,tiktok,youtube,bluesky,reddit,twitch,articles,erome` in `docs/self-hosting.md` and `.env.example`; the hosted-platform sentence at the top of `docs/self-hosting.md` also omits Facebook. `VERIFICATION.md` step 3.7 covers Bluesky, Reddit and Twitch corpus entries but not the new Facebook share.
+- **Expected:** Operator references list `facebook` wherever they enumerate rewrite platforms, so an explicit list copied from the docs keeps Facebook; step 3.7 includes the Facebook share.
+- **Repro / Notes:** `git grep -n "twitch,articles" -- docs .env.example`; compare with `REWRITE_PLATFORMS` in `src/services/LinkConfiguration.ts`.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** `.env.example` and `docs/self-hosting.md` now list `facebook` in `REWRITE_PLATFORMS`, the hosted-platform sentence names Facebook Reels and videos, and `VERIFICATION.md` step 3.7 includes the Facebook `/share/r/` corpus entry.
+- **Docs:** `.env.example`, `docs/self-hosting.md`, `VERIFICATION.md`.
+
+### [BUG-1791986810] Facebook, Erome and hosted-album wiring paths have no regression tests
+- [x] **Severity:** low
+- **Area:** tests
+- **File(s):** tests/preview-watcher.test.ts, tests/diagnose-command.test.ts, tests/mobile-share-links.test.ts, tests/erome-media-repost.test.ts, tests/manual-media.test.ts
+- **Observation:** The 2026-10-14 PR audit removed each of these conditions and the suite stayed green: Facebook's eight-second Gateway wait (`PreviewWatcher.ts`), the Facebook branch of `/diagnose` share detection (`diagnose.ts`), the automatic-repost Erome link suppression (`eromeMedia` passed to `canonicalRepostLinks`), and album registration in the hosted `/fix` Erome path (`publishHostedErome`). `m.facebook.com` share redirects are handled but untested.
+- **Expected:** Each path has a test that fails when the condition is removed.
+- **Repro / Notes:** Mutate the condition, run the named suite with `npx tsx --test`, observe no failure.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Added a Facebed 7.5-second cold-media watcher test, a Facebook share row in the `/diagnose` shape table, an `m.facebook.com` share redirect test, an assertion that automatic hosted Erome reposts show the album link in angle brackets, and a public/private album-registration test for hosted `/fix`. Each removed condition (the Facebook wait, the diagnose branch, the mobile host, `eromeMedia`, and both halves of the album-registration guard) now fails its suite.
+- **Docs:** none needed (tests only).
+
+### [BUG-1791986811] Strict-URL test case is a no-op and shared ID and platform constants are incomplete
+- [x] **Severity:** low
+- **Area:** tests, security
+- **File(s):** tests/social-providers.test.ts, src/services/RepostRegistry.ts, src/services/MediaAssetStore.ts, src/services/EromeAlbumSessions.ts, src/services/DeliveryDiagnostics.ts, src/services/DeliveryContext.ts
+- **Observation:** The 2026-10-14 audit of PR #73 found: the `strictHttpsUrl` test string `'https://x.com\a'` contains no backslash (JS drops the escape), so the backslash case is never exercised directly; three identical `/^[1-9]\d{16,19}$/` copies remain outside the shared `DISCORD_ID`; `DeliveryDiagnostics` keeps an intentionally looser `DISCORD_ID` under the same name with no explanation; `DELIVERY_PLATFORMS` restates `REWRITE_PLATFORMS` by hand and can drift.
+- **Expected:** Real backslash and other normalisation cases are asserted on `strictHttpsUrl`; every strict snowflake check uses the shared constant; the looser legacy pattern is named and explained; delivery platforms derive from rewrite platforms.
+- **Repro / Notes:** `node -e "console.log('https://x.com\a'.includes('\\'))"` prints false.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** The strict-URL test now asserts real backslash host and path cases, a non-443 port, encoded and single-dot segments, a tab, an uppercase scheme and a literal Unicode lookalike. `RepostRegistry`, `MediaAssetStore` and `EromeAlbumSessions` use the shared `DISCORD_ID`; the looser diagnostics pattern is renamed `LEGACY_SNOWFLAKE` with its reason; `DELIVERY_PLATFORMS` derives from `REWRITE_PLATFORMS`. Build, workers, 1,238 TypeScript tests, 54 script tests (eight environment-dependent skips), audit and deploy safeguards pass.
+- **Docs:** none needed (internal constants and tests).
+
+### [BUG-1791986812] Facebook page-name pattern accepts dot-only names and the host allowlist is exported mutable
+- [x] **Severity:** low
+- **Area:** providers, security
+- **File(s):** src/services/SocialProviders.ts, tests/social-providers.test.ts
+- **Observation:** `/^\/(?:reel|[A-Za-z0-9.]{1,80}\/videos)\/(\d{1,20})\/?$/` accepts `https://www.facebook.com/.../videos/123`, rewriting it to a Facebed URL. `FACEBOOK_HOSTS` is exported as a mutable `Set`, which the share resolver also uses as an allowlist.
+- **Expected:** Page names start with a letter or digit; the shared host set is typed read-only.
+- **Repro / Notes:** `parseSocialUrl('https://www.facebook.com/.../videos/123')` returns a Facebook source. Harmless today (fixed provider host, video required) but outside the documented URL forms.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Facebook page names must start with a letter or digit, and `FACEBOOK_HOSTS` is typed `ReadonlySet<string>`. Dot-only and dot-leading page names are rejected in tests; restoring the old pattern fails them.
+- **Docs:** none needed (documented URL forms unchanged).
+
+### [BUG-1791990872] Self-hosting guide says the container runs Node.js 24
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** docs/self-hosting.md
+- **Observation:** `docs/self-hosting.md:94` says "The container runs Node.js 24"; both `Dockerfile` stages use `node:26-trixie-slim` (PR #52 moved the runtime to Node 26).
+- **Expected:** The guide names the runtime the `Dockerfile` actually builds.
+- **Repro / Notes:** `grep -n FROM Dockerfile`; found during FEAT-1791990467 recon (pre-existing, not caused by that change).
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1791991450] README counts seven social platforms after Facebook was added
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** README.md
+- **Observation:** README "Self-hosting and development" says the hosted bot is free "for the seven social platforms above"; the platform table lists eight (X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clips, Facebook) since FEAT-1791951567.
+- **Expected:** The count matches the table, or the sentence avoids a number.
+- **Repro / Notes:** Found during FEAT-1791990470 docs update (pre-existing, not caused by that change).
+- **Bump:** patch
+- **Status:** open
+
+
+### [BUG-1792164365] Reddit component previews cannot be confirmed by Linky's embed verifier
+- [x] **Severity:** high
+- **Area:** providers, previews
+- **File(s):** src/services/SocialProviders.ts, tests/social-providers.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts, ops/preview-corpus.json
+- **Observation:** The reported ColumbiaMD image post produced a Retry preview failure notice. vxReddit now advertises a `discord:component-embed` payload by default, while Linky's Gateway/REST verifier checks conventional embeds. The same post returns usable canonical image metadata with vxReddit's documented `?legacy` option, without the component payload.
+- **Expected:** Automatic and manual Reddit previews request a format Linky can verify, retain post identity and controls, and preserve the source whenever confirmation fails.
+- **Repro / Notes:** Compare Discord-crawler responses for `https://vxreddit.com/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/` with and without `?legacy`. Upstream documentation: https://github.com/dylanpdx/vxReddit#extras. Production logged two vxReddit confirmation failures for the reported source.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** The shared provider builder requests `?legacy` before fragments for automatic, manual and resolved-share previews. Regression fixtures cover canonical image/video confirmation, Replace/Reply modes, missing/unrelated metadata, original-post controls and source preservation. Node 26 validation passes (1,273 TypeScript tests, 74 script tests, 24 deployment safeguards; eight expected container-only skips). Local and Hostinger probes confirm HTTP 200, matching image metadata and no component payload for the reported legacy URL; a live Discord render was not exercised.
+- **Docs:** docs/provider-checks.md records the format requirement and observation limits.
+
+### [BUG-1792164560] PR template assertion fails on Windows CRLF checkouts
+- [x] **Severity:** low
+- **Area:** tests, ci
+- **File(s):** tests/pr-evidence-check.test.mjs
+- **Observation:** `npm run validate` on Node 26 failed because the template-heading test searches for a literal LF immediately after each heading, but `core.autocrlf=true` checks out the Markdown template with CRLF. The evidence parser itself already handles both line endings.
+- **Expected:** Template structure assertions accept the repository's Windows checkout and Linux CI line endings.
+- **Repro / Notes:** Run `node --test tests/pr-evidence-check.test.mjs` in a CRLF checkout; the unedited-template test fails on its first heading.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Assert exact heading lines after splitting LF, CRLF or CR line endings. The original assertion failed in this Windows checkout; all ten PR evidence tests and full Node 26 validation now pass.
+
+### [BUG-1792536754] Manual X fixes never request tweet translation in servers or DMs
+- [x] **Severity:** med
+- **Area:** commands, previews
+- **File(s):** src/commands/fix.ts, src/bot.ts, tests/manual-fix.test.ts, tests/bot.test.ts
+- **Observation:** `/fix` and Apps → Fix with Linky rewrite X links but never call the tweet translator. An offline reproduction with translation enabled made zero translation calls in both server and DM contexts; the reported group-DM preview retained a Japanese quoted post.
+- **Expected:** Both manual entry points use the existing English tweet presentation, including quoted text and media, honor server opt-outs, and use the operator translation setting in DMs. Failed lookups retain the native preview.
+- **Repro / Notes:** Exercise both commands with translation enabled in a server and without a guild. Cover translated cards, quoted videos, long-text attachments, provider recovery, disabled settings, and source/settings changes during preparation.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Share the enabled tweet adapter with both manual commands and reuse tweet cards, quote/video captions, long-text files and delivery expectations. Respect operator/server switches, retain native previews when translation or attachment delivery is unavailable, and clear stale output after source/settings changes. Node 26 `npm run validate` passes; targeted mutation checks reject missing command wiring and missing video requirements. Live Discord rendering/playback was not exercised.
+- **Docs:** README.md, CONTRIBUTING.md.
+
+### [BUG-1792537162] Empty outer posts discard usable quoted-post translations
+- [x] **Severity:** med
+- **Area:** providers, previews
+- **File(s):** src/services/TweetTranslation.ts, src/services/TweetPresentation.ts, tests/tweet-translation.test.ts, tests/bot.test.ts
+- **Observation:** The reported X post returns a successful FxEmbed response with empty outer text, a null outer language, a photo, and a Japanese quote with an English translation. The parser rejects the outer post before inspecting the quote, so the usable translation is lost even after manual command wiring is repaired.
+- **Expected:** Preserve an empty post's supported media and translate usable quoted text without inventing a source-language label. Unknown-language prose, malformed quotes, and wholly untranslated chains must still keep native previews.
+- **Repro / Notes:** A bounded live lookup confirmed the response shape. Regression fixtures use synthetic text and media and must cover parsing, manual dispatch, image preservation, and textless video captions.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Parse empty posts only with usable media or valid quoted context, retain their null language, preserve photo cards and video galleries, and show only the quoted text's translation label. Synthetic parser/command/bot regressions and the full Node 26 validation pass. A post-fix live lookup of the reported post produced one preserved photo and one English quote card; removing the empty-post photo rendering fails its regression.
+- **Docs:** README.md, CONTRIBUTING.md.
+### [BUG-1793013677] Locked undici 6.28.1 fails the dependency audit gate
+- [x] **Severity:** high
+- **Area:** security, ci
+- **File(s):** package-lock.json
+- **Observation:** On 2026-10-26 `npm audit --audit-level=low` on main reported two high-severity undici advisories (GHSA-4qv8-2p9j-2685, GHSA-xjj6-f33q-929c) for undici 6.28.1, a discord.js dependency. `npm run validate` and the CI audit step fail for every branch.
+- **Expected:** The lockfile resolves a patched undici within discord.js's declared range and the audit reports no vulnerabilities.
+- **Repro / Notes:** `npm ls undici`; `npm audit --audit-level=low`. Found while validating FEAT-1793013312; not caused by it.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** `npm audit fix` updated only package-lock.json to undici 6.29.1; `npm audit` reports 0 vulnerabilities and the full test suite passes.
+
+### [BUG-1793035756] Truth Social card images and avatars do not render in Discord
+- [x] **Severity:** high
+- **Area:** previews, providers
+- **File(s):** src/services/TruthSocial.ts, src/services/ArticlePreview.ts, src/services/ArticlePosts.ts, src/services/PreviewRecovery.ts, src/services/SocialLinkService.ts, src/commands/fix.ts, tests/truth-social.test.ts, tests/social-links.test.ts, tests/manual-fix.test.ts, docs/article-previews.md
+- **Observation:** After FEAT-1793034185 deployed, Truth Social cards in GAMBA showed text, counts and Play video links but no post image or author icon. Discord's image proxy answers `404 Invalid resource` for every `static-assets.truthsocial.com` address; Truth Social refuses Discord's fetchers, Vercel, Cloudflare Workers and wsrv.nl, while the bot host receives the same images with HTTP 200.
+- **Expected:** Truth Social cards show the post's first image and the author's avatar for any account.
+- **Repro / Notes:** A REST probe from the bot host posted a card with an `attachment://` image plus avatar; Discord rendered both (517x800 image). Referenced uploads are hidden from `message.attachments` and reported at their `cdn.discordapp.com/attachments/...` address in the echoed embed.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** The bot host downloads the post image (8 MiB cap) and avatar (1 MiB cap) from the validated media hosts and uploads them with the card as `attachment://truth-<id>[-avatar].<ext>`; preview confirmation accepts the matching Discord CDN address. Without Attach Files, or past six files or 16 MiB per message, cards link the originals. An unconfirmed `/fix` card removes its hidden uploads with it. Downloads are cached with the lookup (32 MiB total).
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.

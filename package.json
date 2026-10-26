@@ -26,6 +26,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "check:workers": "tsc --project tsconfig.worker.json",
+    "validate": "node ops/validate.mjs",
     "report:deliveries": "node ops/delivery-archive-report.mjs",
     "check:providers": "node ops/provider-metadata-check.mjs",
     "test": "npm run build && tsc --project tsconfig.test.json && tsx --test tests/*.test.ts && node --test tests/*.test.mjs",
@@ -34,11 +35,11 @@
   },
   "dependencies": {
     "discord.js": "^14.27.0",
-    "dotenv": "^18.0.5",
+    "dotenv": "^18.0.8",
     "pino": "^10.4.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
     "pino-pretty": "^13.2.0",
     "tsx": "^4.23.15",

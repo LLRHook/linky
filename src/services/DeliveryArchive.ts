@@ -2,22 +2,21 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from './AtomicWrite';
-import { DELIVERY_OUTCOMES, DELIVERY_PATHS, DELIVERY_STAGES, type DeliveryOutcome, type DeliveryPath, type StageOutcome } from './DeliveryContext';
+import { DELIVERY_OUTCOMES, DELIVERY_PATHS, DELIVERY_PLATFORMS, DELIVERY_STAGES, STAGE_OUTCOMES, type DeliveryOutcome, type DeliveryPath,
+  type DeliveryPlatform, type StageOutcome } from './DeliveryContext';
 import type { DeliveryStageRecord } from './DeliveryDiagnostics';
 
 const DAY = 86_400_000;
 const MAX_BYTES = 64 * 1_024 * 1_024;
 const HEALTH_RESERVE = 64 * 1_024; // Includes the temporary file used for an atomic health update.
 const MAX_LINE = 16 * 1_024;
-const PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'youtube', 'articles', 'erome', 'mixed'] as const;
-const STAGE_OUTCOMES: readonly StageOutcome[] = ['ok', 'unavailable', 'busy', 'timeout', 'cancelled', 'failed'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const COUNTERS = ['written', 'duplicates', 'queueDrops', 'invalidDrops', 'expiredDrops', 'closedDrops',
   'writeErrors', 'capacityFiles', 'invalidLines', 'readErrors', 'closeTimeouts'] as const;
 export type DeliveryArchiveWarning = 'queue_full' | 'invalid_record' | 'write_failed' | 'capacity_eviction' | 'read_failed' | 'close_incomplete';
 export interface ArchivedDelivery {
-  id: string; startedAt: number; platform: typeof PLATFORMS[number]; mode: 'automatic' | 'manual';
+  id: string; startedAt: number; platform: DeliveryPlatform; mode: 'automatic' | 'manual';
   outcome: DeliveryOutcome; path?: DeliveryPath; cache?: 'hit' | 'miss'; durationMs?: number; stages: DeliveryStageRecord[];
 }
 export interface ArchiveHealth {
@@ -43,7 +42,7 @@ const object = (value: unknown): value is Record<string, unknown> => Boolean(val
 /** A fresh allowlisted copy is the privacy boundary. Input identities and arbitrary properties are never serialized. */
 export function archiveDelivery(value: unknown): ArchivedDelivery | undefined {
   if (!object(value) || typeof value.id !== 'string' || !UUID.test(value.id) || !timestamp(value.startedAt) ||
-    !PLATFORMS.includes(value.platform as never) || !['automatic', 'manual'].includes(value.mode as string) ||
+    !DELIVERY_PLATFORMS.includes(value.platform as never) || !['automatic', 'manual'].includes(value.mode as string) ||
     !DELIVERY_OUTCOMES.includes(value.outcome as never) ||
     (value.path !== undefined && !DELIVERY_PATHS.includes(value.path as never)) ||
     (value.cache !== undefined && value.cache !== 'hit' && value.cache !== 'miss') ||

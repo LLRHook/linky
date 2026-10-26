@@ -1,22 +1,22 @@
-import { ActionRowBuilder, ApplicationCommandType, ApplicationIntegrationType, ButtonBuilder, ButtonStyle, ComponentType,
-  ContextMenuCommandBuilder, InteractionContextType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
-  type ButtonInteraction, type ChatInputCommandInteraction, type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
+import { ApplicationCommandType, ApplicationIntegrationType, ContextMenuCommandBuilder, InteractionContextType, MessageFlags,
+  PermissionFlagsBits, SlashCommandBuilder,
+  type ButtonInteraction, type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../config';
 import { mapLinks, visibleLink } from '../services/LinkTokens';
 import { getProviderCandidates, parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
 import { findArticleLinks, parseArticleUrl, type ArticleLookup } from '../services/ArticlePreview';
-import { ARTICLE_MIXED_GUIDANCE, articleEmbeds, hasMixedArticleLinks, prepareArticlePosts } from '../services/ArticlePosts';
+import { ARTICLE_MIXED_GUIDANCE, articleAttachments, articleEmbeds, fitArticleFiles, hasMixedArticleLinks,
+  prepareArticlePosts } from '../services/ArticlePosts';
 import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from '../services/YouTubeCommunity';
 import { originalPostUrl } from '../services/RepostPresentation';
-import { expectedPreviews, verifyPublishedPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
+import { verifyPublishedPreviews, nextProviderContent, waitForPreviews, type ExpectedPreview, type PreviewResult } from '../services/PreviewRecovery';
 import { parseEromeUrl } from '../services/Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer, type EromeProgress } from '../services/EromeDelivery';
 import type { ServerPreferences } from '../services/ServerSettings';
 import { attachmentBudget, fitsAttachmentBudget } from '../services/AttachmentLimits';
-import { eromeMediaComponents, messageHasEromeMedia, onlyEromeLinks, sendEromeMedia, watchEromeMedia,
-  type EromeMedia, type EromeMediaBinding, type EromeMediaPreparer } from '../services/EromeMedia';
+import { onlyEromeLinks, type EromeMedia, type EromeMediaBinding, type EromeMediaPreparer } from '../services/EromeMedia';
 import { createDeliveryProgress } from '../services/DeliveryProgress';
 import { createDeliveryAttempt, deliveryPlatform } from '../services/DeliveryAttempt';
 import type { DeliveryDiagnostics } from '../services/DeliveryDiagnostics';
@@ -26,7 +26,11 @@ import type { EromeAlbumSessions } from '../services/EromeAlbumSessions';
 import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailability';
 import { hasMobileShareLinks, type MobileShareLinkNormalizer } from '../services/MobileShareLinks';
 import { addInstagramCaptions } from '../services/InstagramPresentation';
-import { parseInstagramUrl, type InstagramTranslation } from '../services/InstagramTranslation';
+import type { InstagramTranslation } from '../services/InstagramTranslation';
+import { translateRepost } from '../services/TweetPresentation';
+import type { TweetTranslation } from '../services/TweetTranslation';
+import { instagramShortcodes, repostExpectations } from '../services/RepostDelivery';
+import { manualButtons, publishHostedErome } from './fixMedia';
 
 const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall];
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
@@ -71,7 +75,7 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
 export async function execute(interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
   config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment,
     prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation, serverPreferences,
-    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateInstagram, lookupYouTubeCommunity, lookupArticle, signal }: {
+    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateTweet, translateInstagram, lookupYouTubeCommunity, lookupArticle, signal }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     prepareErome?: EromePreparer;
@@ -86,6 +90,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     providerHealth?: ProviderHealth;
     albums?: EromeAlbumSessions;
     normalizeMobileLinks?: MobileShareLinkNormalizer;
+    translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
     translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
     lookupYouTubeCommunity?: YouTubeCommunityLookup;
     lookupArticle?: ArticleLookup;
@@ -158,11 +163,13 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     return;
   }
   if (!links.length) {
-    await reject('No supported post link found. Choose a public article, an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, or a Twitch clip.' +
+    await reject('No supported post link found. Choose a public article, an Instagram, TikTok, X/Twitter, YouTube, Bluesky or Reddit post, a Facebook Reel or video, or a Twitch clip.' +
       (isEromeAvailable(config, interaction.guildId) ? ' Erome albums also work in allowed server channels.' : '') +
       ' Links inside <angle brackets>, spoilers or code are skipped.');
     return;
   }
+  const tweetTranslator = config.translateTweets && preferences.translateTweets !== false &&
+    links.some(link => parseSocialUrl(link.source)?.platform === 'x') ? translateTweet : undefined;
   const eromeSource = links.find(link => parseEromeUrl(link.source))?.source;
   if (eromeSource && !interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles)) {
     await reject('Linky needs Attach Files permission to post an Erome video preview.');
@@ -183,11 +190,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
   let previewWatch: PreviewWatch | undefined;
   let media: EromeMedia | null = null;
   try {
-    const buttons = links.map((link, index) => new ButtonBuilder().setStyle(ButtonStyle.Link)
-      .setLabel(index ? `Original post ${index + 1}` : 'Original post').setURL(link.source));
-    buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Remove').setCustomId('linky:remove-manual'));
-    const buttonRows = () => [0, 5].filter(start => buttons.length > start)
-      .map(start => new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(start, start + 5)));
+    const { buttons, rows: buttonRows } = manualButtons(links);
     const stopChangedPreferences = async () => {
       if (preferencesCurrent()) return false;
       attempt.finish('disabled');
@@ -220,7 +223,10 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     }
     if (articleLinks.length) context.trace?.setPath('explicit');
     const articleStage = articleLinks.length ? context.trace?.startStage('resolve') : undefined;
-    const articles = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal) : [];
+    const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal) : [];
+    // Truth Social media is uploaded with its card; without Attach Files the card links the original addresses.
+    const articles = prepared && fitArticleFiles(prepared,
+      !interaction.inGuild() || Boolean(interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles)));
     articleStage?.finish(articles ? 'ok' : 'unavailable');
     if (await stopChangedPreferences()) return;
     if (articles === null || articles.length && !await sourceCurrent()) {
@@ -231,10 +237,11 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       return;
     }
     const explicitPosts = [...community, ...articles];
-    const previewName = articles.length ? 'article' : 'community';
+    const previewName = articles.length ? 'article' : community.length ? 'community' : 'translated';
+    const checkSource = explicitPosts.length > 0 || Boolean(tweetTranslator);
     if (explicitPosts.length) context.trace?.setPath('explicit');
     const stopChangedSource = async () => {
-      if (!explicitPosts.length || await sourceCurrent()) return false;
+      if (!checkSource || await sourceCurrent()) return false;
       if (await stopChangedPreferences()) return true;
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
       await interaction.editReply({ content: `The source changed or became unavailable. The ${previewName} preview was removed; the original is unchanged.`,
@@ -247,76 +254,9 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       ? await prepareEromeMedia(eromeSource, { context }).catch(() => null) : null;
     if (signal?.aborted) return;
     if (media) {
-      const preparedMedia = media;
-      context.trace?.setPath('hosted-original');
-      await progress.stop();
-      const initialControls = [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(0, -1)).toJSON()];
-      if (context.signal?.aborted) {
-        attempt.finish('timeout');
-        await interaction.editReply({ content: 'This preparation reached its time limit. The album is unchanged; try again later.',
-          components: initialControls, allowedMentions: { parse: [] } });
-        return;
-      }
-      if (!eromeAllowed() || !preferencesCurrent()) {
-        attempt.finish('disabled');
-        await interaction.editReply({ content: 'Erome previews are no longer allowed here. The album is unchanged.',
-          components: initialControls, allowedMentions: { parse: [] } });
-        return;
-      }
-      const watcher = watchEromeMedia(interaction.client, interaction.channelId, preparedMedia);
-      let published: Message | undefined, rollbackAttempted = false;
-      const rollback = async () => {
-        rollbackAttempted = true;
-        attempt.finish(context.signal?.aborted ? 'timeout' : eromeAllowed() && preferencesCurrent() ? 'metadata-unconfirmed' : 'disabled');
-        const details = published ? await attempt.controls(published.id) : [];
-        // V2 is sticky. Release media only once Discord confirms the gallery was removed.
-        await interaction.editReply({ flags: MessageFlags.IsComponentsV2, content: null, components: [
-          { type: ComponentType.TextDisplay, content: `<${eromeSource}>\n-# The media preview could not be confirmed or is no longer allowed here. The album is unchanged.` },
-          ...initialControls, ...details.map(row => row.toJSON()),
-        ], allowedMentions: { parse: [] } });
-        if (published) await releaseEromeMedia!(published.id);
-      };
-      try {
-        const publishStage = context.trace?.startStage('publish');
-        published = await sendEromeMedia(() => interaction.editReply({ flags: MessageFlags.IsComponentsV2, content: null,
-          components: eromeMediaComponents(preparedMedia, links[0].fixed, initialControls), allowedMentions: { parse: [] } }), async () => {
-          const existing = await interaction.fetchReply();
-          return messageHasEromeMedia(existing, preparedMedia.url) ? existing : null;
-        });
-        publishStage?.finish();
-        const ownershipStage = context.trace?.startStage('ownership');
-        const bound = await bindEromeMedia!(preparedMedia.id, published.id, preparedMedia.reservation).catch(() => false);
-        ownershipStage?.finish(bound ? 'ok' : 'failed');
-        if (!bound || context.signal?.aborted || !eromeAllowed() || !preferencesCurrent()) {
-          if (context.signal?.aborted) attempt.finish('timeout');
-          await rollback(); return;
-        }
-        const previewStage = context.trace?.startStage('preview');
-        const verified = await watcher.verify(published).catch(() => false);
-        previewStage?.finish(verified ? 'ok' : 'unavailable');
-        if (!verified || context.signal?.aborted || !eromeAllowed() || !preferencesCurrent()) {
-          if (context.signal?.aborted) attempt.finish('timeout');
-          attempt.finish(verified ? 'disabled' : 'metadata-unconfirmed');
-          observePreview?.([], { ok: false, missing: [], videoMetadata: false });
-          await rollback();
-          return;
-        }
-        const albumControl = !privateResponse && interaction.guildId ? albums?.register({ media: preparedMedia, source: eromeSource!,
-          requesterId: interaction.user.id, channelId: interaction.channelId, guildId: interaction.guildId,
-          messageId: published.id, mode: 'manual',
-          ...!interaction.isChatInputCommand() ? { sourceMessageId: interaction.targetMessage.id } : {} }) : undefined;
-        const details = await attempt.controls(published.id);
-        if (context.signal?.aborted || !eromeAllowed() || !preferencesCurrent()) { await rollback(); return; }
-        await interaction.editReply({ components: eromeMediaComponents(preparedMedia, links[0].fixed,
-          [...buttonRows().map(row => row.toJSON()), ...details.map(row => row.toJSON()),
-            ...albumControl ? [albumControl] : []]), allowedMentions: { parse: [] } });
-        if (context.signal?.aborted || !eromeAllowed() || !preferencesCurrent()) { await rollback(); return; }
-        observePreview?.([], { ok: true, missing: [], videoMetadata: preparedMedia.kind !== 'image' });
-        attempt.finish('confirmed');
-      } catch (error) {
-        if (rollbackAttempted) throw error;
-        await rollback();
-      } finally { watcher.close(); }
+      await publishHostedErome({ interaction, attempt, progress, media, source: eromeSource!, fixed: links[0].fixed,
+        buttons, buttonRows, eromeAllowed, preferencesCurrent, privateResponse, bindEromeMedia: bindEromeMedia!,
+        releaseEromeMedia: releaseEromeMedia!, albums, observePreview });
       return;
     }
     const onStage: EromeProgress = stage => {
@@ -342,24 +282,36 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     }
     let rendered = links.map(link => link.fixed).join('\n');
     const original = links.map(link => link.source).join('\n');
-    const presentation = await addInstagramCaptions(original, { content: rendered },
+    // Translate only the selected X sources; retain the prepared rendering of every other link.
+    const tweetInput = links.map(link => parseSocialUrl(link.source)?.platform === 'x' ? link.source : link.fixed).join('\n');
+    let tweetPresentation = tweetTranslator
+      ? await translateRepost(tweetInput, activeConfig.rewritePlatforms, tweetTranslator, 1800) : null;
+    const tweetFiles = tweetPresentation?.translationFiles ?? [];
+    const tweetBytes = tweetFiles.reduce((total, file) => total + (Buffer.isBuffer(file.attachment) ? file.attachment.length : Infinity), 0);
+    if (tweetFiles.length && (interaction.inGuild() && !interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles) ||
+        !tweetFiles.every(file => fitsAttachmentBudget(file, eromeBudget)) ||
+        tweetBytes + (erome && Buffer.isBuffer(erome.file.attachment) ? erome.file.attachment.length : 0) > eromeBudget)) {
+      tweetPresentation = null;
+    }
+    const presentation = await addInstagramCaptions(original, tweetPresentation ?? { content: rendered },
       preferences.translateInstagram !== false ? translateInstagram : undefined, 1800, preferences.instagramPresentation);
     if (context.signal?.aborted || !preferencesCurrent()) {
       attempt.finish(context.signal?.aborted ? 'timeout' : 'disabled');
       await reject('Link settings changed or preparation was cancelled. The original post is unchanged; try again.');
       return;
     }
+    if (await stopChangedSource()) return;
     rendered = providerHealth?.preferContent(presentation.content) ?? presentation.content;
     if (erome) rendered += eromeNotice(erome.videoCount, erome.kind);
-    const instagramIds = new Set((presentation.instagramSources ?? []).map(url => parseInstagramUrl(url)?.shortcode));
-    const instagramVideos = new Set((presentation.instagramVideos ?? []).map(url => parseInstagramUrl(url)?.shortcode));
-    const expectations = () => expectedPreviews(original, rendered, community, articles).map(item => {
-      const id = parseInstagramUrl(item.source)?.shortcode;
-      return { ...item, ...(id && instagramIds.has(id) ? { captionFree: true } : {}),
-        ...(id && instagramVideos.has(id) ? { requireVideo: true } : {}) };
-    });
+    const captionFreeInstagram = instagramShortcodes(presentation.instagramSources);
+    const videoInstagram = instagramShortcodes(presentation.instagramVideos);
+    const textStatusIds = new Set(presentation.textStatusIds), videoStatusIds = new Set(presentation.videoStatusIds);
+    const expectations = () => repostExpectations(`${original}\n${presentation.mediaSources ?? ''}`, rendered, community, articles,
+      { textStatusIds, videoStatusIds, captionFreeInstagram, videoInstagram });
     let expected = expectations();
-    const embeds = [...community.flatMap(post => post.embeds), ...articleEmbeds(articles)];
+    const embeds = [...presentation.embeds ?? [], ...community.flatMap(post => post.embeds), ...articleEmbeds(articles)];
+    const articleUploads = articleAttachments(articles);
+    const files = [...presentation.translationFiles ?? [], ...erome ? [erome.file] : [], ...articleUploads];
     if (explicitPosts.length && (!communityEmbedBudget(embeds, expected.filter(item => !item.explicitEmbeds).length) || !await sourceCurrent())) {
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
       await interaction.editReply({ content: `The complete ${previewName} preview exceeds the message limits, or its source changed. Share fewer posts; the original is unchanged.`,
@@ -372,7 +324,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (await stopChangedPreferences()) return;
     let message = await interaction.editReply({ content: rendered,
       ...(embeds.length ? { embeds } : {}),
-      ...(erome ? { files: [erome.file] } : {}),
+      ...(files.length ? { files } : {}),
       components: buttonRows(), allowedMentions: { parse: [] } });
     publishStage?.finish();
     const attempted = new Set<string>();
@@ -382,7 +334,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       const stage = context.trace?.startStage('preview');
       const result = await verifyPublishedPreviews(message, expected, {
         verifyNative: native => previewWatch?.verify(message) ?? verifyPreview(message, native),
-        contentVerified: eromeVerified,
+        contentVerified: textStatusIds.size > 0 || eromeVerified,
       });
       stage?.finish(context.signal?.aborted ? 'timeout' : result.ok ? 'ok' : 'unavailable');
       return { ...result, ok: !context.signal?.aborted && result.ok && (!erome || eromeVerified), videoMetadata: result.videoMetadata || eromeVerified && erome?.kind !== 'image' };
@@ -407,7 +359,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       providerAttempts.push({ expected, result: preview });
       observePreview?.(expected, preview);
     }
-    if (explicitPosts.length && !await sourceCurrent()) {
+    if (checkSource && !await sourceCurrent()) {
       if (await stopChangedPreferences()) return;
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
       await interaction.editReply({ content: `The source changed or became unavailable. The ${previewName} preview was removed; the original is unchanged.`,
@@ -424,7 +376,8 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (!preview.ok || context.signal?.aborted) await interaction.editReply({ content: rendered + (context.signal?.aborted
       ? '\n-# This preview reached its time limit. The original post link is available below; try again later.'
       : '\n-# A useful preview could not be confirmed. The original post link is available below.'),
-      ...(articles.length ? { embeds: [] } : {}),
+      // Removing a card would show its uploads as loose attachments; keep only the message's own files.
+      ...(articles.length ? { embeds: [], ...(articleUploads.length ? { attachments: [...message.attachments.values()] } : {}) } : {}),
       ...(erome && !eromeVerified ? { attachments: [] } : {}), allowedMentions: { parse: [] } });
     const details = await attempt.controls(message.id);
     if (await stopChangedPreferences()) return;

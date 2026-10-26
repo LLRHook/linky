@@ -1,10 +1,10 @@
 import { resolve4 } from 'node:dns/promises';
 import type { request, RequestOptions } from 'node:https';
-import { mapLinks, visibleLink } from './LinkTokens';
+import { mapLinks, strictHttpsUrl as strictUrl, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
-import { parseSocialUrl } from './SocialProviders';
+import { FACEBOOK_HOSTS, parseSocialUrl } from './SocialProviders';
 
-type MobilePlatform = 'instagram' | 'reddit' | 'tiktok';
+type MobilePlatform = 'instagram' | 'reddit' | 'tiktok' | 'facebook';
 export interface NormalizedMobileLinks {
   content: string;
   /** Canonical source URL to the first original share token that fits a link button. */
@@ -25,22 +25,13 @@ const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com', 
 // https://github.com/MinnDevelopment/fxreddit documents /r|u|user/.../s/... redirects.
 // Resolution only: vxReddit still generates the final preview, checked by post ID.
 const REDDIT_REDIRECT_HOST = 'rxddit.com';
+/** Third-party hosts contacted during share resolution, beyond the platforms' own hosts; documented for operators. */
+export const SHARE_FALLBACK_HOSTS: readonly string[] = Object.freeze([REDDIT_REDIRECT_HOST]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_LINKS = 5;
 const MAX_HOPS = 4;
 const MAX_ACTIVE_RESOLUTIONS = 8;
 const MAX_TIMEOUT_MS = 4_000;
-
-/** Inspect raw authority/path before URL can normalize credentials, ports or dot segments away. */
-function strictUrl(raw: string): URL | null {
-  if (raw.length > 2048 || /[\\\s\u0000-\u001f\u007f]/.test(raw)) return null;
-  const parts = /^https:\/\/([^/?#]+)([^?#]*)(?:\?[^#]*)?(#.*)?$/i.exec(raw);
-  if (!parts) return null;
-  try {
-    const url = new URL(raw);
-    return parts[1].toLowerCase() === url.hostname && parts[2] === url.pathname ? url : null;
-  } catch { return null; }
-}
 
 function sharePlatform(url: URL): MobilePlatform | null {
   const tiktok = parseSocialUrl(url.href);
@@ -52,6 +43,8 @@ function sharePlatform(url: URL): MobilePlatform | null {
       /^\/(?:r\/[A-Za-z0-9_]{1,64}|(?:u|user)\/[A-Za-z0-9_-]{1,64})\/s\/[A-Za-z0-9_-]{1,64}\/?$/.test(url.pathname)) {
     return 'reddit';
   }
+  // Facebook answers mobile Reel/video shares with a 302 to /reel/<id> or /<page>/videos/<id>.
+  if (FACEBOOK_HOSTS.has(url.hostname) && /^\/share\/[rv]\/[A-Za-z0-9_-]{1,64}\/?$/.test(url.pathname)) return 'facebook';
   return null;
 }
 

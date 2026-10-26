@@ -7,18 +7,25 @@ Linky's catalog accepts fixed HTTPS hosts and post-shaped paths. It does not fet
 | Platform | Candidates, in order | Selection evidence and limits |
 | --- | --- | --- |
 | X/Twitter | `fixupx.com`, `vxtwitter.com` | FxEmbed and BetterTwitFix are separate implementations. `fxtwitter.com` is an alias of the primary, and `fixvx.com` is an alias of the alternate; aliases are not independent recovery providers. |
-| Instagram | `fkinstagram.com` (Instagram7), `oginstagram.com` | OGInstagram produced matching image previews for two public posts that failed on Instagram7, plus video metadata for a public Reel in Discord. These samples establish a useful fallback, not an uptime or playback guarantee. Legacy `/tv/` paths have not been verified with OGInstagram. |
+| Instagram | `fkinstagram.com` (Instagram7), `oginstagram.com`; caption-free `g.fkinstagram.com` and `g.oginstagram.com` with translated captions | OGInstagram produced matching image previews for two public posts that failed on Instagram7, plus video metadata for a public Reel in Discord. These samples establish a useful fallback, not an uptime or playback guarantee. Legacy `/tv/` paths have not been verified with OGInstagram. |
 | TikTok | `tnktok.com` | fxTikTok supports long post URLs and mobile shares. Linky resolves first-party `/t/`, `vm.` and `vt.` shares to their exact public video or photo before rewriting. Unresolved shares cannot be confirmed by an arbitrary canonical TikTok embed. No verified alternate is configured. |
 | Bluesky | `bskx.app`, `fxbsky.app` | VixBluesky returned image and video metadata for current public examples. FxBluesky returned text but no media URL in sampled HTML; actual Discord checks decide whether a fallback is useful. |
 | Reddit | `vxreddit.com`; `rxddit.com` for blocked share redirects only | `redd.it` post IDs and mobile post aliases normalize directly. App `/s/` shares first try Reddit; HTTP 403, 429 or 5xx can use FixReddit's public redirect within the same four-hop/four-second budget. Only validated public Reddit post destinations proceed to vxReddit. No verified alternate media provider is configured; gallery shortcut URLs and feeds remain excluded. |
+| Facebook | `facebed.com` | On October 14, 2026, the reported `/share/r/` link resolved through Facebook's 302 to `/reel/1060921586772217` from both a residential network and Hostinger. Facebed returned a 720×1280 `og:video` MP4 for the Reel and `/page/videos/` forms; its `og:url` names either form, so Linky matches by numeric video ID. A Facebook login wall returns no video and is rejected. |
 | Twitch clips | `fxtwitch.seria.moe` | The maintainer's clip returned canonical clip identity and video metadata. Its media URL uses the provider's shortening service. Linky requires no Twitch or shortening-service credential. Streams and VODs are excluded. |
 | YouTube | Native video preview; public-page community cards | Counts and optional comments use YouTube Data API v3. Public `/post/` text and images use a separate cookie-free page lookup. Statistics and authored community cards never substitute for video playback evidence. |
 
-Sources: [FxEmbed documentation](https://docs.fxembed.com/guide/getting-started/), [BetterTwitFix](https://github.com/dylanpdx/BetterTwitFix), [Instagram7 / InstaFix Revived](https://fkinstagram.com/), [fxTikTok](https://github.com/okdargy/fxTikTok), [VixBluesky pinned README](https://github.com/Lexedia/VixBluesky/blob/37280716ff389847d8f410edcc7258e550dccf63/README.md), [vxReddit pinned README](https://github.com/dylanpdx/vxReddit/blob/d3f7876fb3fc9045aebcca6fa41d0352ec3697c6/README.md), and [fxTwitch pinned README](https://github.com/seriaati/fxtwitch/blob/4519f7ad601077d5e8226895d04348657d97b656/README.md).
+Sources: [FxEmbed documentation](https://docs.fxembed.com/guide/getting-started/), [BetterTwitFix](https://github.com/dylanpdx/BetterTwitFix), [Instagram7 / InstaFix Revived](https://fkinstagram.com/), [fxTikTok](https://github.com/okdargy/fxTikTok), [VixBluesky pinned README](https://github.com/Lexedia/VixBluesky/blob/37280716ff389847d8f410edcc7258e550dccf63/README.md), [vxReddit pinned README](https://github.com/dylanpdx/vxReddit/blob/d3f7876fb3fc9045aebcca6fa41d0352ec3697c6/README.md), [fxTwitch pinned README](https://github.com/seriaati/fxtwitch/blob/4519f7ad601077d5e8226895d04348657d97b656/README.md), and [Facebed at 0059c87](https://github.com/facebed/facebed/tree/0059c87a9856c31de947fdaeb4ce285521c6c118).
 
 ## Repeatable checks
 
 On September 18, a public Instagram mobile share resolved from Hostinger through HTTP 302. A Reddit app share returned HTTP 403 and stayed unchanged; its canonical `/comments/` URL and deterministic `redd.it` form avoid that resolution step. Tests reject unsafe redirects, non-public DNS answers, loops, excess hops and expired requests. These observations do not guarantee all mobile shares resolve.
+
+### Reddit conventional embeds
+
+Linky adds vxReddit's documented `?legacy` switch to every Reddit preview URL, before any fragment. vxReddit's default response now advertises a Discord component preview; Linky's Gateway and REST confirmation path inspects conventional embeds. The legacy switch requests that verifiable format from the same provider. Original-post buttons still open Reddit, and a missing or unrelated preview still preserves the source.
+
+On October 16, 2026, local and Hostinger probes of the reported ColumbiaMD image post (`1x3j1s3`, including its `#lightbox` fragment) returned HTTP 200 with a `discord:component-embed` payload by default. Adding `?legacy` omitted that payload while retaining the canonical post URL and image metadata. Linky's provider control accepted the legacy image metadata. Automatic Replace/Reply and manual command fixtures cover the same URL, source preservation and controls. These observations establish provider metadata and offline delivery behavior; they do not establish a live Discord render. The reported post is retained in `ops/preview-corpus.json`. See the [vxReddit legacy option at 990860a](https://github.com/dylanpdx/vxReddit/blob/990860a01ca865774b0e77b5de9af76b54947900/README.md#extras).
 
 ### Reddit app-share recovery
 
@@ -29,6 +36,8 @@ Linky uses the existing first-party lookup, then one fixed `rxddit.com` redirect
 The scoped candidate also automatically replaced the reported app share in GAMBA in 2.411 seconds, with matching video metadata before source deletion. Its 4.907-second clip played to completion in Chrome Discord at 1106×720. An unavailable-share control produced no replacement and retained the source. These selected checks do not establish general latency or mobile-client playback.
 
 Controlled Discord checks that day confirmed the previously reported X text post both directly and with attribution in under half a second. One Instagram Reel produced useful video metadata around 7.5 seconds, after the old check had ended; the Instagram Gateway window now allows eight seconds and still wakes immediately on success. Empty Instagram media cards remained unusable after 20 seconds. The historical captioned image post had a working OGInstagram gallery while Instagram7 lacked media. Keep those causes separate; a longer wait cannot repair an empty provider response.
+
+On October 14, 2026, the hosted bot posted the Facebed link for the reported Facebook Reel to GAMBA. Discord generated a `video` embed (720×1280) through its media proxy, which returned `video/mp4` bytes; Linky's preview matcher accepted that embed, and the clip played in Chrome Discord. The check message was deleted. This observes one public Reel, not mobile-client playback or general availability.
 
 ### Provider metadata control
 
@@ -48,7 +57,7 @@ On September 12, public posts `DdKVPMEhTXe` and `DdFwAIqgncQ` returned image pre
 
 ### Regression and live checks
 
-Offline tests cover strict hosts, post identities, known provider errors, delayed/missing previews, bounded fallback, attachments, source edits, permission changes and durable ownership. Canonical Reddit URLs match by post ID; Twitch aliases match by clip ID. Bluesky identity uses actor and record key; Linky does not resolve handles to DIDs.
+Offline tests cover strict hosts, post identities, known provider errors, delayed/missing previews, bounded fallback, attachments, source edits, permission changes and durable ownership. Canonical Reddit URLs match by post ID; Twitch aliases match by clip ID; Facebook Reel and page video forms match by video ID. Bluesky identity uses actor and record key; Linky does not resolve handles to DIDs.
 
 For authorized live tests, use current public posts and a dedicated channel. Record source URL, provider, Discord embed identity, image/video presence, source preservation and cleanup. Use the [vxReddit maintainer test list](https://github.com/dylanpdx/vxReddit/blob/d3f7876fb3fc9045aebcca6fa41d0352ec3697c6/tests.sh) and provider READMEs for reproducible samples. Keep private message bodies, API keys and signed media URLs out of reports.
 

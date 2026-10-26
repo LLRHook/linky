@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getProviderCandidates, parseProviderUrl, parseSocialUrl } from '../src/services/SocialProviders';
+import { strictHttpsUrl } from '../src/services/LinkTokens';
 
 test('recognizes X and legacy Twitter posts with one status identity and cleaned source URL', () => {
   for (const host of ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com']) {
@@ -215,13 +216,26 @@ test('Reddit post links retain paths while canonical and old-host aliases share 
     assert.deepEqual(parsed, { platform: 'reddit', sourceUrl: `https://www.reddit.com${path}#comment`,
       path, fragment: '#comment', postId: '90bu6w' });
     assert.deepEqual(getProviderCandidates(`https://${host}${path}?share=1`),
-      [{ providerId: 'vxreddit', platform: 'reddit', url: `https://vxreddit.com${path}` }]);
+      [{ providerId: 'vxreddit', platform: 'reddit', url: `https://vxreddit.com${path}?legacy` }]);
   }
   assert.equal(parseSocialUrl('https://www.reddit.com/comments/90bu6w')?.postId, '90bu6w');
   assert.equal(parseSocialUrl('https://www.reddit.com/r/aww/comments/90bu6w/comment/abc123/')?.postId, '90bu6w');
   assert.equal(parseSocialUrl('https://www.reddit.com/user/SomeUser/comments/90bu6w/a_post/')?.postId, '90bu6w');
   assert.equal(parseProviderUrl(`https://vxreddit.com${path}`)?.postId, '90bu6w');
   assert.equal(parseProviderUrl('https://vxreddit.com/comments/90bu6w')?.sourceUrl, 'https://www.reddit.com/comments/90bu6w');
+});
+
+test('Reddit requests verifiable legacy embeds before fragments and drops source query parameters', () => {
+  for (const path of ['/r/ColumbiaMD/comments/1x3j1s3/to_all_my_luxury_car_driving_neighbors/',
+    '/comments/1x3j1s3', '/user/example/comments/1x3j1s3/title/']) {
+    const source = `https://www.reddit.com${path}?utm_source=share&legacy=false#lightbox`;
+    const [candidate] = getProviderCandidates(source);
+    assert.equal(candidate.url, `https://vxreddit.com${path}?legacy#lightbox`);
+    assert.equal(new URL(candidate.url).search, '?legacy', 'legacy must reach the provider, outside the fragment');
+    assert.equal(parseProviderUrl(candidate.url)?.postId, '1x3j1s3');
+    assert.equal(parseProviderUrl(candidate.url)?.sourceUrl, `https://www.reddit.com${path}#lightbox`);
+    assert.deepEqual(getProviderCandidates(candidate.url), [], 'provider links are never rewritten again');
+  }
 });
 
 test('Reddit short-share, feeds, profiles, galleries and invalid post paths remain untouched', () => {
@@ -264,7 +278,8 @@ test('Twitch streams, VODs, embed-player URLs and unrelated fixer domains are ex
 
 test('all new providers retain exact HTTPS authorities and do not trust caller-supplied identities', () => {
   const sources = ['https://bsky.app/profile/bsky.app/post/3mk4lzkrnk22d',
-    'https://www.reddit.com/r/aww/comments/90bu6w/title', 'https://clips.twitch.tv/ExampleClip'];
+    'https://www.reddit.com/r/aww/comments/90bu6w/title', 'https://clips.twitch.tv/ExampleClip',
+    'https://www.facebook.com/reel/1060921586772217'];
   for (const source of sources) {
     const url = new URL(source);
     for (const invalid of [source.replace('https:', 'http:'), `https://${url.hostname}:443${url.pathname}`,
@@ -282,4 +297,41 @@ test('all new providers retain exact HTTPS authorities and do not trust caller-s
   }
   assert.equal(parseProviderUrl('https://rxddit.com/comments/90bu6w'), null);
   assert.equal(parseProviderUrl('https://bskyx.app/profile/bsky.app/post/3mk4lzkrnk22d'), null);
+});
+
+test('Facebook Reel and page video URLs share one numeric identity and the Facebed route', () => {
+  const id = '1060921586772217';
+  for (const [url, path] of [[`https://www.facebook.com/reel/${id}/`, `/reel/${id}/`],
+    [`https://m.facebook.com/reel/${id}`, `/reel/${id}`],
+    [`https://facebook.com/thevarietynerd/videos/${id}`, `/thevarietynerd/videos/${id}`],
+    [`https://web.facebook.com/61582221823407/videos/${id}/`, `/61582221823407/videos/${id}/`]] as const) {
+    assert.deepEqual(parseSocialUrl(`${url}?fs=e&rdid=tracking`), { platform: 'facebook',
+      sourceUrl: `https://www.facebook.com${path}`, path, fragment: '', postId: id });
+    assert.deepEqual(getProviderCandidates(url), [{ providerId: 'facebed', platform: 'facebook', url: `https://facebed.com${path}` }]);
+  }
+  // Facebed's og:url can name either form for the same video.
+  for (const path of [`/reel/${id}`, `/61582221823407/videos/${id}/`]) {
+    const parsed = parseProviderUrl(`https://facebed.com${path}`);
+    assert.equal(parsed?.providerId, 'facebed');
+    assert.equal(parsed?.postId, id);
+  }
+});
+
+test('Facebook shares, photo posts, watch pages and lookalike hosts are not direct Facebook sources', () => {
+  for (const url of ['https://www.facebook.com/share/r/1DTK3shLVM/', 'https://www.facebook.com/watch/?v=1060921586772217',
+    'https://www.facebook.com/thevarietynerd/posts/pfbid0abc', 'https://www.facebook.com/reel/', 'https://www.facebook.com/reel/abc',
+    'https://www.facebook.com/a/b/videos/1', 'https://www.facebook.com/.../videos/1', 'https://www.facebook.com/.page/videos/1',
+    'https://fb.watch/abc123/', 'https://facebook.com.evil.test/reel/1', 'http://www.facebook.com/reel/1', 'https://www.facebook.com:443/reel/1']) assert.equal(parseSocialUrl(url), null, url);
+  assert.equal(parseProviderUrl('https://facebed.com/'), null);
+  assert.equal(parseProviderUrl('https://facebed.com/share/r/1DTK3shLVM/'), null);
+});
+
+test('strict HTTPS parsing rejects anything URL would silently normalize', () => {
+  assert.equal(strictHttpsUrl('https://www.facebook.com/reel/1?x=1#y')?.hostname, 'www.facebook.com');
+  assert.equal(strictHttpsUrl('https://WWW.Facebook.com/reel/1')?.pathname, '/reel/1');
+  assert.equal(strictHttpsUrl('HTTPS://x.com/a')?.href, 'https://x.com/a');
+  for (const raw of ['http://x.com/a', 'https://x.com', 'https://x.com:443/a', 'https://u@x.com/a', 'https://x.com/a/../b',
+    'https://x.com/a b', 'https://x.com\\a', 'https://x.com\\@evil.test/a', 'https://x.com/a\\b', 'https://x.com:8443/a',
+    'https://x.com/%2e%2e/a', 'https://x.com/a/./b', 'https://x.com/a\tb', `https://x.com/${'a'.repeat(2048)}`, 'https://ẋ.com/a'])
+    assert.equal(strictHttpsUrl(raw), null, raw);
 });

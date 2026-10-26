@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import { atomicWrite } from './AtomicWrite';
-import { DELIVERY_OUTCOMES, DELIVERY_PATHS, DELIVERY_STAGES, type DeliveryOutcome, type DeliveryPath,
-  type DeliveryStage, type DeliveryTrace, type StageOutcome } from './DeliveryContext';
+import { DELIVERY_OUTCOMES, DELIVERY_PATHS, DELIVERY_PLATFORMS, DELIVERY_STAGES, STAGE_OUTCOMES, type DeliveryOutcome, type DeliveryPath,
+  type DeliveryPlatform, type DeliveryStage, type DeliveryTrace, type StageOutcome } from './DeliveryContext';
 
-const PLATFORMS = ['x', 'instagram', 'tiktok', 'bluesky', 'reddit', 'twitch', 'youtube', 'articles', 'erome', 'mixed'] as const;
-const STAGE_OUTCOMES: readonly StageOutcome[] = ['ok', 'unavailable', 'busy', 'timeout', 'cancelled', 'failed'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const DISCORD_ID = /^\d{17,20}$/;
+// Deliberately looser than LinkConfiguration.DISCORD_ID, matching ops/delivery-report.mjs.
+// Tightening it here would silently drop stored diagnostic records that the report still reads.
+const LEGACY_SNOWFLAKE = /^\d{17,20}$/;
 const MAX_STAGES = 96;
 const MAX_DURATION = 24 * 60 * 60_000;
 
@@ -16,7 +16,7 @@ export interface DeliveryRequest {
   channelId: string;
   guildId?: string;
   mode: 'automatic' | 'manual';
-  platform: typeof PLATFORMS[number];
+  platform: DeliveryPlatform;
 }
 export interface DeliveryStageRecord { stage: DeliveryStage; durationMs: number; outcome: StageOutcome; itemIndex?: number }
 export interface DeliveryRecord extends DeliveryRequest {
@@ -53,15 +53,15 @@ function bounded(value: number | undefined, fallback: number, min: number, max: 
   return value === undefined || !Number.isFinite(value) ? fallback : Math.max(min, Math.min(max, Math.floor(value)));
 }
 function validRequest(value: DeliveryRequest): boolean {
-  return DISCORD_ID.test(value.requesterId) && DISCORD_ID.test(value.channelId) &&
-    (value.guildId === undefined || DISCORD_ID.test(value.guildId)) &&
-    ['automatic', 'manual'].includes(value.mode) && PLATFORMS.includes(value.platform);
+  return LEGACY_SNOWFLAKE.test(value.requesterId) && LEGACY_SNOWFLAKE.test(value.channelId) &&
+    (value.guildId === undefined || LEGACY_SNOWFLAKE.test(value.guildId)) &&
+    ['automatic', 'manual'].includes(value.mode) && DELIVERY_PLATFORMS.includes(value.platform);
 }
 function restore(value: unknown): DeliveryRecord | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const record = value as DeliveryRecord;
   if (!UUID.test(record.id) || !validRequest(record) || !Number.isSafeInteger(record.startedAt) || record.startedAt < 0 ||
-    (record.messageId !== undefined && !DISCORD_ID.test(record.messageId)) ||
+    (record.messageId !== undefined && !LEGACY_SNOWFLAKE.test(record.messageId)) ||
     (record.path !== undefined && !DELIVERY_PATHS.includes(record.path)) ||
     (record.cache !== undefined && record.cache !== 'hit' && record.cache !== 'miss') ||
     (record.outcome !== undefined && !DELIVERY_OUTCOMES.includes(record.outcome)) ||
@@ -164,7 +164,7 @@ export class DeliveryDiagnostics {
     return this.within((async () => {
       await this.ready;
       const record = this.records.get(id);
-      if (!record || !DISCORD_ID.test(messageId) || (record.messageId !== undefined && record.messageId !== messageId)) return false;
+      if (!record || !LEGACY_SNOWFLAKE.test(messageId) || (record.messageId !== undefined && record.messageId !== messageId)) return false;
       record.messageId = messageId;
       this.dirty = true;
       return await this.flush() && this.persistedBindings.get(id) === messageId;
@@ -176,7 +176,7 @@ export class DeliveryDiagnostics {
       await this.ready;
       this.prune();
       const record = this.records.get(id);
-      if (!record || !DISCORD_ID.test(reader.requesterId) || this.persistedBindings.get(id) !== reader.messageId ||
+      if (!record || !LEGACY_SNOWFLAKE.test(reader.requesterId) || this.persistedBindings.get(id) !== reader.messageId ||
         record.messageId !== reader.messageId || record.channelId !== reader.channelId || record.guildId !== reader.guildId ||
         record.requesterId !== reader.requesterId && !(reader.sharedMessage && record.guildId)) return undefined;
       return structuredClone(record);

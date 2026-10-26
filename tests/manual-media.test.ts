@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { setImmediate as nextTurn } from 'node:timers/promises';
-import { setTimeout as delay } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
-import { ComponentType, Events, MessageFlags, PermissionFlagsBits, PermissionsBitField,
+import { ButtonStyle, ComponentType, Events, MessageFlags, PermissionFlagsBits, PermissionsBitField,
   type APIMessageTopLevelComponent, type ButtonInteraction, type ChatInputCommandInteraction,
   type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
 import { execute, removeManual } from '../src/commands/fix';
 import type { Config } from '../src/config';
 import type { EromeMedia } from '../src/services/EromeMedia';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
+import type { AlbumRegistration, EromeAlbumSessions } from '../src/services/EromeAlbumSessions';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
+import { commandInteraction, deferred, diagnosticsStub, mockClock, reached, type InteractionEvent } from './support/discord';
 
 const BOT = '1491240385031311470', OWNER = '111111111111111111', MESSAGE = '333333333333333333';
 const album = 'https://www.erome.com/a/Album123';
@@ -23,9 +23,11 @@ const media: EromeMedia = {
 };
 type Payload = { flags?: number; content?: string | null; components?: APIMessageTopLevelComponent[];
   allowedMentions?: unknown; files?: unknown };
+// /fix creates its progress reporter with a 500 ms delay (src/commands/fix.ts).
+const FIX_PROGRESS_DELAY_MS = 500;
 
 function fixture(content = album, context = false) {
-  const events: { name: string; payload?: Payload }[] = [];
+  const events: InteractionEvent<Payload>[] = [];
   const client = Object.assign(new EventEmitter(), { user: { id: BOT } });
   const state = {
     metadata: true, gateway: false, failFirstEdit: false, wrongReconciliation: false,
@@ -36,16 +38,14 @@ function fixture(content = album, context = false) {
     fetch: async () => { events.push({ name: 'fetch-message' }); state.afterVerify(); return response as unknown as Message; },
   };
   let edits = 0;
-  const input = {
-    isChatInputCommand: () => !context, inGuild: () => true,
+  const input = commandInteraction(events, {
+    isChatInputCommand: () => !context,
     guildId: 'guild', channelId: 'channel', user: { id: OWNER }, client,
     channel: { isThread: () => false, nsfw: true },
     appPermissions: new PermissionsBitField(PermissionFlagsBits.AttachFiles),
     memberPermissions: new PermissionsBitField(PermissionFlagsBits.SendMessages), attachmentSizeLimit: 10 * 1024 * 1024,
     options: { getString: () => content },
     targetMessage: { content, delete: () => assert.fail('The original must remain'), edit: () => assert.fail('The original must remain') },
-    reply: async (payload: Payload) => { events.push({ name: 'reply', payload }); },
-    deferReply: async (payload: Payload) => { events.push({ name: 'defer', payload }); },
     editReply: async (payload: Payload) => {
       events.push({ name: 'edit', payload });
       edits++;
@@ -71,7 +71,7 @@ function fixture(content = album, context = false) {
         items: [{ media: { url: 'https://media.example.com/media/unrelated.mp4' } }] }) }] } as unknown as Message;
       return response as unknown as Message;
     },
-  };
+  });
   const dependencies: NonNullable<Parameters<typeof execute>[2]> = {
     prepareEromeMedia: async source => { assert.equal(source, album); events.push({ name: 'prepare' }); state.afterPrepare(); return media; },
     bindEromeMedia: async (id, messageId) => { assert.equal(id, media.id); assert.equal(messageId, MESSAGE);
@@ -90,15 +90,26 @@ function controls(payload: Payload): { custom_id?: string; url?: string }[] {
       ...'url' in component ? { url: component.url } : {} })) ?? [];
 }
 
-test('slow original-media preparation reports progress then clears legacy content on the V2 transition', async () => {
+test('slow original-media preparation reports progress at its delay then clears legacy content on the V2 transition', async t => {
+  const clock = mockClock(t), started = deferred(), ready = deferred<EromeMedia>();
   const f = fixture();
   f.dependencies.prepareEromeMedia = async (_source, options) => {
     assert.equal(options?.context?.fairnessKey, 'guild');
     assert(options?.context?.signal);
-    await delay(550);
-    return media;
+    started.resolve();
+    return ready.promise;
   };
-  await execute(f.interaction, config, f.dependencies);
+  const pending = execute(f.interaction, config, f.dependencies);
+  const progress = () => f.events.filter(event => event.name === 'edit');
+  try {
+    await reached(started.promise, pending, 'hosted preparation with its fairness context'); // no virtual time has passed
+    await clock.advance(FIX_PROGRESS_DELAY_MS - 1);
+    assert.equal(progress().length, 0, 'no progress edit before the delay elapses');
+    await clock.advance(1);
+    assert.equal(progress().length, 1, 'one progress edit at the delay');
+    ready.resolve(media);
+    await clock.settle(pending);
+  } finally { ready.resolve(media); await clock.settle(pending).catch(() => {}); }
   const edits = f.events.filter(event => event.name === 'edit').map(event => event.payload!);
   assert.match(String(edits[0].content), /Checking the album/);
   assert.equal(edits[0].flags, undefined);
@@ -124,8 +135,7 @@ test('manual hosted-media expiration during final controls rolls back and record
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture(), outcomes: DeliveryOutcome[] = [];
   f.state.afterControls = () => t.mock.timers.tick(120_000);
-  f.dependencies.diagnostics = { begin: () => ({ id: 'attempt', setPath() {}, startStage: () => ({ finish() {} }),
-    finish: (outcome: DeliveryOutcome) => outcomes.push(outcome) }), bind: async () => false } as unknown as DeliveryDiagnostics;
+  f.dependencies.diagnostics = diagnosticsStub({ outcomes });
   await execute(f.interaction, config, f.dependencies);
   assert.deepEqual(outcomes, ['timeout']);
   const edits = f.events.filter(event => event.name === 'edit');
@@ -159,6 +169,29 @@ test('requesters without send permission keep their prepared-media reply private
   await execute(f.interaction, config, f.dependencies);
   assert.equal(f.events[0].payload?.flags, MessageFlags.Ephemeral);
   assert.equal(f.events.filter(event => event.name === 'edit').length, 2);
+});
+
+test('public hosted media registers its album controls while private replies never do', async () => {
+  for (const visibility of ['public', 'private'] as const) {
+    const f = fixture(), registrations: AlbumRegistration[] = [];
+    if (visibility === 'private') f.input.memberPermissions = new PermissionsBitField(0n);
+    f.dependencies.albums = { register: (record: AlbumRegistration) => {
+      registrations.push(record);
+      return { type: ComponentType.ActionRow, components: [{ type: ComponentType.Button, style: ButtonStyle.Secondary,
+        custom_id: 'linky:album:test', label: 'Load next item' }] };
+    } } as unknown as EromeAlbumSessions;
+    await execute(f.interaction, config, f.dependencies);
+    const final = f.events.filter(event => event.name === 'edit').at(-1)!.payload!;
+    if (visibility === 'private') {
+      assert.deepEqual(registrations, []);
+      continue;
+    }
+    assert.equal(registrations.length, 1);
+    assert.equal(registrations[0].media, media);
+    assert.deepEqual({ ...registrations[0], media: undefined }, { media: undefined, source: album, requesterId: OWNER,
+      channelId: 'channel', guildId: 'guild', messageId: MESSAGE, mode: 'manual' });
+    assert.equal(controls(final).at(-1)?.custom_id, 'linky:album:test');
+  }
 });
 
 test('permission and Erome scope checks happen before preparation', async () => {

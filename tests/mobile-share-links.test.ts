@@ -378,3 +378,47 @@ test('global concurrency is bounded without queuing and one caller abort cannot 
   assert.equal(results[0].content, share);
   assert.ok(results.slice(1).every(result => result.content === post));
 });
+
+test('Facebook Reel and video shares resolve to the redirected video identity without tracking parameters', async () => {
+  for (const kind of ['r', 'v']) {
+    const original = `https://www.facebook.com/share/${kind}/1DTK3shLVM/?mibextid=wwXIfr`;
+    const f = fixture(async options => {
+      assert.equal(options.hostname, 'www.facebook.com');
+      assert.equal(options.path, `/share/${kind}/1DTK3shLVM/?mibextid=wwXIfr`);
+      return redirect('https://www.facebook.com/reel/1060921586772217/?fs=e&rdid=abc&share_url=https%3A%2F%2Fwww.facebook.com%2Fshare%2Fr%2F1DTK3shLVM%2F');
+    });
+    assert.equal(hasMobileShareLinks(original, ['facebook']), true);
+    assert.equal(hasMobileShareLinks(original, ['instagram']), false);
+    const result = await f.normalizer(`Watch ${original}`, ['facebook']);
+    assert.equal(result.content, 'Watch https://www.facebook.com/reel/1060921586772217/');
+    assert.deepEqual([...result.originals], [['https://www.facebook.com/reel/1060921586772217/', original]]);
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test('mobile Facebook shares resolve through m.facebook.com to the canonical Reel', async () => {
+  const original = 'https://m.facebook.com/share/r/1DTK3shLVM/';
+  const f = fixture(async options => {
+    assert.equal(options.hostname, 'm.facebook.com');
+    return redirect('https://m.facebook.com/reel/1060921586772217/?mibextid=wwXIfr&_rdr');
+  });
+  assert.equal(hasMobileShareLinks(original, ['facebook']), true);
+  const result = await f.normalizer(original, ['facebook']);
+  assert.equal(result.content, 'https://www.facebook.com/reel/1060921586772217/');
+  assert.deepEqual([...result.originals], [['https://www.facebook.com/reel/1060921586772217/', original]]);
+});
+
+test('Facebook shares that redirect to login, other platforms or nowhere keep the original link', async () => {
+  const original = 'https://www.facebook.com/share/r/1DTK3shLVM/';
+  for (const response of [redirect('https://www.facebook.com/login/?next=x'), redirect('https://www.instagram.com/reel/Post123/'),
+    redirect('https://evil.test/reel/1'), new Response('<html></html>', { status: 200 }), new Response(null, { status: 400 })]) {
+    const f = fixture(async () => response);
+    const result = await f.normalizer(original, ['facebook']);
+    assert.equal(result.content, original);
+    assert.equal(result.originals.size, 0);
+  }
+  const disabled = fixture(async () => assert.fail('No lookup for a disabled platform'));
+  assert.equal((await disabled.normalizer(original, ['instagram'])).content, original);
+  for (const path of ['/share/p/1DTK3shLVM/', '/share/1DTK3shLVM/', '/share/r/'])
+    assert.equal(hasMobileShareLinks(`https://www.facebook.com${path}`, ['facebook']), false, path);
+});

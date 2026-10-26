@@ -1,9 +1,8 @@
 import { closeSync, openSync, readSync } from 'node:fs';
-import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
+import { atomicWrite } from './AtomicWrite';
+import { DISCORD_ID } from './LinkConfiguration';
 
-const DISCORD_ID = /^[1-9]\d{16,19}$/;
 export const PERSONAL_PREFERENCE_LIMIT = 10_000;
 const MAX_FILE_BYTES = 1024 * 1024;
 
@@ -26,15 +25,6 @@ function checkCapacity(values: Map<string, Set<string>>): void {
   let records = 0;
   for (const users of values.values()) records += users.size;
   if (records > PERSONAL_PREFERENCE_LIMIT) throw new Error('Personal preference record limit reached; existing choices were retained.');
-}
-
-async function atomicWrite(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, content, { flag: 'wx', mode: 0o600 });
-    await rename(temporary, path);
-  } finally { await unlink(temporary).catch(() => {}); }
 }
 
 /** Only opted-out server/account IDs are retained. Re-enabling or removing the bot deletes them. */
