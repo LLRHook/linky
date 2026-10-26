@@ -1822,6 +1822,7 @@ test('automatic MyAnimeList previews use bounded metadata and require an echoed 
     assert.equal(card.title, myAnimeListTitle); assert.equal(card.image?.url, myAnimeListImage);
     assert(card.description && card.description.length <= 300);
     assert.equal(f.events.includes('delete original'), mode === 'replace' && confirmed);
+    assert.equal(f.events.includes('delete replacement'), !confirmed, `${mode}: only unverified cards are removed`);
   }
 });
 

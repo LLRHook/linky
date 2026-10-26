@@ -170,85 +170,6 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** The approved documentation correction identifies Node.js 26, reposts.json and delivery-logs/, matching Dockerfile and src/bot.ts. The historical verification reports remain verbatim in their archive.
 
-### [BUG-1791833859] Verification checklist relies on CI evidence and retains completed run reports
-- [x] **Severity:** low
-- **Area:** docs, tests
-- **File(s):** VERIFICATION.md, docs/verification-history.md
-- **Observation:** The checklist contains two filled historical reports, calls the image vulnerability scan CI-only, requires a GitHub CI success as Stage 2.7, and lacks the fresh-stack/data-restore manifest required by the invoked protocol. Step 1.5 also names the gallery host's former module.
-- **Expected:** A local run proves its committed artifact and freshly restored stack without citing CI; the checklist holds reusable procedure and baselines, and preserves historical evidence separately.
-- **Repro / Notes:** Compare VERIFICATION.md Stages 0, 2.5, 2.7 and the Run log with the invoked protocol's local-evidence, fresh-stack and compaction requirements. The complete proposal is in .vv/protocol-proposal/proposal.diff; the user explicitly approved that diff on 2026-10-12.
-- **Bump:** patch
-- **Status:** fixed-pending-migration
-- **Fix:** Preserve both historical reports verbatim in docs/verification-history.md; add the exact pinned local Trivy scan and fresh-stack restore rows; replace CI evidence with local matrix results; update the gallery module reference. CHANGELOG.md remains unchanged until a green full run.
-
-### [BUG-1791837090] Fresh live TikTok attempt cannot confirm the reported share preview
-- [ ] **Severity:** med
-- **Area:** providers, previews
-- **File(s):** src/services/MobileShareLinks.ts, src/services/PreviewWatcher.ts, src/services/PreviewRecovery.ts
-- **Observation:** After the approved fresh Hostinger reset at SHA 1bdfa5a, posting the reported public share in GAMBA Replace mode produced an unconfirmed-preview notice. The source remained intact. Private Details reported native TikTok delivery, 8.8 seconds total and an 8.1-second unavailable preview stage. X controls succeeded in the same session.
-- **Expected:** The reported share resolves to video 7695457160653851935 and receives a matching playable preview, with safe source retention when provider delivery is unavailable.
-- **Repro / Notes:** Current owned fixture source 1559302030542118972, notice 1559302069590949890, attempt 5ee06734-e617-46af-adce-9c63f1ac0d23. Browser mutation evidence and screenshot are retained under .vv/. Provider timing and Retry are under investigation; do not infer an identity mismatch or source loss from the unconfirmed notice alone.
-- **Bump:** patch
-- **Status:** open
-
-### [BUG-1791837609] Live Twitch corpus delivery has no confirmed Discord preview
-- [ ] **Severity:** med
-- **Area:** providers, previews
-- **File(s):** src/services/SocialProviders.ts, ops/preview-corpus.json
-- **Observation:** A fresh-stack GAMBA post of the existing public Twitch corpus clip kept its source and returned an unconfirmed-preview notice. The local provider metadata control had passed for that clip in this session.
-- **Expected:** The corpus clip previews once through the configured provider; unavailable delivery retains the source and safe Retry controls.
-- **Repro / Notes:** Owned source 1559304608327929888 and notice 1559304628900991091. The native Twitch source card rendered, but that does not establish Linky provider delivery. Host-network control and Retry are being checked.
-- **Bump:** patch
-- **Status:** open
-
-### [BUG-1791837720] Confirmed social previews lose Remove and Details controls in live Discord
-- [ ] **Severity:** med
-- **Area:** previews, ownership
-- **File(s):** src/services/SocialLinkService.ts, src/services/RepostRegistry.ts, tests/social-links.test.ts, tests/repost-sync.test.ts, tests/delivery-recovery.test.ts
-- **Observation:** Fresh-stack GAMBA TikTok, Bluesky and Reddit previews were confirmed and their sources safely deleted, but the resulting Discord messages retained only Original post. The canonical reported TikTok initially displayed Remove and Details, then lost both within seconds. A Bot REST GET confirms this server state; the durable ownership records still exist. X and Instagram controls remain present.
-- **Expected:** A confirmed automatic preview retains the original sharer's Remove action and its delivery Details while its ownership record is valid.
-- **Repro / Notes:** Owned examples: TikTok 1559302634077425725 (canonical), 1559302873437962383 (Retry reply), 1559304300969070615 and 1559304343214231662 (corpus); Bluesky 1559304532083736667; Reddit 1559304570570670212. .vv/discord-fixtures.json, .vv/gui-evidence.json and Hostinger registry/log evidence show the mismatch. No product root cause has been assumed.
-- **Investigation:** Batch A reproduced Original-only controls on Reddit 1559369650746429450 in both the GUI and channel-list REST response. A later Reddit delivery retained all controls in single-message and channel-list REST checks; bound private Details and owner Remove worked. TikTok and a three-minute Bluesky replay also retained controls. Controlled REST probes and the actual Discord.js publication handler without a Gateway connection retained controls. The failure is intermittent; its writer remains unproven. Component fixtures now preserve serialized server state and model cloned edit/fetch results, but this characterization is not a product fix.
-- **Acceptance criteria:** Confirmed automatic and Retry previews retain Original post, owner-only Remove and correctly bound Details after delayed updates; unrelated controls, source-deletion ordering and cleanup remain correct.
-- **Test plan:** Reproduce component-state loss with faithful send/edit/cache and delayed-event behavior; exercise Replace, Reply, Retry, ownership reload, non-owner actions and cancellation against the captured lifecycle.
-- **Bump:** patch
-- **Status:** in-progress
-
-### [BUG-1791838422] vxTwitter error card is accepted as a useful post preview
-- [ ] **Severity:** high
-- **Area:** previews, source-safety
-- **File(s):** src/services/PreviewRecovery.ts, tests/preview-recovery.test.ts, tests/preview-watcher.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts
-- **Observation:** Retrying the current unavailable X fixture produced a vxTwitter / fixvx card whose description begins "Failed to scan your link!" and returned a confirmed preview. A read-only invocation of the committed inspectPreviews matcher against the actual Discord embed returns ok:true with no missing expectation.
-- **Expected:** A provider's unavailable/error card cannot satisfy useful post delivery or permit source deletion.
-- **Repro / Notes:** Owned source 1559305894511116288, retry response 1559306040581816402. .vv/live-fixture-analysis.json captures the real embed and current matcher result. Retry kept the source because it forces Reply; the automatic Replace path shares this matcher and remains at risk. No source loss was observed in this fixture.
-- **Root cause:** The known-error expressions omit the branded vxTwitter service-error signature, allowing its matching URL, title and description to satisfy a text-post preview.
-- **Implementation progress:** Added a narrow branded scan-error rejection before media checks and regression coverage for aliases, logos/video, legitimate quoted text, Gateway/REST observations, automatic Replace/Retry and manual commands. The live REST-backed SDK probe rejected both unavailable providers, retained its source and exposed an owned recovery notice. Integrated sign-off and verification through the normal deployed bot remain pending.
-- **Acceptance criteria:** Recognizable provider service-error cards remain missing and receive no success attribution; automatic failure preserves the source and owned recovery controls; legitimate post/media and useful bounded fallback still pass.
-- **Test plan:** Regress the captured error signature and media/logo variants, legitimate-post positive controls, Gateway/REST rejection, automatic Replace/Retry source safety and explicit manual fixing.
-- **Bump:** patch
-- **Status:** in-progress
-
-### [BUG-1793043364] MyAnimeList catalogue previews are rejected as unverifiable articles
-- [x] **Severity:** med
-- **Area:** previews, commands
-- **File(s):** src/services/ArticlePreview.ts, src/commands/fix.ts, tests/article-preview.test.ts, tests/manual-fix.test.ts, tests/social-links.test.ts, tests/fixtures/myanimelist.ts, README.md, docs/article-previews.md
-- **Observation:** The reported `/fix` request for `https://myanimelist.net/anime/61578/Seitokai_ni_mo_Ana_wa_Aru` returns the public-article-metadata failure. A public metadata check on 2026-10-26 returned HTTP 200, a title, synopsis and cover, but `og:type=video.tv_show` with no player. Article parsing rejects that type before requiring Article metadata. Anime films use `video.movie`; manga entries use `books.book`.
-- **Expected:** Public MyAnimeList anime and manga detail links produce compact, attributed cards with a bounded synopsis and cover; actual player pages, unrelated pages, unsafe requests and changed sources retain their existing protections.
-- **Repro / Notes:** The screenshot's anime link; offline fixtures reproduce its head metadata. Verify both manual entry points, automatic source-retention checks, exact catalogue identities and genuine media-player exclusions.
-- **Bump:** patch
-- **Status:** fixed-pending-migration
-- **Fix:** Accept matching MyAnimeList anime/film/manga detail metadata through the existing bounded HTTPS lookup, with a source-labelled card, synopsis of at most 300 characters and full-size cover when available. Keep real player exclusions, source/card confirmation, settings, ownership and HTTPS redirect checks. Update manual failure guidance and support docs. Node 26.12.1: 1,234 TypeScript tests and 54 script tests passed (eight unchanged container-only skips), worker type-check and 24 deploy safeguards passed. Real pinned lookups returned cards for the reported anime, an anime film and a manga entry. The unrelated dependency audit failure is BUG-1793043611; deployment and live Discord rendering were not performed.
-
-### [BUG-1793043611] Dependency audit fails for the existing undici version
-- [ ] **Severity:** med
-- **Area:** security, ci
-- **File(s):** package-lock.json
-- **Observation:** On 2026-10-26, `npm audit --audit-level=low` reports one high-severity vulnerable package, `undici@6.28.1`, installed through `discord.js@14.27.0` and `@discordjs/rest@2.6.3`. The reported advisories are GHSA-4qv8-2p9j-2685 and GHSA-xjj6-f33q-929c. The MyAnimeList fix does not change dependencies or the lockfile.
-- **Expected:** The CI dependency audit passes with a reviewed, fixed transitive dependency version.
-- **Repro / Notes:** `npm audit --audit-level=low`; `npm ls undici`. Advisory links: https://github.com/advisories/GHSA-4qv8-2p9j-2685 and https://github.com/advisories/GHSA-xjj6-f33q-929c. Review the upstream fixes and dependency compatibility before updating the lockfile; no live exploitability assessment was performed in this preview-fix task.
-- **Bump:** patch
-- **Status:** open
-
 ### [BUG-1791981980] Permission tests can pass because the repost handler swallows assertions raised in its callbacks
 - [x] **Severity:** low
 - **Area:** tests
@@ -260,6 +181,7 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** `tests/social-links.test.ts` replaces every callback `assert.fail` with a recorded `forbid` callback checked in `afterEach`. This exposed an article test whose permission case kept Administrator, so it never lacked Embed Links; it now removes both. A suite-wide probe of swallowed `assert.fail` calls found one more, in `tests/delivery-recovery.test.ts`, where the community-lookup case used `nolinky` instead of `!nolinky`; it now uses the real bypass and counts lookups. The probe reports no swallowed assertions. Removing the Attach Files or Embed Links requirement now fails the matching test.
 - **Docs:** none needed (tests only).
+
 ### [BUG-1791986809] Operator docs and V&V checklist omit the Facebook platform
 - [x] **Severity:** low
 - **Area:** docs
@@ -328,7 +250,6 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** open
 
-
 ### [BUG-1792164365] Reddit component previews cannot be confirmed by Linky's embed verifier
 - [x] **Severity:** high
 - **Area:** providers, previews
@@ -375,6 +296,34 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** Parse empty posts only with usable media or valid quoted context, retain their null language, preserve photo cards and video galleries, and show only the quoted text's translation label. Synthetic parser/command/bot regressions and the full Node 26 validation pass. A post-fix live lookup of the reported post produced one preserved photo and one English quote card; removing the empty-post photo rendering fails its regression.
 - **Docs:** README.md, CONTRIBUTING.md.
+
+### [BUG-1791837720] Confirmed social previews lose Remove and Details controls in live Discord
+- [ ] **Severity:** med
+- **Area:** previews, ownership
+- **File(s):** src/services/SocialLinkService.ts, src/services/RepostRegistry.ts, tests/social-links.test.ts, tests/repost-sync.test.ts, tests/delivery-recovery.test.ts
+- **Observation:** Fresh-stack GAMBA TikTok, Bluesky and Reddit previews were confirmed and their sources safely deleted, but the resulting Discord messages retained only Original post. The canonical reported TikTok initially displayed Remove and Details, then lost both within seconds. A Bot REST GET confirms this server state; the durable ownership records still exist. X and Instagram controls remain present.
+- **Expected:** A confirmed automatic preview retains the original sharer's Remove action and its delivery Details while its ownership record is valid.
+- **Repro / Notes:** Owned examples: TikTok 1559302634077425725 (canonical), 1559302873437962383 (Retry reply), 1559304300969070615 and 1559304343214231662 (corpus); Bluesky 1559304532083736667; Reddit 1559304570570670212. .vv/discord-fixtures.json, .vv/gui-evidence.json and Hostinger registry/log evidence show the mismatch. No product root cause has been assumed.
+- **Investigation:** Batch A reproduced Original-only controls on Reddit 1559369650746429450 in both the GUI and channel-list REST response. A later Reddit delivery retained all controls in single-message and channel-list REST checks; bound private Details and owner Remove worked. TikTok and a three-minute Bluesky replay also retained controls. Controlled REST probes and the actual Discord.js publication handler without a Gateway connection retained controls. The failure is intermittent; its writer remains unproven. Component fixtures now preserve serialized server state and model cloned edit/fetch results, but this characterization is not a product fix.
+- **Acceptance criteria:** Confirmed automatic and Retry previews retain Original post, owner-only Remove and correctly bound Details after delayed updates; unrelated controls, source-deletion ordering and cleanup remain correct.
+- **Test plan:** Reproduce component-state loss with faithful send/edit/cache and delayed-event behavior; exercise Replace, Reply, Retry, ownership reload, non-owner actions and cancellation against the captured lifecycle.
+- **Bump:** patch
+- **Status:** in-progress
+
+### [BUG-1791838422] vxTwitter error card is accepted as a useful post preview
+- [ ] **Severity:** high
+- **Area:** previews, source-safety
+- **File(s):** src/services/PreviewRecovery.ts, tests/preview-recovery.test.ts, tests/preview-watcher.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts
+- **Observation:** Retrying the current unavailable X fixture produced a vxTwitter / fixvx card whose description begins "Failed to scan your link!" and returned a confirmed preview. A read-only invocation of the committed inspectPreviews matcher against the actual Discord embed returns ok:true with no missing expectation.
+- **Expected:** A provider's unavailable/error card cannot satisfy useful post delivery or permit source deletion.
+- **Repro / Notes:** Owned source 1559305894511116288, retry response 1559306040581816402. .vv/live-fixture-analysis.json captures the real embed and current matcher result. Retry kept the source because it forces Reply; the automatic Replace path shares this matcher and remains at risk. No source loss was observed in this fixture.
+- **Root cause:** The known-error expressions omit the branded vxTwitter service-error signature, allowing its matching URL, title and description to satisfy a text-post preview.
+- **Implementation progress:** Added a narrow branded scan-error rejection before media checks and regression coverage for aliases, logos/video, legitimate quoted text, Gateway/REST observations, automatic Replace/Retry and manual commands. The live REST-backed SDK probe rejected both unavailable providers, retained its source and exposed an owned recovery notice. Integrated sign-off and verification through the normal deployed bot remain pending.
+- **Acceptance criteria:** Recognizable provider service-error cards remain missing and receive no success attribution; automatic failure preserves the source and owned recovery controls; legitimate post/media and useful bounded fallback still pass.
+- **Test plan:** Regress the captured error signature and media/logo variants, legitimate-post positive controls, Gateway/REST rejection, automatic Replace/Retry source safety and explicit manual fixing.
+- **Bump:** patch
+- **Status:** in-progress
+
 ### [BUG-1793013677] Locked undici 6.28.1 fails the dependency audit gate
 - [x] **Severity:** high
 - **Area:** security, ci
@@ -396,6 +345,70 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** fixed-pending-migration
 - **Fix:** The bot host downloads the post image (8 MiB cap) and avatar (1 MiB cap) from the validated media hosts and uploads them with the card as `attachment://truth-<id>[-avatar].<ext>`; preview confirmation accepts the matching Discord CDN address. Without Attach Files, or past six files or 16 MiB per message, cards link the originals. An unconfirmed `/fix` card removes its hidden uploads with it. Downloads are cached with the lookup (32 MiB total).
+
+### [BUG-1791833859] Verification checklist relies on CI evidence and retains completed run reports
+- [x] **Severity:** low
+- **Area:** docs, tests
+- **File(s):** VERIFICATION.md, docs/verification-history.md
+- **Observation:** The checklist contains two filled historical reports, calls the image vulnerability scan CI-only, requires a GitHub CI success as Stage 2.7, and lacks the fresh-stack/data-restore manifest required by the invoked protocol. Step 1.5 also names the gallery host's former module.
+- **Expected:** A local run proves its committed artifact and freshly restored stack without citing CI; the checklist holds reusable procedure and baselines, and preserves historical evidence separately.
+- **Repro / Notes:** Compare VERIFICATION.md Stages 0, 2.5, 2.7 and the Run log with the invoked protocol's local-evidence, fresh-stack and compaction requirements. The complete proposal is in .vv/protocol-proposal/proposal.diff; the user explicitly approved that diff on 2026-10-12.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Preserve both historical reports verbatim in docs/verification-history.md; add the exact pinned local Trivy scan and fresh-stack restore rows; replace CI evidence with local matrix results; update the gallery module reference. CHANGELOG.md remains unchanged until a green full run.
+
+### [BUG-1791837090] Fresh live TikTok attempt cannot confirm the reported share preview
+- [ ] **Severity:** med
+- **Area:** providers, previews
+- **File(s):** src/services/MobileShareLinks.ts, src/services/PreviewWatcher.ts, src/services/PreviewRecovery.ts
+- **Observation:** After the approved fresh Hostinger reset at SHA 1bdfa5a, posting the reported public share in GAMBA Replace mode produced an unconfirmed-preview notice. The source remained intact. Private Details reported native TikTok delivery, 8.8 seconds total and an 8.1-second unavailable preview stage. X controls succeeded in the same session.
+- **Expected:** The reported share resolves to video 7695457160653851935 and receives a matching playable preview, with safe source retention when provider delivery is unavailable.
+- **Repro / Notes:** Current owned fixture source 1559302030542118972, notice 1559302069590949890, attempt 5ee06734-e617-46af-adce-9c63f1ac0d23. Browser mutation evidence and screenshot are retained under .vv/. Provider timing and Retry are under investigation; do not infer an identity mismatch or source loss from the unconfirmed notice alone.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1791837609] Live Twitch corpus delivery has no confirmed Discord preview
+- [ ] **Severity:** med
+- **Area:** providers, previews
+- **File(s):** src/services/SocialProviders.ts, ops/preview-corpus.json
+- **Observation:** A fresh-stack GAMBA post of the existing public Twitch corpus clip kept its source and returned an unconfirmed-preview notice. The local provider metadata control had passed for that clip in this session.
+- **Expected:** The corpus clip previews once through the configured provider; unavailable delivery retains the source and safe Retry controls.
+- **Repro / Notes:** Owned source 1559304608327929888 and notice 1559304628900991091. The native Twitch source card rendered, but that does not establish Linky provider delivery. Host-network control and Retry are being checked.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1793043364] MyAnimeList catalogue previews are rejected as unverifiable articles
+- [x] **Severity:** med
+- **Area:** previews, commands
+- **File(s):** src/services/ArticlePreview.ts, src/commands/fix.ts, tests/article-preview.test.ts, tests/manual-fix.test.ts, tests/social-links.test.ts, tests/fixtures/myanimelist.ts, README.md, docs/article-previews.md
+- **Observation:** The reported `/fix` request for `https://myanimelist.net/anime/61578/Seitokai_ni_mo_Ana_wa_Aru` returns the public-article-metadata failure. A public metadata check on 2026-10-26 returned HTTP 200, a title, synopsis and cover, but `og:type=video.tv_show` with no player. Article parsing rejects that type before requiring Article metadata. Anime films use `video.movie`; manga entries use `books.book`.
+- **Expected:** Public MyAnimeList anime and manga detail links produce compact, attributed cards with a bounded synopsis and cover; actual player pages, unrelated pages, unsafe requests and changed sources retain their existing protections.
+- **Repro / Notes:** The screenshot's anime link; offline fixtures reproduce its head metadata. Verify both manual entry points, automatic source-retention checks, exact catalogue identities and genuine media-player exclusions.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Accept matching MyAnimeList anime/film/manga detail metadata through the existing bounded HTTPS lookup, with a source-labelled card, synopsis of at most 300 characters and full-size cover when available. Keep real player exclusions, source/card confirmation, settings, ownership and HTTPS redirect checks. Update manual failure guidance and support docs. Node 26.12.1: 1,234 TypeScript tests and 54 script tests passed (eight unchanged container-only skips), worker type-check and 24 deploy safeguards passed. Real pinned lookups returned cards for the reported anime, an anime film and a manga entry. The unrelated dependency audit failure is BUG-1793043611; deployment and live Discord rendering were not performed.
+
+### [BUG-1793043611] Dependency audit fails for the existing undici version
+- [x] **Severity:** med
+- **Area:** security, ci
+- **File(s):** package-lock.json
+- **Observation:** On 2026-10-26, `npm audit --audit-level=low` reports one high-severity vulnerable package, `undici@6.28.1`, installed through `discord.js@14.27.0` and `@discordjs/rest@2.6.3`. The reported advisories are GHSA-4qv8-2p9j-2685 and GHSA-xjj6-f33q-929c. The MyAnimeList fix does not change dependencies or the lockfile.
+- **Expected:** The CI dependency audit passes with a reviewed, fixed transitive dependency version.
+- **Repro / Notes:** `npm audit --audit-level=low`; `npm ls undici`. Advisory links: https://github.com/advisories/GHSA-4qv8-2p9j-2685 and https://github.com/advisories/GHSA-xjj6-f33q-929c. Review the upstream fixes and dependency compatibility before updating the lockfile; no live exploitability assessment was performed in this preview-fix task.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Integrate current main's existing BUG-1793013677 fix, which pins the transitive dependency to undici 6.29.1 within discord.js's declared range. Both upstream advisories identify 6.29.1 as patched. A fresh Node 26 `npm ci` reports zero vulnerabilities. Duplicate of BUG-1793013677; no separate changelog line. No dependency override or additional version bump is needed.
+
+### [BUG-1793048766] Verification backups are not ignored in other clones
+- [x] **Severity:** med
+- **Area:** security, docs
+- **File(s):** .gitignore, VERIFICATION.md
+- **Observation:** The verification checklist stores state backups and run evidence under `.vv/`, but only this checkout's private Git exclusion ignored that directory. A fresh clone could accidentally stage production JSON state or private evidence with `git add .`.
+- **Expected:** The shared repository ignore rules exclude verification backups and scratch evidence in every clone.
+- **Repro / Notes:** Independent review of Stage 0.8 and D3 identified the missing shared rule. `git check-ignore --no-index -v .vv/backups/synthetic.json` must identify `.gitignore` as the source, and `git ls-files .vv` must remain empty.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Add `.vv/` to the shared .gitignore; preserve the documented private backup location and keep all verification scratch files outside the committed change set.
 
 ## Migrated to changelog
 
