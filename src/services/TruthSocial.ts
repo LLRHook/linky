@@ -14,7 +14,7 @@ export interface TruthSocialPost {
   link?: { title: string; site?: string };
   image?: string;
   video: boolean;
-  /** A playable archived copy of the post's video. */
+  /** A playable copy of the post's video, from Truth Social or its archive. */
   videoUrl?: string;
   mediaCount: number;
   counts?: { replies: number; reposts: number; likes: number };
@@ -30,6 +30,9 @@ const HANDLE = /^[A-Za-z0-9_]{1,30}$/;
 const STATUS_ID = /^\d{1,20}$/;
 // Truth Social's own media hosts; no queries, ports, credentials or dot segments reach Discord's image proxy.
 const ASSET = /^https:\/\/static-assets(?:-\d{1,2})?\.truthsocial\.com\/[A-Za-z0-9_:-]+(?:\/[A-Za-z0-9_:-]+)*\.(?:jpe?g|png|webp|gif)$/i;
+const VIDEO_ASSET = /^https:\/\/static-assets(?:-\d{1,2})?\.truthsocial\.com\/[A-Za-z0-9_:-]+(?:\/[A-Za-z0-9_:-]+)*\.mp4$/i;
+// Crawler metadata names the post's first image by its downsized copy; the original sits beside it.
+const PAGE_MEDIA = /^(https:\/\/static-assets(?:-\d{1,2})?\.truthsocial\.com\/[A-Za-z0-9_:-]+\/media_attachments\/files(?:\/\d{3}){6})\/small(\/[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif))$/i;
 // The archive's object storage, with the same path restrictions.
 const ARCHIVE_MEDIA = /^https:\/\/truth-archive\.[a-z]{2}-[a-z]{3,6}-\d\.linodeobjects\.com\/attachments(?:\/[A-Za-z0-9_-]+)+\.(jpe?g|png|webp|gif|mp4)$/i;
 const record = (value: unknown): Record<string, unknown> =>
@@ -55,6 +58,11 @@ export function truthSocialAsset(value: unknown): string | null {
 function archiveMedia(value: unknown, kind: 'image' | 'video'): string | null {
   const match = typeof value === 'string' && value.length <= 1024 ? ARCHIVE_MEDIA.exec(value) : null;
   return match && (match[1].toLowerCase() === 'mp4') === (kind === 'video') ? value as string : null;
+}
+
+/** Playable videos, like card images, come only from Truth Social or its archive's storage. */
+function truthSocialVideo(value: unknown): string | null {
+  return typeof value === 'string' && value.length <= 1024 && VIDEO_ASSET.test(value) ? value : archiveMedia(value, 'video');
 }
 
 /** Card images come only from Truth Social or its archive's storage. */
@@ -106,11 +114,12 @@ export function parseTruthSocialStatus(value: unknown, link: TruthSocialLink): T
   if (!author || text === null) return null;
   const media = status.media_attachments === undefined ? [] : status.media_attachments;
   if (!Array.isArray(media) || media.length > 20) return null;
-  let image: string | null = null, video = false;
+  let image: string | null = null, video = false, videoUrl: string | null = null;
   for (const raw of media) {
     const item = record(raw), type = String(item.type);
     // Uncached remote media ('unknown') has no usable preview; it still counts toward the post's media.
     if (['video', 'gifv', 'audio'].includes(type)) video = true;
+    if (type === 'video' || type === 'gifv') videoUrl ??= truthSocialVideo(item.url);
     if (type !== 'unknown') image ??= truthSocialAsset(type === 'image' ? item.url : item.preview_url) ?? truthSocialAsset(item.preview_url);
   }
   const card = record(status.card), title = typeof card.title === 'string' && card.title.length <= 1000 ? card.title.trim() : '';
@@ -127,7 +136,8 @@ export function parseTruthSocialStatus(value: unknown, link: TruthSocialLink): T
     url: `https://${TRUTH_SOCIAL_HOST}/@${reposter.handle}/${link.id}`, author, text,
     ...(reblog ? { repostedBy: reposter.name } : {}),
     ...(quoteAuthor && quoteText ? { quote: { name: quoteAuthor.name, handle: quoteAuthor.handle, text: quoteText } } : {}),
-    ...(title ? { link: { title, ...(site ? { site } : {}) } } : {}), ...(image ? { image } : {}), video, mediaCount: media.length,
+    ...(title ? { link: { title, ...(site ? { site } : {}) } } : {}), ...(image ? { image } : {}), video,
+    ...(videoUrl ? { videoUrl } : {}), mediaCount: media.length,
     counts: { replies: count(status.replies_count), reposts: count(status.reblogs_count), likes: count(status.favourites_count) },
     ...(publishedAt ? { publishedAt } : {}), via: 'api',
   };
@@ -180,11 +190,13 @@ export function parseTruthSocialPage(meta: { url?: string; title?: string; descr
   link: TruthSocialLink, authorName?: string): TruthSocialPost | null {
   const canonical = meta.url && parseTruthSocialUrl(meta.url);
   const text = (meta.description ?? '').trim();
-  if (!canonical || canonical.id !== link.id || !text || text.length > 100_000 || meta.title?.trim() === 'Truth Social') return null;
-  const avatar = truthSocialAsset(meta.image);
+  // The page's image is the post's first image when it has one, otherwise the author's avatar.
+  const media = typeof meta.image === 'string' && meta.image.length <= 1024 ? PAGE_MEDIA.exec(meta.image) : null;
+  const image = media ? `${media[1]}/original${media[2]}` : undefined, avatar = media ? null : truthSocialAsset(meta.image);
+  if (!canonical || canonical.id !== link.id || !text && !image || text.length > 100_000 || meta.title?.trim() === 'Truth Social') return null;
   const name = authorName?.trim();
   return { url: canonical.url, author: { name: name && name.length <= 256 ? name : canonical.handle, handle: canonical.handle,
-    ...(avatar ? { avatar } : {}) }, text, video: false, mediaCount: 0, via: 'page' };
+    ...(avatar ? { avatar } : {}) }, text, ...(image ? { image } : {}), video: false, mediaCount: image ? 1 : 0, via: 'page' };
 }
 
 /** Inert Discord text: no mentions, markdown, masked links or invite links; line breaks are kept. */
@@ -210,7 +222,7 @@ export function formatTruthSocialPost(post: TruthSocialPost): APIEmbed[] {
   const link = parseTruthSocialUrl(post?.url ?? '');
   if (!link || link.url !== post.url || !HANDLE.test(post.author?.handle ?? '') || typeof post.author.name !== 'string' ||
       typeof post.text !== 'string' || (post.image !== undefined && truthSocialImage(post.image) !== post.image) ||
-      (post.videoUrl !== undefined && archiveMedia(post.videoUrl, 'video') !== post.videoUrl) ||
+      (post.videoUrl !== undefined && truthSocialVideo(post.videoUrl) !== post.videoUrl) ||
       (post.author.avatar !== undefined && truthSocialAsset(post.author.avatar) !== post.author.avatar)) return [];
   const name = plain(post.author.name, 200) || post.author.handle;
   const parts = [literal(post.text, 2800)];
@@ -240,4 +252,15 @@ export function formatTruthSocialPost(post: TruthSocialPost): APIEmbed[] {
     footer: { text: footer },
     ...(date ? { timestamp: date } : {}),
   }];
+}
+
+/** `TRUTH_SOCIAL_RELAY_URL` and `TRUTH_SOCIAL_RELAY_TOKEN` together, or neither. */
+export function parseTruthSocialRelay(url: string | undefined, token: string | undefined): { hostname: string; token: string } | undefined {
+  const address = url?.trim(), secret = token?.trim();
+  if (!address && !secret) return undefined;
+  if (!address || !secret) throw Error('TRUTH_SOCIAL_RELAY_URL and TRUTH_SOCIAL_RELAY_TOKEN must be set together.');
+  if (!/^[A-Za-z0-9._~-]{32,512}$/.test(secret)) throw Error('TRUTH_SOCIAL_RELAY_TOKEN must be 32 to 512 URL-safe characters.');
+  const match = /^https:\/\/([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)\/?$/i.exec(address);
+  if (!match || /^[\d.]+$/.test(match[1])) throw Error('TRUTH_SOCIAL_RELAY_URL must be an https:// origin such as https://relay.example.workers.dev.');
+  return { hostname: match[1].toLowerCase(), token: secret };
 }

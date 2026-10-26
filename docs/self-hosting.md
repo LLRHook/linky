@@ -53,6 +53,7 @@ Linky registers its commands automatically at startup. Open `/setup` to enable y
 | `TRANSLATE_INSTAGRAM` | `true` enables English Instagram captions when the translation key is available; default `false` |
 | `GOOGLE_TRANSLATE_API_KEY` | Optional dedicated Cloud Translation Basic v2 key; independent of the YouTube key |
 | `YOUTUBE_API_KEY` | Optional operator key for YouTube Data API v3; absent leaves native videos untouched; public community text/image posts need no key |
+| `TRUTH_SOCIAL_RELAY_URL`, `TRUTH_SOCIAL_RELAY_TOKEN` | Optional [Truth Social relay](truth-social-relay.md) HTTPS origin and its 32–512 character bearer secret; set both or neither. Used only when Truth Social's status API refuses the host; without either, other accounts' posts fall back to page text and first images |
 | `EROME_MEDIA_ENABLED` | Enables optional regional original-video delivery after hosting is configured; default `false` |
 | `EROME_WORKER_KEY`, `EROME_WORKER_BASE_URL` | Shared worker HMAC secret and the dedicated Vercel worker project's HTTPS origin |
 | `EROME_MEDIA_BASE_URL` | Public HTTPS media origin, without a path, query or credentials |
