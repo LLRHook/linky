@@ -1,10 +1,13 @@
 import { lookup as lookupDns } from 'node:dns/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { RequestOptions } from 'node:https';
 import { isIP } from 'node:net';
 import type { APIEmbed } from 'discord.js';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
 import { SOCIAL_PROVIDERS } from './SocialProviders';
+import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialStatus, parseTruthSocialUrl,
+  TRUTH_ARCHIVE, TRUTH_SOCIAL_HOST, type TruthSocialLink, type TruthSocialPost } from './TruthSocial';
 
 export interface ArticlePreview {
   source: string;
@@ -14,15 +17,21 @@ export interface ArticlePreview {
   description?: string;
   image?: string;
   publishedAt?: string;
+  /** Truth Social serves no per-post page metadata; its public status API supplies an authored post card. */
+  truthSocial?: TruthSocialPost;
 }
 export interface ArticleLookupOptions {
   resolve4?: (hostname: string) => Promise<string[]>;
   connect?: (options: RequestOptions, signal: AbortSignal) => Promise<Response>;
   now?: () => number;
   timeoutMs?: number;
+  /** Wait before revisiting a Truth Social page that served its placeholder. */
+  pageRetryMs?: number;
 }
 
 const MAX_BYTES = 512 * 1024;
+// Truth Social's bot protection rejects generic and bare product user agents but accepts this identified browser-style one.
+const USER_AGENT = 'Mozilla/5.0 (compatible; Linky/1.0; +https://linkybot.dev/)';
 // Discord's own domains; its invites, messages and gifts render first-party cards.
 const DISCORD_HOSTS = ['discord.com', 'discordapp.com', 'discord.gg', 'discordapp.net', 'discord.media', 'discord.new',
   'discord.gift', 'discord.gifts', 'discord.co', 'discord.dev', 'discordstatus.com', 'discordcdn.com', 'discordsays.com', 'dis.gd'];
@@ -247,7 +256,7 @@ function parseMetadata(html: string, source: string, current: URL): ArticlePrevi
     ...(publishedAt ? { publishedAt } : {}) };
 }
 
-async function readHead(response: Response, signal: AbortSignal): Promise<string> {
+async function readHead(response: Response, signal: AbortSignal, untilHead = true, maxBytes = MAX_BYTES): Promise<string> {
   if (!response.body) throw new Error('article_body');
   const reader = response.body.getReader(), decoder = new TextDecoder('utf-8', { fatal: true });
   const cancel = () => { void reader.cancel().catch(() => undefined); };
@@ -259,11 +268,11 @@ async function readHead(response: Response, signal: AbortSignal): Promise<string
       const part = await regionalAbortable(reader.read(), signal);
       if (part.done) { html += decoder.decode(); break; }
       bytes += part.value.byteLength;
-      if (bytes > MAX_BYTES) throw new Error('article_body');
+      if (bytes > maxBytes) throw new Error('article_body');
       html += decoder.decode(part.value, { stream: true });
       // Stop reading after metadata. An incidental boundary inside raw text may
       // conservatively skip a page; it can never include article-body prose.
-      const end = /<\/head\s*>|<body\b/i.exec(html);
+      const end = untilHead && /<\/head\s*>|<body\b/i.exec(html);
       if (end) { html = html.slice(0, end.index + end[0].length); break; }
     }
     signal.throwIfAborted();
@@ -281,6 +290,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     (await lookupDns(hostname, { all: true, family: 4 })).map(answer => answer.address));
   const connect = options.connect ?? connectHttps, now = options.now ?? Date.now;
   const timeout = Math.max(1, Math.min(5000, options.timeoutMs ?? 5000));
+  const pageRetry = Math.max(0, Math.min(2000, options.pageRetryMs ?? 1200));
   type Pending = { promise: Promise<ArticlePreview | null>; controller: AbortController; subscribers: number };
   const pending = new Map<string, Pending>();
   const cache = new Map<string, { value: ArticlePreview | null; expires: number }>();
@@ -291,10 +301,92 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     signal.throwIfAborted();
     return addresses;
   }
+  /** One pinned, cookie-free GET on a fixed host; redirects and unexpected types are misses. */
+  async function fetchText(hostname: string, path: string, accept: string, type: RegExp, signal: AbortSignal,
+    maxBytes = MAX_BYTES): Promise<string | null> {
+    const [address] = await publicAddresses(hostname, signal);
+    const response = await regionalAbortable(connect({
+      protocol: 'https:', hostname, servername: hostname, port: 443,
+      method: 'GET', path, family: 4, agent: false, rejectUnauthorized: true, maxHeaderSize: 8192,
+      headers: { accept, 'accept-encoding': 'identity', 'user-agent': USER_AGENT },
+      lookup: (_hostname, lookupOptions, callback) => {
+        if (lookupOptions.all) callback(null, [{ address, family: 4 }]);
+        else callback(null, address, 4);
+      },
+    }, signal), signal, cancelRegionalResponse);
+    try {
+      signal.throwIfAborted();
+      if (response.status !== 200 || !type.test(response.headers.get('content-type') ?? '') ||
+          ![null, 'identity'].includes(response.headers.get('content-encoding')?.toLowerCase() ?? null)) return null;
+      return await readHead(response, signal, false, maxBytes);
+    } finally { cancelRegionalResponse(response); }
+  }
+  const attempt = async <T>(step: () => Promise<T | null>, signal: AbortSignal): Promise<T | null> => {
+    try { return await step(); } catch { signal.throwIfAborted(); return null; }
+  };
+  // The archive feed is shared by every @realDonaldTrump lookup; one request serves a burst of links.
+  let archiveFeed: { promise: Promise<string | null>; expires: number } | undefined;
+  function readArchiveFeed(signal: AbortSignal): Promise<string | null> {
+    if (!archiveFeed || archiveFeed.expires <= now()) {
+      const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeout);
+      const entry = { promise: Promise.resolve<string | null>(null), expires: now() + 30_000 };
+      entry.promise = fetchText(TRUTH_ARCHIVE.host, TRUTH_ARCHIVE.feed, 'application/rss+xml, application/xml',
+        /^(?:application\/(?:rss\+)?xml|text\/xml)(?:\s*;|$)/i, controller.signal, 2 * 1024 * 1024)
+        .catch(() => null).then(xml => { if (!xml && archiveFeed === entry) entry.expires = now() + 5_000; return xml; })
+        .finally(() => clearTimeout(timer));
+      archiveFeed = entry;
+    }
+    return regionalAbortable(archiveFeed.promise, signal);
+  }
+  /**
+   * Truth Social's status API, then (when its bot protection blocks this host) the @realDonaldTrump
+   * archive, then Truth Social's own crawler metadata. Every source is public and signed out.
+   */
+  async function requestTruthSocial(source: string, link: TruthSocialLink, signal: AbortSignal): Promise<ArticlePreview | null> {
+    const post = await attempt(async () => {
+      const json = await fetchText(TRUTH_SOCIAL_HOST, `/api/v1/statuses/${link.id}`, 'application/json',
+        /^application\/json(?:\s*;|$)/i, signal);
+      return json ? parseTruthSocialStatus(JSON.parse(json) as unknown, link) : null;
+    }, signal) ?? await attempt(async () => {
+      const xml = link.handle.toLowerCase() === TRUTH_ARCHIVE.handle ? await readArchiveFeed(signal) : null;
+      return xml ? parseTruthArchiveFeed(xml, link) : null;
+    }, signal) ?? await attempt(async () => {
+      const author = attempt(async () => {
+        const body = await fetchText(TRUTH_SOCIAL_HOST, `/api/oembed?url=${encodeURIComponent(link.url)}`, 'application/json',
+          /^application\/json(?:\s*;|$)/i, signal);
+        const data = object(body ? JSON.parse(body) as unknown : null);
+        return typeof data.author_url === 'string' && data.author_url.toLowerCase() === `https://${TRUTH_SOCIAL_HOST}/@${link.handle}`.toLowerCase() &&
+          typeof data.author_name === 'string' ? data.author_name : null;
+      }, signal);
+      author.catch(() => undefined);
+      // The page renders post metadata only after a first visit warms it; that visit receives the placeholder.
+      for (let visit = 0; visit < 2; visit++) {
+        if (visit) await delay(pageRetry, undefined, { signal });
+        const html = await fetchText(TRUTH_SOCIAL_HOST, `/@${link.handle}/${link.id}`, 'text/html', /^text\/html(?:\s*;|$)/i, signal);
+        const head = html ? headMetadata(html) : null, get = (key: string) => head?.meta.get(key);
+        if (!head || !get('og:description') || get('og:title')?.trim() === 'Truth Social') continue;
+        return parseTruthSocialPage({ url: get('og:url'), title: get('og:title'), description: get('og:description'),
+          image: get('og:image') }, link, await author ?? undefined);
+      }
+      return null;
+    }, signal);
+    if (!post) return null;
+    for (const asset of [post.image, post.author.avatar]) {
+      if (!asset) continue;
+      try { await publicAddresses(new URL(asset).hostname, signal); }
+      catch { if (asset === post.image) delete post.image; else delete post.author.avatar; }
+    }
+    if (signal.aborted || !post.text && !post.image && !post.videoUrl) return null;
+    return { source, url: post.url, title: 'Truth Social post', publisher: 'Truth Social',
+      ...(post.text ? { description: post.text } : {}), ...(post.image ? { image: post.image } : {}),
+      ...(post.publishedAt ? { publishedAt: post.publishedAt } : {}), truthSocial: post };
+  }
   async function request(source: string, controller: AbortController): Promise<ArticlePreview | null> {
     const { signal } = controller, timer = setTimeout(() => controller.abort(), timeout), seen = new Set<string>();
     let current = new URL(source);
     try {
+      const truthSocial = parseTruthSocialUrl(source);
+      if (truthSocial) return await requestTruthSocial(source, truthSocial, signal);
       for (let hop = 0; hop <= 3; hop++) {
         if (seen.has(current.href)) return null;
         seen.add(current.href);
@@ -303,7 +395,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
           protocol: 'https:', hostname: current.hostname, servername: current.hostname, port: 443,
           method: 'GET', path: current.pathname + current.search, family: 4, agent: false, rejectUnauthorized: true, maxHeaderSize: 8192,
           headers: { accept: 'text/html,application/xhtml+xml;q=0.9', 'accept-encoding': 'identity',
-            'user-agent': 'Mozilla/5.0 (compatible; Linky/1.0; +https://linkybot.dev/)' },
+            'user-agent': USER_AGENT },
           lookup: (_hostname, lookupOptions, callback) => {
             if (lookupOptions.all) callback(null, [{ address, family: 4 }]);
             else callback(null, address, 4);
@@ -380,6 +472,8 @@ function literal(value: string, limit: number): string {
 export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   const source = parseArticleUrl(article.source), url = parseArticleUrl(article.url);
   if (!source || !url || typeof article.title !== 'string' || typeof article.publisher !== 'string') return [];
+  // A Truth Social permalink renders only from its verified status; its placeholder page metadata never does.
+  if (parseTruthSocialUrl(source)) return article.truthSocial?.url === url ? formatTruthSocialPost(article.truthSocial) : [];
   const title = literal(article.title, 256), publisher = literal(article.publisher, 180);
   if (!title || !publisher) return [];
   const description = typeof article.description === 'string' ? literal(article.description, 300) : '';

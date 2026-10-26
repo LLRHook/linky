@@ -10,6 +10,7 @@ import { parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
 import { parseYouTubeCommunityUrl } from '../services/YouTubeCommunity';
 import { parseArticleUrl } from '../services/ArticlePreview';
+import { parseTruthSocialUrl } from '../services/TruthSocial';
 import { hasMobileShareLinks } from '../services/MobileShareLinks';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
 import { parseEromeUrl } from '../services/Erome';
@@ -88,7 +89,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     const platform = platformFor(link);
     if (!platform) lines.push('Link format: unsupported. Use an HTTPS post link for a listed platform.');
     else {
-      lines.push(platform === 'articles' ? 'Link format: public article candidate; metadata has not been fetched.' : `Link format: recognized ${PLATFORM_NAMES[platform]} URL.`);
+      lines.push(platform === 'articles' ? parseTruthSocialUrl(link) ? 'Link format: recognized Truth Social post; the post has not been fetched.'
+        : 'Link format: public article candidate; metadata has not been fetched.' : `Link format: recognized ${PLATFORM_NAMES[platform]} URL.`);
       if (hasMobileShareLinks(link, [platform])) lines.push('This mobile/share URL shape is recognized. Redirect shares require a public destination before previewing; direct Reddit aliases already contain the post ID. No link was resolved or fetched by this check.');
       if (!effective.platforms.includes(platform)) lines.push(config.rewritePlatforms.includes(platform) &&
         (platform !== 'erome' || isEromeAvailable(config, interaction.guildId))
@@ -100,6 +102,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
             : 'This channel meets the server’s age restriction for Erome.');
           lines.push('When enabled here, automatic Erome previews follow Replace or Reply mode and retain full-album access through Original post. Failed previews, manual fixes and retries keep the source. Video limits: 64 MiB input and 5 minutes; hosted originals fit 24 MiB. JPEG/PNG images fit 8 MiB. Eligible channel members can use hosted Load next item; anyone viewing a public preview can open Details for private delivery timings. Remove remains owner-only. No media was fetched by this check.');
         } else lines.push('Erome previews require an age-restricted server channel or a thread in one under this server’s setting. An admin can change /settings erome_channels. No media was fetched.');
+      } else if (platform === 'articles' && parseTruthSocialUrl(link)) {
+        lines.push('Public Truth Social posts use a Linky card with the author, text and, when available, the first image or video poster, counts and post time. @realDonaldTrump videos get a link to an archived copy; other videos play on Truth Social. Private, sensitive or content-warning posts keep the original. The Articles setting controls these cards. No post was fetched by this check.');
       } else if (platform === 'articles') {
         lines.push('Articles need public HTTPS pages with usable article metadata. Linky shows the publisher’s headline, short excerpt and image when available. Up to three articles can share one preview; keep them separate from other links. Pages without usable metadata stay unchanged. No page was fetched by this check.');
       } else if (parseYouTubeCommunityUrl(link)) {
