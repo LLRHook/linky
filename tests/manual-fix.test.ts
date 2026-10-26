@@ -945,15 +945,20 @@ test('manual MyAnimeList fixes in guilds and DMs publish compact cards and prese
   for (const context of [false, true]) for (const guild of [false, true]) {
     const f = communityCommand(myAnimeListUrl, context);
     f.input.inGuild = () => guild;
+    const outcomes: DeliveryOutcome[] = [];
+    const diagnostics = diagnosticsStub({ id: 'myanimelist-manual', outcomes });
     const lookupArticle = createArticleLookup({ resolve4: async () => ['1.1.1.1'],
       connect: async () => new Response(myAnimeListHtml, { headers: { 'content-type': 'text/html' } }) });
-    await execute(f.interaction, articleConfig, { lookupArticle,
+    await execute(f.interaction, articleConfig, { lookupArticle, diagnostics,
       verifyPreview: async () => assert.fail('MyAnimeList cards do not require native player metadata') });
+    assert.equal(f.response.content, `<${myAnimeListUrl}>`);
     assert.equal(f.response.embeds.length, 1);
     const card = f.response.embeds[0].toJSON();
     assert.equal(card.title, myAnimeListTitle); assert.equal(card.image?.url, myAnimeListImage);
     assert(card.description && card.description.length <= 300);
     assert.equal(card.author?.name, 'Source: MyAnimeList.net');
+    assert.equal(card.footer?.text, 'myanimelist.net · Anime metadata');
+    assert.deepEqual(outcomes, ['confirmed']);
     assert.deepEqual(originalControls(f), [myAnimeListUrl]);
     assert.equal(f.input.targetMessage.content, myAnimeListUrl);
     assert(f.events.filter(event => event.name === 'edit').every(event => event.payload.allowedMentions.parse.length === 0));

@@ -257,7 +257,9 @@ function parseMetadata(html: string, source: string, current: URL): ArticlePrevi
   const entry = myAnimeListEntry(current.href);
   // MAL labels catalogue records video.tv_show/video.movie/books.book without providing a player.
   // Only a matching entry, declared URL and content type can use this exception.
-  const catalogue = entry && (entry.startsWith('anime/') ? ['video.tv_show', 'video.movie'].includes(type ?? '') : type === 'books.book') &&
+  const catalogueType = entry?.startsWith('anime/')
+    ? type === 'video.tv_show' || type === 'video.movie' : type === 'books.book';
+  const catalogue = entry && catalogueType &&
     [source, canonical, sameOriginUrl(get('og:url'), current)].every(url => url && myAnimeListEntry(url) === entry) &&
     Boolean(metadataText(get('og:title')));
   // Discord already plays media pages natively; an Article JSON-LD (as on Tenor) must not replace that player.
@@ -564,7 +566,8 @@ export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   const image = article.image && imageUrl(article.image, new URL(url));
   const date = article.publishedAt && Number.isFinite(Date.parse(article.publishedAt)) ? new Date(article.publishedAt).toISOString() : undefined;
   const entry = myAnimeListEntry(url), catalogue = entry && myAnimeListEntry(source) === entry;
-  const label = catalogue ? entry.startsWith('anime/') ? 'Anime' : 'Manga' : 'Article';
+  const catalogueLabel = entry?.startsWith('anime/') ? 'Anime' : 'Manga';
+  const label = catalogue ? catalogueLabel : 'Article';
   return [{ title, url, author: { name: `${catalogue ? 'Source' : 'Publisher'}: ${publisher}`, url: new URL(url).origin },
     footer: { text: `${new URL(url).hostname} · ${label} metadata` }, ...(description ? { description } : {}),
     ...(image ? { image: { url: image } } : {}), ...(date ? { timestamp: date } : {}) }];
