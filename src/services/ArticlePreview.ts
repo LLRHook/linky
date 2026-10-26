@@ -225,15 +225,29 @@ function imageUrl(value: unknown, current: URL): string | null {
   } catch { return null; }
 }
 
+/** Catalogue identity excludes profiles, lists, subpages and lookalike hosts. */
+function myAnimeListEntry(raw: string): string | null {
+  const url = new URL(raw);
+  if (!['myanimelist.net', 'www.myanimelist.net'].includes(url.hostname)) return null;
+  const entry = /^\/(anime|manga)\/([1-9]\d{0,9})(?:\/[^/]+)?\/?$/.exec(url.pathname);
+  return entry ? `${entry[1]}/${entry[2]}` : null;
+}
+
 function parseMetadata(html: string, source: string, current: URL): ArticlePreview | null {
   const head = headMetadata(html), get = (key: string) => head.meta.get(key);
   const canonical = sameOriginUrl(head.canonical, current) ?? sameOriginUrl(get('og:url'), current) ?? current.href;
   const type = get('og:type')?.toLowerCase().trim();
+  const entry = myAnimeListEntry(current.href);
+  // MAL labels catalogue records video.tv_show/video.movie/books.book without providing a player.
+  // Only a matching entry, declared URL and content type can use this exception.
+  const catalogue = entry && (entry.startsWith('anime/') ? ['video.tv_show', 'video.movie'].includes(type ?? '') : type === 'books.book') &&
+    [source, canonical, sameOriginUrl(get('og:url'), current)].every(url => url && myAnimeListEntry(url) === entry) &&
+    Boolean(metadataText(get('og:title')));
   // Discord already plays media pages natively; an Article JSON-LD (as on Tenor) must not replace that player.
-  if (/^(?:video|music)(?:\.|$)/.test(type ?? '') || get('twitter:card')?.toLowerCase().trim() === 'player' ||
+  if ((!catalogue && /^(?:video|music)(?:\.|$)/.test(type ?? '')) || get('twitter:card')?.toLowerCase().trim() === 'player' ||
       ['og:video', 'og:video:url', 'og:video:secure_url', 'twitter:player:stream'].some(key => get(key))) return null;
   const article = structuredArticle(head.json, current, canonical);
-  if (type !== 'article' && !article) return null;
+  if (type !== 'article' && !article && !catalogue) return null;
   const title = metadataText(get('og:title')) || metadataText(article?.headline) || head.title;
   if (!title) return null;
   const publisher = metadataText(get('og:site_name'), 1000) || metadataText(object(article?.publisher).name, 1000) || current.hostname;
@@ -376,7 +390,7 @@ function literal(value: string, limit: number): string {
   return escaped.length <= limit ? escaped : escaped.slice(0, limit - 1).replace(/\\$/, '') + '…';
 }
 
-/** Publisher-provided metadata, explicitly attributed, with no generated claims. */
+/** Source-provided metadata, explicitly attributed, with no generated claims. */
 export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   const source = parseArticleUrl(article.source), url = parseArticleUrl(article.url);
   if (!source || !url || typeof article.title !== 'string' || typeof article.publisher !== 'string') return [];
@@ -385,8 +399,10 @@ export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   const description = typeof article.description === 'string' ? literal(article.description, 300) : '';
   const image = article.image && imageUrl(article.image, new URL(url));
   const date = article.publishedAt && Number.isFinite(Date.parse(article.publishedAt)) ? new Date(article.publishedAt).toISOString() : undefined;
-  return [{ title, url, author: { name: `Publisher: ${publisher}`, url: new URL(url).origin },
-    footer: { text: `${new URL(url).hostname} · Article metadata` }, ...(description ? { description } : {}),
+  const entry = myAnimeListEntry(url), catalogue = entry && myAnimeListEntry(source) === entry;
+  const label = catalogue ? entry.startsWith('anime/') ? 'Anime' : 'Manga' : 'Article';
+  return [{ title, url, author: { name: `${catalogue ? 'Source' : 'Publisher'}: ${publisher}`, url: new URL(url).origin },
+    footer: { text: `${new URL(url).hostname} · ${label} metadata` }, ...(description ? { description } : {}),
     ...(image ? { image: { url: image } } : {}), ...(date ? { timestamp: date } : {}) }];
 }
 

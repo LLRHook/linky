@@ -91,7 +91,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The container runs Node.js 24 as a non-root user on Debian 13, with a read-only root filesystem, no Linux capabilities and no privilege escalation. Writable state belongs in `/app/data`; preparation uses the bounded `/tmp` mount. npm and other package managers are only available during the image build. Back up the `linky-data` volume and server's `.env`. Keep one running instance per bot token. Restart after changing environment settings; `/setup` and `/settings` take effect immediately.
+The container runs Node.js 26 as a non-root user on Debian 13, with a read-only root filesystem, no Linux capabilities and no privilege escalation. Writable state belongs in `/app/data`; preparation uses the bounded `/tmp` mount. npm and other package managers are only available during the image build. Back up the `linky-data` volume and server's `.env`. Keep one running instance per bot token. Restart after changing environment settings; `/setup` and `/settings` take effect immediately.
 
 This version reads both legacy `{ "serverId": true }` settings and records with optional enablement and preferences. Once preferences are saved, older images cannot read those records. Keep a compatible settings backup before upgrading; a rollback to an older image also needs its compatible settings file. Restoring an image alone does not migrate the data volume.
 
