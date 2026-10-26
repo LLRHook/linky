@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ApplicationCommandType, ApplicationIntegrationType, AttachmentBuilder, InteractionContextType, MessageFlags,
+import { ApplicationCommandType, ApplicationIntegrationType, AttachmentBuilder, Collection, InteractionContextType, MessageFlags,
   PermissionFlagsBits, PermissionsBitField, type ButtonInteraction, type ChatInputCommandInteraction,
   type APIEmbed, type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../src/config';
@@ -992,6 +992,42 @@ test('three manual articles allow hidden social links and require an exact echoe
   assert.match(mismatch.response.content, /preview could not be confirmed/);
   assert.equal(mismatch.response.embeds.length, 0, 'An unverified article card must be removed');
   assert.deepEqual(originalControls(mismatch), [ARTICLE_URL]);
+});
+
+const TRUTH_URL = 'https://truthsocial.com/@realDonaldTrump/117497314507062631';
+const truthImage = 'https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/media_attachments/files/117/497/original/d2c8ca4d0b00e832.jpg';
+const truthPost = (source: string): ArticlePreview => ({ source, url: source, title: 'Truth Social post', publisher: 'Truth Social', truthSocial: {
+  url: source, author: { name: 'Donald J. Trump', handle: 'realDonaldTrump' }, text: 'Hello', image: truthImage, video: false, mediaCount: 1,
+  files: [{ name: 'truth-117497314507062631.jpg', url: truthImage, data: new Uint8Array([1, 2, 3]) }] } });
+
+test('manual Truth Social cards upload their image, confirm at the Discord CDN address and drop the upload when unconfirmed', async () => {
+  const cdn = 'https://cdn.discordapp.com/attachments/123456789012345678/223456789012345678/truth-117497314507062631.jpg?ex=1';
+  for (const scenario of ['confirmed', 'unconfirmed', 'no-attach'] as const) {
+    const f = communityCommand(TRUTH_URL), edit = f.input.editReply;
+    Object.assign(f.response, { attachments: new Collection() });
+    if (scenario === 'no-attach') f.input.appPermissions = new PermissionsBitField(0n);
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      const card = f.response.embeds[0]?.toJSON();
+      if (card?.image?.url?.startsWith('attachment://')) f.response.embeds = [{ toJSON: () => ({ ...card,
+        ...(scenario === 'unconfirmed' ? { title: 'Wrong post' } : {}), image: { url: cdn } }) }];
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => truthPost(source) });
+    const published = f.events.find(event => event.name === 'edit' && event.payload.embeds?.length)!.payload;
+    const image = published.embeds[0].toJSON?.().image?.url ?? published.embeds[0].image?.url;
+    if (scenario === 'no-attach') {
+      assert.equal(image, truthImage);
+      assert.equal(published.files?.length ?? 0, 0);
+    } else {
+      assert.equal(image, 'attachment://truth-117497314507062631.jpg');
+      assert.deepEqual(published.files.map((file: AttachmentBuilder) => file.name), ['truth-117497314507062631.jpg']);
+    }
+    if (scenario === 'unconfirmed') {
+      assert.match(f.response.content, /preview could not be confirmed/);
+      assert.deepEqual(f.events.at(-1)?.payload.attachments, [], 'the hidden upload is removed with its card');
+    } else assert.doesNotMatch(f.response.content, /could not/, scenario);
+  }
 });
 
 test('manual article source edits, deletions, shutdown and preference changes prevent publication', async () => {

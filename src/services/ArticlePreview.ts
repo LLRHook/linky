@@ -7,7 +7,7 @@ import { mapLinks, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
 import { SOCIAL_PROVIDERS } from './SocialProviders';
 import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialStatus, parseTruthSocialUrl,
-  TRUTH_ARCHIVE, TRUTH_SOCIAL_HOST, type TruthSocialLink, type TruthSocialPost } from './TruthSocial';
+  TRUTH_ARCHIVE, TRUTH_SOCIAL_HOST, truthSocialFileName, type TruthSocialFile, type TruthSocialLink, type TruthSocialPost } from './TruthSocial';
 
 export interface ArticlePreview {
   source: string;
@@ -33,6 +33,10 @@ export interface ArticleLookupOptions {
 export interface TruthSocialRelay { hostname: string; token: string }
 
 const MAX_BYTES = 512 * 1024;
+// Uploaded Truth Social media: one post image, one avatar, and every cached copy together.
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024, MAX_AVATAR_BYTES = 1024 * 1024, MAX_CACHED_FILE_BYTES = 32 * 1024 * 1024;
+// Media downloads stop this long before the lookup deadline, so a slow download costs only its upload.
+const MEDIA_MARGIN_MS = 250;
 // Truth Social's bot protection rejects generic and bare product user agents but accepts this identified browser-style one
 // from Node's HTTPS client, even on datacenter hosts; curl and fetch() clients with the same agent are rejected there.
 const USER_AGENT = 'Mozilla/5.0 (compatible; Linky/1.0; +https://linkybot.dev/)';
@@ -260,6 +264,34 @@ function parseMetadata(html: string, source: string, current: URL): ArticlePrevi
     ...(publishedAt ? { publishedAt } : {}) };
 }
 
+async function readBytes(response: Response, signal: AbortSignal, maxBytes: number): Promise<Uint8Array> {
+  const declared = response.headers.get('content-length');
+  if (!response.body || declared && (!/^\d{1,10}$/.test(declared) || Number(declared) > maxBytes)) throw new Error('article_body');
+  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener('abort', cancel, { once: true });
+  let bytes = 0;
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      const part = await regionalAbortable(reader.read(), signal);
+      if (part.done) break;
+      bytes += part.value.byteLength;
+      if (bytes > maxBytes) throw new Error('article_body');
+      chunks.push(part.value);
+    }
+    signal.throwIfAborted();
+    const data = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.byteLength; }
+    return data;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    cancel();
+    reader.releaseLock();
+  }
+}
+
 async function readHead(response: Response, signal: AbortSignal, untilHead = true, maxBytes = MAX_BYTES): Promise<string> {
   if (!response.body) throw new Error('article_body');
   const reader = response.body.getReader(), decoder = new TextDecoder('utf-8', { fatal: true });
@@ -298,6 +330,12 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
   type Pending = { promise: Promise<ArticlePreview | null>; controller: AbortController; subscribers: number };
   const pending = new Map<string, Pending>();
   const cache = new Map<string, { value: ArticlePreview | null; expires: number }>();
+  const fileBytes = (value: ArticlePreview | null) => value?.truthSocial?.files?.reduce((total, file) => total + file.data.byteLength, 0) ?? 0;
+  let cachedFileBytes = 0;
+  const forget = (key: string) => {
+    cachedFileBytes -= fileBytes(cache.get(key)?.value ?? null);
+    cache.delete(key);
+  };
   let windowStart = now(), requests = 0;
   async function publicAddresses(hostname: string, signal: AbortSignal): Promise<string[]> {
     const addresses = await regionalAbortable(dns(hostname), signal);
@@ -308,6 +346,21 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
   /** One pinned, cookie-free GET on a fixed host; redirects and unexpected types are misses. */
   async function fetchText(hostname: string, path: string, accept: string, type: RegExp, signal: AbortSignal,
     maxBytes = MAX_BYTES, authorization?: string): Promise<string | null> {
+    return fetchBody(hostname, path, accept, type, signal, response => readHead(response, signal, false, maxBytes), authorization);
+  }
+  /** A Truth Social image the card uploads; the address was validated against Truth Social's or the archive's media hosts. */
+  async function fetchFile(url: string, id: string, kind: 'image' | 'avatar', signal: AbortSignal): Promise<TruthSocialFile | null> {
+    const address = new URL(url);
+    let name: string | null = null;
+    const data = await fetchBody(address.hostname, address.pathname, 'image/jpeg, image/png, image/webp, image/gif',
+      /^image\/(?:jpeg|png|webp|gif)(?:\s*;|$)/i, signal, response => {
+        name = truthSocialFileName(id, kind, response.headers.get('content-type') ?? '');
+        return readBytes(response, signal, kind === 'avatar' ? MAX_AVATAR_BYTES : MAX_IMAGE_BYTES);
+      });
+    return data?.byteLength && name ? { name, url, data } : null;
+  }
+  async function fetchBody<T>(hostname: string, path: string, accept: string, type: RegExp, signal: AbortSignal,
+    read: (response: Response) => Promise<T>, authorization?: string): Promise<T | null> {
     const [address] = await publicAddresses(hostname, signal);
     const response = await regionalAbortable(connect({
       protocol: 'https:', hostname, servername: hostname, port: 443,
@@ -322,7 +375,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
       signal.throwIfAborted();
       if (response.status !== 200 || !type.test(response.headers.get('content-type') ?? '') ||
           ![null, 'identity'].includes(response.headers.get('content-encoding')?.toLowerCase() ?? null)) return null;
-      return await readHead(response, signal, false, maxBytes);
+      return await read(response);
     } finally { cancelRegionalResponse(response); }
   }
   const attempt = async <T>(step: () => Promise<T | null>, signal: AbortSignal): Promise<T | null> => {
@@ -353,7 +406,8 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
    * API, the @realDonaldTrump archive and Truth Social's own crawler metadata. Every source is public and
    * signed out.
    */
-  async function requestTruthSocial(source: string, link: TruthSocialLink, signal: AbortSignal): Promise<ArticlePreview | null> {
+  async function requestTruthSocial(source: string, link: TruthSocialLink, signal: AbortSignal,
+    deadline: number): Promise<ArticlePreview | null> {
     const fromStatus = (value: unknown) => value === null ? null : parseTruthSocialStatus(value, link);
     const post = fromStatus(await statusJson(TRUTH_SOCIAL_HOST, `/api/v1/statuses/${link.id}`, signal)) ??
       (relay ? fromStatus(await statusJson(relay.hostname, `/status/${link.id}`, signal, `Bearer ${relay.token}`)) : null) ?? await attempt(async () => {
@@ -385,16 +439,22 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
       catch { if (asset === post.image) delete post.image; else delete post.author.avatar; }
     }
     if (signal.aborted || !post.text && !post.image && !post.videoUrl) return null;
+    const media = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, deadline - Date.now() - MEDIA_MARGIN_MS))]);
+    const files = await Promise.all([[post.image, 'image'], [post.author.avatar, 'avatar']].map(([asset, kind]) =>
+      asset ? attempt(() => fetchFile(asset, link.id, kind as 'image' | 'avatar', media), signal) : null));
+    const uploads = files.filter((file): file is TruthSocialFile => file !== null);
+    if (uploads.length) post.files = uploads;
+    if (signal.aborted) return null;
     return { source, url: post.url, title: 'Truth Social post', publisher: 'Truth Social',
       ...(post.text ? { description: post.text } : {}), ...(post.image ? { image: post.image } : {}),
       ...(post.publishedAt ? { publishedAt: post.publishedAt } : {}), truthSocial: post };
   }
   async function request(source: string, controller: AbortController): Promise<ArticlePreview | null> {
-    const { signal } = controller, timer = setTimeout(() => controller.abort(), timeout), seen = new Set<string>();
+    const { signal } = controller, deadline = Date.now() + timeout, timer = setTimeout(() => controller.abort(), timeout), seen = new Set<string>();
     let current = new URL(source);
     try {
       const truthSocial = parseTruthSocialUrl(source);
-      if (truthSocial) return await requestTruthSocial(source, truthSocial, signal);
+      if (truthSocial) return await requestTruthSocial(source, truthSocial, signal, deadline);
       for (let hop = 0; hop <= 3; hop++) {
         if (seen.has(current.href)) return null;
         seen.add(current.href);
@@ -448,7 +508,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
   return async (raw: string, signal?: AbortSignal): Promise<ArticlePreview | null> => {
     const source = parseArticleUrl(raw);
     if (!source || signal?.aborted) return null;
-    for (const [key, entry] of cache) if (entry.expires <= now()) cache.delete(key);
+    for (const [key, entry] of cache) if (entry.expires <= now()) forget(key);
     const hit = cache.get(source);
     if (hit) return structuredClone(hit.value);
     const existing = pending.get(source);
@@ -459,8 +519,10 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     const entry: Pending = { promise: Promise.resolve(null), controller: new AbortController(), subscribers: 0 };
     entry.promise = request(source, entry.controller).then(value => {
       if (!entry.controller.signal.aborted) {
+        forget(source);
         cache.set(source, { value, expires: now() + (value ? 300_000 : 15_000) });
-        while (cache.size > 100) cache.delete(cache.keys().next().value!);
+        cachedFileBytes += fileBytes(value);
+        while (cache.size > 100 || cachedFileBytes > MAX_CACHED_FILE_BYTES) forget(cache.keys().next().value!);
       }
       return value;
     }).finally(() => { if (pending.get(source) === entry) pending.delete(source); });

@@ -6,7 +6,8 @@ import { mapLinks, visibleLink } from '../services/LinkTokens';
 import { getProviderCandidates, parseSocialUrl } from '../services/SocialProviders';
 import { parseYouTubeUrl } from '../services/YouTube';
 import { findArticleLinks, parseArticleUrl, type ArticleLookup } from '../services/ArticlePreview';
-import { ARTICLE_MIXED_GUIDANCE, articleEmbeds, hasMixedArticleLinks, prepareArticlePosts } from '../services/ArticlePosts';
+import { ARTICLE_MIXED_GUIDANCE, articleAttachments, articleEmbeds, fitArticleFiles, hasMixedArticleLinks,
+  prepareArticlePosts } from '../services/ArticlePosts';
 import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from '../services/YouTubeCommunity';
 import { originalPostUrl } from '../services/RepostPresentation';
@@ -222,7 +223,10 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     }
     if (articleLinks.length) context.trace?.setPath('explicit');
     const articleStage = articleLinks.length ? context.trace?.startStage('resolve') : undefined;
-    const articles = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal) : [];
+    const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal) : [];
+    // Truth Social media is uploaded with its card; without Attach Files the card links the original addresses.
+    const articles = prepared && fitArticleFiles(prepared,
+      !interaction.inGuild() || Boolean(interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles)));
     articleStage?.finish(articles ? 'ok' : 'unavailable');
     if (await stopChangedPreferences()) return;
     if (articles === null || articles.length && !await sourceCurrent()) {
@@ -306,7 +310,8 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       { textStatusIds, videoStatusIds, captionFreeInstagram, videoInstagram });
     let expected = expectations();
     const embeds = [...presentation.embeds ?? [], ...community.flatMap(post => post.embeds), ...articleEmbeds(articles)];
-    const files = [...presentation.translationFiles ?? [], ...erome ? [erome.file] : []];
+    const articleUploads = articleAttachments(articles);
+    const files = [...presentation.translationFiles ?? [], ...erome ? [erome.file] : [], ...articleUploads];
     if (explicitPosts.length && (!communityEmbedBudget(embeds, expected.filter(item => !item.explicitEmbeds).length) || !await sourceCurrent())) {
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
       await interaction.editReply({ content: `The complete ${previewName} preview exceeds the message limits, or its source changed. Share fewer posts; the original is unchanged.`,
@@ -371,7 +376,8 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (!preview.ok || context.signal?.aborted) await interaction.editReply({ content: rendered + (context.signal?.aborted
       ? '\n-# This preview reached its time limit. The original post link is available below; try again later.'
       : '\n-# A useful preview could not be confirmed. The original post link is available below.'),
-      ...(articles.length ? { embeds: [] } : {}),
+      // Removing a card would show its uploads as loose attachments; keep only the message's own files.
+      ...(articles.length ? { embeds: [], ...(articleUploads.length ? { attachments: [...message.attachments.values()] } : {}) } : {}),
       ...(erome && !eromeVerified ? { attachments: [] } : {}), allowedMentions: { parse: [] } });
     const details = await attempt.controls(message.id);
     if (await stopChangedPreferences()) return;

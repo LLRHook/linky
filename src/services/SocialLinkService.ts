@@ -40,7 +40,8 @@ import { formatLinkRepost, repostControls } from './RepostPresentation';
 import { sourceMentionUsers } from './SourceMentions';
 import type { MobileShareLinkNormalizer } from './MobileShareLinks';
 import { findArticleLinks, type ArticleLookup } from './ArticlePreview';
-import { ARTICLE_MIXED_GUIDANCE, articleEmbeds, hasMixedArticleLinks, prepareArticlePosts } from './ArticlePosts';
+import { ARTICLE_MIXED_GUIDANCE, articleAttachments, articleEmbeds, fitArticleFiles, hasMixedArticleLinks,
+  prepareArticlePosts } from './ArticlePosts';
 import { bypassLinky, canCopy, sourceVersion } from './RepostEligibility';
 import { canonicalRepostLinks, instagramShortcodes, repostExpectations, requiredRepostPermissions } from './RepostDelivery';
 
@@ -237,7 +238,9 @@ export function createLinkRepostHandler(
         rollback = undefined;
       };
       const articleStage = articleLinks.length ? delivery.context.trace?.startStage('resolve') : undefined;
-      const articles = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, delivery.context.signal) : [];
+      const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, delivery.context.signal) : [];
+      // Truth Social media is uploaded with its card; without Attach Files the card links the original addresses.
+      const articles = prepared && fitArticleFiles(prepared, Boolean(permissions?.has(PermissionFlagsBits.AttachFiles)));
       articleStage?.finish(articles ? 'ok' : delivery.context.signal?.aborted ? 'cancelled' : 'unavailable');
       if (articles === null) { delivery.finish(delivery.context.signal?.aborted ? 'cancelled' : 'unavailable'); return; }
       if (articles.length) {
@@ -319,6 +322,9 @@ export function createLinkRepostHandler(
       const explicitCards = [...community.flatMap(post => post.embeds), ...articleEmbeds(articles)];
       const embeds = explicitCards.length ? [...translated.embeds ?? [], ...explicitCards] : translated.embeds;
       const translationFiles = [...translated.translationFiles ?? [], ...erome ? [erome.file] : []];
+      // Discord lists uploads that a card displays as part of the card, not as message attachments.
+      const articleUploads = articleAttachments(articles);
+      const articleBytes = articleUploads.reduce((total, file) => total + (file.attachment as Buffer).byteLength, 0);
       if (translationFiles.length && !permissions.has(PermissionFlagsBits.AttachFiles)) {
         log.warn(context, 'Keeping original: a full translation attachment needs Attach Files permission');
         return;
@@ -328,15 +334,15 @@ export function createLinkRepostHandler(
       // Erome media has its own upload budget; retain the separate source-copy limit.
       const translationBytes = (translated.translationFiles ?? []).reduce((total, file) =>
         total + (Buffer.isBuffer(file.attachment) ? file.attachment.byteLength : 0), 0);
-      if (content.length > MAX_CONTENT_LENGTH || attachments.length + translationFiles.length > 10 ||
-          attachments.reduce((total, attachment) => total + attachment.size, translationBytes) > MAX_COPY_ATTACHMENT_BYTES) {
+      if (content.length > MAX_CONTENT_LENGTH || attachments.length + translationFiles.length + articleUploads.length > 10 ||
+          attachments.reduce((total, attachment) => total + attachment.size, translationBytes + articleBytes) > MAX_COPY_ATTACHMENT_BYTES) {
         log.warn(context, 'Skipping link replacement: content or attachments exceed copy limits');
         return;
       }
 
       const files: AttachmentBuilder[] = [];
       for (const attachment of attachments) files.push(await copyAttachment(attachment));
-      files.push(...translationFiles);
+      files.push(...translationFiles, ...articleUploads);
       if (!enabled() || erome && !fitsAttachmentBudget(erome.file, guildAttachmentBudget(message.guild.premiumTier))) return;
       // Caption-mode text is already delivered as translated message content (or
       // a verified attachment). Only media and untranslated posts need an embed.
@@ -433,7 +439,7 @@ export function createLinkRepostHandler(
         await removeReplacement();
         return;
       }
-      if (replacement.attachments.size !== files.length) {
+      if (replacement.attachments.size !== files.length - articleUploads.length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         await removeReplacement();
         return;
