@@ -296,6 +296,17 @@ in that maintenance branch and are not re-filed here._
 - **Fix:** Parse empty posts only with usable media or valid quoted context, retain their null language, preserve photo cards and video galleries, and show only the quoted text's translation label. Synthetic parser/command/bot regressions and the full Node 26 validation pass. A post-fix live lookup of the reported post produced one preserved photo and one English quote card; removing the empty-post photo rendering fails its regression.
 - **Docs:** README.md, CONTRIBUTING.md.
 
+### [BUG-1793013677] Locked undici 6.28.1 fails the dependency audit gate
+- [x] **Severity:** high
+- **Area:** security, ci
+- **File(s):** package-lock.json
+- **Observation:** On 2026-10-26 `npm audit --audit-level=low` on main reported two high-severity undici advisories (GHSA-4qv8-2p9j-2685, GHSA-xjj6-f33q-929c) for undici 6.28.1, a discord.js dependency. `npm run validate` and the CI audit step fail for every branch.
+- **Expected:** The lockfile resolves a patched undici within discord.js's declared range and the audit reports no vulnerabilities.
+- **Repro / Notes:** `npm ls undici`; `npm audit --audit-level=low`. Found while validating FEAT-1793013312; not caused by it.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** `npm audit fix` updated only package-lock.json to undici 6.29.1; `npm audit` reports 0 vulnerabilities and the full test suite passes.
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.
