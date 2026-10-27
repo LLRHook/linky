@@ -31,6 +31,8 @@ import { parseYouTubeUrl } from '../src/services/YouTube';
 import type { YouTubeStatistics } from '../src/services/YouTube';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { APIEmbed } from 'discord.js';
+import { createArticleLookup } from '../src/services/ArticlePreview';
+import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
 import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
 
 // The repost handler logs and swallows callback errors, so a throwing assertion inside a
@@ -1796,6 +1798,32 @@ test('articles replace only after the complete authored card is echoed and prese
   assert.equal(f.replacement.embeds[0].toJSON().url, ARTICLE_URL);
   assert.deepEqual(f.sent[0].allowedMentions?.users, [AUTHOR_ID]);
   assert(f.events.includes('delete original'));
+});
+
+test('automatic MyAnimeList previews use bounded metadata and require an echoed card before replacement', async () => {
+  for (const mode of ['replace', 'reply'] as const) for (const confirmed of [true, false]) {
+    const f = fixture(); f.source.content = myAnimeListUrl;
+    if (!confirmed) {
+      const send = f.source.channel.send;
+      f.source.channel.send = async options => {
+        const result = await send(options);
+        result.embeds = [];
+        return result;
+      };
+    }
+    const lookupArticle = createArticleLookup({ resolve4: async () => ['1.1.1.1'],
+      connect: async () => new Response(myAnimeListHtml, { headers: { 'content-type': 'text/html' } }) });
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle,
+      serverPreferences: () => ({ mode }),
+      verifyPreview: forbid('MyAnimeList must not wait for native player metadata') })(f.source as unknown as Message);
+    assert.equal(f.sent.length, 1);
+    const embed = f.sent[0].embeds?.[0]; assert(embed);
+    const card = 'toJSON' in embed ? embed.toJSON() : embed;
+    assert.equal(card.title, myAnimeListTitle); assert.equal(card.image?.url, myAnimeListImage);
+    assert(card.description && card.description.length <= 300);
+    assert.equal(f.events.includes('delete original'), mode === 'replace' && confirmed);
+    assert.equal(f.events.includes('delete replacement'), !confirmed, `${mode}: only unverified cards are removed`);
+  }
 });
 
 test('articles retain all originals when metadata is missing, partial or over the three-article limit', async () => {

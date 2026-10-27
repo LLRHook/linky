@@ -2,15 +2,15 @@
 
 Post a public HTTPS article in a channel where Linky is enabled. In Replace mode, Linky credits the sender and removes the source only after Discord returns the complete prepared card and source/ownership checks pass. Reply mode keeps the source. Manual `/fix link:` and **Apps → Fix with Linky** keep it too.
 
-The card contains a publisher-labelled headline, an excerpt of up to 300 characters, and a publisher image and publication date when available. Text comes from the page's metadata. Linky does not generate a summary, evaluate accuracy, translate the article, execute page scripts or bypass access restrictions.
+The card contains a publisher-labelled headline, an excerpt of up to 300 characters, and a publisher image and publication date when available. MyAnimeList anime and manga entries use the same compact card with a synopsis and cover when available, labelled Source with Anime or Manga metadata. Text comes from the page's metadata. Linky does not generate a summary, evaluate accuracy, translate the article, execute page scripts or bypass access restrictions.
 
 ## Supported pages and controls
 
-- Pages need `og:type=article` or Schema.org `Article`, `NewsArticle` or `BlogPosting` JSON-LD in their HTML head, with a usable title. Pages without article metadata, logins and private pages remain unchanged.
-- Media pages keep Discord's native player. Pages declaring `og:video`, a `video.*`/`music.*` `og:type` or a Twitter player card are skipped even when they also carry Article JSON-LD (Tenor does). Discord's own domains and hosts it plays natively (Tenor, Giphy, Imgur, Streamable, Vimeo, Spotify, SoundCloud and similar) are never article candidates.
-- Up to three distinct article links can share a message. All must be prepared before replacing it. Keep articles separate from social and other links because authored cards can suppress Discord's native unfurls. Mixed messages retain the source and receive split-message guidance when supported.
+- Articles need `og:type=article` or Schema.org `Article`, `NewsArticle` or `BlogPosting` JSON-LD in their HTML head, with a usable title. MyAnimeList anime and manga entry pages (`myanimelist.net/anime/<id>` or `/manga/<id>`, with an optional title slug) are also supported when the requested page, final page, canonical and `og:url` identify the same entry. Anime entries need `video.tv_show` or `video.movie` metadata; manga entries need `books.book`. Profiles, lists and entry subpages receive no catalogue exception. Other pages without article metadata, logins and private pages remain unchanged.
+- Media pages keep Discord's native player. Pages declaring `og:video`, a `video.*`/`music.*` `og:type` or a Twitter player card are skipped even when they also carry Article JSON-LD (Tenor does). MyAnimeList anime entries are the one type exception: `video.tv_show` and `video.movie` are accepted only without declared video/player metadata. Discord's own domains and hosts it plays natively (Tenor, Giphy, Imgur, Streamable, Vimeo, Spotify, SoundCloud and similar) are never article candidates.
+- Up to three distinct article or MyAnimeList entry links can share a message. All must be prepared before replacing it. Keep them separate from social and other links because authored cards can suppress Discord's native unfurls. Mixed messages retain the source and receive split-message guidance when supported.
 - Keep unrelated website links separate too. When a message contains an article candidate without usable metadata, automatic processing leaves the entire message unchanged, including any social links beside it.
-- `/settings articles:false` or the setup Platforms menu disables articles. Server enablement, channel scope, personal `/autofix` choices, `!nolinky`, hidden links, source-edit checks and owner-only Remove still apply. Original post and Details remain available to viewers.
+- `/settings articles:false` or the setup Platforms menu disables articles and MyAnimeList entry previews. Server enablement, channel scope, personal `/autofix` choices, `!nolinky`, hidden links, source-edit checks and owner-only Remove still apply. Original post and Details remain available to viewers.
 - No API key is required. Operators using an explicit `REWRITE_PLATFORMS` list must add `articles`; an empty list enables available platforms. Social/provider and Erome URLs cannot fall back through articles to bypass their own settings.
 
 ## Truth Social posts
@@ -32,4 +32,4 @@ Retrieval stops after the HTML head, 512 KiB or five seconds, with at most three
 
 The publisher sees a request from the bot host. Discord retrieves the optional public image separately; source changes or Discord's image proxy can still make that image unavailable. A confirmed card proves that Discord returned the prepared fields, not that the article is accurate or an image rendered on every device. Missing usable metadata leaves the original; manual requests explain the limitation.
 
-The initial requested example is the Manhattan Institute's *The Fiscal Impact of Immigration (2025 Update)*. Support is based on metadata format, not a publisher allowlist.
+The initial requested example is the Manhattan Institute's *The Fiscal Impact of Immigration (2025 Update)*. Article support is based on metadata format, with a separate host-specific exception for MyAnimeList catalogue entries.

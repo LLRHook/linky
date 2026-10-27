@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { RequestOptions } from 'node:https';
 import { createArticleLookup, findArticleLinks, formatArticlePreview, parseArticleUrl,
   type ArticleLookupOptions } from '../src/services/ArticlePreview';
+import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
 
 const source = 'https://publisher.com/news/story';
 const html = (head = '<meta property="og:type" content="article"><meta property="og:title" content="A story">') =>
@@ -82,6 +83,110 @@ test('an actual Manhattan Institute head shape supports article identity, descri
   const result = await f.lookup(mi);
   assert.equal(result?.url, mi); assert.equal(result?.source, mi);
   assert.equal(result?.publisher, 'Manhattan Institute'); assert.ok(result?.image?.endsWith('.jpg'));
+});
+
+test('the reported MyAnimeList anime uses its synopsis and full-size cover without requiring Article metadata', async () => {
+  const f = fixture(async () => response(myAnimeListHtml));
+  const result = await f.lookup(myAnimeListUrl);
+  assert(result);
+  assert.equal(result.source, myAnimeListUrl); assert.equal(result.url, myAnimeListUrl);
+  assert.equal(result.title, myAnimeListTitle); assert.equal(result.image, myAnimeListImage);
+  const [card] = formatArticlePreview(result);
+  assert.equal(card.author?.name, 'Source: MyAnimeList.net');
+  assert.equal(card.footer?.text, 'myanimelist.net · Anime metadata');
+  assert.equal(card.image?.url, myAnimeListImage); assert.equal(card.thumbnail, undefined);
+  assert(card.description && card.description.length <= 300 && card.description.endsWith('…'));
+  assert(!JSON.stringify(result).includes('Body prose'));
+});
+
+test('MyAnimeList catalogue identities ignore slugs and tracking on exact approved hosts', async () => {
+  for (const requested of ['https://myanimelist.net/anime/61578', myAnimeListUrl + '?utm_source=discord#synopsis',
+    'https://www.myanimelist.net/anime/61578/Old_title/']) {
+    const canonical = requested.includes('www.') ? myAnimeListUrl.replace('://', '://www.') : myAnimeListUrl;
+    const page = myAnimeListHtml.replaceAll(myAnimeListUrl, canonical);
+    const result = await fixture(async () => response(page)).lookup(requested);
+    assert.equal(result?.url, canonical, requested);
+    assert.equal(result?.title, myAnimeListTitle, requested);
+  }
+});
+
+test('MyAnimeList manga entries use books.book metadata and a Manga label', async () => {
+  const manga = 'https://myanimelist.net/manga/148467/Super_no_Ura_de_Yani_Suu_Futari';
+  const result = await fixture(async () => response(html(`<meta property="og:type" content="books.book">
+    <meta property="og:title" content="Super no Ura de Yani Suu Futari">
+    <meta property="og:site_name" content="MyAnimeList.net"><meta property="og:url" content="${manga}">
+    <meta property="og:description" content="A publisher-provided manga synopsis.">
+    <meta property="og:image" content="https://cdn.myanimelist.net/images/manga/3/267255.jpg">`)))
+    .lookup('https://myanimelist.net/manga/148467');
+  assert(result);
+  const [card] = formatArticlePreview(result);
+  assert.equal(card.url, manga); assert.equal(card.footer?.text, 'myanimelist.net · Manga metadata');
+  assert.equal(card.author?.name, 'Source: MyAnimeList.net');
+  assert.equal(card.image?.url, 'https://cdn.myanimelist.net/images/manga/3/267255.jpg');
+});
+
+test('MyAnimeList anime films use video.movie metadata without claiming an embedded player', async () => {
+  const movie = 'https://myanimelist.net/anime/199/Sen_to_Chihiro_no_Kamikakushi';
+  const result = await fixture(async () => response(html(`<meta property="og:type" content="video.movie">
+    <meta property="og:title" content="Sen to Chihiro no Kamikakushi"><meta property="og:url" content="${movie}">
+    <meta property="og:site_name" content="MyAnimeList.net">`))).lookup(movie);
+  assert(result);
+  assert.equal(result.title, 'Sen to Chihiro no Kamikakushi');
+  const [card] = formatArticlePreview(result);
+  assert.equal(card.footer?.text, 'myanimelist.net · Anime metadata'); assert.equal(card.video, undefined);
+});
+
+test('MyAnimeList HTTP-downgrade redirects retain the public HTTPS requirement', async () => {
+  const f = fixture(async () => new Response(null, { status: 301, headers: {
+    location: myAnimeListUrl.replace('https:', 'http:'),
+  } }));
+  assert.equal(await f.lookup(myAnimeListUrl.replace('://', '://www.')), null);
+  assert.equal(f.calls.length, 1);
+});
+
+test('the MyAnimeList exception excludes lookalike hosts, subdomains and non-entry paths', async () => {
+  for (const requested of ['https://myanimelist.net.evil.com/anime/61578/Title',
+    'https://notmyanimelist.net/anime/61578/Title', 'https://api.myanimelist.net/anime/61578/Title',
+    'https://myanimelist.net/', 'https://myanimelist.net/anime.php', 'https://myanimelist.net/profile/member',
+    myAnimeListUrl + '/video', myAnimeListUrl + '/reviews', 'https://myanimelist.net/anime/0/Title']) {
+    const page = myAnimeListHtml.replaceAll(myAnimeListUrl, requested);
+    assert.equal(await fixture(async () => response(page)).lookup(requested), null, requested);
+  }
+  assert.equal(await fixture(async () => response(myAnimeListHtml.replace('video.tv_show', 'books.book'))).lookup(source), null);
+});
+
+test('MyAnimeList catalogue metadata must match the requested entry, canonical and exact content type', async () => {
+  for (const page of [
+    myAnimeListHtml.replace('video.tv_show', 'website'), myAnimeListHtml.replace('video.tv_show', 'video.other'),
+    myAnimeListHtml.replace('video.tv_show', 'books.book'),
+    myAnimeListHtml.replace(`content="${myAnimeListTitle}"`, 'content=""'),
+    myAnimeListHtml.replace(`property="og:url"`, 'property="ignored"'),
+    myAnimeListHtml.replace(myAnimeListUrl, myAnimeListUrl.replace('/61578/', '/1/')),
+    myAnimeListHtml.replace(myAnimeListUrl, 'https://evil.com/anime/61578/Title'),
+    myAnimeListHtml.replace('</head>', '<link rel="canonical" href="/anime/1/Other"></head>'),
+    myAnimeListHtml.replace('</head>', '<link rel="canonical" href="/profile/member"></head>'),
+  ]) assert.equal(await fixture(async () => response(page)).lookup(myAnimeListUrl), null, page);
+  let calls = 0;
+  const f = fixture(async () => ++calls === 1
+    ? new Response(null, { status: 302, headers: { location: myAnimeListUrl } }) : response(myAnimeListHtml));
+  assert.equal(await f.lookup(myAnimeListUrl.replace('/61578/', '/1/')), null);
+});
+
+test('actual player metadata still excludes MyAnimeList entries and malformed metadata cannot spoof support', async () => {
+  for (const media of ['<meta property="og:video" content="https://media.myanimelist.net/trailer.mp4">',
+    '<meta property="og:video:url" content="https://media.myanimelist.net/trailer.mp4">',
+    '<meta property="og:video:secure_url" content="https://media.myanimelist.net/trailer.mp4">',
+    '<meta name="twitter:player:stream" content="https://media.myanimelist.net/trailer.mp4">']) {
+    const page = myAnimeListHtml.replace('</head>', media + '</head>');
+    assert.equal(await fixture(async () => response(page)).lookup(myAnimeListUrl), null, media);
+  }
+  assert.equal(await fixture(async () => response(myAnimeListHtml.replace('content="summary"', 'content="player"')))
+    .lookup(myAnimeListUrl), null);
+  const tags = myAnimeListHtml.slice(myAnimeListHtml.indexOf('<meta'), myAnimeListHtml.indexOf('</head>'));
+  for (const page of [html(`<!-- ${tags} -->`), html(`<template>${tags}</template>`),
+    html(`<script>const fake = '${tags}'</script>`), '<html><head></head><body>' + tags + '</body></html>']) {
+    assert.equal(await fixture(async () => response(page)).lookup(myAnimeListUrl), null);
+  }
 });
 
 test('generic websites, body metadata, malformed metadata and script/comment/template spoofing stay untouched', async () => {

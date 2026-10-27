@@ -13,6 +13,7 @@ Thumbs.db
 .idea/
 *.swp
 .orchestrate/
+.vv/
 .vercel/
 public/
 CLAUDE.md

@@ -12,7 +12,8 @@ import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { InstagramTranslation } from '../src/services/InstagramTranslation';
 import type { TweetTranslation } from '../src/services/TweetTranslation';
 import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
-import type { ArticlePreview } from '../src/services/ArticlePreview';
+import { createArticleLookup, type ArticlePreview } from '../src/services/ArticlePreview';
+import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
 import { buttonInteraction, commandInteraction, diagnosticsStub, type InteractionEvent } from './support/discord';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
@@ -940,6 +941,30 @@ test('manual article previews use authored cards without native waits and retain
   }
 });
 
+test('manual MyAnimeList fixes in guilds and DMs publish compact cards and preserve source and requester controls', async () => {
+  for (const context of [false, true]) for (const guild of [false, true]) {
+    const f = communityCommand(myAnimeListUrl, context);
+    f.input.inGuild = () => guild;
+    const outcomes: DeliveryOutcome[] = [];
+    const diagnostics = diagnosticsStub({ id: 'myanimelist-manual', outcomes });
+    const lookupArticle = createArticleLookup({ resolve4: async () => ['1.1.1.1'],
+      connect: async () => new Response(myAnimeListHtml, { headers: { 'content-type': 'text/html' } }) });
+    await execute(f.interaction, articleConfig, { lookupArticle, diagnostics,
+      verifyPreview: async () => assert.fail('MyAnimeList cards do not require native player metadata') });
+    assert.equal(f.response.content, `<${myAnimeListUrl}>`);
+    assert.equal(f.response.embeds.length, 1);
+    const card = f.response.embeds[0].toJSON();
+    assert.equal(card.title, myAnimeListTitle); assert.equal(card.image?.url, myAnimeListImage);
+    assert(card.description && card.description.length <= 300);
+    assert.equal(card.author?.name, 'Source: MyAnimeList.net');
+    assert.equal(card.footer?.text, 'myanimelist.net · Anime metadata');
+    assert.deepEqual(outcomes, ['confirmed']);
+    assert.deepEqual(originalControls(f), [myAnimeListUrl]);
+    assert.equal(f.input.targetMessage.content, myAnimeListUrl);
+    assert(f.events.filter(event => event.name === 'edit').every(event => event.payload.allowedMentions.parse.length === 0));
+  }
+});
+
 test('manual article preparation is all-or-nothing and caps requests before lookup', async () => {
   const sources = Array.from({ length: 3 }, (_, index) => ARTICLE_URL + index);
   for (const kind of ['unavailable', 'partial', 'throw', 'missing-lookup'] as const) {
@@ -1101,7 +1126,7 @@ test('manual articles with conflicting canonical metadata publish no cards and r
     observePreview: () => assert.fail('Conflicting cards must never reach verification'),
   });
   assert.equal(f.response.embeds.length, 0);
-  assert.match(f.response.content, /article preview could not be verified/);
+  assert.match(f.response.content, /page preview could not be verified/);
   assert.deepEqual(originalControls(f), sources);
   assert.equal(f.input.targetMessage.content, sources.join(' '));
 });
