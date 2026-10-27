@@ -23,7 +23,7 @@ See also: [`bugs.md`](./bugs.md), [`features.md`](./features.md),
 2. Tick each step locally as you go.
 3. Every failed step files a `BUG-NNN` entry in `bugs.md`.
 4. Every gap that is a missing feature, not a defect, files a `FEAT-NNN` in `features.md`.
-5. Fill in the summary table (§ 6.3) and either declare the build green or block on open `BUG-NNN`s.
+5. Record results in `.vv/last-run.md` (§ 6.3); only an entirely green run permits migration and a Verified entry.
 
 Time estimate: 15–25 minutes automated (Stages 0–2 and the container checks),
 plus 20–40 minutes for the manual Discord walkthrough in Stage 3 when a test
@@ -49,6 +49,17 @@ server is available.
 - [ ] 0.6 Production profile: Stage 2.5 runs the built image (`NODE_ENV=production`, non-root `node` user, read-only root, all capabilities dropped), not `npm run dev`.
 - [ ] 0.7 Determinism posture: unit tests use fake timers and injected fetch/clock; no test opens the network or logs in to Discord (`CONTRIBUTING.md`). Stage 2c runs the suite twice.
 
+- [ ] 0.8 Fresh stack: inventory Linky containers and data only; back up any existing state to `.vv/backups/`; obtain confirmation before deleting existing volumes. Build this SHA using the production Dockerfile, start a new isolated stack with a distinct test-bot token, and record image ID plus compiled-file hashes. Never run two instances with the same token.
+- [ ] 0.9 Restore the Verification data rows through the documented Discord/API flows, then run each probe. Missing access or a failed restore blocks this run before Stage 1.
+
+### Verification data
+
+| ID | Data | Needed by | Restore | Dependencies | Probe |
+|----|------|-----------|---------|--------------|-------|
+| D1 | Authorised test server/channel and test-bot permissions | Stage 3 administration and posting | Invite the staging bot using the README permissions; `/setup` enables the server and selects the test channel | Distinct staging token; authorised Discord administrator | Private `/settings` reports enabled scope; restart preserves it |
+| D2 | Public social/article corpus and owned temporary messages | Stage 3 preview, playback, failure and suppression flows | Post `ops/preview-corpus.json` source URLs and the reported public share through the Discord client; tag fixtures in the run log and remove only owned temporary fixtures | D1; reachable providers | Exact preview identities, retained/deleted sources and playback recorded separately |
+| D3 | Prior production JSON state snapshot | Stage 4.7 compatibility | Copy the operator's backed-up prior data directory into an isolated volume; do not alter historical JSON fields | Operator access to prior data; private backup under `.vv/` | Current image loads the copied state without errors or lost settings |
+
 > **Protocol vs CI.** CI is the continuous gate on every push. This protocol is
 > the deeper release-readiness gate at a chosen SHA: it runs CI's exact commands
 > locally, proves that newly shipped tickets have a test that demonstrates them,
@@ -63,7 +74,7 @@ server is available.
 - [ ] 1.2 Regional worker type-check (CI step "Check regional video workers"): `npm run check:workers` exits 0.
 - [ ] 1.3 Dependency audit (CI job "Dependency audit"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
 - [ ] 1.4 Secrets: CI job "Secret scan" runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966).
-- [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|CaptionTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `SocialLinkService.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding.
+- [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|CaptionTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `TweetPresentation.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding.
 - [ ] 1.6 Bounded network I/O: every outbound fetch has a timeout, redirect policy and byte cap (`BoundedJson.ts`, `ArticlePreview.ts`, `MobileShareLinks.ts`, `RegionalHttp.ts`). New fetch sites must reuse those helpers.
 - [ ] 1.7 Performance anti-pattern scan of the message hot path (`src/bot.ts` message handler → `SocialLinkService`): no per-message disk read in the loop, no unbounded regex on message bodies, no await per link before detection completes. Record any finding as a `BUG` (area `perf`).
 - [ ] 1.8 No lint or formatter is wired in this repo (no ESLint/Prettier config); do not invent one here.
@@ -89,7 +100,7 @@ runner prints. A changed count means tests appeared or vanished — investigate 
 
 - [ ] 2.1 Test suite (CI step "Test link fixing and bot startup"): `npm test` exits 0. The tsx run prints `ℹ tests 1190` / `ℹ fail 0`; the node run prints `ℹ tests 62` / `ℹ fail 0` with 8 skipped on a non-Linux host.
 - [ ] 2.2 Deployment safeguards (CI step "Test deployment safeguards"): `bash tests/deploy.test.sh` exits 0 and every line starts with `PASS:`.
-- [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passes; start from the PR's Acceptance evidence section and re-run, do not copy, its claims. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in § 6.4.
+- [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passes; start from the PR's Acceptance evidence section and re-run, do not copy, its claims. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in `.vv/last-run.md` (§ 6.4).
 - [ ] 2.4 **2b — Coverage of the change.** No coverage tool is wired (`c8`/`nyc` absent). Fall back to the 2a mapping and, for each changed `src/` file since the last Verified SHA, name the test file that exercises it (`git diff --stat <sha>..HEAD -- src`). Uncovered changed files block.
 - [ ] 2.5 Production container (CI job "Production container"), run from the repo root with Docker available:
   ```bash
@@ -104,16 +115,17 @@ runner prints. A changed count means tests appeared or vanished — investigate 
   ```bash
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 --env LINKY_VIDEO_RUNTIME_TEST=true --mount type=bind,src="$PWD/tests/video-runtime.test.mjs",dst=/tmp/video-runtime.test.mjs,readonly linky:ci node --test /tmp/video-runtime.test.mjs
   ```
-  Expected: build exits 0; the module check exits 0; the archive run prints `ℹ tests 1` / `ℹ fail 0`; the video run prints `ℹ tests 7` / `ℹ fail 0`. On Git Bash set `MSYS_NO_PATHCONV=1` and use `$(pwd -W)` for `src=`. The Trivy image scan is CI-only (pinned binary download); read its result on the CI run for the SHA.
+  Expected: build exits 0; the module check exits 0; the archive run prints `ℹ tests 1` / `ℹ fail 0`; the video run prints `ℹ tests 7` / `ℹ fail 0`. On Git Bash set `MSYS_NO_PATHCONV=1` and use `$(pwd -W)` for `src=`. Run the pinned local Trivy recipe in Appendix F; both scans must exit 0. CI results do not establish a local pass.
 - [ ] 2.6 **2c — Flake check.** Run `npm test` a second time and diff the sorted `✔`/`✖`/`﹣` lines of both runs; any difference quarantines that test as a `BUG` (area `tests`) and the run is not green.
-- [ ] 2.7 CI for the SHA: `gh run list --branch main --limit 3` shows `CI` `completed success` for the SHA under test.
+- [ ] 2.7 Local matrix: repeat the exact Stage 1–2 commands in clean `node:22`, `node:24` and `node:26` checkouts when dependencies or the toolchain changed since the prior baseline. Record versions, executed/skipped counts and exits in `.vv/last-run.md`; CI results do not establish a pass.
 
 A failure in any Stage 2 step is a hard block.
 
 ## Stage 3 — Functional E2E walkthrough
 
-Runs against a self-hosted bot built from the SHA (`docker compose up -d --build`
-with a test token) or against the deployed hosted bot after Deploy succeeds.
+Runs against the freshly created Stage 0 production stack built from the SHA
+with a distinct staging token. One instance per token is required. A hosted-bot
+walkthrough is supplementary unless that stack has been reset and restored.
 Offline tests cannot prove live rendering (`CONTRIBUTING.md`); tick only from
 observation in a Discord client.
 
@@ -162,8 +174,8 @@ Re-tick the non-negotiable contracts stated in the README and `docs/`:
 
 - [ ] 6.1 every failed step has a `BUG-NNN`
 - [ ] 6.2 every gap has a `FEAT-NNN`
-- [ ] 6.3 fill in summary table
-- [ ] 6.4 record run metadata (git SHA, env versions, profile flags)
+- [ ] 6.3 write the summary table to `.vv/last-run.md` (overwrite; do not append run history here)
+- [ ] 6.4 record run metadata, ticket/test mapping, coverage, flake results and data restore probes in `.vv/last-run.md`
 - [ ] 6.5 if all green, append `Verified` entry to `CHANGELOG.md / Unreleased`
 
 Summary table template:
@@ -185,56 +197,6 @@ Stages 1, 2, or 5 is a hard block, including 2a (no proving test), 2b
 (uncovered changed code) and 2c (flaky green). In Stage 4, a crit/high
 performance failure and a failed load of the prior volume (4.7) also block.
 
-### Run log
-
-**2026-09-24 — bootstrap run, SHA d4d6e32 (main after PRs #58, #55, #59 merged).** Stages 0–2 and 5 executed on
-the host; Stage 3 was not executed (no Discord test server or bot host reachable
-from the developer machine) and Stage 4 was executed by test evidence only.
-
-| Stage                    | Pass / Fail | Notes |
-|--------------------------|-------------|-------|
-| 0 Pre-flight             | Pass        | Node 24.15.0, npm 11.12.1, Docker 29.7.2 |
-| 1 Static review          | Pass        | build, check:workers, audit 0 vulnerabilities |
-| 2 Automated tests        | Pass        | 1,190 + 62 (54 pass / 8 skipped on host), deploy 24 checks, container 1 + 1 + 7 (8859ab5) and module check (d4d6e32), two runs identical |
-| 3 Functional E2E         | Not run     | needs a test server; 3.5 (TikTok share) and 3.6 (Reel playback) are the open live checks |
-| 4 Adversarial / perf     | Pass (tests)| no perf budget, FEAT-1790270881 filed |
-| 5 Hard constraints       | Pass        | all by test evidence |
-| 6 Reporting hygiene      | Pass        | BUG-1790270870 fixed and migrated; FEAT-1790270880/881/882 filed |
-
-2a mapping for the batch since the previous release checks (2026-09-15):
-
-| Change | Proving test |
-|--------|--------------|
-| PR #51 TikTok share links accept the canonical post embed | `tests/preview-recovery.test.ts` "a TikTok share link accepts the canonical post embed that providers publish" |
-| PR #50 TypeScript 7, esbuild transform in tests | `npm run build`, `npm run check:workers`, `tests/erome-media-runtime.test.ts` |
-| PR #52 Node 26 runtime image | Stage 2.5 module check (`v26.9.0 production`) |
-| PR #53 provider metadata control | `tests/provider-metadata-check.test.mjs` (5 tests) |
-| PR #57 public article previews | `tests/article-preview.test.ts` (30 tests), `tests/article-posts.test.ts`, `tests/manual-fix.test.ts` |
-| PR #58 keep native GIF/media players | `tests/article-preview.test.ts` "media pages keep their native Discord player even when they also declare an Article" |
-| PR #55 dotenv 18 | `tests/config.test.ts`; Stage 2.5 module check loads `dotenv/config` in the image |
-| PR #59 @types/node 26.6.2, tsx 4.23.15 | `npm run build`, `npm test` |
-
-**2026-09-25 — run, SHA 4ae273d (main after PR #60; only docs/trackers changed since d4d6e32).** Host is macOS
-with Node 25.9.0 (outside the CI matrix), so Stages 1–2 ran CI's exact commands in `node:22` (v22.23.3),
-`node:24` (v24.21.0) and `node:26` (v26.10.0) containers; Docker 29.7.2. Stage 3 was not walked in a Discord
-client; 3.13 was executed. Stage 4 by test evidence; 4.6 and 4.7 not executed (no test token; no `src/` change
-since the deployed d4d6e32).
-
-| Stage                    | Pass / Fail | Notes |
-|--------------------------|-------------|-------|
-| 0 Pre-flight             | Pass        | clean tree, `.env` ignored, containers for the Node matrix |
-| 1 Static review          | Pass        | build, check:workers, audit 0 vulnerabilities on 22/24/26; 1.4 command corrected (BUG-1790322966) |
-| 2 Automated tests        | Pass        | 1,190 + 62 (54 pass / 8 skipped) on each of 22/24/26, two identical runs each; deploy 24 `PASS:`; container module check (v26.9.0 production, uid 1000), archive 1, video 7; CI and Deploy success for 4ae273d |
-| 3 Functional E2E         | Fail / partial | walkthrough not run; 3.13 exit 1: Instagram providers down (BUG-1790322965) |
-| 4 Adversarial / perf     | Pass (tests)| evidence files present; no perf budget (FEAT-1790270881 open) |
-| 5 Hard constraints       | Pass        | by test evidence; Dockerfile `USER node`, compose read-only / cap_drop / no-new-privileges |
-| 6 Reporting hygiene      | Pass        | BUG-1790322965 and BUG-1790322966 filed; no Verified entry (Stage 3 incomplete) |
-
-2a: no ticket shipped since d4d6e32 besides PR #60 (docs/trackers); BUG-1790270870 proven by
-`grep -n "Node.js 22, 24 and 26" README.md docs/self-hosting.md`. 2b: `git diff --stat d4d6e32..HEAD -- src tests` is empty.
-
----
-
 ## Appendix A — Inspecting persistent state
 
 All state is JSON under the data directory (`LINK_SETTINGS_PATH` directory, default `data/`; `/app/data` in the container):
@@ -243,7 +205,7 @@ All state is JSON under the data directory (`LINK_SETTINGS_PATH` directory, defa
 docker exec linky ls -la /app/data
 ```
 
-Files: `servers.json` (server settings), `repost-registry.json` (ownership), `youtube-stats.json`, `translation-usage.json`, `delivery-diagnostics.json`, `delivery-archive/` (daily files), `media/` (Erome assets, self-hosted only). Never copy these off the host with user data intact; the archive is the sanitized view.
+Files: `servers.json` (server settings), `reposts.json` (ownership), `youtube-stats.json`, `translation-usage.json`, `delivery-diagnostics.json`, `delivery-logs/` (daily files), `media/` (Erome assets, self-hosted only). Never copy these off the host with user data intact; the archive is the sanitized view.
 
 ## Appendix B — Reusable command recipes
 
@@ -297,6 +259,26 @@ fetch and never need a key.
 3. `bash tests/deploy.test.sh` all `PASS:`
 4. `npm audit --audit-level=low` prints 0 vulnerabilities
 5. `docker build --tag linky:ci .` and the Stage 2.5 module check exit 0
-6. `gh run list --branch main --limit 1` shows CI success for HEAD
+6. The local Node matrix and pinned Trivy scan pass for HEAD
 7. One X post and one TikTok share link preview in a test channel
 8. `docker inspect --format '{{.RestartCount}}' linky` is `0` after deploy
+
+## Appendix F — Local production-image vulnerability scans
+
+Run on Linux or inside a local Linux utility container with the Docker socket.
+`RUNNER_TEMP` is a private local scratch directory; `linky:ci` is the image built
+in Stage 2.5. These are the exact scan invocations and pinned binary from CI.
+
+```bash
+set -euo pipefail
+archive="$RUNNER_TEMP/trivy.tar.gz"
+curl --fail --location --silent --show-error --retry 2 \
+  https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz \
+  --output "$archive"
+echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  $archive" | sha256sum --check
+tar -xzf "$archive" -C "$RUNNER_TEMP" trivy
+"$RUNNER_TEMP/trivy" image --scanners vuln --timeout 5m --no-progress \
+  --format json --output "$RUNNER_TEMP/linky-container-audit.json" linky:ci
+"$RUNNER_TEMP/trivy" image --scanners vuln --timeout 5m --no-progress \
+  --ignore-unfixed --exit-code 1 linky:ci
+```

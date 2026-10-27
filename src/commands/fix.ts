@@ -232,7 +232,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (articles === null || articles.length && !await sourceCurrent()) {
       await progress.stop();
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
-      await interaction.editReply({ content: 'The article preview could not be verified, or its source changed. The original is unchanged. Public article metadata is required.',
+      await interaction.editReply({ content: 'The page preview could not be verified, or its source changed. The original is unchanged. Public article or MyAnimeList entry metadata is required.',
         embeds: [], components: buttonRows(), allowedMentions: { parse: [] } });
       return;
     }

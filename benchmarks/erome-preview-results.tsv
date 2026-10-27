@@ -1,0 +1,17 @@
+commit	metric	status	description
+d1e8d30	40.914	baseline	Live cold Erome preview at source 720p; target <=10 seconds with source resolution preserved and native 1080p when available
+d1e8d30	37.656	rejected	Four HTTP range requests did not improve 37.770s single GET; reconstructed source hashes identical
+d1e8d30	37.668	rejected	Eight HTTP range requests also show same aggregate transfer ceiling; no production change
+d1e8d30	6.137	partial	Native 1080p 54.5 MB local fixture recognized by gallery; playable; not cold Erome or automatic flow
+d1e8d30	60	failed	Cold Erome gallery fetch cancelled at 9.897s after 6.5 MB; no playable metadata by the 60s observation
+d1e8d30	75	failed	Cold Erome OG media GET cancelled at 9.597s after 6.27 MB; no embed by 75s; native control playable and seekable
+d1e8d30	6.390	rejected	HTTP/2 four-MiB range 6.390s versus HTTP/1.1 6.376s; no throughput improvement
+d1e8d30	12.005	rejected	Virginia, Frankfurt, London and Hostinger each received under 8 MB before 12s deadline; regional placement did not accelerate the full source
+8c9a2b0	41.890	partial	Native1080 superfast retains full160s with SSIM0.980011 vs720baseline0.971632 at40.638s; same19MiBbudget; ten-second cold origin target unresolved
+8c9a2b0	29.727	rejected	Native1080 ultrafast reduced similarity to0.971281 vs720baseline0.971632; no quality trade for fastest timing
+1e456ee	8.183	partial	Six regions assembled full unchanged 25,026,293-byte 720p160.121s source in8.183s; independent fullGET37.842s matches SHA256; full decode passed; Discord delivery pending
+1e456ee	10.054	failed	Buffered six-region Discord trial failed FRA response deadline after1.016MB; no completepreview; 273msreplycreationisnotembedding; streamingregiontestnext
+1e456ee	7.127	partial	Streaming six regions fullunchangedsource ready7.127s firstbytes0.4-0.8s; Discordreplycreated22.486s so10sgoalunmet; 720pfullvideoplays; POST/HEADtimingneedsinstrumentation
+1e456ee	8.918	partial	Empty-cache six-region streaming trial instrumented: Discord video metadata ready, exact original720p bytes; normal generic bot flow not integrated
+1e456ee	8.382	partial	Empty-cache six-region streaming trial repeat1: Discord video metadata ready, exact original720p bytes; normal generic bot flow not integrated
+1e456ee	8.288	partial	Empty-cache six-region streaming trial repeat2: Discord video metadata ready, exact original720p bytes; normal generic bot flow not integrated
