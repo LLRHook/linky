@@ -17,6 +17,8 @@ export interface ArticlePreview {
   description?: string;
   image?: string;
   publishedAt?: string;
+  /** A blocked publisher's readable link label, not a publisher-supplied headline. */
+  titleFromUrl?: true;
   /** Truth Social serves no per-post page metadata; its public status API supplies an authored post card. */
   truthSocial?: TruthSocialPost;
 }
@@ -250,6 +252,19 @@ function myAnimeListEntry(raw: string): string | null {
   return entry ? `${entry[1]}/${entry[2]}` : null;
 }
 
+/** Telegraph's dated editorial links can still have an honest link card when TollBit refuses metadata. */
+function telegraphLinkPreview(source: string, current: URL): ArticlePreview | null {
+  const original = new URL(source), hosts = ['telegraph.co.uk', 'www.telegraph.co.uk'];
+  if (!hosts.includes(original.hostname) || !hosts.includes(current.hostname) ||
+      original.pathname.replace(/\/$/, '') !== current.pathname.replace(/\/$/, '')) return null;
+  const path = /^\/(?:[a-z][a-z0-9-]*\/){1,3}(20\d{2})\/(0[1-9]|1[0-2])\/(0[1-9]|[12]\d|3[01])\/([a-z0-9]+(?:-[a-z0-9]+){2,})\/?$/.exec(current.pathname);
+  if (!path || path[4].length > 200 || !/[a-z]/.test(path[4])) return null;
+  const date = `${path[1]}-${path[2]}-${path[3]}`;
+  if (new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) return null;
+  const title = path[4].replaceAll('-', ' ');
+  return { source, url: current.href, title: title[0].toUpperCase() + title.slice(1), publisher: 'The Telegraph', titleFromUrl: true };
+}
+
 function parseMetadata(html: string, source: string, current: URL): ArticlePreview | null {
   const head = headMetadata(html), get = (key: string) => head.meta.get(key);
   const canonical = sameOriginUrl(head.canonical, current) ?? sameOriginUrl(get('og:url'), current) ?? current.href;
@@ -336,7 +351,7 @@ async function readHead(response: Response, signal: AbortSignal, untilHead = tru
   }
 }
 
-/** Public, cookie-free metadata only; each redirect has a newly validated, pinned address. */
+/** Public, cookie-free preview lookup; each redirect has a newly validated, pinned address. */
 export function createArticleLookup(options: ArticleLookupOptions = {}) {
   const dns = options.resolve4 ?? (async (hostname: string) =>
     (await lookupDns(hostname, { all: true, family: 4 })).map(answer => answer.address));
@@ -495,8 +510,14 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
             current = new URL(next);
             continue;
           }
-          if (response.status !== 200 || !/^(?:text\/html|application\/xhtml\+xml)(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') ||
+          if (!/^(?:text\/html|application\/xhtml\+xml)(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') ||
               ![null, 'identity'].includes(response.headers.get('content-encoding')?.toLowerCase() ?? null)) return null;
+          if (response.status === 402) {
+            const link = telegraphLinkPreview(source, current);
+            // Read only the small refusal page; never treat a login, payment page or arbitrary error as article metadata.
+            return link && /\bvalid TollBit Token\b/i.test(await readHead(response, signal, false, 4096)) ? link : null;
+          }
+          if (response.status !== 200) return null;
           const article = parseMetadata(await readHead(response, signal), source, current);
           if (article?.image) {
             try { await publicAddresses(new URL(article.image).hostname, signal); }
@@ -536,7 +557,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     entry.promise = request(source, entry.controller).then(value => {
       if (!entry.controller.signal.aborted) {
         forget(source);
-        cache.set(source, { value, expires: now() + (value ? 300_000 : 15_000) });
+        cache.set(source, { value, expires: now() + (value && !value.titleFromUrl ? 300_000 : 15_000) });
         cachedFileBytes += fileBytes(value);
         while (cache.size > 100 || cachedFileBytes > MAX_CACHED_FILE_BYTES) forget(cache.keys().next().value!);
       }
@@ -554,7 +575,7 @@ function literal(value: string, limit: number): string {
   return escaped.length <= limit ? escaped : escaped.slice(0, limit - 1).replace(/\\$/, '') + '…';
 }
 
-/** Source-provided metadata, explicitly attributed, with no generated claims. */
+/** Attribute publisher metadata, or explicitly label a readable URL when metadata was refused. */
 export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   const source = parseArticleUrl(article.source), url = parseArticleUrl(article.url);
   if (!source || !url || typeof article.title !== 'string' || typeof article.publisher !== 'string') return [];
@@ -568,8 +589,9 @@ export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   const entry = myAnimeListEntry(url), catalogue = entry && myAnimeListEntry(source) === entry;
   const catalogueLabel = entry?.startsWith('anime/') ? 'Anime' : 'Manga';
   const label = catalogue ? catalogueLabel : 'Article';
-  return [{ title, url, author: { name: `${catalogue ? 'Source' : 'Publisher'}: ${publisher}`, url: new URL(url).origin },
-    footer: { text: `${new URL(url).hostname} · ${label} metadata` }, ...(description ? { description } : {}),
+  const attribution = catalogue ? 'Source' : article.titleFromUrl ? 'Site' : 'Publisher';
+  return [{ title, url, author: { name: `${attribution}: ${publisher}`, url: new URL(url).origin },
+    footer: { text: `${new URL(url).hostname} · ${article.titleFromUrl ? 'Title from URL' : `${label} metadata`}` }, ...(description ? { description } : {}),
     ...(image ? { image: { url: image } } : {}), ...(date ? { timestamp: date } : {}) }];
 }
 
