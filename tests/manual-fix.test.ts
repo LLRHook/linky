@@ -14,6 +14,7 @@ import type { TweetTranslation } from '../src/services/TweetTranslation';
 import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { createArticleLookup, type ArticlePreview } from '../src/services/ArticlePreview';
 import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
+import { telegraphBlocked, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
 import { buttonInteraction, commandInteraction, diagnosticsStub, type InteractionEvent } from './support/discord';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
@@ -938,6 +939,20 @@ test('manual article previews use authored cards without native waits and retain
     assert.equal(paths.at(-1), 'explicit'); assert.deepEqual(outcomes, ['confirmed']);
     assert.equal(f.input.targetMessage.content, ARTICLE_URL);
     assert(f.events.filter(event => event.name === 'edit').every(event => event.payload.allowedMentions.parse.length === 0));
+  }
+});
+
+test('manual Telegraph fixes show the blocked link card and preserve source and controls in both commands', async () => {
+  for (const context of [false, true]) {
+    const f = communityCommand(telegraphUrl, context), outcomes: DeliveryOutcome[] = [];
+    const lookupArticle = createArticleLookup({ resolve4: async () => ['1.1.1.1'], connect: async () => telegraphBlocked() });
+    await execute(f.interaction, articleConfig, { lookupArticle, diagnostics: diagnosticsStub({ id: 'telegraph', outcomes }) });
+    assert.equal(f.response.embeds.length, 1);
+    const card = f.response.embeds[0].toJSON();
+    assert.equal(card.title, telegraphUrlTitle); assert.equal(card.footer?.text, 'www.telegraph.co.uk · Title from URL');
+    assert.equal(card.author?.name, 'Site: The Telegraph');
+    assert.equal(card.image, undefined); assert.deepEqual(outcomes, ['confirmed']);
+    assert.equal(f.input.targetMessage.content, telegraphUrl); assert.deepEqual(originalControls(f), [telegraphUrl]);
   }
 });
 

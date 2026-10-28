@@ -410,6 +410,17 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** Add `.vv/` to the shared .gitignore; preserve the documented private backup location and keep all verification scratch files outside the committed change set.
 
+### [BUG-1793226105] Telegraph articles remain bare links when the publisher blocks bot metadata requests
+- [x] **Severity:** med
+- **Area:** previews
+- **File(s):** src/services/ArticlePreview.ts, src/services/PreviewRecovery.ts, src/commands/diagnose.ts, src/commands/fix.ts, src/commands/settings.ts, tests/article-preview.test.ts, tests/manual-fix.test.ts, tests/social-links.test.ts, tests/fixtures/telegraph.ts, docs/article-previews.md, README.md
+- **Observation:** The reported `https://www.telegraph.co.uk/football/2026/10/28/china-reject-mbappe-real-madrid-apologies-mao-joke/` stays unembedded in Discord. On 2026-10-28 the production host and local pinned HTTPS reader both receive HTTP 402 with a TollBit bot-access refusal, so the article lookup returns null. A public browser sees valid article metadata; the reader is blocked before it reaches that metadata.
+- **Expected:** Give this supported publisher link a useful, accurately labelled card when public article metadata cannot be retrieved, while preserving bounded HTTPS retrieval, the Articles setting, source identity, ownership and exact-card confirmation.
+- **Repro / Notes:** Use the exact screenshot URL. Offline fixtures must reproduce the HTTP 402 and exercise automatic and manual delivery. Do not hardcode this article's metadata, claim a URL-derived title is the publisher's headline, or bypass access restrictions.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** For matching dated Telegraph editorial links, a bounded HTTP 402 TollBit refusal produces a readable URL-title card labelled `Title from URL` and `Site: The Telegraph`, with no invented headline, excerpt, image or publication time. Exact host/path/date validation, a 4 KiB refusal cap, existing public-DNS/time/cancellation limits and 15-second caching apply; normal publisher metadata takes precedence. Automatic Replace/Reply and both manual commands retain their exact-card, settings, source and ownership checks. Update public docs and diagnostic/settings/failure guidance. Node 26.12.0 `npm run validate`: 1,325 TypeScript tests and 77 script tests pass (eight unchanged container-only skips), worker check, 24 deployment safeguards and dependency audit pass. All nine targeted mutations fail their guarding tests. The real lookup also returns the card from production's network. Live Discord client rendering was not exercised in this scoped fix.
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.

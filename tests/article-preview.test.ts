@@ -5,6 +5,7 @@ import type { RequestOptions } from 'node:https';
 import { createArticleLookup, findArticleLinks, formatArticlePreview, parseArticleUrl,
   type ArticleLookupOptions } from '../src/services/ArticlePreview';
 import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
+import { telegraphBlocked, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
 
 const source = 'https://publisher.com/news/story';
 const html = (head = '<meta property="og:type" content="article"><meta property="og:title" content="A story">') =>
@@ -83,6 +84,81 @@ test('an actual Manhattan Institute head shape supports article identity, descri
   const result = await f.lookup(mi);
   assert.equal(result?.url, mi); assert.equal(result?.source, mi);
   assert.equal(result?.publisher, 'Manhattan Institute'); assert.ok(result?.image?.endsWith('.jpg'));
+});
+
+test('the reported Telegraph HTTP 402 produces a labelled URL-title card without invented publisher metadata', async () => {
+  const f = fixture(async () => telegraphBlocked());
+  const result = await f.lookup(telegraphUrl);
+  assert(result);
+  assert.equal(result.source, telegraphUrl); assert.equal(result.url, telegraphUrl);
+  assert.equal(result.title, telegraphUrlTitle); assert.equal(result.publisher, 'The Telegraph');
+  const [card] = formatArticlePreview(result);
+  assert.equal(card.title, telegraphUrlTitle); assert.equal(card.url, telegraphUrl);
+  assert.equal(card.author?.name, 'Site: The Telegraph');
+  assert.equal(card.footer?.text, 'www.telegraph.co.uk · Title from URL');
+  assert.equal(card.description, undefined); assert.equal(card.image, undefined); assert.equal(card.timestamp, undefined);
+  assert.equal(f.calls.length, 1, 'A blocked publisher must not trigger another service or bypass request');
+});
+
+test('Telegraph public metadata takes precedence and blocked link cards expire after fifteen seconds', async () => {
+  let now = 0, blocked = true;
+  const f = fixture(async () => blocked ? telegraphBlocked() : response(html()), { now: () => now });
+  assert.equal((await f.lookup(telegraphUrl))?.title, telegraphUrlTitle);
+  blocked = false;
+  await f.lookup(telegraphUrl); assert.equal(f.calls.length, 1);
+  now = 15001;
+  const result = await f.lookup(telegraphUrl);
+  assert.equal(result?.title, 'A story'); assert.equal(f.calls.length, 2);
+  assert.equal(formatArticlePreview(result!)[0].footer?.text, 'www.telegraph.co.uk · Article metadata');
+});
+
+test('a blocked Telegraph card requires the exact publisher host and a real dated article path', async () => {
+  for (const url of [telegraphUrl.replace('www.telegraph.co.uk', 'telegraph.co.uk.evil.com'),
+    telegraphUrl.replace('www.telegraph.co.uk', 'other.telegraph.co.uk'), telegraphUrl.replace('www.telegraph.co.uk', 'publisher.com'),
+    telegraphUrl.replace('/2026/10/28/', '/2026/02/30/'), telegraphUrl.replace('/2026/10/28/', '/2026/13/28/'),
+    'https://www.telegraph.co.uk/football/', 'https://www.telegraph.co.uk/account/2026/10/28/a-fake-story/',
+    'https://www.telegraph.co.uk/football/2026/10/28/%40everyone-click-here/',
+    'https://www.telegraph.co.uk/football/2026/10/28/123-456-789/']) {
+    assert.equal(await fixture(async () => telegraphBlocked()).lookup(url), null, url);
+  }
+  const tracked = telegraphUrl.replace('www.telegraph.co.uk', 'telegraph.co.uk') + '?ref=discord#section';
+  const result = await fixture(async () => telegraphBlocked()).lookup(tracked);
+  assert.equal(result?.url, tracked.replace('#section', '')); assert.equal(result?.title, telegraphUrlTitle);
+});
+
+test('Telegraph missing pages, login errors and unavailable responses never become URL-title cards', async () => {
+  for (const status of [401, 403, 404, 410, 429, 500, 503]) {
+    assert.equal(await fixture(async () => new Response('', { status, headers: { 'content-type': 'text/html' } }))
+      .lookup(telegraphUrl), null, String(status));
+  }
+  assert.equal(await fixture(async () => response(html('<title>Not an article</title>'))).lookup(telegraphUrl), null);
+  assert.equal(await fixture(async () => new Response('', { status: 402, headers: { 'content-type': 'application/json' } }))
+    .lookup(telegraphUrl), null);
+  assert.equal(await fixture(async () => new Response('<title>Subscribe to read</title>', { status: 402,
+    headers: { 'content-type': 'text/html' } })).lookup(telegraphUrl), null);
+});
+
+test('Telegraph refusal bodies keep their small byte limit, public DNS and cancellation checks', async () => {
+  assert.equal(await fixture(async () => new Response('valid TollBit Token ' + 'x'.repeat(4096), {
+    status: 402, headers: { 'content-type': 'text/html' },
+  })).lookup(telegraphUrl), null);
+  const privateHost = fixture(async () => telegraphBlocked(), { resolve4: async () => ['127.0.0.1'] });
+  assert.equal(await privateHost.lookup(telegraphUrl), null); assert.equal(privateHost.calls.length, 0);
+  let cancelled = false;
+  const stalled = fixture(async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), {
+    status: 402, headers: { 'content-type': 'text/html' },
+  }), { timeoutMs: 15 });
+  assert.equal(await stalled.lookup(telegraphUrl), null); assert.equal(cancelled, true);
+});
+
+test('a Telegraph redirect cannot substitute another article or import a foreign source into a blocked card', async () => {
+  for (const [requested, destination] of [[telegraphUrl, telegraphUrl.replace('mao-joke', 'other-story')], [source, telegraphUrl]]) {
+    const f = fixture(async () => f.calls.length === 1 ? new Response(null, { status: 302, headers: { location: destination } }) : telegraphBlocked());
+    assert.equal(await f.lookup(requested), null);
+  }
+  const f = fixture(async () => f.calls.length === 1 ? new Response(null, { status: 301,
+    headers: { location: telegraphUrl } }) : telegraphBlocked());
+  assert.equal((await f.lookup(telegraphUrl.replace('www.', '')))?.title, telegraphUrlTitle);
 });
 
 test('the reported MyAnimeList anime uses its synopsis and full-size cover without requiring Article metadata', async () => {
