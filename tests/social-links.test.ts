@@ -33,6 +33,7 @@ import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { APIEmbed } from 'discord.js';
 import { createArticleLookup } from '../src/services/ArticlePreview';
 import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
+import { telegraphBlocked, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
 import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
 
 // The repost handler logs and swallows callback errors, so a throwing assertion inside a
@@ -1798,6 +1799,27 @@ test('articles replace only after the complete authored card is echoed and prese
   assert.equal(f.replacement.embeds[0].toJSON().url, ARTICLE_URL);
   assert.deepEqual(f.sent[0].allowedMentions?.users, [AUTHOR_ID]);
   assert(f.events.includes('delete original'));
+});
+
+test('automatic blocked Telegraph cards require exact Discord confirmation before replacing the source', async () => {
+  for (const mode of ['replace', 'reply'] as const) for (const confirmed of [true, false]) {
+    const f = fixture(); f.source.content = `Read this ${telegraphUrl}`;
+    if (!confirmed) {
+      const send = f.source.channel.send;
+      f.source.channel.send = async options => { const result = await send(options); result.embeds = []; return result; };
+    }
+    const lookupArticle = createArticleLookup({ resolve4: async () => ['1.1.1.1'], connect: async () => telegraphBlocked() });
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle,
+      serverPreferences: () => ({ mode }), verifyPreview: forbid('Telegraph link cards do not wait for native embeds') })(f.source as unknown as Message);
+    assert.equal(f.sent.length, 1);
+    const embed = f.sent[0].embeds?.[0]; assert(embed);
+    const card = 'toJSON' in embed ? embed.toJSON() : embed;
+    assert.equal(card.title, telegraphUrlTitle); assert.equal(card.footer?.text, 'www.telegraph.co.uk · Title from URL');
+    assert.equal(card.author?.name, 'Site: The Telegraph');
+    assert.equal(card.image, undefined);
+    assert.equal(f.events.includes('delete original'), mode === 'replace' && confirmed);
+    assert.equal(f.events.includes('delete replacement'), !confirmed);
+  }
 });
 
 test('automatic MyAnimeList previews use bounded metadata and require an echoed card before replacement', async () => {
