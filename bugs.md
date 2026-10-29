@@ -421,6 +421,17 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** For matching dated Telegraph editorial links, a bounded HTTP 402 TollBit refusal produces a readable URL-title card labelled `Title from URL` and `Site: The Telegraph`, with no invented headline, excerpt, image or publication time. Exact host/path/date validation, a 4 KiB refusal cap, existing public-DNS/time/cancellation limits and 15-second caching apply; normal publisher metadata takes precedence. Automatic Replace/Reply and both manual commands retain their exact-card, settings, source and ownership checks. Update public docs and diagnostic/settings/failure guidance. Node 26.12.0 `npm run validate`: 1,325 TypeScript tests and 77 script tests pass (eight unchanged container-only skips), worker check, 24 deployment safeguards and dependency audit pass. All nine targeted mutations fail their guarding tests. The real lookup also returns the card from production's network. Live Discord client rendering was not exercised in this scoped fix.
 
+### [BUG-1793284731] Secret scan fails after main history was rewritten
+- [x] **Severity:** med
+- **Area:** ci
+- **File(s):** .gitleaksignore
+- **Observation:** Since the 2026-10-29 02:39 UTC rewrite of `main`, which replaced `045860b` with `a5a0683` (identical tree, author emails normalised), every CI run fails `Secret scan`. Then `CI gate` fails, so `main` has not redeployed and PR #96 is blocked. Gitleaks reports two `generic-api-key` detections at `tests/regional-downloader.test.ts:12`, in rewritten commits `7aa0fd4` (main, #29) and `132c459` (`feat/erome-regional-media`). These are the same synthetic signing fixture that `.gitleaksignore` already allows under the pre-rewrite SHAs `4a8296e` and `64e01b0`.
+- **Expected:** The historical synthetic fixture stays allowed under its current commit SHAs, and any real secret still fails the scan.
+- **Repro / Notes:** `gitleaks git --log-opts=--all --redact=100 .` (v8.30.1, as in CI) on a full clone reports `leaks found: 2`. Fingerprints are exact (commit:file:rule:line), so no other finding is suppressed.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Add exact fingerprints for `7aa0fd4` and `132c459`. The pre-rewrite entries remain for local branches that still contain the old commits. With gitleaks v8.30.1 over `--all`, the scan now reports `no leaks found`.
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.
