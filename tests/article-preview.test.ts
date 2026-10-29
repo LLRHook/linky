@@ -5,7 +5,9 @@ import type { RequestOptions } from 'node:https';
 import { createArticleLookup, findArticleLinks, formatArticlePreview, parseArticleUrl,
   type ArticleLookupOptions } from '../src/services/ArticlePreview';
 import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
-import { telegraphBlocked, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
+import { kitpPdf, pdfResponse, pdfTitle, pdfUrl } from './fixtures/pdf';
+import { bingItem, bingNewsFeed, telegraphBlocked, telegraphExcerpt, telegraphHeadline, telegraphThumbnail, telegraphUrl,
+  telegraphUrlTitle } from './fixtures/telegraph';
 
 const source = 'https://publisher.com/news/story';
 const html = (head = '<meta property="og:type" content="article"><meta property="og:title" content="A story">') =>
@@ -86,7 +88,7 @@ test('an actual Manhattan Institute head shape supports article identity, descri
   assert.equal(result?.publisher, 'Manhattan Institute'); assert.ok(result?.image?.endsWith('.jpg'));
 });
 
-test('the reported Telegraph HTTP 402 produces a labelled URL-title card without invented publisher metadata', async () => {
+test('without a Bing News entry the reported Telegraph HTTP 402 produces a labelled URL-title card without invented publisher metadata', async () => {
   const f = fixture(async () => telegraphBlocked());
   const result = await f.lookup(telegraphUrl);
   assert(result);
@@ -97,7 +99,8 @@ test('the reported Telegraph HTTP 402 produces a labelled URL-title card without
   assert.equal(card.author?.name, 'Site: The Telegraph');
   assert.equal(card.footer?.text, 'www.telegraph.co.uk · Title from URL');
   assert.equal(card.description, undefined); assert.equal(card.image, undefined); assert.equal(card.timestamp, undefined);
-  assert.equal(f.calls.length, 1, 'A blocked publisher must not trigger another service or bypass request');
+  assert.deepEqual(f.calls.map(call => call.hostname), ['www.telegraph.co.uk', 'www.bing.com'],
+    'A blocked publisher triggers only the news-index lookup, never a bypass request');
 });
 
 test('Telegraph public metadata takes precedence and blocked link cards expire after fifteen seconds', async () => {
@@ -105,10 +108,10 @@ test('Telegraph public metadata takes precedence and blocked link cards expire a
   const f = fixture(async () => blocked ? telegraphBlocked() : response(html()), { now: () => now });
   assert.equal((await f.lookup(telegraphUrl))?.title, telegraphUrlTitle);
   blocked = false;
-  await f.lookup(telegraphUrl); assert.equal(f.calls.length, 1);
+  await f.lookup(telegraphUrl); assert.equal(f.calls.length, 2);
   now = 15001;
   const result = await f.lookup(telegraphUrl);
-  assert.equal(result?.title, 'A story'); assert.equal(f.calls.length, 2);
+  assert.equal(result?.title, 'A story'); assert.equal(f.calls.length, 3);
   assert.equal(formatArticlePreview(result!)[0].footer?.text, 'www.telegraph.co.uk · Article metadata');
 });
 
@@ -159,6 +162,118 @@ test('a Telegraph redirect cannot substitute another article or import a foreign
   const f = fixture(async () => f.calls.length === 1 ? new Response(null, { status: 301,
     headers: { location: telegraphUrl } }) : telegraphBlocked());
   assert.equal((await f.lookup(telegraphUrl.replace('www.', '')))?.title, telegraphUrlTitle);
+});
+
+const bing = (feed: () => Response | Promise<Response>): NonNullable<ArticleLookupOptions['connect']> =>
+  async settings => settings.hostname === 'www.bing.com' ? feed() : telegraphBlocked();
+
+test('the reported Telegraph HTTP 402 uses the Bing News entry for the exact article URL', async () => {
+  let now = 0;
+  const f = fixture(bing(() => bingNewsFeed()), { now: () => now });
+  const result = await f.lookup(telegraphUrl);
+  assert.deepEqual(result, { source: telegraphUrl, url: telegraphUrl, title: telegraphHeadline, publisher: 'The Telegraph',
+    indexedBy: 'Bing News', description: telegraphExcerpt, image: telegraphThumbnail });
+  const [search] = f.calls.slice(1);
+  assert.equal(search.hostname, 'www.bing.com'); assert.equal(search.servername, 'www.bing.com');
+  assert.equal(search.path, '/news/search?q=china%20reject%20mbappe%20real%20madrid%20apologies%20mao%20joke%20site%3Atelegraph.co.uk&format=rss');
+  const headers = new Headers(search.headers as Record<string, string>);
+  assert.equal(headers.get('accept-encoding'), 'identity'); assert.equal(headers.has('cookie'), false);
+  assert.deepEqual(formatArticlePreview(result!), [{ title: telegraphHeadline, url: telegraphUrl,
+    author: { name: 'Publisher: The Telegraph', url: 'https://www.telegraph.co.uk' },
+    footer: { text: 'www.telegraph.co.uk · Headline via Bing News' }, description: telegraphExcerpt,
+    image: { url: telegraphThumbnail } }]);
+  // A real headline is cached like publisher metadata, not like the 15-second URL-title card.
+  now = 15001; await f.lookup(telegraphUrl); assert.equal(f.calls.length, 2);
+  now = 300001; await f.lookup(telegraphUrl); assert.equal(f.calls.length, 4);
+});
+
+test('Bing News entries for other articles, lookalike hosts or foreign images are never used', async () => {
+  const other = telegraphUrl.replace('mao-joke', 'other-story');
+  for (const items of [[bingItem(other, 'Another headline')], [bingItem(telegraphUrl.replace('www.telegraph.co.uk', 'telegraph.co.uk.evil.com'), 'Fake')],
+    [bingItem(telegraphUrl.replace('/football/', '/news/'), 'Wrong section')], [bingItem(telegraphUrl, '')], []]) {
+    const result = await fixture(bing(() => bingNewsFeed(items))).lookup(telegraphUrl);
+    assert.equal(result?.title, telegraphUrlTitle); assert.equal(result?.titleFromUrl, true); assert.equal(result?.indexedBy, undefined);
+  }
+  for (const image of ['https://evil.com/th?id=ONUT.x&amp;pid=News', 'http://www.bing.com/th?id=../../x&amp;pid=News', 'javascript:alert(1)']) {
+    const result = await fixture(bing(() => bingNewsFeed([bingItem(telegraphUrl, telegraphHeadline, image)]))).lookup(telegraphUrl);
+    assert.equal(result?.title, telegraphHeadline); assert.equal(result?.image, undefined);
+    assert.equal(formatArticlePreview({ ...result!, image })[0].image, undefined);
+  }
+  assert.equal(formatArticlePreview({ source, url: source, title: 'A', publisher: 'B', image: telegraphThumbnail })[0].image, undefined,
+    'Bing thumbnails are accepted only on news-index cards');
+});
+
+test('Bing News failures and slow responses fall back to the URL-title card within the lookup deadline', async () => {
+  const stalled = (): Promise<Response> => new Promise(() => undefined);
+  for (const feed of [() => new Response('', { status: 500 }), () => new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+    () => { throw new Error('connection reset'); }, () => new Response('<rss>' + 'x'.repeat(600 * 1024), { headers: { 'content-type': 'application/xml' } }),
+    stalled]) {
+    const started = Date.now();
+    const result = await fixture(bing(feed), { timeoutMs: 600 }).lookup(telegraphUrl);
+    assert.equal(result?.title, telegraphUrlTitle); assert.ok(Date.now() - started < 600);
+  }
+});
+
+test('only the TollBit refusal of a dated Telegraph article triggers a Bing News lookup', async () => {
+  for (const blocked of [() => new Response('<title>Subscribe</title>', { status: 402, headers: { 'content-type': 'text/html' } }),
+    () => new Response('', { status: 403, headers: { 'content-type': 'text/html' } })]) {
+    const f = fixture(async settings => settings.hostname === 'www.bing.com' ? bingNewsFeed() : blocked());
+    assert.equal(await f.lookup(telegraphUrl), null); assert.equal(f.calls.length, 1);
+  }
+  const f = fixture(bing(() => bingNewsFeed()));
+  assert.equal(await f.lookup(source.replace('publisher.com', 'telegraph.co.uk.evil.com')), null);
+  assert.ok(f.calls.every(call => call.hostname !== 'www.bing.com'));
+});
+
+test('the reported KITP PDF produces a labelled document card from its first-page heading', async () => {
+  const bytes = kitpPdf();
+  const f = fixture(async () => pdfResponse(bytes, 'application/pdf', { 'content-length': String(bytes.length) }));
+  const result = await f.lookup(pdfUrl);
+  assert(result?.pdf);
+  assert.equal(result.title, pdfTitle); assert.equal(result.url, pdfUrl); assert.equal(result.publisher, 'www.kitp.ucsb.edu');
+  assert.match(new Headers(f.calls[0].headers as Record<string, string>).get('accept') ?? '', /application\/pdf/);
+  assert.deepEqual(formatArticlePreview(result), [{ title: pdfTitle.replace('-', '\\-'), url: pdfUrl,
+    author: { name: 'PDF document: www.kitp.ucsb.edu', url: 'https://www.kitp.ucsb.edu' },
+    footer: { text: 'www.kitp.ucsb.edu · Title from first page' }, description: `2 pages · ${Math.round(bytes.length / 1024)} KB`,
+    timestamp: '2026-10-27T20:25:56.000Z' }]);
+});
+
+test('PDF cards require a PDF body and response type, and never accept compressed or failed responses', async () => {
+  const bytes = kitpPdf(), octet = 'application/octet-stream';
+  assert.equal((await fixture(async () => pdfResponse(bytes, octet)).lookup(pdfUrl))?.title, pdfTitle);
+  assert.equal((await fixture(async () => pdfResponse(bytes, 'application/pdf; charset=binary')).lookup(source))?.title, pdfTitle);
+  const rejected: [string, () => Promise<Response>][] = [
+    [source, async () => pdfResponse(bytes, octet)],
+    [pdfUrl, async () => pdfResponse(Buffer.from('<!doctype html><title>Login</title>'))],
+    [pdfUrl, async () => new Response(bytes, { status: 404, headers: { 'content-type': 'application/pdf' } })],
+    [pdfUrl, async () => new Response(bytes, { status: 402, headers: { 'content-type': 'application/pdf' } })],
+    [pdfUrl, async () => pdfResponse(bytes, 'application/pdf', { 'content-encoding': 'gzip' })],
+    [pdfUrl, async () => pdfResponse(bytes, 'image/png')],
+  ];
+  for (const [url, connect] of rejected) assert.equal(await fixture(connect).lookup(url), null, url);
+});
+
+test('large PDFs are read only to a 4 MiB prefix and keep their declared size', async () => {
+  let pulled = 0, cancelled = false;
+  const head = kitpPdf();
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) { controller.enqueue(pulled++ ? new Uint8Array(1024 * 1024) : head); },
+    cancel() { cancelled = true; },
+  });
+  const result = await fixture(async () => pdfResponse(body, 'application/pdf', { 'content-length': String(50 * 1024 * 1024) })).lookup(pdfUrl);
+  assert.equal(result?.title, pdfTitle); assert.equal(result?.pdf?.bytes, 50 * 1024 * 1024);
+  assert.ok(pulled <= 6, `read ${pulled} chunks`); assert.equal(cancelled, true);
+  assert.equal(formatArticlePreview(result!)[0].description, '2 pages · 50 MB');
+});
+
+test('PDF card text is literal and labels where its title came from', () => {
+  const [card] = formatArticlePreview({ source: pdfUrl, url: pdfUrl, title: '**Notice** @everyone https://evil.com', publisher: 'www.kitp.ucsb.edu',
+    pdf: { title: 'ignored', titleSource: 'metadata', author: '@here [x](https://evil.com)', pages: 1, bytes: 900 } });
+  assert.equal(card.title, '\\*\\*Notice\\*\\* @\u200beveryone \\[link\\]');
+  assert.equal(card.description, 'By @\u200bhere \\[x\\]\\(\\[link\\]\n1 page · 900 bytes');
+  assert.equal(card.footer?.text, 'www.kitp.ucsb.edu · Title from document metadata'); assert.equal(card.timestamp, undefined);
+  assert.equal(formatArticlePreview({ source: pdfUrl, url: pdfUrl, title: 'Report.pdf', publisher: 'www.kitp.ucsb.edu',
+    pdf: { title: 'Report.pdf', titleSource: 'file name' } })[0].footer?.text, 'www.kitp.ucsb.edu · Title from file name');
 });
 
 test('the reported MyAnimeList anime uses its synopsis and full-size cover without requiring Article metadata', async () => {

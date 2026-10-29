@@ -14,7 +14,8 @@ import type { TweetTranslation } from '../src/services/TweetTranslation';
 import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { createArticleLookup, type ArticlePreview } from '../src/services/ArticlePreview';
 import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
-import { telegraphBlocked, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
+import { kitpPdf, pdfResponse, pdfTitle, pdfUrl } from './fixtures/pdf';
+import { bingNewsFeed, telegraphBlocked, telegraphHeadline, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
 import { buttonInteraction, commandInteraction, diagnosticsStub, type InteractionEvent } from './support/discord';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
@@ -953,6 +954,23 @@ test('manual Telegraph fixes show the blocked link card and preserve source and 
     assert.equal(card.author?.name, 'Site: The Telegraph');
     assert.equal(card.image, undefined); assert.deepEqual(outcomes, ['confirmed']);
     assert.equal(f.input.targetMessage.content, telegraphUrl); assert.deepEqual(originalControls(f), [telegraphUrl]);
+  }
+});
+
+test('manual fixes show Bing News Telegraph headlines and PDF document cards and preserve source and controls in both commands', async () => {
+  const cases = [
+    { url: telegraphUrl, title: telegraphHeadline, footer: 'www.telegraph.co.uk · Headline via Bing News',
+      connect: async (settings: { hostname?: string | null }) => settings.hostname === 'www.bing.com' ? bingNewsFeed() : telegraphBlocked() },
+    { url: pdfUrl, title: pdfTitle.replace('-', '\\-'), footer: 'www.kitp.ucsb.edu · Title from first page', connect: async () => pdfResponse(kitpPdf()) },
+  ];
+  for (const item of cases) for (const context of [false, true]) {
+    const f = communityCommand(item.url, context), outcomes: DeliveryOutcome[] = [];
+    const lookupArticle = createArticleLookup({ resolve4: async () => ['1.1.1.1'], connect: item.connect });
+    await execute(f.interaction, articleConfig, { lookupArticle, diagnostics: diagnosticsStub({ id: 'indexed-or-pdf', outcomes }) });
+    assert.equal(f.response.embeds.length, 1);
+    const card = f.response.embeds[0].toJSON();
+    assert.equal(card.title, item.title); assert.equal(card.footer?.text, item.footer); assert.deepEqual(outcomes, ['confirmed']);
+    assert.equal(f.input.targetMessage.content, item.url); assert.deepEqual(originalControls(f), [item.url]);
   }
 });
 

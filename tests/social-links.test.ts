@@ -33,7 +33,8 @@ import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { APIEmbed } from 'discord.js';
 import { createArticleLookup } from '../src/services/ArticlePreview';
 import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } from './fixtures/myanimelist';
-import { telegraphBlocked, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
+import { kitpPdf, pdfResponse, pdfTitle, pdfUrl } from './fixtures/pdf';
+import { bingNewsFeed, telegraphBlocked, telegraphHeadline, telegraphThumbnail, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
 import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
 
 // The repost handler logs and swallows callback errors, so a throwing assertion inside a
@@ -1817,6 +1818,31 @@ test('automatic blocked Telegraph cards require exact Discord confirmation befor
     assert.equal(card.title, telegraphUrlTitle); assert.equal(card.footer?.text, 'www.telegraph.co.uk · Title from URL');
     assert.equal(card.author?.name, 'Site: The Telegraph');
     assert.equal(card.image, undefined);
+    assert.equal(f.events.includes('delete original'), mode === 'replace' && confirmed);
+    assert.equal(f.events.includes('delete replacement'), !confirmed);
+  }
+});
+
+test('automatic Bing News Telegraph headlines and PDF document cards require exact Discord confirmation before replacing the source', async () => {
+  const cases = [
+    { url: telegraphUrl, title: telegraphHeadline, footer: 'www.telegraph.co.uk · Headline via Bing News', image: telegraphThumbnail,
+      connect: async (settings: { hostname?: string | null }) => settings.hostname === 'www.bing.com' ? bingNewsFeed() : telegraphBlocked() },
+    { url: pdfUrl, title: pdfTitle.replace('-', '\\-'), footer: 'www.kitp.ucsb.edu · Title from first page', image: undefined,
+      connect: async () => pdfResponse(kitpPdf()) },
+  ];
+  for (const item of cases) for (const mode of ['replace', 'reply'] as const) for (const confirmed of [true, false]) {
+    const f = fixture(); f.source.content = `Read this ${item.url}`;
+    if (!confirmed) {
+      const send = f.source.channel.send;
+      f.source.channel.send = async options => { const result = await send(options); result.embeds = []; return result; };
+    }
+    const lookupArticle = createArticleLookup({ resolve4: async () => ['1.1.1.1'], connect: item.connect });
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle,
+      serverPreferences: () => ({ mode }), verifyPreview: forbid('Authored cards do not wait for native embeds') })(f.source as unknown as Message);
+    assert.equal(f.sent.length, 1);
+    const embed = f.sent[0].embeds?.[0]; assert(embed);
+    const card = 'toJSON' in embed ? embed.toJSON() : embed;
+    assert.equal(card.title, item.title); assert.equal(card.footer?.text, item.footer); assert.equal(card.image?.url, item.image);
     assert.equal(f.events.includes('delete original'), mode === 'replace' && confirmed);
     assert.equal(f.events.includes('delete replacement'), !confirmed);
   }
