@@ -431,6 +431,7 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** fixed-pending-migration
 - **Fix:** After the verified TollBit 402 for a dated Telegraph article, the lookup makes one Bing News RSS request (`www.bing.com`, same public-DNS pinning, identity encoding and 512 KiB limits, ending 250 ms before the five-second deadline) for the slug words on `telegraph.co.uk`, and uses only an item whose link (`apiclick.aspx` `url` parameter) names the same Telegraph host and article path. The card shows that headline, excerpt and a validated `www.bing.com/th` thumbnail with `Publisher: The Telegraph` and the footer `Headline via Bing News`, and no publication time (Bing's item time is seven hours earlier than the publisher's). It caches for five minutes. A missing, mismatched, failed or slow Bing result keeps the existing `Title from URL` card. Diagnose, failure, settings and public docs describe the lookup. Node 26.12.0 `npm run validate`: 1,345 TypeScript tests and 77 script tests pass (eight unchanged container-only skips), worker check, 24 deployment safeguards and dependency audit pass. The real lookup returned the headline card locally; production's network returns the same Bing item.
+
 ### [BUG-1793284731] Secret scan fails after main history was rewritten
 - [x] **Severity:** med
 - **Area:** ci
