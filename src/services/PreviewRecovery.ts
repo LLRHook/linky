@@ -228,7 +228,7 @@ export class PreviewHealth {
 
   describe(link: string): string {
     if (parseYouTubeCommunityUrl(link)) return 'YouTube community image and text posts use verified public post data and Linky-authored cards. No video playback or counts are inferred.';
-    if (parseArticleUrl(link)) return 'Public articles use publisher metadata in Linky-authored cards. Blocked Telegraph links can show a card labelled Title from URL. A confirmed card does not verify article content or availability.';
+    if (parseArticleUrl(link)) return 'Public articles use publisher metadata in Linky-authored cards. Blocked Telegraph links use Bing News’s entry for the exact article, or a card labelled Title from URL. Public PDFs get a document card that labels where its title came from. A confirmed card does not verify article content or availability.';
     const candidates = getProviderCandidates(link);
     if (!candidates.length && parseYouTubeUrl(link)) return 'YouTube uses its native video preview. Counts depend on the YouTube API.';
     return candidates.map(candidate => {

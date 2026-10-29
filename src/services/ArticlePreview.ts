@@ -5,6 +5,7 @@ import { isIP } from 'node:net';
 import type { APIEmbed } from 'discord.js';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
+import { formatPdfSize, isPdf, parsePdf, type PdfDocument } from './PdfPreview';
 import { SOCIAL_PROVIDERS } from './SocialProviders';
 import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialStatus, parseTruthSocialUrl,
   TRUTH_ARCHIVE, TRUTH_SOCIAL_HOST, truthSocialFileName, type TruthSocialFile, type TruthSocialLink, type TruthSocialPost } from './TruthSocial';
@@ -19,6 +20,10 @@ export interface ArticlePreview {
   publishedAt?: string;
   /** A blocked publisher's readable link label, not a publisher-supplied headline. */
   titleFromUrl?: true;
+  /** A blocked publisher's metadata came from this news index's entry for the exact article URL. */
+  indexedBy?: 'Bing News';
+  /** A public PDF: facts read from the document itself. */
+  pdf?: PdfDocument;
   /** Truth Social serves no per-post page metadata; its public status API supplies an authored post card. */
   truthSocial?: TruthSocialPost;
 }
@@ -35,6 +40,9 @@ export interface ArticleLookupOptions {
 export interface TruthSocialRelay { hostname: string; token: string }
 
 const MAX_BYTES = 512 * 1024;
+// PDFs are read only to this prefix; linearized files keep their first page and catalogue near the start.
+const MAX_PDF_BYTES = 4 * 1024 * 1024;
+const BING = 'www.bing.com', TELEGRAPH_HOSTS = ['telegraph.co.uk', 'www.telegraph.co.uk'];
 // Uploaded Truth Social media: one post image, one avatar, and every cached copy together.
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024, MAX_AVATAR_BYTES = 1024 * 1024, MAX_CACHED_FILE_BYTES = 32 * 1024 * 1024;
 // Media downloads stop this long before the lookup deadline, so a slow download costs only its upload.
@@ -254,7 +262,7 @@ function myAnimeListEntry(raw: string): string | null {
 
 /** Telegraph's dated editorial links can still have an honest link card when TollBit refuses metadata. */
 function telegraphLinkPreview(source: string, current: URL): ArticlePreview | null {
-  const original = new URL(source), hosts = ['telegraph.co.uk', 'www.telegraph.co.uk'];
+  const original = new URL(source), hosts = TELEGRAPH_HOSTS;
   if (!hosts.includes(original.hostname) || !hosts.includes(current.hostname) ||
       original.pathname.replace(/\/$/, '') !== current.pathname.replace(/\/$/, '')) return null;
   const path = /^\/(?:[a-z][a-z0-9-]*\/){1,3}(20\d{2})\/(0[1-9]|1[0-2])\/(0[1-9]|[12]\d|3[01])\/([a-z0-9]+(?:-[a-z0-9]+){2,})\/?$/.exec(current.pathname);
@@ -263,6 +271,47 @@ function telegraphLinkPreview(source: string, current: URL): ArticlePreview | nu
   if (new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) return null;
   const title = path[4].replaceAll('-', ' ');
   return { source, url: current.href, title: title[0].toUpperCase() + title.slice(1), publisher: 'The Telegraph', titleFromUrl: true };
+}
+
+/** A Bing News thumbnail, the only image host a news-index card may name. */
+function bingThumbnail(value: unknown): string | null {
+  const match = typeof value === 'string' && /^https?:\/\/www\.bing\.com\/th\?id=([A-Za-z0-9._-]{1,160})&pid=News$/.exec(value.replace(/&amp;/g, '&'));
+  return match ? `https://${BING}/th?id=${match[1]}&pid=News` : null;
+}
+
+/** Bing News search terms for a blocked Telegraph article: its slug words, limited to the publisher's site. */
+export function bingNewsPath(link: ArticlePreview): string {
+  const slug = new URL(link.url).pathname.replace(/\/$/, '').split('/').at(-1)!;
+  return `/news/search?q=${encodeURIComponent(`${slug.replaceAll('-', ' ')} site:telegraph.co.uk`)}&format=rss`;
+}
+
+/** The Bing News RSS item whose link names exactly this Telegraph article; any other match is ignored. */
+export function parseBingNewsFeed(xml: string, link: ArticlePreview): ArticlePreview | null {
+  const wanted = new URL(link.url).pathname.replace(/\/$/, '');
+  const tag = (item: string, name: string) => {
+    const start = item.indexOf(`<${name}>`), end = start < 0 ? -1 : item.indexOf(`</${name}>`, start);
+    const found = end < 0 || end - start > 4000 ? '' : item.slice(start + name.length + 2, end);
+    return found.replace(/^<!\[CDATA\[([\s\S]*)\]\]>$/, '$1');
+  };
+  for (const [, item] of xml.slice(0, MAX_BYTES).matchAll(/<item>([\s\S]{0,20000}?)<\/item>/g)) {
+    let target: URL;
+    try {
+      const href = new URL(entities(tag(item, 'link')));
+      const named = href.hostname === BING && href.pathname === '/news/apiclick.aspx' ? href.searchParams.get('url') : href.href;
+      const parsed = named && parseArticleUrl(named);
+      if (!parsed) continue;
+      target = new URL(parsed);
+    } catch { continue; }
+    if (!TELEGRAPH_HOSTS.includes(target.hostname) || target.pathname.replace(/\/$/, '') !== wanted) continue;
+    const title = metadataText(tag(item, 'title'));
+    if (!title) return null;
+    const description = metadataText(tag(item, 'description'));
+    const image = bingThumbnail(entities(tag(item, 'News:Image')));
+    // Bing's pubDate is its indexing time (seven hours before the publisher's time for the reported article), so none is shown.
+    return { source: link.source, url: link.url, title, publisher: link.publisher, indexedBy: 'Bing News',
+      ...(description ? { description } : {}), ...(image ? { image } : {}) };
+  }
+  return null;
 }
 
 function parseMetadata(html: string, source: string, current: URL): ArticlePreview | null {
@@ -316,6 +365,37 @@ async function readBytes(response: Response, signal: AbortSignal, maxBytes: numb
     let offset = 0;
     for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.byteLength; }
     return data;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    cancel();
+    reader.releaseLock();
+  }
+}
+
+/** At most `maxBytes` of a body; a longer file is cut off rather than refused. `total` is its known full size. */
+async function readPrefix(response: Response, signal: AbortSignal, maxBytes: number): Promise<{ data: Uint8Array; total?: number }> {
+  if (!response.body) throw new Error('article_body');
+  const declared = response.headers.get('content-length');
+  const length = declared && /^\d{1,12}$/.test(declared) ? Number(declared) : undefined;
+  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener('abort', cancel, { once: true });
+  let bytes = 0, complete = false;
+  try {
+    while (bytes < maxBytes) {
+      signal.throwIfAborted();
+      const part = await regionalAbortable(reader.read(), signal);
+      if (part.done) { complete = true; break; }
+      const piece = part.value.subarray(0, maxBytes - bytes);
+      chunks.push(piece);
+      bytes += piece.byteLength;
+    }
+    signal.throwIfAborted();
+    const data = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.byteLength; }
+    const total = length !== undefined && length >= bytes ? length : complete ? bytes : undefined;
+    return { data, ...(total !== undefined ? { total } : {}) };
   } finally {
     signal.removeEventListener('abort', cancel);
     cancel();
@@ -493,7 +573,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
         const response = await regionalAbortable(connect({
           protocol: 'https:', hostname: current.hostname, servername: current.hostname, port: 443,
           method: 'GET', path: current.pathname + current.search, family: 4, agent: false, rejectUnauthorized: true, maxHeaderSize: 8192,
-          headers: { accept: 'text/html,application/xhtml+xml;q=0.9', 'accept-encoding': 'identity',
+          headers: { accept: 'text/html,application/xhtml+xml;q=0.9,application/pdf;q=0.8', 'accept-encoding': 'identity',
             'user-agent': USER_AGENT },
           lookup: (_hostname, lookupOptions, callback) => {
             if (lookupOptions.all) callback(null, [{ address, family: 4 }]);
@@ -510,14 +590,31 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
             current = new URL(next);
             continue;
           }
-          if (!/^(?:text\/html|application\/xhtml\+xml)(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') ||
+          const type = response.headers.get('content-type') ?? '';
+          // Some servers label PDFs generically; those must also name a .pdf file and start with a PDF header.
+          const pdf = /^application\/(?:pdf|x-pdf)(?:\s*;|$)/i.test(type) ||
+            /^(?:application\/octet-stream|binary\/octet-stream)(?:\s*;|$)/i.test(type) && /\.pdf$/i.test(current.pathname);
+          if (!pdf && !/^(?:text\/html|application\/xhtml\+xml)(?:\s*;|$)/i.test(type) ||
               ![null, 'identity'].includes(response.headers.get('content-encoding')?.toLowerCase() ?? null)) return null;
-          if (response.status === 402) {
+          if (response.status === 402 && !pdf) {
             const link = telegraphLinkPreview(source, current);
             // Read only the small refusal page; never treat a login, payment page or arbitrary error as article metadata.
-            return link && /\bvalid TollBit Token\b/i.test(await readHead(response, signal, false, 4096)) ? link : null;
+            if (!link || !/\bvalid TollBit Token\b/i.test(await readHead(response, signal, false, 4096))) return null;
+            // Bing News indexes the article; its entry for this exact URL supplies the real headline. The URL title remains the fallback.
+            const index = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, deadline - Date.now() - MEDIA_MARGIN_MS))]);
+            const indexed = await attempt(async () => {
+              const xml = await fetchText(BING, bingNewsPath(link), 'application/rss+xml, application/xml',
+                /^(?:application\/(?:rss\+)?xml|text\/xml)(?:\s*;|$)/i, index);
+              return xml ? parseBingNewsFeed(xml, link) : null;
+            }, signal);
+            return signal.aborted ? null : indexed ?? link;
           }
           if (response.status !== 200) return null;
+          if (pdf) {
+            const { data, total } = await readPrefix(response, signal, MAX_PDF_BYTES);
+            const document = isPdf(data) ? parsePdf(data, current, total) : null;
+            return document && !signal.aborted ? { source, url: current.href, title: document.title, publisher: current.hostname, pdf: document } : null;
+          }
           const article = parseMetadata(await readHead(response, signal), source, current);
           if (article?.image) {
             try { await publicAddresses(new URL(article.image).hostname, signal); }
@@ -575,7 +672,7 @@ function literal(value: string, limit: number): string {
   return escaped.length <= limit ? escaped : escaped.slice(0, limit - 1).replace(/\\$/, '') + '…';
 }
 
-/** Attribute publisher metadata, or explicitly label a readable URL when metadata was refused. */
+/** Attribute publisher metadata, name the index or document part a title came from, or label a readable URL when metadata was refused. */
 export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   const source = parseArticleUrl(article.source), url = parseArticleUrl(article.url);
   if (!source || !url || typeof article.title !== 'string' || typeof article.publisher !== 'string') return [];
@@ -583,15 +680,29 @@ export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   if (parseTruthSocialUrl(source)) return article.truthSocial?.url === url ? formatTruthSocialPost(article.truthSocial) : [];
   const title = literal(article.title, 256), publisher = literal(article.publisher, 180);
   if (!title || !publisher) return [];
+  const host = new URL(url).hostname;
+  if (article.pdf) {
+    const pdf = article.pdf, sources = { metadata: 'Title from document metadata', 'first page': 'Title from first page', 'file name': 'Title from file name' };
+    if (!(pdf.titleSource in sources)) return [];
+    const facts = [pdf.pages && Number.isInteger(pdf.pages) ? `${pdf.pages} page${pdf.pages === 1 ? '' : 's'}` : '',
+      pdf.bytes && Number.isInteger(pdf.bytes) ? formatPdfSize(pdf.bytes) : ''].filter(Boolean).join(' · ');
+    const author = typeof pdf.author === 'string' ? literal(pdf.author, 200) : '';
+    const description = [author ? `By ${author}` : '', facts].filter(Boolean).join('\n');
+    const created = pdf.createdAt && Number.isFinite(Date.parse(pdf.createdAt)) ? new Date(pdf.createdAt).toISOString() : undefined;
+    return [{ title, url, author: { name: `PDF document: ${host}`, url: new URL(url).origin },
+      footer: { text: `${host} · ${sources[pdf.titleSource]}` }, ...(description ? { description } : {}),
+      ...(created ? { timestamp: created } : {}) }];
+  }
   const description = typeof article.description === 'string' ? literal(article.description, 300) : '';
-  const image = article.image && imageUrl(article.image, new URL(url));
+  const indexed = article.indexedBy === 'Bing News';
+  const image = article.image && (indexed ? bingThumbnail(article.image) : imageUrl(article.image, new URL(url)));
   const date = article.publishedAt && Number.isFinite(Date.parse(article.publishedAt)) ? new Date(article.publishedAt).toISOString() : undefined;
   const entry = myAnimeListEntry(url), catalogue = entry && myAnimeListEntry(source) === entry;
   const catalogueLabel = entry?.startsWith('anime/') ? 'Anime' : 'Manga';
   const label = catalogue ? catalogueLabel : 'Article';
   const attribution = catalogue ? 'Source' : article.titleFromUrl ? 'Site' : 'Publisher';
   return [{ title, url, author: { name: `${attribution}: ${publisher}`, url: new URL(url).origin },
-    footer: { text: `${new URL(url).hostname} · ${article.titleFromUrl ? 'Title from URL' : `${label} metadata`}` }, ...(description ? { description } : {}),
+    footer: { text: `${host} · ${article.titleFromUrl ? 'Title from URL' : indexed ? 'Headline via Bing News' : `${label} metadata`}` }, ...(description ? { description } : {}),
     ...(image ? { image: { url: image } } : {}), ...(date ? { timestamp: date } : {}) }];
 }
 

@@ -354,6 +354,24 @@ Priority guide: crit / high / med / low.
 - **Bump:** minor
 - **Status:** in-progress
 
+### [FEAT-1793283259] PDF document cards
+- [x] **Priority:** med
+- **Area:** previews
+- **File(s):** src/services/PdfPreview.ts, src/services/ArticlePreview.ts, src/services/PreviewRecovery.ts, src/commands/diagnose.ts, src/commands/fix.ts, src/commands/settings.ts, tests/pdf-preview.test.ts, tests/article-preview.test.ts, tests/manual-fix.test.ts, tests/social-links.test.ts, tests/fixtures/pdf.ts, docs/article-previews.md, docs/self-hosting.md, README.md
+- **Why:** On 2026-10-29 `https://www.kitp.ucsb.edu/sites/default/files/YM_working_group.pdf` posted in a Linky channel stayed a bare link: Discord does not unfurl PDFs and the article reader accepts only HTML, so readers cannot see what the document is before opening it.
+- **Approach:** Public HTTPS responses served as `application/pdf` (or `application/octet-stream` for a `.pdf` path) whose body starts with `%PDF-` are read up to a 4 MiB prefix within the existing article deadline and limits. A dependency-free, bounded parser reads direct and object-stream objects (Flate only, capped inflation), the document information dictionary (Title, Author, CreationDate), XMP `dc:title`, the page count, and the first page's text runs with ToUnicode/simple-encoding decoding. The title comes from document metadata, else the first page's largest-type heading, else the file name, and the footer names which. The card shows `PDF: <host>`, the title, the author when declared, page count and size, and the creation time.
+- **Library / dependency notes:** No new dependency; PDF parsing libraries (pdf.js, pdf-parse) are large and execute far more of the format than a title card needs.
+- **Acceptance criteria:**
+  - The reported KITP PDF produces a card titled "Proof by OpenAI of the Existence of Quantum Yang-Mills theory", labelled `Title from first page`, with page count and size.
+  - Metadata titles take precedence; documents without usable text fall back to a labelled file-name title.
+  - Non-PDF bodies, oversized declared bodies beyond the prefix, encrypted documents' strings, malformed or hostile streams (inflation bombs, deep nesting, huge counts) never crash, block for long, or produce unlabelled guesses.
+  - PDFs follow the Articles setting and every existing article delivery, confirmation and ownership rule.
+- **Test plan:** `tests/pdf-preview.test.ts` parser units over generated PDFs (metadata, first-page heading, object streams, ToUnicode, file-name fallback, hostile inputs); `tests/article-preview.test.ts` lookup and card formatting through the fixture connector. Live: the reported URL from the production host.
+- **Out of scope:** Rendering page thumbnails; extracting body text beyond the first page's heading; encrypted or password-protected PDFs; non-Flate filters; PDFs behind logins.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+- **Implementation:** New dependency-free `src/services/PdfPreview.ts` parses a bounded object graph (direct and object-stream objects, Flate only with 4 MiB per stream and 24 MiB per file, a shared 4M-token budget, nesting depth 24, textual reference detection), the information dictionary and XMP title, the page count, and the first page's upright text runs through ToUnicode CMaps or simple encodings with TJ word spacing. Titles come from metadata (placeholders and editor file names rejected), else the largest upright first-page heading that reads as words, else the file name; encrypted files expose only page count and file name. `createArticleLookup` accepts `application/pdf` (or octet-stream for `.pdf` paths) with a PDF header, reads a 4 MiB prefix within the existing deadline, rate and cache limits, and `formatArticlePreview` renders `PDF document: <host>`, the literal title, declared author, page count, size, creation time and a footer naming the title source. Delivery, confirmation, settings and ownership rules are unchanged. The reported KITP PDF and nine other public PDFs (arXiv, IRS, Federal Reserve, Supreme Court, bitcoin.org and others) were checked locally; the reported one returns "Proof by OpenAI of the Existence of Quantum Yang-Mills theory", 2 pages, 87 KB. Same validation run as BUG-1793283258.
+
 ---
 
 ## Shipped
