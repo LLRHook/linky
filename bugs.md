@@ -431,6 +431,16 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** fixed-pending-migration
 - **Fix:** After the verified TollBit 402 for a dated Telegraph article, the lookup makes one Bing News RSS request (`www.bing.com`, same public-DNS pinning, identity encoding and 512 KiB limits, ending 250 ms before the five-second deadline) for the slug words on `telegraph.co.uk`, and uses only an item whose link (`apiclick.aspx` `url` parameter) names the same Telegraph host and article path. The card shows that headline, excerpt and a validated `www.bing.com/th` thumbnail with `Publisher: The Telegraph` and the footer `Headline via Bing News`, and no publication time (Bing's item time is seven hours earlier than the publisher's). It caches for five minutes. A missing, mismatched, failed or slow Bing result keeps the existing `Title from URL` card. Diagnose, failure, settings and public docs describe the lookup. Node 26.12.0 `npm run validate`: 1,345 TypeScript tests and 77 script tests pass (eight unchanged container-only skips), worker check, 24 deployment safeguards and dependency audit pass. The real lookup returned the headline card locally; production's network returns the same Bing item.
+### [BUG-1793284731] Secret scan fails after main history was rewritten
+- [x] **Severity:** med
+- **Area:** ci
+- **File(s):** .gitleaksignore
+- **Observation:** Since the 2026-10-29 02:39 UTC rewrite of `main`, which replaced `045860b` with `a5a0683` (identical tree, author emails normalised), every CI run fails `Secret scan`. Then `CI gate` fails, so `main` has not redeployed and PR #96 is blocked. Gitleaks reports two `generic-api-key` detections at `tests/regional-downloader.test.ts:12`, in rewritten commits `7aa0fd4` (main, #29) and `132c459` (`feat/erome-regional-media`). These are the same synthetic signing fixture that `.gitleaksignore` already allows under the pre-rewrite SHAs `4a8296e` and `64e01b0`.
+- **Expected:** The historical synthetic fixture stays allowed under its current commit SHAs, and any real secret still fails the scan.
+- **Repro / Notes:** `gitleaks git --log-opts=--all --redact=100 .` (v8.30.1, as in CI) on a full clone reports `leaks found: 2`. Fingerprints are exact (commit:file:rule:line), so no other finding is suppressed.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Add exact fingerprints for `7aa0fd4` and `132c459`. The pre-rewrite entries remain for local branches that still contain the old commits. With gitleaks v8.30.1 over `--all`, the scan now reports `no leaks found`.
 
 ## Migrated to changelog
 
