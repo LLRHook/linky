@@ -410,6 +410,39 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** Add `.vv/` to the shared .gitignore; preserve the documented private backup location and keep all verification scratch files outside the committed change set.
 
+### [BUG-1793226105] Telegraph articles remain bare links when the publisher blocks bot metadata requests
+- [x] **Severity:** med
+- **Area:** previews
+- **File(s):** src/services/ArticlePreview.ts, src/services/PreviewRecovery.ts, src/commands/diagnose.ts, src/commands/fix.ts, src/commands/settings.ts, tests/article-preview.test.ts, tests/manual-fix.test.ts, tests/social-links.test.ts, tests/fixtures/telegraph.ts, docs/article-previews.md, README.md
+- **Observation:** The reported `https://www.telegraph.co.uk/football/2026/10/28/china-reject-mbappe-real-madrid-apologies-mao-joke/` stays unembedded in Discord. On 2026-10-28 the production host and local pinned HTTPS reader both receive HTTP 402 with a TollBit bot-access refusal, so the article lookup returns null. A public browser sees valid article metadata; the reader is blocked before it reaches that metadata.
+- **Expected:** Give this supported publisher link a useful, accurately labelled card when public article metadata cannot be retrieved, while preserving bounded HTTPS retrieval, the Articles setting, source identity, ownership and exact-card confirmation.
+- **Repro / Notes:** Use the exact screenshot URL. Offline fixtures must reproduce the HTTP 402 and exercise automatic and manual delivery. Do not hardcode this article's metadata, claim a URL-derived title is the publisher's headline, or bypass access restrictions.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** For matching dated Telegraph editorial links, a bounded HTTP 402 TollBit refusal produces a readable URL-title card labelled `Title from URL` and `Site: The Telegraph`, with no invented headline, excerpt, image or publication time. Exact host/path/date validation, a 4 KiB refusal cap, existing public-DNS/time/cancellation limits and 15-second caching apply; normal publisher metadata takes precedence. Automatic Replace/Reply and both manual commands retain their exact-card, settings, source and ownership checks. Update public docs and diagnostic/settings/failure guidance. Node 26.12.0 `npm run validate`: 1,325 TypeScript tests and 77 script tests pass (eight unchanged container-only skips), worker check, 24 deployment safeguards and dependency audit pass. All nine targeted mutations fail their guarding tests. The real lookup also returns the card from production's network. Live Discord client rendering was not exercised in this scoped fix.
+
+### [BUG-1793283258] Blocked Telegraph cards show only a URL-derived title instead of the real headline
+- [x] **Severity:** med
+- **Area:** previews
+- **File(s):** src/services/ArticlePreview.ts, src/services/PreviewRecovery.ts, src/commands/diagnose.ts, src/commands/fix.ts, src/commands/settings.ts, tests/article-preview.test.ts, tests/manual-fix.test.ts, tests/social-links.test.ts, tests/fixtures/telegraph.ts, docs/article-previews.md, README.md
+- **Observation:** On 2026-10-29 the reported `https://www.telegraph.co.uk/football/2026/10/28/china-reject-mbappe-real-madrid-apologies-mao-joke/` posted in Discord renders the BUG-1793226105 card: "China reject mbappe real madrid apologies mao joke", `Title from URL`, no excerpt or image. The user reports the link as still failing. The publisher still answers the bot with HTTP 402 (TollBit); its section RSS feeds omit the story and its sitemaps also return 402.
+- **Expected:** The card shows the article's real headline, and an excerpt and image when available, from a public source that identifies this exact article URL, with the source of the metadata labelled. The URL-title card remains only as a last resort.
+- **Repro / Notes:** Bing News RSS (`https://www.bing.com/news/search?q=<slug words> site:telegraph.co.uk&format=rss`) returns the item from both the workstation and the production host, with the exact article URL in the `url` parameter of its link, the headline "China rejects Mbappe and Real Madrid apologies over ‘outrageous’ Mao joke", an excerpt, a publication time and a Bing thumbnail. Only an exact host-and-path match may be used; no publisher access control is bypassed and no article body is read.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** After the verified TollBit 402 for a dated Telegraph article, the lookup makes one Bing News RSS request (`www.bing.com`, same public-DNS pinning, identity encoding and 512 KiB limits, ending 250 ms before the five-second deadline) for the slug words on `telegraph.co.uk`, and uses only an item whose link (`apiclick.aspx` `url` parameter) names the same Telegraph host and article path. The card shows that headline, excerpt and a validated `www.bing.com/th` thumbnail with `Publisher: The Telegraph` and the footer `Headline via Bing News`, and no publication time (Bing's item time is seven hours earlier than the publisher's). It caches for five minutes. A missing, mismatched, failed or slow Bing result keeps the existing `Title from URL` card. Diagnose, failure, settings and public docs describe the lookup. Node 26.12.0 `npm run validate`: 1,345 TypeScript tests and 77 script tests pass (eight unchanged container-only skips), worker check, 24 deployment safeguards and dependency audit pass. The real lookup returned the headline card locally; production's network returns the same Bing item.
+
+### [BUG-1793284731] Secret scan fails after main history was rewritten
+- [x] **Severity:** med
+- **Area:** ci
+- **File(s):** .gitleaksignore
+- **Observation:** Since the 2026-10-29 02:39 UTC rewrite of `main`, which replaced `045860b` with `a5a0683` (identical tree, author emails normalised), every CI run fails `Secret scan`. Then `CI gate` fails, so `main` has not redeployed and PR #96 is blocked. Gitleaks reports two `generic-api-key` detections at `tests/regional-downloader.test.ts:12`, in rewritten commits `7aa0fd4` (main, #29) and `132c459` (`feat/erome-regional-media`). These are the same synthetic signing fixture that `.gitleaksignore` already allows under the pre-rewrite SHAs `4a8296e` and `64e01b0`.
+- **Expected:** The historical synthetic fixture stays allowed under its current commit SHAs, and any real secret still fails the scan.
+- **Repro / Notes:** `gitleaks git --log-opts=--all --redact=100 .` (v8.30.1, as in CI) on a full clone reports `leaks found: 2`. Fingerprints are exact (commit:file:rule:line), so no other finding is suppressed.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Add exact fingerprints for `7aa0fd4` and `132c459`. The pre-rewrite entries remain for local branches that still contain the old commits. With gitleaks v8.30.1 over `--all`, the scan now reports `no leaks found`.
+
 ## Migrated to changelog
 
 Entries below have been ticked off and copied as a one-liner into `CHANGELOG.md`.
