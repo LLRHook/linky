@@ -24,6 +24,7 @@ import { createYouTubeCommunityLookup } from './services/YouTubeCommunity';
 import { createArticleLookup } from './services/ArticlePreview';
 import { YouTubeStats } from './services/YouTubeStats';
 import { RepostRegistry } from './services/RepostRegistry';
+import { restoreRepostControls } from './services/RepostControlRecovery';
 import { PreviewHealth } from './services/PreviewRecovery';
 import { replyToYouTubeControl } from './services/YouTubeInteractions';
 import { evaluateScope } from './services/ServerScope';
@@ -210,6 +211,8 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   });
   client.on(Events.MessageUpdate, (before, after) => {
     if (!accepting || !registry) return;
+    void work.track(registry.handleReplacementUpdate(after)
+      .catch(() => log.warn('Preview controls could not be restored after a message update')));
     void work.track(registry.handleSourceUpdate(before, after, source => repost(source as Message, { refresh: true, forceReply: true }))
       .catch(() => log.warn('Source edit synchronization will be retried')));
   });
@@ -319,6 +322,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         path: join(dirname(settings.settingsPath), 'reposts.json'), botUserId: readyClient.user.id, fetchMessage,
         removeRelated: record => youtubeStats!.removeForMessage(record.replacementId),
         afterReplacementRemoved: record => releaseEromeMedia(record.replacementId),
+        restoreControls: (record, message) => restoreRepostControls(message as Message, record, diagnostics),
         regenerate: source => repost(source as Message, { refresh: true, forceReply: true }),
         canRetry: async (record, userId) => {
           const guild = await client.guilds.fetch(record.guildId);

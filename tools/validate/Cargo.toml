@@ -1,0 +1,14 @@
+[package]
+name = "linky-validate"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.93.1"
+publish = false
+license = "MIT"
+description = "Linky's local CI validation gate"
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

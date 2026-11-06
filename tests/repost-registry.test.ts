@@ -73,6 +73,52 @@ test('ownership survives restart with only allowed metadata and isolated read va
   assert.equal(await registry.remember({ ...f.record, content: 'not allowed' } as RepostRecord), false);
 });
 
+test('delayed control recovery is owned, coalesced, bounded and reloads existing ownership', async t => {
+  const f = await fixture(t); let repairs = 0;
+  let finish!: () => void;
+  const blocked = new Promise<void>(resolve => { finish = resolve; });
+  const initial = f.manager(); await initial.remember(f.record);
+  const registry = f.manager({ restoreControls: async () => { repairs++; await blocked; return true; } });
+  for (const patch of [{ author: { id: MOD } }, { guildId: null }, { channelId: snowflake(0, 55) }, { id: f.source.id }]) {
+    await registry.handleReplacementUpdate({ ...f.replacement, ...patch });
+  }
+  assert.equal(repairs, 0);
+  const first = registry.handleReplacementUpdate(f.replacement);
+  await Promise.resolve();
+  await registry.handleReplacementUpdate(f.replacement);
+  finish(); await first;
+  assert.equal(repairs, 1, 'concurrent Gateway updates must share one repair');
+  await registry.handleReplacementUpdate({ ...f.replacement, author: undefined, partial: true });
+  await registry.handleReplacementUpdate(f.replacement);
+  await registry.handleReplacementUpdate(f.replacement);
+  assert.equal(repairs, 3, 'at most three actual repairs per message per minute');
+  f.advance(60_001); await registry.handleReplacementUpdate(f.replacement);
+  assert.equal(repairs, 4);
+  f.advance(REPOST_RETENTION_MS); await registry.handleReplacementUpdate(f.replacement);
+  assert.equal(repairs, 4, 'expired ownership never revives controls');
+});
+
+test('pending removal blocks control repair and recovery serializes with owner Remove', async t => {
+  const f = await fixture(t); let repairs = 0;
+  let finish!: () => void;
+  const blocked = new Promise<void>(resolve => { finish = resolve; });
+  const registry = f.manager({ restoreControls: async () => { repairs++; await blocked; return true; } });
+  await registry.remember(f.record);
+  const repair = registry.handleReplacementUpdate(f.replacement);
+  const remove = registry.handleRemove(f.interaction().value);
+  finish(); await Promise.all([repair, remove]);
+  assert.equal(repairs, 1); assert(!f.messages.has(f.replacement.id));
+  await registry.handleReplacementUpdate(f.replacement);
+  assert.equal(repairs, 1, 'a delayed event must not resurrect a removed output');
+  const pending = f.manager({ restoreControls: async () => { repairs++; return true; } });
+  f.messages.set(f.replacement.id, f.replacement);
+  await pending.remember(f.record); f.failDelete({ code: 50013 });
+  await pending.handleRemove(f.interaction().value);
+  assert((await f.saved()).remove.includes(f.record.replacementId));
+  await pending.handleReplacementUpdate(f.replacement);
+  assert.equal(repairs, 1);
+});
+
 test('replace ownership can downgrade to reply only for the identical copy', async t => {
   const f = await fixture(t), registry = f.manager();
   assert.equal(await registry.remember({ ...f.record, mode: 'replace' }), true);

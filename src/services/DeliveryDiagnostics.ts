@@ -183,6 +183,18 @@ export class DeliveryDiagnostics {
     })(), undefined);
   }
 
+  /** Recover a completed automatic delivery's controls from its durable, exact owner/message binding. */
+  boundAutomatic(reader: DeliveryReader): Promise<DeliveryRecord | undefined> {
+    return this.within((async () => {
+      await this.ready;
+      this.prune();
+      const record = [...this.records.values()].find(record => record.mode === 'automatic' && record.outcome &&
+        record.requesterId === reader.requesterId && record.channelId === reader.channelId && record.guildId === reader.guildId &&
+        record.messageId === reader.messageId && this.persistedBindings.get(record.id) === reader.messageId);
+      return record && structuredClone(record);
+    })(), undefined);
+  }
+
   async flush(): Promise<boolean> {
     this.tail = this.tail.then(async () => {
       await this.ready;

@@ -1,6 +1,6 @@
 # Self-hosting and operations
 
-The public hosted bot runs on Hostinger; the website uses Vercel. It provides X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clip and Facebook Reel and video previews, with available tweet and Instagram caption translation and YouTube extras. Members need no keys or hosting. Erome is self-host-only for public users: use your own bot application, server, storage and any media workers. The optional coding integration is disabled on the public bot. Operator settings do not bypass a server administrator's channel choices.
+The public hosted bot runs on Hostinger; the website uses Vercel. It provides X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clip and Facebook Reel and video previews, plus public article, PDF, MyAnimeList and Truth Social cards, with available tweet and Instagram caption translation and YouTube extras. Truth Social cards use the Articles setting, show the first image or video poster and link to available video; they do not provide inline video playback or multi-image galleries. The optional [relay](truth-social-relay.md) helps when Truth Social's API refuses the host. Members need no keys or hosting. Erome is self-host-only for public users: use your own bot application, server, storage and any media workers. The optional coding integration is disabled on the public bot. Operator settings do not bypass a server administrator's channel choices.
 
 ## Hosted and self-hosted features
 

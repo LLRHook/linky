@@ -88,8 +88,8 @@ function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   const errorTitle = /^(?:error(?:\s+\d+)?|not found|temporarily unavailable|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;
   const errorText = /^(?:sorry,? (?:that |this )?(?:post|tweet) (?:doesn.t exist|could not be found)|this (?:tweet|post|video) (?:is (?:unavailable|private)|has been deleted)|could not (?:find|load) (?:this |the )?(?:tweet|post|video)|try again later)/i;
   // The service's branded scan-error card is not the requested post, even with a logo/video.
-  const scanError = expected.platform === 'x' && /^vxTwitter\s*\/\s*fixvx$/i.test(title) &&
-    /^failed to scan your link!(?:\s|$)/i.test(description);
+  const scanError = expected.platform === 'x' && /^(?:vxTwitter(?:\s*\/\s*fixvx)?|fixvx)$/i.test(title) &&
+    /^failed to scan your link!(?:[\s*_`]|$)/i.test(description.replace(/^[*_`]+/, ''));
   if (errorTitle.test(title) || errorText.test(description) || scanError) return false;
   const media = Boolean(embed.video?.url || embed.image?.url || embed.thumbnail?.url);
   const source = parseSocialUrl(expected.source);

@@ -26,7 +26,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "check:workers": "tsc --project tsconfig.worker.json",
-    "validate": "node ops/validate.mjs",
+    "validate": "cargo run --quiet --locked --manifest-path tools/validate/Cargo.toml --",
     "report:deliveries": "node ops/delivery-archive-report.mjs",
     "check:providers": "node ops/provider-metadata-check.mjs",
     "test": "npm run build && tsc --project tsconfig.test.json && tsx --test tests/*.test.ts && node --test tests/*.test.mjs",

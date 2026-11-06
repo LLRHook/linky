@@ -82,6 +82,26 @@ test('a vxTwitter service-error event and REST echo cannot wake or confirm a pos
   assert.equal(fetches, 1);
 });
 
+for (const phase of ['before-send', 'active', 'reconcile'] as const) {
+  test(`a later Gateway error revokes earlier preview success during ${phase}`, async t => {
+    const { client, watcher } = fixture(t, { gatewayWaitMs: 0 });
+    const url = 'https://vxtwitter.com/public/status/123';
+    const items = expectedPreviews('https://x.com/public/status/123', url);
+    const good: APIEmbed = { url, title: 'Synthetic author', description: 'A useful post.' };
+    const error: APIEmbed = { url, title: 'vxTwitter / fixvx', description: 'Failed to scan your link! Unavailable.' };
+    const watch = watcher.arm(channel, items);
+    if (phase === 'before-send') { raw(client, [good]); raw(client, [error]); }
+    const pending = watch.verify(message([], async () => {
+      if (phase === 'reconcile') { raw(client, [good]); raw(client, [error]); return message([good]); }
+      return message([error]);
+    }));
+    if (phase === 'active') { raw(client, [good]); raw(client, [error]); }
+    const result = await pending;
+    assert.equal(result.ok, false, 'the latest observed error must invalidate a transient success');
+    assert.deepEqual(result.missing, items); assert.deepEqual(result.attributed, []);
+  });
+}
+
 test('a stuck REST fetch and explicit cancellation both terminate within the bounded wait', async t => {
   const { watcher } = fixture(t);
   let fetches = 0;

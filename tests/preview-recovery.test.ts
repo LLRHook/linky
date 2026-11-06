@@ -110,6 +110,21 @@ test('a real post may quote scan-failure text without becoming a provider servic
   ]) assert.equal(inspectPreviews([{ url, ...card }], items).ok, true);
 });
 
+test('branded scan-error cards remain errors with Discord Markdown and service title aliases', () => {
+  const source = 'https://x.com/public/status/123', url = 'https://vxtwitter.com/public/status/123';
+  const items = expectedPreviews(source, url);
+  for (const title of ['vxTwitter / fixvx', 'vxTwitter', 'fixvx']) {
+    for (const description of ['**Failed to scan your link!** Unavailable.', '__Failed to scan your link!__',
+      '`Failed to scan your link!` This post is private.']) {
+      const result = inspectPreviews([{ url, title, description, video: { url: 'https://media.example/error.mp4' } }], items);
+      assert.equal(result.ok, false, `${title}: ${description}`);
+      assert.equal(result.videoMetadata, false); assert.deepEqual(result.attributed, []);
+      assert.equal(inspectPreviews([{ url, title: 'Synthetic author', description }], items).ok, true,
+        'quoted error text in a real post remains useful');
+    }
+  }
+});
+
 test('every visible rewritten post requires its own preview and hidden posts are excluded', () => {
   const original = `${source} https://instagram.com/p/Another/ <https://instagram.com/p/Hidden/>`;
   const rendered = `${fixed} https://fkinstagram.com/p/Another/ <https://instagram.com/p/Hidden/>`;
