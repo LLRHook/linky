@@ -96,16 +96,16 @@ After building, run `npm run report:deliveries -- --days 7` on the bot host to c
 
 ## Self-hosting and development
 
-The hosted bot is free to add for the seven social platforms above, public article previews and available translations. Run your own instance for Erome or your own extensions; self-hosting does not automatically add support for arbitrary websites. The [self-hosting guide](docs/self-hosting.md) covers Node/Docker setup, environment variables, API keys, quotas, persistent data, logs, deployment and rollback. The optional [Discord coding integration](docs/discord-prompt.md) is disabled on the hosted bot.
+The hosted bot is free to add for the platforms listed above, public article previews and available translations. Run your own instance for Erome or your own extensions; self-hosting does not automatically add support for arbitrary websites. The [self-hosting guide](docs/self-hosting.md) covers Node/Docker setup, environment variables, API keys, quotas, persistent data, logs, deployment and rollback. The optional [Discord coding integration](docs/discord-prompt.md) is disabled on the hosted bot.
 
 ```bash
 npm ci
 npm run validate
 ```
 
-`npm run validate` runs CI's build, worker, test, deployment-safeguard and audit commands and reports every result; see [CONTRIBUTING.md](CONTRIBUTING.md) for the Node version and Windows notes.
+`npm run validate` uses the Rust CLI in `tools/validate` to run CI's build, worker, test, deployment-safeguard, audit and Rust checks and report every result. It requires the toolchain in `rust-toolchain.toml`; see [CONTRIBUTING.md](CONTRIBUTING.md) for setup and Windows notes. The Discord bot and provider handling remain TypeScript on Node.js. Rust is contributor tooling and is not needed in the production bot container.
 
-CI tests Node.js 22, 24 and 26, deployment safeguards and the production container, with the dependency audit and secret scan as separate jobs; the `CI gate` check passes only when every job passes. See [CONTRIBUTING.md](CONTRIBUTING.md) for live checks and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for dependency, secret-scan and supply-chain results. The bot deploys to Hostinger after the tested `main` commit passes CI; website deployment is separate.
+CI tests Node.js 22, 24 and 26, the Rust validation CLI, deployment safeguards and the production container, with the dependency audit and secret scan as separate jobs; the `CI gate` check passes only when every job passes. See [CONTRIBUTING.md](CONTRIBUTING.md) for live checks and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for dependency, secret-scan and supply-chain results. The bot deploys to Hostinger after the tested `main` commit passes CI; website deployment is separate.
 
 [PERFORMANCE_AUDIT.md](PERFORMANCE_AUDIT.md) records measured local CPU costs, the delivery module boundaries and remaining measurement gaps. Its synthetic timings are separate from provider delays and Discord playback checks.
 

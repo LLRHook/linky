@@ -2,15 +2,25 @@
 
 Use Node.js 22+ (26, pinned in `.nvmrc`, matches the production image; CI also tests 22 and 24) and `npm ci`. Tests need no Discord token. For a local bot, copy `.env.example` to `.env`, set its token, then run `npm run dev`. Commands register automatically at startup. Open `/setup` and use the private panel to enable a test server and select its channels, as described in the [README](README.md).
 
+Install the Rust toolchain pinned in `rust-toolchain.toml` for validation tooling. The standard-library-only `tools/validate` CLI replaces the JavaScript validator; `npm run validate` compiles and runs it through Cargo. `npm run validate -- --list` lists checks without executing them. Bot runtime, providers and Discord handlers remain TypeScript; the production image needs no Rust toolchain. On macOS, use a canonical temporary directory for tests: the media store deliberately rejects symlinked directories.
+
 Before opening a PR, run:
 
 ```bash
 npm run validate
 ```
 
-It runs CI's `npm run build`, `npm run check:workers`, `npm test`, `bash tests/deploy.test.sh` and `npm audit --audit-level=low`, continues after a failure and ends with a PASS/FAIL summary; a test keeps the list equal to `.github/workflows/ci.yml`. The production container checks need Docker and run in CI (or by hand per `VERIFICATION.md` 2.5). `tests/deploy.test.sh` needs Linux-compatible Bash: on Windows run validate from Git Bash with Git's `bash` first on `PATH`, or validate the committed `HEAD` in a clean Linux checkout (works from worktrees too): `git bundle create - HEAD | docker run --rm -i node:26 sh -c 'cat > /tmp/head.bundle && git clone -q /tmp/head.bundle /app && cd /app && npm ci && npm run validate'`. To run it before every push, opt in once per clone: `git config core.hooksPath .githooks`.
+It runs CI's `npm run build`, `npm run check:workers`, `npm test`, `bash tests/deploy.test.sh`, `npm audit --audit-level=low` and the Rust test, Clippy and formatting commands below. It continues after a failure and ends with a PASS/FAIL summary; a test keeps the list equal to `.github/workflows/ci.yml`. The production container checks need Docker and run in CI (or by hand per `VERIFICATION.md` 2.5). `tests/deploy.test.sh` needs Linux-compatible Bash: on Windows run validate from Git Bash with Git's `bash` first on `PATH`, plus the pinned Rust toolchain. To run it before every push, opt in once per clone: `git config core.hooksPath .githooks`.
 
-CI runs the secret scan, dependency audit, Node 22/24/26 builds and production container as independent jobs, so one failure does not hide the others. `CI gate` is the required check on `main` and passes only when every job passes.
+```bash
+cargo test --locked --manifest-path tools/validate/Cargo.toml
+cargo clippy --locked --manifest-path tools/validate/Cargo.toml --all-targets -- -D warnings
+cargo fmt --manifest-path tools/validate/Cargo.toml -- --check
+```
+
+Rust tests cover gate order, all failure positions, missing tools, actual child exit codes, stdout inheritance, paths with spaces, invalid arguments and working-directory errors. Unix process fixtures run on macOS and Linux; Windows shell selection is unit-tested, with native Windows execution still requiring a Windows check. The CLI is an on-demand development command, not a subprocess in the message handler, and no performance improvement is claimed.
+
+CI runs the secret scan, dependency audit, Node 22/24/26 builds, Rust validation CLI and production container as independent jobs, so one failure does not hide the others. `CI gate` is the required check on `main` and passes only when every job passes.
 
 Every PR description fills the [template](.github/pull_request_template.md) sections Tickets, Acceptance evidence, Mutation checks, Docs checked and Remaining gaps; the required `PR evidence` check fails while any is empty and reruns when the description is edited. Map each acceptance criterion to a named test, or to the `file:function` you inspected when the criterion is structural ("execute reads as named stages"): passing behaviour tests do not prove structure. A criterion delivered only in part stays unticked, is stated under Remaining gaps and gets a follow-up ticket. For each critical new assertion, break the code it guards and record which test failed.
 

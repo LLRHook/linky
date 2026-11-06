@@ -33,8 +33,11 @@ export class PreviewWatcher {
     let verified = false;
     let wake: (() => void) | undefined;
     let lifetime: NodeJS.Timeout | undefined;
+    let revision = 0;
     const pending = new Map<string, PreviewResult>();
-    const accept = (result: PreviewResult) => { if (!latest.ok || result.ok) latest = result; if (result.ok) wake?.(); };
+    // A later error/empty snapshot revokes success. In particular a crawler's transient card
+    // must not authorize source deletion after the same message has become unavailable.
+    const accept = (result: PreviewResult) => { latest = result; if (result.ok) wake?.(); };
     const receive = (data: Record<string, unknown>) => {
       if (stopped || data.channel_id !== channelId || typeof data.id !== 'string' ||
         (targetId !== undefined && data.id !== targetId) || !Array.isArray(data.embeds)) return;
@@ -44,8 +47,8 @@ export class PreviewWatcher {
         (embed.description === undefined || typeof embed.description === 'string')));
       let result: PreviewResult;
       try { result = inspectPreviews(embeds, expected); } catch { return; }
-      if (targetId) accept(result);
-      else if (result.ok) {
+      if (targetId) { revision++; accept(result); }
+      else {
         // Discord can emit MESSAGE_CREATE before the REST send resolves. Never accumulate channel history.
         pending.set(data.id, result);
         if (pending.size > 16) pending.delete(pending.keys().next().value!);
@@ -72,7 +75,7 @@ export class PreviewWatcher {
       targetId = message.id;
       const cached = pending.get(targetId);
       pending.clear();
-      accept(cached?.ok ? cached : inspectPreviews(message.embeds.map(embed => embed.toJSON()), expected));
+      accept(cached ?? inspectPreviews(message.embeds.map(embed => embed.toJSON()), expected));
       try {
         if (!latest.ok && subscribed) {
           await new Promise<void>(resolve => {
@@ -93,8 +96,12 @@ export class PreviewWatcher {
             wake = () => { clearTimeout(timer); resolve(undefined); };
           });
           try {
+            const beforeFetch = revision;
             const reconciled = await Promise.race([message.fetch(true), timeout]);
-            if (reconciled && !stopped) accept(inspectPreviews(reconciled.embeds.map(embed => embed.toJSON()), expected));
+            // REST may return a snapshot taken before an in-flight Gateway update, including
+            // an error that replaced a useful card. Prefer the most recent Gateway evidence.
+            if (reconciled && !stopped && beforeFetch === revision)
+              accept(inspectPreviews(reconciled.embeds.map(embed => embed.toJSON()), expected));
           } catch (error) {
             if (!latest.ok && !stopped) throw error;
           } finally { clearTimeout(timer); wake = undefined; }

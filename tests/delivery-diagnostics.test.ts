@@ -69,6 +69,44 @@ test('pending attempts become interrupted after restart; identity boundaries are
   await restarted.flush();
 });
 
+test('automatic control recovery requires completed, durable and exact ownership bindings after reload', async t => {
+  const path = await fixture(t);
+  const diagnostics = createDiagnostics({ path });
+  const trace = diagnostics.begin({ ...request, platform: 'x' });
+  assert.equal(await diagnostics.boundAutomatic(reader), undefined);
+  assert.equal(await diagnostics.bind(trace.id, messageId), true);
+  assert.equal(await diagnostics.boundAutomatic(reader), undefined, 'no Remove while publication/source deletion is running');
+  trace.finish('confirmed');
+  await diagnostics.flush();
+  const restored = createDiagnostics({ path });
+  const value = await restored.boundAutomatic(reader);
+  assert.equal(value?.id, trace.id); assert.equal(value?.outcome, 'confirmed');
+  value!.outcome = 'unavailable';
+  assert.equal((await restored.boundAutomatic(reader))?.outcome, 'confirmed');
+  for (const patch of [{ requesterId: '100000000000000009' }, { channelId: '100000000000000009' },
+    { guildId: undefined }, { messageId: '100000000000000009' }]) {
+    assert.equal(await restored.boundAutomatic({ ...reader, ...patch }), undefined);
+  }
+  const manual = restored.begin({ ...request, mode: 'manual' });
+  assert.equal(await restored.bind(manual.id, '100000000000000010'), true); manual.finish('confirmed');
+  assert.equal(await restored.boundAutomatic({ ...reader, messageId: '100000000000000010' }), undefined);
+});
+
+test('failed diagnostic writes and expired attempts cannot invent recovery bindings', async t => {
+  const path = await fixture(t);
+  const failed = createDiagnostics({ path, write: async () => { throw new Error('synthetic disk failure'); } });
+  const trace = failed.begin(request); trace.finish('confirmed');
+  assert.equal(await failed.bind(trace.id, messageId), false);
+  assert.equal(await failed.boundAutomatic(reader), undefined);
+  let now = 1_000;
+  const short = createDiagnostics({ path: await fixture(t), wallNow: () => now, retentionMs: 100 });
+  const complete = short.begin(request); complete.finish('confirmed');
+  assert.equal(await short.bind(complete.id, messageId), true);
+  assert.equal((await short.boundAutomatic(reader))?.id, complete.id);
+  now += 100;
+  assert.equal(await short.boundAutomatic(reader), undefined);
+});
+
 test('failed persistence never exposes Details or rejects delivery traces', async t => {
   const diagnostics = createDiagnostics({ path: await fixture(t), write: async () => { throw new Error('disk full'); } });
   const trace = diagnostics.begin(request);

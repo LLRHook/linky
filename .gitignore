@@ -3,6 +3,7 @@
 !.env.example
 node_modules/
 dist/
+/tools/validate/target/
 coverage/
 data/
 *.log

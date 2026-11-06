@@ -52,3 +52,12 @@ test('outbound host list covers each provider and fallback exactly once', () => 
   assert.ok(outboundHosts.includes('g.oginstagram.com'));
   assert.equal(outboundHosts.length, new Set(outboundHosts).size);
 });
+
+test('self-hosting guide names the actual container runtime and README avoids a stale platform count', () => {
+  const version = read('.nvmrc').trim();
+  for (const line of read('Dockerfile').split(/\r?\n/).filter(line => line.startsWith('FROM node:'))) {
+    assert(line.startsWith(`FROM node:${version}-`));
+  }
+  assert(read('docs/self-hosting.md').includes(`The container runs Node.js ${version}`));
+  assert.doesNotMatch(read('README.md'), /for the (?:seven|eight|nine) social platforms above/);
+});

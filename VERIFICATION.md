@@ -14,6 +14,12 @@ regional media workers (`api/*.ts`, type-checked only here) and two operator
 report scripts under `ops/`. There is no database; state lives in JSON files
 under the `linky-data` volume.
 
+Contributor validation uses the standard-library-only Rust CLI in `tools/validate`,
+invoked by `npm run validate`. It replaces the former JavaScript gate; the bot
+runtime and production container remain Node.js/TypeScript. Rust is pinned in
+`rust-toolchain.toml`. Local validation covers its unit and executable process
+tests, Clippy and formatting in addition to the Node gates.
+
 See also: [`bugs.md`](./bugs.md), [`features.md`](./features.md),
 [`CHANGELOG.md`](./CHANGELOG.md), [`README.md`](./README.md).
 
@@ -46,6 +52,7 @@ server is available.
 - [ ] 0.3 Toolchain: `node --version` is 22, 24 or 26 (CI matrix); if the host runs another major, run Stages 1–2 inside `node:22`, `node:24` and `node:26` containers with the repo copied in (no host `node_modules`), which also matches CI's Linux runner; `npm --version` prints a version; `docker version --format '{{.Server.Version}}'` prints a version (needed for Stage 2.5).
 - [ ] 0.4 Dependencies: `npm ci` exits 0.
 - [ ] 0.5 No `.env` is required for Stages 1–2; `git check-ignore -q .env && echo ignored` prints `ignored`.
+- [ ] 0.5a Rust: `rustc --version` matches `rust-toolchain.toml`; Cargo, Clippy and rustfmt are available. On macOS select a canonical temporary directory before the tests; symlinked temporary paths intentionally fail media-store validation.
 - [ ] 0.6 Production profile: Stage 2.5 runs the built image (`NODE_ENV=production`, non-root `node` user, read-only root, all capabilities dropped), not `npm run dev`.
 - [ ] 0.7 Determinism posture: unit tests use fake timers and injected fetch/clock; no test opens the network or logs in to Discord (`CONTRIBUTING.md`). Stage 2c runs the suite twice.
 
@@ -118,6 +125,7 @@ runner prints. A changed count means tests appeared or vanished — investigate 
   Expected: build exits 0; the module check exits 0; the archive run prints `ℹ tests 1` / `ℹ fail 0`; the video run prints `ℹ tests 7` / `ℹ fail 0`. On Git Bash set `MSYS_NO_PATHCONV=1` and use `$(pwd -W)` for `src=`. Run the pinned local Trivy recipe in Appendix F; both scans must exit 0. CI results do not establish a local pass.
 - [ ] 2.6 **2c — Flake check.** Run `npm test` a second time and diff the sorted `✔`/`✖`/`﹣` lines of both runs; any difference quarantines that test as a `BUG` (area `tests`) and the run is not green.
 - [ ] 2.7 Local matrix: repeat the exact Stage 1–2 commands in clean `node:22`, `node:24` and `node:26` checkouts when dependencies or the toolchain changed since the prior baseline. Record versions, executed/skipped counts and exits in `.vv/last-run.md`; CI results do not establish a pass.
+- [ ] 2.8 Rust validation CLI (CI job "Rust validation CLI"): `cargo test --locked --manifest-path tools/validate/Cargo.toml`, `cargo clippy --locked --manifest-path tools/validate/Cargo.toml --all-targets -- -D warnings` and `cargo fmt --manifest-path tools/validate/Cargo.toml -- --check` exit 0. The library tests require every failed check to continue and fail the overall result. Executable integration tests use synthetic local tools, including missing tools and paths with spaces, with no network or Discord token. They run on Unix; native Windows process behavior needs a separate Windows run.
 
 A failure in any Stage 2 step is a hard block.
 

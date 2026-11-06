@@ -152,10 +152,31 @@ jobs:
           --mount type=bind,src="${{ github.workspace }}/tests/video-runtime.test.mjs",dst=/tmp/video-runtime.test.mjs,readonly
           linky:ci node --test /tmp/video-runtime.test.mjs
 
+  validation:
+    name: Rust validation CLI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal --component clippy --component rustfmt
+
+      - name: Test Rust validation CLI and process integration
+        run: cargo test --locked --manifest-path tools/validate/Cargo.toml
+
+      - name: Lint Rust validation CLI
+        run: cargo clippy --locked --manifest-path tools/validate/Cargo.toml --all-targets -- -D warnings
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path tools/validate/Cargo.toml -- --check
+
   gate:
     name: CI gate
     if: always()
-    needs: [secrets, audit, build, container]
+    needs: [secrets, audit, build, container, validation]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to succeed

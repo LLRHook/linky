@@ -62,6 +62,8 @@ interface Options {
   removeRelated?: (record: RepostRecord) => Promise<void>;
   afterReplacementRemoved?: (record: RepostRecord) => Promise<void>;
   regenerate?: Regenerate;
+  /** Restores finalized controls only; returns true if a REST edit was needed. */
+  restoreControls?: (record: RepostRecord, message: SourceMessage) => Promise<boolean>;
   now?: () => number;
   write?: (path: string, value: string) => Promise<void>;
   onError?: (error: Error) => void;
@@ -107,6 +109,8 @@ export class RepostRegistry {
   private sweepPending?: Promise<void>;
   private cursor = 0;
   private pendingCursor = 0;
+  private repairing = new Set<string>();
+  private repairs = new Map<string, { since: number; count: number }>();
   private readonly path: string;
   private readonly now: () => number;
 
@@ -379,6 +383,31 @@ export class RepostRegistry {
       await this.schedule(record, true);
       await this.process(after.id, regenerate);
     });
+  }
+
+  /** Delayed updates can remove actions after publication. Serialize recovery with owner
+   * Remove/Retry and cleanup; never resurrect an output being removed or regenerated. */
+  async handleReplacementUpdate(message: SourceMessage): Promise<void> {
+    const record = this.findByReplacement(message.id);
+    if (!record || !this.options.restoreControls || (message.author && message.author.id !== this.options.botUserId) ||
+      message.guildId !== record.guildId || message.channelId !== record.channelId ||
+      this.repairing.has(message.id) || this.repairing.size >= 128) return;
+    this.repairing.add(message.id);
+    try {
+      await this.forSource(record.sourceId, async () => {
+        const current = this.findByReplacement(record.replacementId);
+        if (!current || this.journal.remove.includes(current.replacementId) || this.journal.refresh.includes(current.replacementId) ||
+          createdAt(current.replacementId) + REPOST_RETENTION_MS <= this.now()) return;
+        const old = this.repairs.get(message.id);
+        const budget = old && this.now() - old.since < 60_000 ? old : { since: this.now(), count: 0 };
+        if (budget.count >= 3) return;
+        if (await this.options.restoreControls!(current, message)) {
+          budget.count++;
+          this.repairs.delete(message.id); this.repairs.set(message.id, budget);
+          if (this.repairs.size > CAPACITY) this.repairs.delete(this.repairs.keys().next().value!);
+        }
+      });
+    } finally { this.repairing.delete(message.id); }
   }
 
   sweep(): Promise<void> {
