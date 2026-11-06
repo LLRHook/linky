@@ -53,7 +53,8 @@ for (const observation of ['gateway', 'rest'] as const) test(`SDK ${observation}
   f.render(content => { const url = /https:\/\/[^\s<>]+/.exec(content)?.[0]; return url ? [{ url,
     title: 'vxTwitter / fixvx', description: '**Failed to scan your link!** This post is unavailable.',
     thumbnail: { url: 'https://media.example/logo.png' } }] : []; });
-  const sourceId = await f.post('https://x.com/synthetic/status/123');
+  const sourceUrl = 'https://x.com/synthetic/status/123';
+  const sourceId = await f.post(sourceUrl);
   assert(f.state.has(sourceId), 'a branded provider error must never authorize source deletion');
   let notice = [...f.state.values()].find(message => message.author.id === BOT)!; assert(notice);
   const detailId = controls(notice);
@@ -61,7 +62,12 @@ for (const observation of ['gateway', 'rest'] as const) test(`SDK ${observation}
   f.update(notice.id, { components: f.initialControls.get(notice.id) }); await f.drain();
   assert.equal(controls(f.state.get(notice.id)!), detailId);
   assert(actions(f.state.get(notice.id)!).some(button => 'custom_id' in button && button.custom_id === 'linky:retry'));
+  f.update(notice.id, { components: [] }); await f.drain();
+  assert.equal(controls(f.state.get(notice.id)!), detailId, 'a failure notice has no URL in its text; use its bound source');
+  assert(actions(f.state.get(notice.id)!).some(button => 'url' in button && button.url === sourceUrl));
   await f.restart();
+  f.update(notice.id, { components: [] }); await f.drain();
+  assert.equal(controls(f.state.get(notice.id)!), detailId, 'the bound source must restore Original post after restart too');
   f.observation('gateway');
   f.render(content => { const url = /https:\/\/[^\s<>]+/.exec(content)?.[0]; return url ? [{ url,
     title: 'Synthetic author', description: 'Failed to scan your link! Here is the quoted error and our fix.' }] : []; });
@@ -77,6 +83,23 @@ for (const observation of ['gateway', 'rest'] as const) test(`SDK ${observation}
   assert.match(denied.at(-1)?.content ?? '', /Only the original author/);
   const removed = await f.click(notice.id, 'linky:remove');
   assert.match(removed.at(-1)?.content ?? '', /Removed/); assert(f.state.has(sourceId));
+});
+
+test('SDK failure-notice recovery refuses source links from a different author after restart', async t => {
+  const f = await discordLifecycle(t);
+  f.render(() => []);
+  const sourceId = await f.post('https://x.com/synthetic/status/123');
+  const notice = [...f.state.values()].find(message => message.author.id === BOT)!; assert(notice);
+  controls(notice);
+  await f.restart();
+  const source = f.state.get(sourceId)!;
+  source.author.id = MEMBER;
+  source.content = 'https://x.com/other_author/status/999';
+  const before = f.requests.filter(request => request.method === 'PATCH').length;
+  f.update(notice.id, { components: [] }); await f.drain();
+  assert.equal(f.requests.filter(request => request.method === 'PATCH').length, before,
+    'untrusted source data must not authorize component restoration');
+  assert.deepEqual(actions(f.state.get(notice.id)!), []);
 });
 
 test('SDK automatic Replace keeps the source when a later error revokes an early useful Gateway card', async t => {

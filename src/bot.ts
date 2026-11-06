@@ -322,7 +322,8 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         path: join(dirname(settings.settingsPath), 'reposts.json'), botUserId: readyClient.user.id, fetchMessage,
         removeRelated: record => youtubeStats!.removeForMessage(record.replacementId),
         afterReplacementRemoved: record => releaseEromeMedia(record.replacementId),
-        restoreControls: (record, message) => restoreRepostControls(message as Message, record, diagnostics),
+        restoreControls: (record, message) => restoreRepostControls(message as Message, record, diagnostics,
+          () => fetchMessage(record.channelId, record.sourceId)),
         regenerate: source => repost(source as Message, { refresh: true, forceReply: true }),
         canRetry: async (record, userId) => {
           const guild = await client.guilds.fetch(record.guildId);

@@ -21,6 +21,9 @@ const wire = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
  */
 export async function discordLifecycle(t: TestContext, mode: 'reply' | 'replace' = 'replace') {
   const directory = await mkdtemp(join(tmpdir(), 'linky-sdk-lifecycle-'));
+  // A real connected client keeps Node alive while PreviewWatcher's unref'ed timers run.
+  // The synthetic transport has no socket, so retain a bounded reference for this fixture.
+  const keepAlive = setTimeout(() => {}, 30_000);
   const tasks = new Set<Promise<unknown>>(), clients: Client[] = [], errors: unknown[] = [];
   const originalTrack = InFlightWork.prototype.track;
   t.mock.method(InFlightWork.prototype, 'track', function<T>(this: InFlightWork, task: Promise<T>): Promise<T> {
@@ -33,6 +36,7 @@ export async function discordLifecycle(t: TestContext, mode: 'reply' | 'replace'
     assert.deepEqual(errors, [], 'production handlers must not swallow a fixture or product failure');
   }
   t.after(async () => {
+    clearTimeout(keepAlive);
     for (const client of clients) await client.destroy();
     await rm(directory, { recursive: true, force: true });
   });
