@@ -1176,6 +1176,39 @@ test('manual Truth Social videos use the shared panel in slash and Apps commands
   }
 });
 
+test('manual article videos above the interaction upload limit publish only the poster and Play video card', async () => {
+  const truthVideo = 'https://static-assets-1.truthsocial.com/media/movie.mp4';
+  for (const provider of ['linkedin', 'truth']) for (const context of [false, true]) {
+    const url = provider === 'linkedin' ? LINKEDIN_URL : TRUTH_URL;
+    const poster = provider === 'linkedin'
+      ? 'https://media.licdn.com/dms/image/v2/D4E10AQGwmDk6ncG1cg/videocover-high/B4EaBfptUzG4Ao-/0/1788311167342?e=2147483647&v=beta&t=synthetic'
+      : truthImage;
+    const f = communityCommand(url, context), edit = f.input.editReply;
+    f.input.attachmentSizeLimit = 10 * 1024 * 1024;
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      if (payload.components) f.response.components = payload.components.map((c: any) => ({ toJSON: () => c.toJSON?.() ?? c }));
+      return result;
+    };
+    const outcomes: DeliveryOutcome[] = [];
+    await execute(f.interaction, articleConfig, { diagnostics: diagnosticsStub({ outcomes }), lookupArticle: async source => {
+      const data = new Uint8Array(12 * 1024 * 1024);
+      return provider === 'linkedin' ? { ...linkedInPost(source), linkedIn: { ...linkedInPost(source).linkedIn!, image: poster,
+        files: [{ ...linkedInPost(source).linkedIn!.files![0], data }] } } : { ...truthPost(source), truthSocial: {
+        ...truthPost(source).truthSocial!, video: true, videoUrl: truthVideo,
+        files: [{ name: 'truth-117497314507062631.mp4', url: truthVideo, data }] } };
+    } });
+    assert(!f.events.some(event => event.payload.files?.length), `${provider}/${context}: no upload attempt`);
+    const published = f.events.find(event => event.payload.embeds?.length)!.payload;
+    const card = published.embeds[0].toJSON?.() ?? published.embeds[0];
+    assert.deepEqual(card.image, { url: poster });
+    assert.match(card.description, /Play video/);
+    assert(card.description.includes(provider === 'linkedin' ? linkedInVideo : truthVideo));
+    assert.deepEqual(outcomes, ['confirmed']);
+    assert.doesNotMatch(f.response.content, /could not be confirmed/);
+  }
+});
+
 test('private slash and Apps image cards confirm ephemeral Discord uploads', async () => {
   for (const context of [false, true]) {
     const f = communityCommand(TRUTH_URL, context), edit = f.input.editReply;

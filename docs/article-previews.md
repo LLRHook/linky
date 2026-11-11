@@ -40,6 +40,8 @@ Video posts upload the MP4 rendition the page names (LinkedIn's 640p copy on `dm
 
 The single-video panel is shared by article-family cards, regardless of provider. It accepts one uploaded MP4 and an optional uploaded author avatar. Multiple cards, unrelated uploads and text beyond the 4000-character component limit retain the embed path. Automatic reposts, `/fix` and **Apps → Fix with Linky** use the same panel. Linky checks that the returned panel contains the prepared video before accepting it. A manual response that loses its video, changes source or loses permission clears its uploads and panel while keeping a Components V2 notice and original-link controls; V2 messages cannot switch back to ordinary content and embeds.
 
+Manual article uploads must also fit the interaction's upload allowance, with the same 1 MiB reserve used by other manual uploads, in addition to the six-file/16 MiB article budget. Invalid allowances disable uploads; an absent allowance uses the shared default. If a video cannot fit, Linky sends no upload and retains its poster and **Play video** card.
+
 Private `/fix` and **Apps → Fix with Linky** video responses also confirm exact uploaded files served under Discord's `/ephemeral-attachments/` path, with the same HTTPS, CDN host, filename and identifier checks as public attachments. Image and author-avatar confirmation accepts both paths too. Ports and credentials are rejected.
 
 The [media presentation audit](media-blocks.md) records copied-source-file, mixed-card and native-preview compatibility exceptions, and the existing image-card paths.

@@ -4,6 +4,8 @@ Single LinkedIn and Truth Social video cards use a Components V2 panel: post tex
 
 Private manual responses can confirm uploads under Discord's `/ephemeral-attachments/` path as well as `/attachments/`. Both require HTTPS on `cdn.discordapp.com` or `media.discordapp.net`, two 17–20 digit identifiers and the exact prepared filename, without ports or user credentials. Signed CDN query strings are permitted. `tests/uploaded-media.test.ts` covers both paths and their rejection boundaries; `tests/manual-fix.test.ts` covers private slash and Apps video confirmation.
 
+Manual article uploads also share the interaction's upload budget, reserving 1 MiB below Discord's reported allowance and retaining the six-file/16 MiB article ceiling. A video that cannot fit uploads nothing and uses its poster and **Play video** card. The manual article upload-limit test covers LinkedIn and Truth Social in both slash and Apps commands.
+
 Standalone Erome prepared attachments, including transcoded MP4s and JPEG/PNG images, now put their text and media in one V2 panel too. Hosted Erome originals and additional-item galleries already use V2. Erome media verification requires the matching file, Discord media type, proxy and positive dimensions. Legacy loose attachments also require the prepared byte size. These are Discord metadata checks; they do not establish playback on a client.
 
 ## Publication paths and compatibility constraints

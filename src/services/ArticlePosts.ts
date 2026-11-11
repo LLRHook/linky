@@ -69,10 +69,10 @@ export function withoutArticleFiles(posts: readonly PreparedArticle[]): Prepared
 }
 
 /** Uploads stay within the per-message budget, and only where the channel allows attachments. */
-export function fitArticleFiles(posts: readonly PreparedArticle[], canAttach: boolean): PreparedArticle[] {
+export function fitArticleFiles(posts: readonly PreparedArticle[], canAttach: boolean, maxBytes = MAX_ARTICLE_FILE_BYTES): PreparedArticle[] {
   const files = uploads(posts);
   return canAttach && files.length <= MAX_ARTICLE_FILES &&
-    files.reduce((total, file) => total + file.data.byteLength, 0) <= MAX_ARTICLE_FILE_BYTES ? [...posts] : withoutArticleFiles(posts);
+    files.reduce((total, file) => total + file.data.byteLength, 0) <= Math.min(MAX_ARTICLE_FILE_BYTES, maxBytes) ? [...posts] : withoutArticleFiles(posts);
 }
 
 /** Publish the whole requested set or leave the source intact. */

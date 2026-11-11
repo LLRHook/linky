@@ -227,7 +227,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal) : [];
     // Truth Social and LinkedIn media is uploaded with its card; without Attach Files the card links the original addresses.
     const articles = prepared && fitArticleFiles(prepared,
-      !interaction.inGuild() || Boolean(interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles)));
+      !interaction.inGuild() || Boolean(interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles)), eromeBudget);
     articleStage?.finish(articles ? 'ok' : 'unavailable');
     if (await stopChangedPreferences()) return;
     if (articles === null || articles.length && !await sourceCurrent()) {
