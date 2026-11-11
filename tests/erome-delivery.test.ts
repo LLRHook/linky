@@ -734,6 +734,28 @@ test('prepared Erome galleries require the exact uploaded media with Discord typ
   }
 });
 
+test('manual Erome rechecks source, settings and cancellation after the final asynchronous media verification', async () => {
+  for (const context of [false, true]) for (const change of ['source', 'settings', 'cancelled']) {
+    const f = manual(ALBUM, context), controller = new AbortController();
+    let enabled = true, verifications = 0;
+    await f.run({ signal: controller.signal, serverPreferences: () => ({ platforms: { erome: enabled } }),
+      verifyErome: async () => {
+        if (++verifications === 2) {
+          if (change === 'settings') enabled = false;
+          if (change === 'source' && context) f.input.targetMessage.content += ' edited';
+          if (change === 'cancelled') controller.abort();
+        }
+        return true;
+      } });
+    assert.equal(verifications, 2);
+    if (change === 'source' && !context) continue; // Slash commands have no mutable source message.
+    const last = f.edits.at(-1)!;
+    assert.deepEqual(last.attachments, [], `${context}/${change}`);
+    assert.equal(last.flags, MessageFlags.IsComponentsV2);
+    assert.doesNotMatch(JSON.stringify(last.components), /attachment:\/\/linky-video.mp4/);
+  }
+});
+
 function attachmentMessage(attachments: Partial<Attachment>[]) {
   const value = { attachments: new Collection(attachments.map((item, index) => [String(index), item as Attachment])),
     fetch: async (_force?: boolean) => value as unknown as Awaited<ReturnType<Message['fetch']>> };

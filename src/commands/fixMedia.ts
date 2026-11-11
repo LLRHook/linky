@@ -45,12 +45,12 @@ export async function publishManualMediaBlock({ interaction, attempt, verifyMedi
     published = await interaction.editReply({ flags: MessageFlags.IsComponentsV2, content: null, embeds: [], attachments: [], files,
       components: [...block, ...buttonRows().map(row => row.toJSON())], allowedMentions: { parse: [] } });
     stage?.finish();
-    if (!await current() || !await verifyMedia(published)) { await rollback(); return; }
+    if (!await current() || !await verifyMedia(published) || !await current()) { await rollback(); return; }
     const details = await attempt.controls(published.id);
     if (!await current()) { await rollback(); return; }
     published = await interaction.editReply({ components: [...block, ...buttonRows().map(row => row.toJSON()),
       ...details.map(row => row.toJSON())], allowedMentions: { parse: [] } });
-    if (!await current() || !await verifyMedia(published)) { await rollback(); return; }
+    if (!await current() || !await verifyMedia(published) || !await current()) { await rollback(); return; }
     observePreview?.(expected, { ok: true, missing: [], videoMetadata: true });
     attempt.finish('confirmed');
   } catch (error) {
