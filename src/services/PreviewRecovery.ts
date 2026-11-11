@@ -132,8 +132,9 @@ function sameMedia(actual: string | undefined, expected: string | undefined): bo
   if (!actual || !/^[a-z0-9-]{1,80}\.[a-z]{3,4}$/.test(name)) return false;
   try {
     const url = new URL(actual);
-    return url.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname) && !url.port &&
-      /^\/attachments\/\d{17,20}\/\d{17,20}\/[^/]+$/.test(url.pathname) && url.pathname.endsWith(`/${name}`);
+    return url.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname) &&
+      !url.port && !/:\d+$/.test(actual.split('/')[2] ?? '') && !url.username && !url.password &&
+      /^\/(?:ephemeral-attachments|attachments)\/\d{17,20}\/\d{17,20}\/[^/]+$/.test(url.pathname) && url.pathname.endsWith(`/${name}`);
   } catch { return false; }
 }
 

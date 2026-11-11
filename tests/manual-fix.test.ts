@@ -1059,26 +1059,87 @@ const linkedInPost = (source: string): ArticlePreview => ({ source, url: linkedI
   url: linkedInPermalink, author: { name: 'RTX' }, text: 'Ready to build what’s next?', video: linkedInVideo, imageCount: 0,
   files: [{ name: 'linkedin-7500720890129756160.mp4', url: linkedInVideo, data: new Uint8Array([1, 2, 3]) }] } });
 
-test('manual LinkedIn cards upload the MP4 and remove it with an unconfirmed card', async () => {
-  for (const scenario of ['confirmed', 'unconfirmed'] as const) {
-    const f = communityCommand(LINKEDIN_URL), edit = f.input.editReply;
+test('manual video cards in slash and Apps commands use the same verified panel and roll back without loose media', async () => {
+  for (const context of [false, true]) for (const missing of [false, true]) {
+    const f = command(LINKEDIN_URL, context), edit = f.input.editReply;
+    const outcomes: DeliveryOutcome[] = [];
     f.input.editReply = async payload => {
       const result = await edit(payload);
-      // Discord lists the uploaded video as the reply's own attachment.
-      if (payload.files?.length) Object.assign(f.response, { attachments: new Collection([['video', { name: 'linkedin-7500720890129756160.mp4' }]]) });
-      if (scenario === 'unconfirmed' && payload.embeds?.length) {
-        const card = payload.embeds[0].toJSON?.() ?? payload.embeds[0];
-        f.response.embeds = [{ toJSON: () => ({ ...card, title: 'Wrong post' }) }];
+      if (payload.components) f.response.components = (missing ? [] : payload.components).map((c: any) => ({ toJSON: () => c.toJSON?.() ?? c }));
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => linkedInPost(source),
+      diagnostics: diagnosticsStub({ id: UUID, outcomes, bind: async () => true }) });
+    const published = f.events.find(event => event.name === 'edit' && event.payload.files?.length)!.payload;
+    assert.equal(published.content, null);
+    assert.deepEqual(published.embeds, []);
+    assert.equal(published.flags, MessageFlags.IsComponentsV2);
+    assert.deepEqual(published.files.map((file: AttachmentBuilder) => file.name), ['linkedin-7500720890129756160.mp4']);
+    const last = f.events.filter(event => event.name === 'edit').at(-1)!.payload;
+    const json = JSON.stringify(last.components);
+    if (missing) {
+      assert.doesNotMatch(json, /attachment:\/\/linkedin-/);
+      assert.match(json, /preview could not be confirmed/);
+      assert.equal(last.flags, MessageFlags.IsComponentsV2);
+      assert.equal(last.content, null);
+      assert.deepEqual(last.attachments, []);
+      assert.deepEqual(outcomes, ['metadata-unconfirmed']);
+    } else {
+      assert.match(json, /attachment:\/\/linkedin-7500720890129756160.mp4/);
+      assert.match(json, /linky:remove-manual/);
+      assert.match(json, /linky:details/);
+      assert.deepEqual(outcomes, ['confirmed']);
+    }
+  }
+});
+
+test('private slash and Apps video panels confirm ephemeral Discord uploads without rollback', async () => {
+  for (const context of [false, true]) {
+    const f = command(LINKEDIN_URL, context), edit = f.input.editReply;
+    f.input.memberPermissions = new PermissionsBitField(0n);
+    const outcomes: DeliveryOutcome[] = [];
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      if (payload.components) {
+        const normalized = JSON.parse(JSON.stringify(payload.components).replaceAll(
+          'attachment://linkedin-7500720890129756160.mp4',
+          'https://cdn.discordapp.com/ephemeral-attachments/123456789012345678/223456789012345678/linkedin-7500720890129756160.mp4?ex=1'));
+        f.response.components = normalized.map((c: unknown) => ({ toJSON: () => c }));
       }
       return result;
     };
-    await execute(f.interaction, articleConfig, { lookupArticle: async source => linkedInPost(source) });
-    const published = f.events.find(event => event.name === 'edit' && event.payload.embeds?.length)!.payload;
-    assert.deepEqual(published.files.map((file: AttachmentBuilder) => file.name), ['linkedin-7500720890129756160.mp4']);
-    if (scenario === 'unconfirmed') {
-      assert.match(f.response.content, /preview could not be confirmed/);
-      assert.deepEqual(f.events.at(-1)?.payload.attachments, [], 'the video is removed with its card');
-    } else assert.doesNotMatch(f.response.content, /could not/, scenario);
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => linkedInPost(source),
+      diagnostics: diagnosticsStub({ outcomes }) });
+    assert.equal(f.events.find(event => event.name === 'defer')!.payload.flags, MessageFlags.Ephemeral);
+    assert.deepEqual(outcomes, ['confirmed']);
+    assert.match(JSON.stringify(f.response.components.map(c => c.toJSON())), /ephemeral-attachments/);
+    assert(!f.events.some(event => JSON.stringify(event.payload.components ?? []).includes('could not be confirmed')));
+  }
+});
+
+test('manual video panels revoke media when source, settings or cancellation change during publish, Details or final controls', async () => {
+  for (const kind of ['source', 'preferences', 'cancelled']) for (const phase of ['publish', 'binding', 'controls']) {
+    const f = command(LINKEDIN_URL, true), edit = f.input.editReply, controller = new AbortController();
+    let preferences: ServerPreferences = {};
+    const change = () => {
+      if (kind === 'source') f.input.targetMessage.content += ' edited';
+      if (kind === 'preferences') preferences = { platforms: { articles: false } };
+      if (kind === 'cancelled') controller.abort();
+    };
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      if (payload.components) f.response.components = payload.components.map((c: any) => ({ toJSON: () => c.toJSON?.() ?? c }));
+      if (phase === 'publish' && payload.files?.length || phase === 'controls' && payload.content === undefined && payload.components) change();
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => linkedInPost(source), signal: controller.signal,
+      serverPreferences: () => preferences,
+      diagnostics: diagnosticsStub({ id: UUID, bind: async () => { if (phase === 'binding') change(); return true; } }) });
+    const last = f.events.filter(event => event.name === 'edit').at(-1)!.payload;
+    assert.equal(last.flags, MessageFlags.IsComponentsV2, `${kind}/${phase}`);
+    assert.deepEqual(last.attachments, [], `${kind}/${phase}`);
+    assert.doesNotMatch(JSON.stringify(last.components), /attachment:\/\/linkedin-/, `${kind}/${phase}`);
+    assert.equal(last.content, null);
   }
 });
 
@@ -1087,6 +1148,88 @@ const truthImage = 'https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets
 const truthPost = (source: string): ArticlePreview => ({ source, url: source, title: 'Truth Social post', publisher: 'Truth Social', truthSocial: {
   url: source, author: { name: 'Donald J. Trump', handle: 'realDonaldTrump' }, text: 'Hello', image: truthImage, video: false, mediaCount: 1,
   files: [{ name: 'truth-117497314507062631.jpg', url: truthImage, data: new Uint8Array([1, 2, 3]) }] } });
+
+test('manual Truth Social videos use the shared panel in slash and Apps commands with poster fallback without Attach Files', async () => {
+  const videoUrl = 'https://static-assets-1.truthsocial.com/media/movie.mp4';
+  for (const context of [false, true]) for (const canAttach of [false, true]) {
+    const f = command(TRUTH_URL, context), edit = f.input.editReply;
+    if (!canAttach) f.input.appPermissions = new PermissionsBitField(0n);
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      if (payload.components) f.response.components = payload.components.map((c: any) => ({ toJSON: () => c.toJSON?.() ?? c }));
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => ({ ...truthPost(source), truthSocial: {
+      ...truthPost(source).truthSocial!, video: true, videoUrl,
+      files: [{ name: 'truth-117497314507062631.mp4', url: videoUrl, data: new Uint8Array([1, 2, 3]) }] } }) });
+    const published = f.events.find(event => event.name === 'edit' && (event.payload.files?.length || event.payload.embeds?.length))!.payload;
+    if (canAttach) {
+      assert.equal(published.flags, MessageFlags.IsComponentsV2);
+      assert.match(JSON.stringify(published.components), /attachment:\/\/truth-117497314507062631.mp4/);
+      assert.match(JSON.stringify(f.response.components.map(c => c.toJSON())), /truth-117497314507062631.mp4/);
+    } else {
+      assert.equal(published.flags, undefined);
+      assert.equal(published.files?.length ?? 0, 0);
+      assert.deepEqual(published.embeds[0].image, { url: truthImage });
+      assert.match(published.embeds[0].description, /Play video/);
+    }
+  }
+});
+
+test('manual article videos above the interaction upload limit publish only the poster and Play video card', async () => {
+  const truthVideo = 'https://static-assets-1.truthsocial.com/media/movie.mp4';
+  for (const provider of ['linkedin', 'truth']) for (const context of [false, true]) {
+    const url = provider === 'linkedin' ? LINKEDIN_URL : TRUTH_URL;
+    const poster = provider === 'linkedin'
+      ? 'https://media.licdn.com/dms/image/v2/D4E10AQGwmDk6ncG1cg/videocover-high/B4EaBfptUzG4Ao-/0/1788311167342?e=2147483647&v=beta&t=synthetic'
+      : truthImage;
+    const f = communityCommand(url, context), edit = f.input.editReply;
+    f.input.attachmentSizeLimit = 10 * 1024 * 1024;
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      if (payload.components) f.response.components = payload.components.map((c: any) => ({ toJSON: () => c.toJSON?.() ?? c }));
+      return result;
+    };
+    const outcomes: DeliveryOutcome[] = [];
+    await execute(f.interaction, articleConfig, { diagnostics: diagnosticsStub({ outcomes }), lookupArticle: async source => {
+      const data = new Uint8Array(12 * 1024 * 1024);
+      return provider === 'linkedin' ? { ...linkedInPost(source), linkedIn: { ...linkedInPost(source).linkedIn!, image: poster,
+        files: [{ ...linkedInPost(source).linkedIn!.files![0], data }] } } : { ...truthPost(source), truthSocial: {
+        ...truthPost(source).truthSocial!, video: true, videoUrl: truthVideo,
+        files: [{ name: 'truth-117497314507062631.mp4', url: truthVideo, data }] } };
+    } });
+    assert(!f.events.some(event => event.payload.files?.length), `${provider}/${context}: no upload attempt`);
+    const published = f.events.find(event => event.payload.embeds?.length)!.payload;
+    const card = published.embeds[0].toJSON?.() ?? published.embeds[0];
+    assert.deepEqual(card.image, { url: poster });
+    assert.match(card.description, /Play video/);
+    assert(card.description.includes(provider === 'linkedin' ? linkedInVideo : truthVideo));
+    assert.deepEqual(outcomes, ['confirmed']);
+    assert.doesNotMatch(f.response.content, /could not be confirmed/);
+  }
+});
+
+test('private slash and Apps image cards confirm ephemeral Discord uploads', async () => {
+  for (const context of [false, true]) {
+    const f = communityCommand(TRUTH_URL, context), edit = f.input.editReply;
+    f.input.memberPermissions = new PermissionsBitField(0n);
+    const outcomes: DeliveryOutcome[] = [];
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      const card = f.response.embeds[0]?.toJSON();
+      if (card?.image?.url?.startsWith('attachment://')) f.response.embeds = [{ toJSON: () => ({ ...card, image: {
+        url: 'https://media.discordapp.net/ephemeral-attachments/123456789012345678/223456789012345678/truth-117497314507062631.jpg?ex=1',
+      } }) }];
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => truthPost(source),
+      diagnostics: diagnosticsStub({ outcomes }) });
+    assert.equal(f.events.find(event => event.name === 'defer')!.payload.flags, MessageFlags.Ephemeral);
+    assert.deepEqual(outcomes, ['confirmed']);
+    assert.match(f.response.embeds[0].toJSON().image!.url, /ephemeral-attachments/);
+    assert(!f.events.some(event => event.payload.attachments?.length === 0));
+  }
+});
 
 test('manual Truth Social cards upload their image, confirm at the Discord CDN address and drop the upload when unconfirmed', async () => {
   const cdn = 'https://cdn.discordapp.com/attachments/123456789012345678/223456789012345678/truth-117497314507062631.jpg?ex=1';

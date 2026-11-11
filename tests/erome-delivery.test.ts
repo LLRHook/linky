@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
-import { AttachmentBuilder, Collection, MessageFlags, MessageFlagsBitField, MessageType, PermissionFlagsBits,
+import { AttachmentBuilder, Collection, ComponentType, MessageFlags, MessageFlagsBitField, MessageType, PermissionFlagsBits,
   PermissionsBitField, type Attachment, type ChatInputCommandInteraction, type InteractionEditReplyOptions,
   type Message, type MessageContextMenuCommandInteraction, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
 import type { Config } from '../src/config';
@@ -21,6 +21,15 @@ const MiB = 1024 * 1024;
 const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['erome', 'x'],
   translateTweets: false, settingsPath: 'unused' };
 const prepared = () => ({ file: new AttachmentBuilder(Buffer.from('synthetic MP4 test fixture'), { name: 'linky-video.mp4' }), videoCount: 2 });
+
+function bodyText(value: { content?: string | null; components?: readonly unknown[] }): string {
+  const text = (entry: unknown): string => {
+    const item = entry as { toJSON?: () => unknown; content?: string; components?: unknown[] };
+    if (item.toJSON) return text(item.toJSON());
+    return [item.content ?? '', ...item.components?.map(text) ?? []].join('\n');
+  };
+  return value.content || value.components?.map(text).join('\n') || '';
+}
 type AutoOptions = NonNullable<Parameters<typeof createLinkRepostHandler>[3]>;
 type ManualOptions = NonNullable<Parameters<typeof execute>[2]>;
 // /fix creates its progress reporter with a 500 ms delay (src/commands/fix.ts).
@@ -43,6 +52,7 @@ function automatic(content = ALBUM) {
       const message = {
         id: String(BigInt(SOURCE) + BigInt(outputs.length)), guildId: GUILD, channelId: CHANNEL,
         author: { id: BOT, bot: true }, content: options.content ?? '',
+        components: (options.components ?? []).map(c => ({ toJSON: () => 'toJSON' in c ? c.toJSON() : c })),
         attachments: new Collection<string, Attachment>((options.files ?? []).map((_, i) => [String(i), {} as Attachment])),
         delete: async () => { entry.deleted = true; },
         fetch: async () => message,
@@ -79,7 +89,7 @@ function automatic(content = ALBUM) {
 function manual(content = ALBUM, context = false) {
   const calls: string[] = [], replies: { content?: string; flags?: unknown }[] = [];
   const edits: InteractionEditReplyOptions[] = [], deferrals: unknown[] = [];
-  const response = { id: SOURCE, content: '', fetch: async () => response };
+  const response = { id: SOURCE, content: '', components: [] as { toJSON(): unknown }[], fetch: async () => response };
   const input = {
     isChatInputCommand: () => !context, inGuild: () => true, guildId: GUILD, channelId: CHANNEL, user: { id: AUTHOR }, channel: ageChannel(),
     memberPermissions: new PermissionsBitField(PermissionsBitField.All),
@@ -94,6 +104,8 @@ function manual(content = ALBUM, context = false) {
     editReply: async (options: InteractionEditReplyOptions) => {
       edits.push(options);
       if (typeof options.content === 'string') response.content = options.content;
+      if (options.content === null) response.content = '';
+      if (options.components) response.components = options.components.map(c => ({ toJSON: () => 'toJSON' in c ? c.toJSON() : c }));
       return response as unknown as Message;
     },
   };
@@ -102,6 +114,56 @@ function manual(content = ALBUM, context = false) {
       verifyPreview: async (_message, expected) => ({ ok: false, missing: [...expected], videoMetadata: false }), ...options });
   return { input, calls, replies, edits, deferrals, response, run };
 }
+
+test('standalone Erome prepared video and image previews group text and media in automatic and both manual commands', async () => {
+  for (const kind of ['video', 'image'] as const) {
+    const file = new AttachmentBuilder(Buffer.from('prepared media'), { name: kind === 'image' ? 'erome-image.jpg' : 'erome-video.mp4' });
+    const f = automatic();
+    await f.run({ prepareErome: async () => ({ file, videoCount: 1, kind }) });
+    assert.equal(f.outputs.length, 1);
+    const sent = f.outputs[0].options;
+    assert.equal(sent.content, undefined);
+    assert.equal(sent.embeds, undefined);
+    assert(new MessageFlagsBitField(sent.flags as number).has(MessageFlags.IsComponentsV2));
+    assert.match(JSON.stringify(sent.components), new RegExp(`attachment://${file.name}`));
+    assert.match(bodyText(sent), /Shared by/);
+    assert.equal(f.state.originalDeleted, true);
+    assert.match(JSON.stringify(f.outputs[0].edits.at(-1)?.components), new RegExp(`attachment://${file.name}`));
+    for (const context of [false, true]) {
+      const m = manual(ALBUM, context); m.input.attachmentSizeLimit = 10 * MiB;
+      await m.run({ prepareErome: async () => ({ file, videoCount: 1, kind }) });
+      const publication = m.edits.find(edit => edit.files?.length)!;
+      assert.equal(publication.content, null);
+      assert.deepEqual(publication.embeds, []);
+      assert.equal(publication.flags, MessageFlags.IsComponentsV2);
+      assert.match(JSON.stringify(publication.components), new RegExp(`attachment://${file.name}`));
+      assert.match(JSON.stringify(m.edits.at(-1)?.components), new RegExp(`attachment://${file.name}`));
+    }
+  }
+});
+
+test('automatic inline Erome replies recheck source and scope after ownership and final Details binding', async () => {
+  for (const change of ['none', 'source', 'settings', 'disabled']) {
+    const f = automatic(); f.state.preferences = { mode: 'reply' };
+    let bindings = 0;
+    await f.run({ diagnostics: diagnosticsStub({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', bind: async () => {
+      bindings++;
+      assert.equal(f.records.length, 1, 'ownership was durably saved before the late change');
+      if (change === 'source') f.source.content += ' edited';
+      if (change === 'settings') f.state.preferences = { mode: 'reply', platforms: { erome: false } };
+      if (change === 'disabled') f.state.enabled = false;
+      return true;
+    } }) });
+    assert.equal(bindings, 1, change);
+    assert.equal(f.outputs.length, 1, change);
+    assert.equal(f.records[0].mode, 'reply', change);
+    assert.equal(f.outputs[0].options.flags, MessageFlags.IsComponentsV2);
+    assert.match(JSON.stringify(f.outputs[0].options.components), /attachment:\/\/linky-video.mp4/);
+    assert.equal(f.outputs[0].edits.length, 1, 'the final controls edit completed');
+    assert.equal(f.state.originalDeleted, false, change);
+    assert.equal(f.outputs[0].deleted, change !== 'none', change);
+  }
+});
 
 test('operator Erome restrictions make no media calls and leave automatic sources unchanged', async () => {
   for (const guildIds of [[], ['1700000000000000099']]) {
@@ -125,8 +187,8 @@ test('mixed messages still fix normal links but suppress blocked Erome embeds an
   } });
   assert.deepEqual(f.calls, []); assert.equal(f.outputs.length, 1);
   assert.equal(f.state.originalDeleted, false); assert.equal(f.records[0].mode, 'reply');
-  assert.match(f.outputs[0].options.content!, /https:\/\/fixupx.com\/example\/status\/20/);
-  assert.ok(f.outputs[0].options.content!.includes(`<${ALBUM}>`));
+  assert.match(bodyText(f.outputs[0].options), /https:\/\/fixupx.com\/example\/status\/20/);
+  assert.ok(bodyText(f.outputs[0].options).includes(`<${ALBUM}>`));
   assert.doesNotMatch(JSON.stringify(f.outputs[0].options.components), /erome.com/);
   assert.deepEqual(f.outputs[0].options.reply, { messageReference: SOURCE, failIfNotExists: true });
 });
@@ -177,7 +239,7 @@ test('manual attachment preview is withdrawn if operator policy changes during v
   await f.run({ verifyErome: async () => { settings.eromeGuildIds = []; return true; } }, settings);
   assert.deepEqual(f.calls, [ALBUM]);
   assert.deepEqual(f.edits.at(-1)?.attachments, []);
-  assert.match(f.edits.at(-1)?.content!, /no longer allowed/);
+  assert.match(bodyText(f.edits.at(-1)!), /no longer allowed/);
 });
 
 test('automatic Erome gating rejects ordinary channels, unmarked thread parents and DMs before preparation', async () => {
@@ -250,11 +312,11 @@ test('automatic Erome respects posting mode, preserves every album URL and inher
       assert.equal(f.outputs.length, 1);
       assert.equal(f.outputs[0].options.files?.length, 1);
       assert.deepEqual(f.outputs[0].options.reply, mode === 'reply' ? { messageReference: SOURCE, failIfNotExists: true } : undefined);
-      assert.match(f.outputs[0].options.content!, /First of 2 videos/);
+      assert.match(bodyText(f.outputs[0].options), /First of 2 videos/);
       assert.equal(f.outputs[0].deleted, false);
       assert.equal(f.source.content, content);
       assert.equal(f.state.originalDeleted, mode === 'replace');
-      assert(f.outputs[0].options.content!.includes(ALBUM) && f.outputs[0].options.content!.includes(SECOND));
+      assert(bodyText(f.outputs[0].options).includes(ALBUM) && bodyText(f.outputs[0].options).includes(SECOND));
       assert.deepEqual(f.records, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
         replacementId: String(BigInt(SOURCE) + 1n), authorId: AUTHOR, mode }]);
       assert.match(JSON.stringify(f.outputs[0].edits.at(-1)), /linky:remove/);
@@ -358,7 +420,7 @@ test('manual Erome never uploads an oversized, empty or remote prepared attachme
     f.input.attachmentSizeLimit = 10 * MiB;
     await f.run({ prepareErome: async () => ({ ...prepared(), file }) });
     assert(f.edits.every(edit => !edit.files?.length));
-    assert.match(f.response.content, /could not be prepared/);
+    assert.match(bodyText(f.response), /could not be prepared/);
     assert.equal(f.input.targetMessage.content, ALBUM);
     assert.match(JSON.stringify(f.edits[0].components), /linky:remove-manual/);
   }
@@ -509,11 +571,11 @@ test('manual Erome preserves policy-specific revocation notices and source contr
       return true;
     } });
     if (phase === 'preparation') assert(f.edits.every(edit => !edit.files?.length));
-    assert.match(f.response.content, /Erome previews are no longer allowed/);
+    assert.match(bodyText(f.response), /Erome previews are no longer allowed/);
     assert.equal(f.input.targetMessage.content, ALBUM);
     const last = f.edits.at(-1)!;
     assert.deepEqual(last.attachments, []); assert.deepEqual(last.embeds, []);
-    assert.equal(last.flags, MessageFlags.SuppressEmbeds);
+    assert.equal(last.flags, phase === 'verification' ? MessageFlags.IsComponentsV2 : MessageFlags.SuppressEmbeds);
     assert.match(JSON.stringify(last.components), /Original post/);
     assert.match(JSON.stringify(last.components), /linky:remove-manual/);
     assert.deepEqual(last.allowedMentions, { parse: [] });
@@ -529,9 +591,9 @@ test('manual Erome slash and message actions upload only the first album and pre
     f.input.channel.parent!.nsfw = true;
     await f.run();
     assert.deepEqual(f.calls, [ALBUM]);
-    assert.equal(f.edits.length, 1);
+    assert.equal(f.edits.length, 2);
     assert.equal(f.edits[0].files?.length, 1);
-    assert.match(f.response.content, /First of 2 videos/);
+    assert.match(bodyText(f.response), /First of 2 videos/);
     assert.equal(f.input.targetMessage.content, content);
     assert.deepEqual(f.edits[0].allowedMentions, { parse: [] });
     assert.match(JSON.stringify(f.edits[0].components), /linky:remove-manual/);
@@ -549,7 +611,7 @@ test('manual Erome stops upload if channel or parent age restriction changes dur
       return prepared();
     } });
     assert(f.edits.every(edit => !edit.files?.length));
-    assert.match(f.response.content, /no longer allowed/);
+    assert.match(bodyText(f.response), /no longer allowed/);
   }
 });
 
@@ -558,7 +620,7 @@ test('manual unavailable or throwing Erome preparation returns a useful failure 
     const f = manual(ALBUM, true);
     await f.run({ prepareErome: async () => { if (fail) throw new Error('unavailable'); return null; } });
     assert(f.edits.every(edit => !edit.files?.length));
-    assert.match(f.response.content, /could not be prepared/);
+    assert.match(bodyText(f.response), /could not be prepared/);
     assert.equal(f.input.targetMessage.content, ALBUM);
   }
 });
@@ -568,7 +630,7 @@ test('manual Erome removes an unverified attachment and keeps the original-post 
   await f.run({ verifyErome: async () => false });
   assert.equal(f.edits.length, 2);
   assert.deepEqual(f.edits[1].attachments, []);
-  assert.match(f.response.content, /preview could not be confirmed/);
+  assert.match(bodyText(f.response), /preview could not be confirmed/);
   assert.match(JSON.stringify(f.edits[0].components), /Synthetic01/);
   assert.match(JSON.stringify(f.edits[0].components), /linky:remove-manual/);
 });
@@ -576,7 +638,7 @@ test('manual Erome removes an unverified attachment and keeps the original-post 
 test('manual mixed-platform failure is still reported when the Erome upload succeeds', async () => {
   const f = manual(`${ALBUM} https://x.com/jack/status/20`, true);
   await f.run();
-  assert.match(f.response.content, /preview could not be confirmed/);
+  assert.match(bodyText(f.response), /preview could not be confirmed/);
   assert.equal(f.edits.filter(edit => edit.files?.length).length, 1);
   assert.equal(f.edits.at(-1)!.attachments, undefined, 'retain the independently verified video');
   assert.equal(f.input.targetMessage.content, `${ALBUM} https://x.com/jack/status/20`);
@@ -616,13 +678,13 @@ test('manual Erome serializes progress before the final upload and ignores late 
     assert.equal(started[0].files, undefined);
     release();
     await clock.settle(pending);
-    assert.equal(f.edits.length, 2);
+    assert.equal(f.edits.length, 3);
     assert.equal(f.edits[1].files?.length, 1);
     assert(f.edits.slice(0, 1).every(edit => !String(edit.content).includes('https://') && !edit.files));
     await late?.('queued');
     await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(f.edits.length, 2, 'A late progress edit must not replace the uploaded preview');
-    assert.match(f.response.content, /Synthetic01/);
+    assert.equal(f.edits.length, 3, 'A late progress edit must not replace the uploaded preview');
+    assert.match(bodyText(f.response), /Synthetic01/);
   } finally { release(); ready.resolve(); await clock.settle(pending).catch(() => {}); }
 });
 
@@ -631,7 +693,7 @@ test('manual Erome completes despite rejected progress edits for a deleted or in
   const f = manual(), editReply = f.input.editReply;
   let progressAttempts = 0;
   f.input.editReply = async options => {
-    if (!options.files?.length) { progressAttempts++; throw new Error('Unknown message'); }
+    if (!options.files?.length && !options.components?.length) { progressAttempts++; throw new Error('Unknown message'); }
     return editReply(options);
   };
   const pending = f.run({ prepareErome: async (_url, onStage) => {
@@ -650,9 +712,71 @@ test('manual Erome completes despite rejected progress edits for a deleted or in
     await clock.settle(pending);
   } finally { ready.resolve(); await clock.settle(pending).catch(() => {}); }
   assert.equal(progressAttempts, 1);
-  assert.equal(f.edits.length, 1);
+  assert.equal(f.edits.length, 2);
   assert.equal(f.edits[0].files?.length, 1);
-  assert.match(f.response.content, /Synthetic01/);
+  assert.match(bodyText(f.response), /Synthetic01/);
+});
+
+test('prepared Erome panels fail closed when Discord omits their gallery', async () => {
+  const f = automatic(), send = f.channel.send;
+  f.channel.send = async options => {
+    const result = await send(options);
+    Object.assign(result, { components: [] });
+    return result;
+  };
+  await f.run();
+  assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.outputs[0].deleted, true);
+  for (const context of [false, true]) {
+    const m = manual(ALBUM, context), edit = m.input.editReply;
+    m.input.editReply = async options => {
+      const result = await edit(options);
+      if (options.files?.length) m.response.components = [];
+      return result;
+    };
+    await m.run();
+    const last = m.edits.at(-1)!;
+    assert.deepEqual(last.attachments, []);
+    assert.doesNotMatch(JSON.stringify(last.components), /attachment:\/\/linky-video.mp4/);
+    assert.equal(last.flags, MessageFlags.IsComponentsV2);
+  }
+});
+
+test('prepared Erome galleries require the exact uploaded media with Discord type, proxy and positive dimensions', async () => {
+  const { file } = prepared();
+  const good = { url: 'attachment://linky-video.mp4', content_type: 'video/mp4', proxy_url: 'https://media.discordapp.net/proxy',
+    width: 1280, height: 720 };
+  const variants = [good, { ...good, url: 'attachment://unrelated.mp4' }, { ...good, content_type: 'text/html' },
+    { ...good, proxy_url: '' }, { ...good, width: 0 }, { ...good, height: -1 },
+    { ...good, url: 'https://evil.com/attachments/123456789012345678/123456789012345679/linky-video.mp4' }];
+  for (const [index, media] of variants.entries()) {
+    const value = { components: [{ toJSON: () => ({ type: ComponentType.Container, components: [
+      { type: ComponentType.MediaGallery, items: [{ media }] },
+    ] }) }], attachments: new Collection<string, Attachment>(), fetch: async () => value as unknown as Message };
+    assert.equal(await verifyEromeAttachment(value as unknown as Message, file, async () => {}), index === 0, JSON.stringify(media));
+  }
+});
+
+test('manual Erome rechecks source, settings and cancellation after the final asynchronous media verification', async () => {
+  for (const context of [false, true]) for (const change of ['source', 'settings', 'cancelled']) {
+    const f = manual(ALBUM, context), controller = new AbortController();
+    let enabled = true, verifications = 0;
+    await f.run({ signal: controller.signal, serverPreferences: () => ({ platforms: { erome: enabled } }),
+      verifyErome: async () => {
+        if (++verifications === 2) {
+          if (change === 'settings') enabled = false;
+          if (change === 'source' && context) f.input.targetMessage.content += ' edited';
+          if (change === 'cancelled') controller.abort();
+        }
+        return true;
+      } });
+    assert.equal(verifications, 2);
+    if (change === 'source' && !context) continue; // Slash commands have no mutable source message.
+    const last = f.edits.at(-1)!;
+    assert.deepEqual(last.attachments, [], `${context}/${change}`);
+    assert.equal(last.flags, MessageFlags.IsComponentsV2);
+    assert.doesNotMatch(JSON.stringify(last.components), /attachment:\/\/linky-video.mp4/);
+  }
 });
 
 function attachmentMessage(attachments: Partial<Attachment>[]) {
@@ -697,7 +821,7 @@ test('manual Erome does not upload when its deadline expires while a progress ed
   release();
   await pending;
   assert.ok(f.edits.every(edit => !edit.files?.length));
-  assert.match(f.response.content, /time limit/);
+  assert.match(bodyText(f.response), /time limit/);
   assert.deepEqual(outcomes, ['timeout']);
   assert.equal(f.input.targetMessage.content, ALBUM);
 });

@@ -408,6 +408,93 @@ Priority guide: crit / high / med / low.
 - **Status:** in-progress
 - **Implementation:** `articleVideoComponents` builds the block from the prepared card; `messageHasArticleVideo` confirms the published block shows the video; `SocialLinkService` publishes and finishes the block as Components V2 when it applies.
 
+### [FEAT-1794400497] General article video blocks
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/services/ArticlePosts.ts, tests/article-video.test.ts, docs/article-previews.md
+- **Why:** Media-blocks charter I2: show Linky-authored post text and its media together.
+- **Approach:** A single article-family card with one uploaded MP4 uses a Components V2 panel regardless of provider, including an uploaded avatar; verification rejects absent or unrelated media. Existing text and multi-card fallbacks remain.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] A single article-family card with one uploaded MP4 uses a Components V2 panel regardless of provider, including an uploaded avatar; verification rejects absent or unrelated media. Existing text and multi-card fallbacks remain.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+
+
+- **Implementation:** General filename recognition and video selection support provider-independent MP4 panels with an uploaded avatar. Two new tests and eight existing LinkedIn tests pass; four mutation checks fail as expected. Limits and legacy fallbacks remain. See docs/article-previews.md, General video panels.
+
+### [FEAT-1794400619] Truth Social video upload and inline playback
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/services/TruthSocial.ts, src/services/ArticlePreview.ts, src/services/ArticlePosts.ts, tests/truth-social.test.ts, tests/social-links.test.ts, README.md, docs/article-previews.md
+- **Why:** Media-blocks charter I1: show Linky-authored post text and its media together.
+- **Approach:** Download allow-listed Truth Social or archive MP4s with a 15 MiB cap, ftyp header check and an independent window capped at 15 seconds. Single automatic video posts use the shared panel; download failures retain the poster and Play video card.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] Download allow-listed Truth Social or archive MP4s with a 15 MiB cap, ftyp header check and an independent window capped at 15 seconds. Single automatic video posts use the shared panel; download failures retain the poster and Play video card.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+- **Implementation:** Truth Social uploads allow-listed API/archive MP4s through the shared LinkedIn download helper (15 MiB, video/mp4, ftyp, at most 15 seconds, pinned public DNS, no redirects or cookies). Avatar and video share the general panel; failure and permission/budget fallback restore original media URLs. tests/truth-social.test.ts and the Truth Social automatic panel test pass; five mutation checks fail as expected. README and article preview docs updated.
+
+### [FEAT-1794400814] Single video panels for manual fixes
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/commands/fix.ts, tests/manual-fix.test.ts, README.md, docs/article-previews.md
+- **Why:** Media-blocks charter I3: show Linky-authored post text and its media together.
+- **Approach:** Manual /fix and Apps Fix with Linky use the same single-video article panel, verify its media, retain controls, and roll back within Components V2 on missing media, cancellation, source edits or settings revocation.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] Manual /fix and Apps Fix with Linky use the same single-video article panel, verify its media, retain controls, and roll back within Components V2 on missing media, cancellation, source edits or settings revocation.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+- **Implementation:** Both manual entry points publish the shared panel through publishManualMediaBlock. V2-only rollback removes uploads and media on missing gallery, source/settings changes, cancellation and publication errors; final controls retain and recheck the panel. tests/manual-fix.test.ts plus tests/manual-media.test.ts: 87 pass, zero skipped; five mutations caught. README and article docs updated.
+
+### [FEAT-1794401068] Group standalone prepared Erome media and document compatibility fallbacks
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/services/UploadedMedia.ts, src/services/EromeDelivery.ts, src/services/ArticlePosts.ts, src/services/SocialLinkService.ts, src/commands/fix.ts, src/commands/fixMedia.ts, tests/erome-delivery.test.ts, docs/media-blocks.md, docs/erome-previews.md, docs/article-previews.md, README.md
+- **Why:** Media-blocks charter I4: show Linky-authored post text and its media together.
+- **Approach:** Standalone Erome attachment delivery groups text and image or video into Components V2, with matching-media verification and rollback for automatic and manual paths. Record every remaining loose-media path and its compatibility constraint with file and line evidence.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] Standalone Erome attachment delivery groups text and image or video into Components V2, with matching-media verification and rollback for automatic and manual paths. Record every remaining loose-media path and its compatibility constraint with file and line evidence.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+- **Implementation:** Standalone prepared Erome MP4/JPEG/PNG media now shares a V2 text/gallery container in automatic and manual delivery. The shared manual publisher keeps V2 rollback and revalidates controls. Matching gallery plus Erome metadata is mandatory; legacy byte-size checks remain for loose attachments. Ten mutation checks fail as expected; affected tests pass (336, zero skipped). docs/media-blocks.md inventories every remaining compatibility exception with source line references, and README/Erome/article docs explain the changes.
+
+### [FEAT-1794401433] Confirm images are already inside authored cards
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** docs/media-blocks.md, features.md
+- **Why:** Media-blocks charter I5: show Linky-authored post text and its media together.
+- **Approach:** Document source-line evidence and named offline tests for images inside article, MyAnimeList, LinkedIn, Truth Social, YouTube community and X translation embeds; leave working image formatting unchanged and test the evidence by removing image fields temporarily.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] Document source-line evidence and named offline tests for images inside article, MyAnimeList, LinkedIn, Truth Social, YouTube community and X translation embeds; leave working image formatting unchanged and test the evidence by removing image fields temporarily.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+- **Implementation:** Confirmed six image-card families already use embed image fields on b803f79; no working image layout was rebuilt. docs/media-blocks.md records file:line evidence, named tests and rerun commands. Five image-field mutation runs cover all six families. The video-window regression uses a deterministic mocked clock so proof does not depend on wall-clock scheduling. No loose image-card path was found beyond the documented I4 compatibility cases.
+
 ---
 
 ## Shipped

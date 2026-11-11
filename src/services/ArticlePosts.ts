@@ -1,18 +1,19 @@
 import { AttachmentBuilder, ComponentType, type APIEmbed, type APIMessageTopLevelComponent } from 'discord.js';
 import { findArticleLinks, formatArticlePreview, parseArticleUrl, type ArticleLookup } from './ArticlePreview';
-import { isLinkedInVideoFile } from './LinkedIn';
 import type { RewritePlatform } from './LinkConfiguration';
 import { mapLinks, visibleLink } from './LinkTokens';
 import type { TruthSocialFile } from './TruthSocial';
+import { messageHasUploadedMedia } from './UploadedMedia';
 
 /**
- * `files` are uploaded with the message; the card names images as `attachment://name`, while a video plays as the
- * message's own attachment. `withoutFiles` is the card to show when the uploads cannot be attached.
+ * `files` are uploaded with the message; images use `attachment://name`, and a single video can play inside a
+ * Components V2 panel. `withoutFiles` is the card to show when the uploads cannot be attached.
  */
 export interface PreparedArticle { source: string; embeds: APIEmbed[]; files?: TruthSocialFile[]; withoutFiles?: APIEmbed[] }
 
 /** A card's uploaded video; Discord lists it as a message attachment, unlike images the card displays. */
-export const isArticleVideo = isLinkedInVideoFile;
+export const isArticleVideo = (name: string | null | undefined): boolean =>
+  typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,180}\.mp4$/.test(name);
 
 // Uploaded card media per message, within Discord's ten files and well under its request size.
 const MAX_ARTICLE_FILES = 6, MAX_ARTICLE_FILE_BYTES = 16 * 1024 * 1024;
@@ -68,10 +69,10 @@ export function withoutArticleFiles(posts: readonly PreparedArticle[]): Prepared
 }
 
 /** Uploads stay within the per-message budget, and only where the channel allows attachments. */
-export function fitArticleFiles(posts: readonly PreparedArticle[], canAttach: boolean): PreparedArticle[] {
+export function fitArticleFiles(posts: readonly PreparedArticle[], canAttach: boolean, maxBytes = MAX_ARTICLE_FILE_BYTES): PreparedArticle[] {
   const files = uploads(posts);
   return canAttach && files.length <= MAX_ARTICLE_FILES &&
-    files.reduce((total, file) => total + file.data.byteLength, 0) <= MAX_ARTICLE_FILE_BYTES ? [...posts] : withoutArticleFiles(posts);
+    files.reduce((total, file) => total + file.data.byteLength, 0) <= Math.min(MAX_ARTICLE_FILE_BYTES, maxBytes) ? [...posts] : withoutArticleFiles(posts);
 }
 
 /** Publish the whole requested set or leave the source intact. */
@@ -83,11 +84,12 @@ export async function prepareArticlePosts(sources: readonly string[], lookup?: A
   if (signal?.aborted || posts.some((post, index) => !post || post.source !== sources[index])) return null;
   const prepared = posts.map((post, index): PreparedArticle => {
     const embeds = formatArticlePreview(post!), shown = JSON.stringify(embeds);
-    const linkedIn = post!.linkedIn?.files ?? [];
-    const files = [...post!.truthSocial?.files ?? [], ...linkedIn].filter(file =>
-      linkedIn.includes(file) && isArticleVideo(file.name) || shown.includes(JSON.stringify(`attachment://${file.name}`)));
+    const uploads = [...post!.truthSocial?.files ?? [], ...post!.linkedIn?.files ?? []];
+    const files = uploads.filter(file => isArticleVideo(file.name) || shown.includes(JSON.stringify(`attachment://${file.name}`)));
     // Without its upload, a video card shows the poster and links the MP4 instead.
-    const withoutFiles = linkedIn.length ? formatArticlePreview({ ...post!, linkedIn: { ...post!.linkedIn!, files: [] } }) : [];
+    const withoutFiles = uploads.length ? formatArticlePreview({ ...post!,
+      ...(post!.linkedIn ? { linkedIn: { ...post!.linkedIn!, files: [] } } : {}),
+      ...(post!.truthSocial ? { truthSocial: { ...post!.truthSocial!, files: [] } } : {}) }) : [];
     return { source: sources[index], embeds, ...(files.length ? { files } : {}), ...(withoutFiles.length ? { withoutFiles } : {}) };
   });
   return articleEmbeds(prepared).length ? prepared : null;
@@ -106,13 +108,17 @@ const MAX_COMPONENT_TEXT = 4000;
 /**
  * One article card with its uploaded video, as a single Components V2 block: the shared-by line, then a container
  * holding the card's author, title and text, the playable video, and its counts and time. Null when the set is not
- * exactly one card with one uploaded video, or the text would not fit; the embed card and attachment are used then.
+ * exactly one card with one uploaded video and its optional avatar, or the text would not fit; the embed card and
+ * attachment are used then.
  */
 export function articleVideoComponents(posts: readonly PreparedArticle[], content: string,
   controls: APIMessageTopLevelComponent[] = []): APIMessageTopLevelComponent[] | null {
   const cards = articleEmbeds(posts), files = uploads(posts);
-  if (cards.length !== 1 || files.length !== 1 || !isArticleVideo(files[0].name)) return null;
+  const videos = files.filter(file => isArticleVideo(file.name));
+  if (cards.length !== 1 || videos.length !== 1) return null;
   const card = cards[0];
+  // Auxiliary uploads must be used by the card's thumbnail, never left loose beside the block.
+  if (files.some(file => file !== videos[0] && card.author?.icon_url !== `attachment://${file.name}`)) return null;
   if (!card.url || !card.title || card.image || !card.footer?.text) return null;
   const author = card.author?.name ? inert(card.author.name, 200) : '';
   const byline = author ? `-# ${card.author!.url ? `[${author}](${card.author!.url})` : author}\n` : '';
@@ -126,7 +132,7 @@ export function articleVideoComponents(posts: readonly PreparedArticle[], conten
     { type: ComponentType.Container, ...(card.color !== undefined ? { accent_color: card.color } : {}), components: [
       card.author?.icon_url ? { type: ComponentType.Section, components: [text],
         accessory: { type: ComponentType.Thumbnail, media: { url: card.author.icon_url } } } : text,
-      { type: ComponentType.MediaGallery, items: [{ media: { url: `attachment://${files[0].name}` }, description: 'Video from the linked post.' }] },
+      { type: ComponentType.MediaGallery, items: [{ media: { url: `attachment://${videos[0].name}` }, description: 'Video from the linked post.' }] },
       { type: ComponentType.TextDisplay, content: footer },
     ] },
     ...controls,
@@ -135,24 +141,6 @@ export function articleVideoComponents(posts: readonly PreparedArticle[], conten
 
 /** The published block shows the uploaded video, at its Discord CDN address or as the requested attachment. */
 export function messageHasArticleVideo(components: readonly { toJSON(): unknown }[], posts: readonly PreparedArticle[]): boolean {
-  const [file] = uploads(posts);
-  if (!file || !isArticleVideo(file.name)) return false;
-  const shown = (url: unknown) => {
-    if (url === `attachment://${file.name}`) return true;
-    try {
-      const address = new URL(String(url));
-      return address.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(address.hostname) && !address.port &&
-        /^\/attachments\/\d{17,20}\/\d{17,20}\/[^/]+$/.test(address.pathname) && address.pathname.endsWith(`/${file.name}`);
-    } catch { return false; }
-  };
-  const galleries = (value: unknown, depth = 0): boolean => {
-    const item = value as { type?: unknown; items?: { media?: { url?: unknown } }[]; components?: unknown[] } | null;
-    if (!item || typeof item !== 'object' || depth > 3) return false;
-    if (item.type === ComponentType.MediaGallery) return Array.isArray(item.items) && item.items.some(entry => shown(entry?.media?.url));
-    return Array.isArray(item.components) && item.components.some(child => galleries(child, depth + 1));
-  };
-  return components.some(component => {
-    const value = component.toJSON() as { type?: unknown };
-    return value?.type === ComponentType.Container && galleries(value);
-  });
+  const [file] = uploads(posts).filter(file => isArticleVideo(file.name));
+  return Boolean(file && messageHasUploadedMedia(components, file.name));
 }

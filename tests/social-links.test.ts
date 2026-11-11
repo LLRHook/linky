@@ -2048,6 +2048,33 @@ test('a LinkedIn video publishes as one block: shared-by text, then the post car
   assert(plain.events.includes('delete original'));
 });
 
+test('a Truth Social video with uploaded avatar publishes one verified panel and keeps the original when the gallery is missing', async () => {
+  for (const missing of [false, true]) {
+    const f = fixture(); f.source.content = 'https://truthsocial.com/@someone/123';
+    const edits: MessageCreateOptions[] = [];
+    f.replacement.edit = async options => { edits.push(options as MessageCreateOptions); return f.replacement; };
+    const send = f.source.channel.send;
+    f.source.channel.send = async options => { const result = await send(options); if (missing) result.components = []; return result; };
+    const videoUrl = 'https://static-assets-1.truthsocial.com/media/movie.mp4';
+    const avatarUrl = 'https://static-assets-1.truthsocial.com/media/avatar.jpg';
+    await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], rememberRepost: async () => true, lookupArticle: async source => ({
+      source, url: source, title: 'Truth Social post', publisher: 'Truth Social', truthSocial: { url: source,
+        author: { name: 'Someone', handle: 'someone', avatar: avatarUrl }, text: 'The post text', video: true, videoUrl, mediaCount: 1,
+        files: [{ name: 'truth-123-avatar.jpg', url: avatarUrl, data: new Uint8Array([1]) },
+          { name: 'truth-123.mp4', url: videoUrl, data: new Uint8Array([2]) }] },
+    }) })(f.source as unknown as Message);
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].content, undefined);
+    assert.equal(f.sent[0].embeds, undefined);
+    assert(new MessageFlagsBitField(f.sent[0].flags as number).has(MessageFlags.IsComponentsV2));
+    assert.match(JSON.stringify(f.sent[0].components), /attachment:\/\/truth-123.mp4/);
+    assert.match(JSON.stringify(f.sent[0].components), /The post text/);
+    assert.equal(f.events.includes('delete original'), !missing);
+    assert.equal(f.events.includes('delete replacement'), missing);
+    if (!missing) assert.match(JSON.stringify(edits.at(-1)?.components), /truth-123.mp4/);
+  }
+});
+
 test('a LinkedIn video beside copied source attachments keeps the card with the video as an attachment', async () => {
   const f = fixture(); f.source.content = LINKEDIN_URL;
   f.source.attachments.set('file', makeAttachment());

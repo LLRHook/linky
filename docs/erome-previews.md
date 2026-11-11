@@ -6,6 +6,12 @@ Linky prepares the first video from the first Erome album in a message, or its f
 
 The server preference `eromeChannels` defaults to `age-restricted`: Erome requires an age-restricted channel or a thread whose parent is age-restricted. Admins with Manage Server permission can select `/settings erome_channels:all` to allow ordinary server channels and their threads. This does not change automatic channel enablement, platform switches or permissions. DMs and unknown channels remain excluded. Manual previews use the same saved server policy, even for a personally installed command. The policy is checked again after preparation, so a revoked permission prevents an upload in an ordinary channel. Linky does not classify video content.
 
+## Text and media together
+
+A standalone prepared MP4, JPEG or PNG is uploaded into a Components V2 panel with the album text above the media. Automatic reposts, `/fix` and **Apps → Fix with Linky** share this layout. A gallery must contain the matching upload; Erome also requires Discord media type, proxy and positive dimensions before confirmation. Missing media keeps the source and rolls back the preview. Manual rollback stays in Components V2 and clears its uploads. Hosted originals retain their existing V2 galleries.
+
+Messages with copied source files or other native/translated previews keep attachment delivery so those files and previews are preserved. These exceptions and every authored image-card path are recorded in [the media presentation audit](media-blocks.md).
+
 ## Why an ordinary rewrite fails
 
 Metadata-only checks of the reported album found HTTP 200 HTML with one distinct MP4 but no `og:video`. Its CDN returned 403 for a Discordbot HEAD request without an album Referer, and 200 `video/mp4` with the original album Referer. The reported length was 32,179,163 bytes, too large for an unboosted server attachment. No video or image bytes were retrieved for that investigation.

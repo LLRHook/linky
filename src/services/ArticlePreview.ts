@@ -39,7 +39,7 @@ export interface ArticleLookupOptions {
   pageRetryMs?: number;
   /** Operator relay for Truth Social's status API when its bot protection blocks this host (see docs/truth-social-relay.md). */
   truthSocialRelay?: TruthSocialRelay;
-  /** How long a LinkedIn post's video download may run after its page metadata arrives. */
+  /** How long a post's video download may run after its metadata arrives (at most 15 seconds). */
   videoTimeoutMs?: number;
 }
 export interface TruthSocialRelay { hostname: string; token: string }
@@ -51,7 +51,7 @@ const BING = 'www.bing.com', TELEGRAPH_HOSTS = ['telegraph.co.uk', 'www.telegrap
 // Uploaded Truth Social media: one post image, one avatar, and every cached copy together.
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024, MAX_AVATAR_BYTES = 1024 * 1024, MAX_CACHED_FILE_BYTES = 32 * 1024 * 1024;
 // An uploaded LinkedIn video stays inside the per-message article upload budget (ArticlePosts).
-const MAX_LINKEDIN_VIDEO_BYTES = 15 * 1024 * 1024;
+const MAX_POST_VIDEO_BYTES = 15 * 1024 * 1024;
 // Media downloads stop this long before the lookup deadline, so a slow download costs only its upload.
 const MEDIA_MARGIN_MS = 250;
 // Truth Social's bot protection rejects generic and bare product user agents but accepts this identified browser-style one
@@ -445,7 +445,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
   const connect = options.connect ?? connectHttps, now = options.now ?? Date.now;
   const timeout = Math.max(1, Math.min(5000, options.timeoutMs ?? 5000));
   const pageRetry = Math.max(0, Math.min(2000, options.pageRetryMs ?? 1200));
-  const videoTimeout = Math.max(1, Math.min(30_000, options.videoTimeoutMs ?? 15_000));
+  const videoTimeout = Math.max(1, Math.min(15_000, options.videoTimeoutMs ?? 15_000));
   type Pending = { promise: Promise<ArticlePreview | null>; controller: AbortController; subscribers: number };
   const pending = new Map<string, Pending>();
   const cache = new Map<string, { value: ArticlePreview | null; expires: number }>();
@@ -527,7 +527,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
    * signed out.
    */
   async function requestTruthSocial(source: string, link: TruthSocialLink, signal: AbortSignal,
-    deadline: number): Promise<ArticlePreview | null> {
+    deadline: number, extend: (ms: number) => void): Promise<ArticlePreview | null> {
     const fromStatus = (value: unknown) => value === null ? null : parseTruthSocialStatus(value, link);
     const post = fromStatus(await statusJson(TRUTH_SOCIAL_HOST, `/api/v1/statuses/${link.id}`, signal)) ??
       (relay ? fromStatus(await statusJson(relay.hostname, `/status/${link.id}`, signal, `Bearer ${relay.token}`)) : null) ?? await attempt(async () => {
@@ -563,11 +563,25 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     const files = await Promise.all([[post.image, 'image'], [post.author.avatar, 'avatar']].map(([asset, kind]) =>
       asset ? attempt(() => fetchFile(asset, link.id, kind as 'image' | 'avatar', media), signal) : null));
     const uploads = files.filter((file): file is TruthSocialFile => file !== null);
+    // The parser accepts only the known Truth Social and archive CDN shapes. Revalidate DNS and pin the
+    // connection here too; redirects never leave fetchBody. Video gets its own bounded window after metadata.
+    if (post.videoUrl) {
+      const video = await fetchPostVideo(post.videoUrl, `truth-${link.id}.mp4`, signal, extend);
+      if (video) uploads.push(video);
+    }
     if (uploads.length) post.files = uploads;
     if (signal.aborted) return null;
     return { source, url: post.url, title: 'Truth Social post', publisher: 'Truth Social',
       ...(post.text ? { description: post.text } : {}), ...(post.image ? { image: post.image } : {}),
       ...(post.publishedAt ? { publishedAt: post.publishedAt } : {}), truthSocial: post };
+  }
+  async function fetchPostVideo(url: string, name: string, signal: AbortSignal,
+    extend: (ms: number) => void): Promise<TruthSocialFile | null> {
+    extend(videoTimeout);
+    const video = new URL(url), media = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, videoTimeout - MEDIA_MARGIN_MS))]);
+    const data = await attempt(() => fetchBody(video.hostname, video.pathname + video.search, 'video/mp4', /^video\/mp4(?:\s*;|$)/i, media,
+      response => readBytes(response, media, MAX_POST_VIDEO_BYTES)), signal);
+    return data && data.byteLength > 12 && new TextDecoder().decode(data.subarray(4, 8)) === 'ftyp' ? { name, url, data } : null;
   }
   /**
    * A LinkedIn post's card media stays on LinkedIn's CDN, which Discord's proxy reads; its MP4 is uploaded so
@@ -585,12 +599,8 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     }
     const name = linkedInVideoName(post);
     if (post.video && name) {
-      extend(videoTimeout);
-      const video = new URL(post.video), media = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, videoTimeout - MEDIA_MARGIN_MS))]);
-      const data = await attempt(() => fetchBody(video.hostname, video.pathname + video.search, 'video/mp4', /^video\/mp4(?:\s*;|$)/i, media,
-        response => readBytes(response, media, MAX_LINKEDIN_VIDEO_BYTES)), signal);
-      // An MP4 starts with its ftyp box; anything else is not uploaded as a playable video.
-      if (data && data.byteLength > 12 && new TextDecoder().decode(data.subarray(4, 8)) === 'ftyp') post.files = [{ name, url: post.video, data }];
+      const video = await fetchPostVideo(post.video, name, signal, extend);
+      if (video) post.files = [video];
     }
     if (signal.aborted) return null;
     return { source, url: post.url, title: post.title ?? (post.video ? 'LinkedIn video' : 'LinkedIn post'), publisher: 'LinkedIn',
@@ -606,7 +616,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     let current = untracked(new URL(source));
     try {
       const truthSocial = parseTruthSocialUrl(source);
-      if (truthSocial) return await requestTruthSocial(source, truthSocial, signal, deadline);
+      if (truthSocial) return await requestTruthSocial(source, truthSocial, signal, deadline, extend);
       for (let hop = 0; hop <= 3; hop++) {
         if (seen.has(current.href)) return null;
         seen.add(current.href);

@@ -135,6 +135,30 @@ in that maintenance branch and are not re-filed here._
 - **Status:** fixed-pending-migration
 - **Fix:** Atomically downgrade identical replace ownership to reply after Discord refuses source deletion with 60003 or 50013, retain the verified preview with final controls, and report a permission outcome. Details includes server security restrictions and /diagnose flags elevated moderator 2FA requirements in Replace mode.
 
+### [BUG-1794401869] Manual media panel can confirm a revoked final verification
+- [x] **Severity:** med
+- **Area:** commands, media, tests
+- **File(s):** src/commands/fixMedia.ts, tests/erome-delivery.test.ts
+- **Observation:** Final review of the I4 implementation found that publishManualMediaBlock awaited the final media verifier after checking source/settings, then recorded confirmed without checking them again. Erome verification can await Discord metadata, so revocation or cancellation in that interval could retain a stale panel.
+- **Expected:** Every asynchronous verification must finish with current source, settings and cancellation checks before confirmation; revoke and clear stale media.
+- **Repro / Notes:** The regression test changes source, platform preference or cancellation during the second verifyErome call in both manual entry points. The original implementation keeps the panel; the fix clears its uploads and uses a V2 notice. This defect was introduced within this branch, not found in unrelated code.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Recheck current source/settings/cancellation after both awaited media verifications. The final-verification regression fails before the change and under mutation, then passes for slash/Apps settings/cancellation and Apps source changes. The source and uploads are preserved or removed using the existing V2 rollback.
+
+
+### [BUG-1794403249] Private article image uploads fail CDN confirmation
+- [x] **Severity:** med
+- **Area:** previews, commands
+- **File(s):** src/services/PreviewRecovery.ts, tests/preview-recovery.test.ts, tests/manual-fix.test.ts
+- **Observation:** The pre-existing sameMedia matcher accepts only /attachments/, so private article images and author avatars returned under /ephemeral-attachments/ cannot confirm. It also accepts userinfo and an explicit default port after URL normalization.
+- **Expected:** Confirm both Discord upload paths with exact host, two snowflake identifiers and filename, HTTPS, no credentials or explicit port.
+- **Repro / Notes:** tests/preview-recovery.test.ts "article image and avatar confirmations accept public and ephemeral uploads with exact safe CDN identity"; tests/manual-fix.test.ts private image confirmation. Offline fixtures only; the image-matching gap predates PR #104.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Accept both Discord attachment paths for exact uploaded image/avatar confirmation; reject userinfo and explicit ports. Public/private CDN identity and private slash/Apps tests pass (104/104); reverting ephemeral path support fails both new tests.
+
+
 ---
 
 ### [BUG-1791830086] TikTok share previews lack an exact post identity and a cold-media wait
