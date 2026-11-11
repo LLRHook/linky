@@ -46,10 +46,10 @@ import { ARTICLE_MIXED_GUIDANCE, articleAttachments, articleEmbeds, fitArticleFi
 import { bypassLinky, canCopy, sourceVersion } from './RepostEligibility';
 import { canonicalRepostLinks, instagramShortcodes, repostExpectations, requiredRepostPermissions } from './RepostDelivery';
 
-export { REWRITE_PLATFORMS, parseRewritePlatforms, parseDiscordIds, type RewritePlatform } from './LinkConfiguration';
+export { REWRITE_PLATFORMS, parseRewritePlatforms, parseDiscordIds } from './LinkConfiguration';
 export { rewriteSocialLinks } from './SocialProviders';
 export { downloadAttachment } from './RepostAttachments';
-export { originalPostUrl, formatLinkRepost, repostControls } from './RepostPresentation';
+export { formatLinkRepost } from './RepostPresentation';
 export { bypassLinky } from './RepostEligibility';
 
 const MAX_CONTENT_LENGTH = 2_000;

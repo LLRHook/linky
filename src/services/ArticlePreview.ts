@@ -287,13 +287,13 @@ function bingThumbnail(value: unknown): string | null {
 }
 
 /** Bing News search terms for a blocked Telegraph article: its slug words, limited to the publisher's site. */
-export function bingNewsPath(link: ArticlePreview): string {
+function bingNewsPath(link: ArticlePreview): string {
   const slug = new URL(link.url).pathname.replace(/\/$/, '').split('/').at(-1)!;
   return `/news/search?q=${encodeURIComponent(`${slug.replaceAll('-', ' ')} site:telegraph.co.uk`)}&format=rss`;
 }
 
 /** The Bing News RSS item whose link names exactly this Telegraph article; any other match is ignored. */
-export function parseBingNewsFeed(xml: string, link: ArticlePreview): ArticlePreview | null {
+function parseBingNewsFeed(xml: string, link: ArticlePreview): ArticlePreview | null {
   const wanted = new URL(link.url).pathname.replace(/\/$/, '');
   const tag = (item: string, name: string) => {
     const start = item.indexOf(`<${name}>`), end = start < 0 ? -1 : item.indexOf(`</${name}>`, start);

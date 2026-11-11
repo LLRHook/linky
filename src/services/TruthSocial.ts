@@ -2,7 +2,7 @@ import type { APIEmbed } from 'discord.js';
 
 export interface TruthSocialLink { id: string; handle: string; url: string }
 /** Where the post data came from; the status API is preferred, the others serve hosts its bot protection blocks. */
-export type TruthSocialSource = 'api' | 'archive' | 'page';
+type TruthSocialSource = 'api' | 'archive' | 'page';
 /**
  * A post image or avatar the bot host downloaded. Discord's image proxy cannot fetch Truth Social's media hosts,
  * so the card shows an uploaded copy (`attachment://name`) instead of the original address.
@@ -66,7 +66,7 @@ export function parseTruthSocialUrl(raw: string): TruthSocialLink | null {
   } catch { return null; }
 }
 
-export function truthSocialAsset(value: unknown): string | null {
+function truthSocialAsset(value: unknown): string | null {
   return typeof value === 'string' && value.length <= 1024 && ASSET.test(value) ? value : null;
 }
 
@@ -81,7 +81,7 @@ function truthSocialVideo(value: unknown): string | null {
 }
 
 /** Card images come only from Truth Social or its archive's storage. */
-export function truthSocialImage(value: unknown): string | null {
+function truthSocialImage(value: unknown): string | null {
   return truthSocialAsset(value) ?? archiveMedia(value, 'image');
 }
 

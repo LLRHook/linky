@@ -25,7 +25,7 @@ export interface LinkedInPost {
   files?: TruthSocialFile[];
 }
 
-export const LINKEDIN_HOST = 'www.linkedin.com';
+const LINKEDIN_HOST = 'www.linkedin.com';
 const HOSTS = new Set([LINKEDIN_HOST, 'linkedin.com']);
 // `/posts/<author>_<slug>-activity-<id>-<suffix>`; shared links also use `ugcPost` or `share` ids.
 const POST_PATH = /^\/posts\/[^/?#\s]{1,400}-(?:activity|ugcPost|share)-\d{15,22}-[A-Za-z0-9_-]{2,8}\/?$/;
@@ -60,11 +60,11 @@ export function linkedInPermalink(raw: unknown): string | null {
   return url && POST_PATH.test(url.pathname) ? `https://${LINKEDIN_HOST}${url.pathname.replace(/\/$/, '')}` : null;
 }
 
-export function linkedInImage(value: unknown): string | null {
+function linkedInImage(value: unknown): string | null {
   return typeof value === 'string' && value.length <= 1024 && IMAGE.test(value) ? value : null;
 }
 
-export function linkedInVideo(value: unknown): string | null {
+function linkedInVideo(value: unknown): string | null {
   return typeof value === 'string' && value.length <= 1024 && VIDEO.test(value) ? value : null;
 }
 

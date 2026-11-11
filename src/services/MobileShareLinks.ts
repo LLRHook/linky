@@ -5,7 +5,7 @@ import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable }
 import { FACEBOOK_HOSTS, parseSocialUrl } from './SocialProviders';
 
 type MobilePlatform = 'instagram' | 'reddit' | 'tiktok' | 'facebook';
-export interface NormalizedMobileLinks {
+interface NormalizedMobileLinks {
   content: string;
   /** Canonical source URL to the first original share token that fits a link button. */
   originals: ReadonlyMap<string, string>;

@@ -8,7 +8,7 @@ import type { EromeSelection } from './EromeAlbum';
 import type { EromeItemInfo } from './EromeMedia';
 import { messageHasUploadedMedia } from './UploadedMedia';
 
-export type EromeStage = 'queued' | 'downloading' | 'preparing' | 'cached';
+type EromeStage = 'queued' | 'downloading' | 'preparing' | 'cached';
 export type EromeProgress = (stage: EromeStage) => void | Promise<void>;
 export type EromePreparer = (source: string, onStage?: EromeProgress,
   options?: { maxBytes?: number; context?: DeliveryContext; selection?: EromeSelection }) =>
