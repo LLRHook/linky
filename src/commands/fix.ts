@@ -7,7 +7,7 @@ import { getProviderCandidates, parseSocialUrl } from '../services/SocialProvide
 import { parseYouTubeUrl } from '../services/YouTube';
 import { findArticleLinks, parseArticleUrl, type ArticleLookup } from '../services/ArticlePreview';
 import { ARTICLE_MIXED_GUIDANCE, articleAttachments, articleEmbeds, fitArticleFiles, hasMixedArticleLinks,
-  isArticleVideo, prepareArticlePosts } from '../services/ArticlePosts';
+  articleVideoComponents, isArticleVideo, prepareArticlePosts } from '../services/ArticlePosts';
 import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from '../services/YouTubeCommunity';
 import { originalPostUrl } from '../services/RepostPresentation';
@@ -30,7 +30,7 @@ import type { InstagramTranslation } from '../services/InstagramTranslation';
 import { translateRepost } from '../services/TweetPresentation';
 import type { TweetTranslation } from '../services/TweetTranslation';
 import { instagramShortcodes, repostExpectations } from '../services/RepostDelivery';
-import { manualButtons, publishHostedErome } from './fixMedia';
+import { manualButtons, publishHostedErome, publishManualArticleVideo } from './fixMedia';
 
 const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall];
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
@@ -319,6 +319,13 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       return;
     }
     const nativeExpected = expected.filter(item => !item.explicitEmbeds);
+    const inlineVideo = !erome && !presentation.embeds?.length && !community.length && !presentation.translationFiles?.length
+      ? articleVideoComponents(articles, rendered) : null;
+    if (inlineVideo) {
+      await publishManualArticleVideo({ interaction, attempt, posts: articles, block: inlineVideo, files, buttonRows,
+        preferencesCurrent, sourceCurrent, expected, observePreview });
+      return;
+    }
     previewWatch = nativeExpected.length ? armPreview?.(interaction.channelId, nativeExpected, context) : undefined;
     const publishStage = context.trace?.startStage('publish');
     if (await stopChangedPreferences()) return;

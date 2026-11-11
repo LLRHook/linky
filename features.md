@@ -444,6 +444,23 @@ Priority guide: crit / high / med / low.
 
 - **Implementation:** Truth Social uploads allow-listed API/archive MP4s through the shared LinkedIn download helper (15 MiB, video/mp4, ftyp, at most 15 seconds, pinned public DNS, no redirects or cookies). Avatar and video share the general panel; failure and permission/budget fallback restore original media URLs. tests/truth-social.test.ts and the Truth Social automatic panel test pass; five mutation checks fail as expected. README and article preview docs updated.
 
+### [FEAT-1794400814] Single video panels for manual fixes
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/commands/fix.ts, tests/manual-fix.test.ts, README.md, docs/article-previews.md
+- **Why:** Media-blocks charter I3: show Linky-authored post text and its media together.
+- **Approach:** Manual /fix and Apps Fix with Linky use the same single-video article panel, verify its media, retain controls, and roll back within Components V2 on missing media, cancellation, source edits or settings revocation.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] Manual /fix and Apps Fix with Linky use the same single-video article panel, verify its media, retain controls, and roll back within Components V2 on missing media, cancellation, source edits or settings revocation.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+- **Implementation:** Both manual entry points publish the shared panel through publishManualArticleVideo. V2-only rollback removes uploads and media on missing gallery, source/settings changes, cancellation and publication errors; final controls retain and recheck the panel. tests/manual-fix.test.ts plus tests/manual-media.test.ts: 87 pass, zero skipped; five mutations caught. README and article docs updated.
+
 ---
 
 ## Shipped
