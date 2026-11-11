@@ -459,7 +459,7 @@ Priority guide: crit / high / med / low.
 - **Bump:** minor
 - **Status:** shipped-pending-migration
 
-- **Implementation:** Both manual entry points publish the shared panel through publishManualArticleVideo. V2-only rollback removes uploads and media on missing gallery, source/settings changes, cancellation and publication errors; final controls retain and recheck the panel. tests/manual-fix.test.ts plus tests/manual-media.test.ts: 87 pass, zero skipped; five mutations caught. README and article docs updated.
+- **Implementation:** Both manual entry points publish the shared panel through publishManualMediaBlock. V2-only rollback removes uploads and media on missing gallery, source/settings changes, cancellation and publication errors; final controls retain and recheck the panel. tests/manual-fix.test.ts plus tests/manual-media.test.ts: 87 pass, zero skipped; five mutations caught. README and article docs updated.
 
 ### [FEAT-1794401068] Group standalone prepared Erome media and document compatibility fallbacks
 - [x] **Priority:** high
