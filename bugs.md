@@ -144,6 +144,7 @@ in that maintenance branch and are not re-filed here._
 - **Repro / Notes:** The regression test changes source, platform preference or cancellation during the second verifyErome call in both manual entry points. The original implementation keeps the panel; the fix clears its uploads and uses a V2 notice. This defect was introduced within this branch, not found in unrelated code.
 - **Bump:** patch
 - **Status:** fixed-pending-migration
+- **Fix:** Recheck current source/settings/cancellation after both awaited media verifications. The final-verification regression fails before the change and under mutation, then passes for slash/Apps settings/cancellation and Apps source changes. The source and uploads are preserved or removed using the existing V2 rollback.
 
 
 ### [BUG-1794403249] Private article image uploads fail CDN confirmation
@@ -159,8 +160,6 @@ in that maintenance branch and are not re-filed here._
 
 
 ---
-
-- **Fix:** Recheck current source/settings/cancellation after both awaited media verifications. The final-verification regression fails before the change and under mutation, then passes for slash/Apps settings/cancellation and Apps source changes. The source and uploads are preserved or removed using the existing V2 rollback.
 
 ### [BUG-1791830086] TikTok share previews lack an exact post identity and a cold-media wait
 - [x] **Severity:** high
