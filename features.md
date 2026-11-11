@@ -408,6 +408,25 @@ Priority guide: crit / high / med / low.
 - **Status:** in-progress
 - **Implementation:** `articleVideoComponents` builds the block from the prepared card; `messageHasArticleVideo` confirms the published block shows the video; `SocialLinkService` publishes and finishes the block as Components V2 when it applies.
 
+### [FEAT-1794400497] General article video blocks
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/services/ArticlePosts.ts, tests/article-video.test.ts, docs/article-previews.md
+- **Why:** Media-blocks charter I2: show Linky-authored post text and its media together.
+- **Approach:** A single article-family card with one uploaded MP4 uses a Components V2 panel regardless of provider, including an uploaded avatar; verification rejects absent or unrelated media. Existing text and multi-card fallbacks remain.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] A single article-family card with one uploaded MP4 uses a Components V2 panel regardless of provider, including an uploaded avatar; verification rejects absent or unrelated media. Existing text and multi-card fallbacks remain.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+
+
+- **Implementation:** General filename recognition and video selection support provider-independent MP4 panels with an uploaded avatar. Two new tests and eight existing LinkedIn tests pass; four mutation checks fail as expected. Limits and legacy fallbacks remain. See docs/article-previews.md, General video panels.
+
 ---
 
 ## Shipped

@@ -1,6 +1,5 @@
 import { AttachmentBuilder, ComponentType, type APIEmbed, type APIMessageTopLevelComponent } from 'discord.js';
 import { findArticleLinks, formatArticlePreview, parseArticleUrl, type ArticleLookup } from './ArticlePreview';
-import { isLinkedInVideoFile } from './LinkedIn';
 import type { RewritePlatform } from './LinkConfiguration';
 import { mapLinks, visibleLink } from './LinkTokens';
 import type { TruthSocialFile } from './TruthSocial';
@@ -12,7 +11,8 @@ import type { TruthSocialFile } from './TruthSocial';
 export interface PreparedArticle { source: string; embeds: APIEmbed[]; files?: TruthSocialFile[]; withoutFiles?: APIEmbed[] }
 
 /** A card's uploaded video; Discord lists it as a message attachment, unlike images the card displays. */
-export const isArticleVideo = isLinkedInVideoFile;
+export const isArticleVideo = (name: string | null | undefined): boolean =>
+  typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,180}\.mp4$/.test(name);
 
 // Uploaded card media per message, within Discord's ten files and well under its request size.
 const MAX_ARTICLE_FILES = 6, MAX_ARTICLE_FILE_BYTES = 16 * 1024 * 1024;
@@ -111,8 +111,11 @@ const MAX_COMPONENT_TEXT = 4000;
 export function articleVideoComponents(posts: readonly PreparedArticle[], content: string,
   controls: APIMessageTopLevelComponent[] = []): APIMessageTopLevelComponent[] | null {
   const cards = articleEmbeds(posts), files = uploads(posts);
-  if (cards.length !== 1 || files.length !== 1 || !isArticleVideo(files[0].name)) return null;
+  const videos = files.filter(file => isArticleVideo(file.name));
+  if (cards.length !== 1 || videos.length !== 1) return null;
   const card = cards[0];
+  // Auxiliary uploads must be used by the card's thumbnail, never left loose beside the block.
+  if (files.some(file => file !== videos[0] && card.author?.icon_url !== `attachment://${file.name}`)) return null;
   if (!card.url || !card.title || card.image || !card.footer?.text) return null;
   const author = card.author?.name ? inert(card.author.name, 200) : '';
   const byline = author ? `-# ${card.author!.url ? `[${author}](${card.author!.url})` : author}\n` : '';
@@ -126,7 +129,7 @@ export function articleVideoComponents(posts: readonly PreparedArticle[], conten
     { type: ComponentType.Container, ...(card.color !== undefined ? { accent_color: card.color } : {}), components: [
       card.author?.icon_url ? { type: ComponentType.Section, components: [text],
         accessory: { type: ComponentType.Thumbnail, media: { url: card.author.icon_url } } } : text,
-      { type: ComponentType.MediaGallery, items: [{ media: { url: `attachment://${files[0].name}` }, description: 'Video from the linked post.' }] },
+      { type: ComponentType.MediaGallery, items: [{ media: { url: `attachment://${videos[0].name}` }, description: 'Video from the linked post.' }] },
       { type: ComponentType.TextDisplay, content: footer },
     ] },
     ...controls,
@@ -135,7 +138,7 @@ export function articleVideoComponents(posts: readonly PreparedArticle[], conten
 
 /** The published block shows the uploaded video, at its Discord CDN address or as the requested attachment. */
 export function messageHasArticleVideo(components: readonly { toJSON(): unknown }[], posts: readonly PreparedArticle[]): boolean {
-  const [file] = uploads(posts);
+  const [file] = uploads(posts).filter(file => isArticleVideo(file.name));
   if (!file || !isArticleVideo(file.name)) return false;
   const shown = (url: unknown) => {
     if (url === `attachment://${file.name}`) return true;
