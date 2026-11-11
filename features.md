@@ -478,6 +478,23 @@ Priority guide: crit / high / med / low.
 
 - **Implementation:** Standalone prepared Erome MP4/JPEG/PNG media now shares a V2 text/gallery container in automatic and manual delivery. The shared manual publisher keeps V2 rollback and revalidates controls. Matching gallery plus Erome metadata is mandatory; legacy byte-size checks remain for loose attachments. Ten mutation checks fail as expected; affected tests pass (336, zero skipped). docs/media-blocks.md inventories every remaining compatibility exception with source line references, and README/Erome/article docs explain the changes.
 
+### [FEAT-1794401433] Confirm images are already inside authored cards
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** docs/media-blocks.md, features.md
+- **Why:** Media-blocks charter I5: show Linky-authored post text and its media together.
+- **Approach:** Document source-line evidence and named offline tests for images inside article, MyAnimeList, LinkedIn, Truth Social, YouTube community and X translation embeds; leave working image formatting unchanged and test the evidence by removing image fields temporarily.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] Document source-line evidence and named offline tests for images inside article, MyAnimeList, LinkedIn, Truth Social, YouTube community and X translation embeds; leave working image formatting unchanged and test the evidence by removing image fields temporarily.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+- **Implementation:** Confirmed six image-card families already use embed image fields on b803f79; no working image layout was rebuilt. docs/media-blocks.md records file:line evidence, named tests and rerun commands. Five image-field mutation runs cover all six families. The video-window regression uses a deterministic mocked clock so proof does not depend on wall-clock scheduling. No loose image-card path was found beyond the documented I4 compatibility cases.
+
 ---
 
 ## Shipped

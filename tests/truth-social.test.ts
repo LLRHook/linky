@@ -103,21 +103,26 @@ test('Truth Social video download rejects oversized, malformed, redirected and s
   assert.match(posts[0].embeds[0].description!, /Play video/);
 });
 
-test('Truth Social video gets its own window after metadata and caller cancellation still stops it', async () => {
+test('Truth Social video gets its own window after metadata and caller cancellation still stops it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const videoUrl = asset('media_attachments/files/123/original/movie.mp4');
   for (const cancel of [false, true]) {
     const controller = new AbortController();
     const f = fixture(async (settings, signal) => {
       if (settings.hostname === 'truthsocial.com') {
-        await new Promise(resolve => setTimeout(resolve, 30));
+        const ready = new Promise(resolve => setTimeout(resolve, 30));
+        t.mock.timers.tick(30);
+        await ready;
         return json(status({ media_attachments: [{ type: 'video', url: videoUrl }] }));
       }
       if (!settings.path?.endsWith('.mp4')) return picture();
       if (cancel) controller.abort();
-      await new Promise<void>((resolve, reject) => {
+      const downloaded = new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, 100);
         signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
       });
+      t.mock.timers.tick(100);
+      await downloaded;
       return mp4();
     }, { timeoutMs: 80, videoTimeoutMs: 500 });
     const posts = await prepareArticlePosts([source], f.lookup, controller.signal);
