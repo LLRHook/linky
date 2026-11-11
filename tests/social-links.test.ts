@@ -6,6 +6,7 @@ import {
   AttachmentFlags,
   AttachmentFlagsBitField,
   Collection,
+  ComponentType,
   Message,
   MessageCreateOptions,
   MessageFlags,
@@ -326,6 +327,7 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
   const replacement = botMessage({
     id: 'replacement-1', attachments: new Collection<string, Attachment>(),
     embeds: [] as { toJSON(): APIEmbed }[],
+    components: [] as { toJSON(): unknown }[],
     fetch: async () => replacement,
     delete: async () => { events.push('delete replacement'); },
   });
@@ -351,6 +353,8 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
           return url;
         });
         for (const embed of options.embeds ?? []) replacement.embeds.push({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed });
+        replacement.components = (options.components ?? []).map(component =>
+          ({ toJSON: () => 'toJSON' in component ? component.toJSON() : component }));
         return replacement;
       },
     }),
@@ -1991,31 +1995,69 @@ const linkedInLookup = async (source: string) => ({ source, url: linkedInPermali
   url: linkedInPermalink, author: { name: 'RTX' }, text: 'Ready to build what’s next?', video: linkedInVideo, imageCount: 0,
   files: [{ name: 'linkedin-7500720890129756160.mp4', url: linkedInVideo, data: new Uint8Array([1, 2, 3]) }] } });
 
-test('LinkedIn video cards upload the MP4, which Discord lists as the message attachment', async () => {
-  const f = fixture(); f.source.content = LINKEDIN_URL;
-  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: linkedInLookup })(f.source as unknown as Message);
-  assert.equal(f.sent.length, 1);
-  assert.deepEqual(f.sent[0].files?.map(file => (file as { name?: string }).name), ['linkedin-7500720890129756160.mp4']);
-  const embed = f.sent[0].embeds![0];
-  assert.equal(('toJSON' in embed ? embed.toJSON() : embed).image, undefined);
-  assert(f.events.includes('delete original'));
+const sentNames = (options: MessageCreateOptions) => options.files?.map(file => (file as { name?: string }).name);
+const sentComponents = (options: { components?: readonly unknown[] }) => (options.components ?? [])
+  .map(component => (component as { toJSON?: () => unknown }).toJSON?.() ?? component) as { type: number; content?: string; components?: unknown[] }[];
 
-  // A reply that lost the video is not accepted.
+test('a LinkedIn video publishes as one block: shared-by text, then the post card with its video inside', async () => {
+  const f = fixture(); f.source.content = LINKEDIN_URL;
+  const edits: { components?: unknown[] }[] = [];
+  Object.assign(f.replacement, { edit: async (payload: { components?: unknown[] }) => { edits.push(payload); return f.replacement; } });
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: linkedInLookup,
+    rememberRepost: async () => true })(f.source as unknown as Message);
+  assert.equal(f.sent.length, 1);
+  const sent = f.sent[0];
+  assert.equal(sent.content, undefined);
+  assert.equal(sent.embeds, undefined);
+  assert(new MessageFlagsBitField(sent.flags as number).has(MessageFlags.IsComponentsV2));
+  assert.deepEqual(sentNames(sent), ['linkedin-7500720890129756160.mp4']);
+  const [shared, block] = sentComponents(sent);
+  assert.equal(shared.type, ComponentType.TextDisplay);
+  assert.match(shared.content!, /Shared by/);
+  assert.equal(block.type, ComponentType.Container);
+  assert.equal((block as { accent_color?: number }).accent_color, 0x0a66c2);
+  const inner = JSON.stringify(block.components);
+  assert(inner.includes('### [LinkedIn video](https://www.linkedin.com/posts/rtx_'));
+  assert.match(inner, /Ready to build/);
+  // The video sits inside the block, below the text and above the footer.
+  const kinds = (block.components as { type: number }[]).map(component => component.type);
+  assert.deepEqual(kinds, [ComponentType.TextDisplay, ComponentType.MediaGallery, ComponentType.TextDisplay]);
+  assert(inner.includes('attachment://linkedin-7500720890129756160.mp4'));
+  assert(f.events.includes('delete original'));
+  // The finished message keeps the block and adds the Remove control.
+  const final = sentComponents(edits.at(-1)!);
+  assert.equal(final[1].type, ComponentType.Container);
+  assert(JSON.stringify(final).includes('linky:remove'));
+
+  // A reply whose block lost the video is not accepted.
   const lost = fixture(); lost.source.content = LINKEDIN_URL;
   const send = lost.source.channel.send;
-  lost.source.channel.send = async options => { const result = await send(options); result.attachments = new Collection(); return result; };
+  lost.source.channel.send = async options => { const result = await send(options); result.components = []; return result; };
   await createLinkRepostHandler(CHANNEL_ID, lost.log, undefined, { platforms: ['articles'], lookupArticle: linkedInLookup })(lost.source as unknown as Message);
   assert(!lost.events.includes('delete original'));
   assert(lost.events.includes('delete replacement'));
 
-  // Without Attach Files the card links the MP4 and uploads nothing.
+  // Without Attach Files the embed card links the MP4 and uploads nothing.
   const plain = fixture(); plain.source.content = LINKEDIN_URL;
   plain.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.AttachFiles);
   await createLinkRepostHandler(CHANNEL_ID, plain.log, undefined, { platforms: ['articles'], lookupArticle: linkedInLookup })(plain.source as unknown as Message);
   assert.equal(plain.sent[0].files?.length ?? 0, 0);
+  assert.equal(plain.sent[0].components?.some(component => JSON.stringify(component).includes('"type":17')) ?? false, false);
   const linked = plain.sent[0].embeds![0];
   assert.match(('toJSON' in linked ? linked.toJSON() : linked).description ?? '', /Play video\]\(https:\/\/dms\.licdn\.com\//);
   assert(plain.events.includes('delete original'));
+});
+
+test('a LinkedIn video beside copied source attachments keeps the card with the video as an attachment', async () => {
+  const f = fixture(); f.source.content = LINKEDIN_URL;
+  f.source.attachments.set('file', makeAttachment());
+  await createLinkRepostHandler(CHANNEL_ID, f.log,
+    async attachment => new AttachmentBuilder(Buffer.from('x'), { name: attachment.name }), { platforms: ['articles'], lookupArticle: linkedInLookup,
+    verifyPreview: async () => ({ ok: true, missing: [], videoMetadata: false }) })(f.source as unknown as Message);
+  assert.equal(f.sent.length, 1);
+  assert(!new MessageFlagsBitField((f.sent[0].flags as number | undefined) ?? 0).has(MessageFlags.IsComponentsV2));
+  assert.equal(f.sent[0].embeds?.length, 1);
+  assert(sentNames(f.sent[0])?.includes('linkedin-7500720890129756160.mp4'));
 });
 
 test('article reply mode keeps originals without Manage Messages permission', async () => {

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RequestOptions } from 'node:https';
 import { createArticleLookup, findArticleLinks, type ArticleLookupOptions } from '../src/services/ArticlePreview';
-import { articleAttachments, fitArticleFiles, isArticleVideo, prepareArticlePosts, withoutArticleFiles } from '../src/services/ArticlePosts';
+import { ComponentType } from 'discord.js';
+import { articleAttachments, articleVideoComponents, fitArticleFiles, isArticleVideo, messageHasArticleVideo, prepareArticlePosts,
+  withoutArticleFiles, type PreparedArticle } from '../src/services/ArticlePosts';
 import { formatLinkedInPost, isLinkedInPostUrl, linkedInPermalink, parseLinkedInPost } from '../src/services/LinkedIn';
 import { expectedPreviews, inspectPreviews } from '../src/services/PreviewRecovery';
 
@@ -184,4 +186,46 @@ test('image posts need no upload; pages without matching post JSON-LD keep the g
   const generic = fixture(() => page({ '@context': 'http://schema.org', '@type': 'Organization', '@id': permalink }));
   const [card] = (await prepareArticlePosts([permalink], generic.lookup))![0].embeds;
   assert.equal(card.footer?.text, 'www.linkedin.com · Article metadata');
+});
+
+test('a LinkedIn video becomes one block: author, linked title and text, the video, then counts and time', () => {
+  const video = { name: `linkedin-${activity}.mp4`, url: 'https://dms.licdn.com/v.mp4', data: new Uint8Array([1]) };
+  const post = (overrides: Partial<PreparedArticle['embeds'][number]> = {}, files = [video]): PreparedArticle => ({ source: 'https://lnkd.in/p/x',
+    embeds: [{ url: permalink, title: 'Turn ideas \\*into\\* hardware', description: 'Ready to build?', color: 0x0a66c2,
+      author: { name: 'R*T*X @everyone', url: 'https://www.linkedin.com/company/rtx', icon_url: 'https://media.licdn.com/a.jpg' },
+      footer: { text: 'LinkedIn · 12 reactions' }, timestamp: '2026-11-10T12:00:00.000Z', ...overrides }], files });
+  const components = articleVideoComponents([post()], 'Shared by <@1>')!;
+  assert.deepEqual(components[0], { type: ComponentType.TextDisplay, content: 'Shared by <@1>' });
+  const block = components[1] as { type: number; accent_color: number; components: { type: number; content?: string;
+    components?: { content: string }[]; accessory?: { media: { url: string } }; items?: { media: { url: string } }[] }[] };
+  assert.equal(block.type, ComponentType.Container);
+  assert.equal(block.accent_color, 0x0a66c2);
+  const [section, gallery, footer] = block.components;
+  assert.equal(section.type, ComponentType.Section);
+  assert.equal(section.accessory!.media.url, 'https://media.licdn.com/a.jpg');
+  // Author names are plain in embeds; here they render, so markdown and mentions are made inert.
+  assert.equal(section.components![0].content,
+    `-# [R\\*T\\*X @​everyone](https://www.linkedin.com/company/rtx)\n### [Turn ideas \\*into\\* hardware](${permalink})\nReady to build?`);
+  assert.deepEqual(gallery.items!.map(item => item.media.url), [`attachment://${video.name}`]);
+  assert.equal(footer.content, '-# LinkedIn · 12 reactions · <t:1794312000:f>');
+
+  // Anything but exactly one card and one uploaded video keeps the embed card.
+  assert.equal(articleVideoComponents([post({}, [])], ''), null);
+  assert.equal(articleVideoComponents([post({ image: { url: 'attachment://a.jpg' } })], ''), null);
+  assert.equal(articleVideoComponents([post({}, [{ ...video, name: 'linkedin-1.jpg' }])], ''), null);
+  assert.equal(articleVideoComponents([post(), { ...post({ url: `${permalink}?x` }), files: [] }], ''), null);
+  assert.equal(articleVideoComponents([post({ description: 'x'.repeat(3990) })], ''), null);
+  const bare = articleVideoComponents([post({ author: { name: 'RTX' } })], '')![1] as typeof block;
+  assert.equal(bare.components[0].type, ComponentType.TextDisplay);
+
+  // The published block must show this video: as requested, or at its Discord CDN address.
+  const shown = (url: string) => messageHasArticleVideo([{ toJSON: () => ({ type: ComponentType.Container,
+    components: [{ type: ComponentType.MediaGallery, items: [{ media: { url } }] }] }) }], [post()]);
+  assert(shown(`attachment://${video.name}`));
+  assert(shown(`https://cdn.discordapp.com/attachments/123456789012345678/123456789012345679/${video.name}?ex=1`));
+  assert(!shown('https://cdn.discordapp.com/attachments/123456789012345678/123456789012345679/other.mp4'));
+  assert(!shown(`https://evil.example/attachments/123456789012345678/123456789012345679/${video.name}`));
+  assert(!messageHasArticleVideo([{ toJSON: () => ({ type: ComponentType.MediaGallery,
+    items: [{ media: { url: `attachment://${video.name}` } }] }) }], [post()]));
+  assert(!messageHasArticleVideo([], [post()]));
 });
