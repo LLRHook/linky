@@ -35,7 +35,6 @@ const ACTIVITY = /-activity-(\d{15,22})-[A-Za-z0-9_-]{2,8}$/;
 const SIGNED = '(?:\\/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,120}){1,12}\\?e=\\d{1,12}&v=beta&t=[A-Za-z0-9_-]{8,200}$';
 const IMAGE = new RegExp(`^https:\\/\\/media\\.licdn\\.com\\/dms\\/image${SIGNED}`);
 const VIDEO = new RegExp(`^https:\\/\\/dms\\.licdn\\.com\\/playlist\\/vid${SIGNED}`);
-const FILE_NAME = /^linkedin-\d{15,22}\.mp4$/;
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -73,10 +72,6 @@ export function linkedInVideo(value: unknown): string | null {
 export function linkedInVideoName(post: Pick<LinkedInPost, 'url'>): string | null {
   const id = ACTIVITY.exec(linkedInPermalink(post.url) ?? '')?.[1];
   return id ? `linkedin-${id}.mp4` : null;
-}
-
-export function isLinkedInVideoFile(name: unknown): boolean {
-  return typeof name === 'string' && FILE_NAME.test(name);
 }
 
 function text(value: unknown, maximum = 10_000): string {
