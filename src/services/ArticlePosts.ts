@@ -1,11 +1,18 @@
 import { AttachmentBuilder, type APIEmbed } from 'discord.js';
 import { findArticleLinks, formatArticlePreview, parseArticleUrl, type ArticleLookup } from './ArticlePreview';
+import { isLinkedInVideoFile } from './LinkedIn';
 import type { RewritePlatform } from './LinkConfiguration';
 import { mapLinks, visibleLink } from './LinkTokens';
 import type { TruthSocialFile } from './TruthSocial';
 
-/** `files` are uploaded with the message; the card names them as `attachment://name`. */
-export interface PreparedArticle { source: string; embeds: APIEmbed[]; files?: TruthSocialFile[] }
+/**
+ * `files` are uploaded with the message; the card names images as `attachment://name`, while a video plays as the
+ * message's own attachment. `withoutFiles` is the card to show when the uploads cannot be attached.
+ */
+export interface PreparedArticle { source: string; embeds: APIEmbed[]; files?: TruthSocialFile[]; withoutFiles?: APIEmbed[] }
+
+/** A card's uploaded video; Discord lists it as a message attachment, unlike images the card displays. */
+export const isArticleVideo = isLinkedInVideoFile;
 
 // Uploaded card media per message, within Discord's ten files and well under its request size.
 const MAX_ARTICLE_FILES = 6, MAX_ARTICLE_FILE_BYTES = 16 * 1024 * 1024;
@@ -52,6 +59,7 @@ export function articleAttachments(posts: readonly PreparedArticle[]): Attachmen
 export function withoutArticleFiles(posts: readonly PreparedArticle[]): PreparedArticle[] {
   return posts.map(post => {
     if (!post.files?.length) return post;
+    if (post.withoutFiles) return { source: post.source, embeds: post.withoutFiles };
     const original = (url?: string) => post.files!.find(file => url === `attachment://${file.name}`)?.url ?? url;
     return { source: post.source, embeds: post.embeds.map(embed => ({ ...embed,
       ...(embed.author ? { author: { ...embed.author, ...(embed.author.icon_url ? { icon_url: original(embed.author.icon_url) } : {}) } } : {}),
@@ -75,8 +83,12 @@ export async function prepareArticlePosts(sources: readonly string[], lookup?: A
   if (signal?.aborted || posts.some((post, index) => !post || post.source !== sources[index])) return null;
   const prepared = posts.map((post, index): PreparedArticle => {
     const embeds = formatArticlePreview(post!), shown = JSON.stringify(embeds);
-    const files = post!.truthSocial?.files?.filter(file => shown.includes(JSON.stringify(`attachment://${file.name}`)));
-    return { source: sources[index], embeds, ...(files?.length ? { files } : {}) };
+    const linkedIn = post!.linkedIn?.files ?? [];
+    const files = [...post!.truthSocial?.files ?? [], ...linkedIn].filter(file =>
+      linkedIn.includes(file) && isArticleVideo(file.name) || shown.includes(JSON.stringify(`attachment://${file.name}`)));
+    // Without its upload, a video card shows the poster and links the MP4 instead.
+    const withoutFiles = linkedIn.length ? formatArticlePreview({ ...post!, linkedIn: { ...post!.linkedIn!, files: [] } }) : [];
+    return { source: sources[index], embeds, ...(files.length ? { files } : {}), ...(withoutFiles.length ? { withoutFiles } : {}) };
   });
   return articleEmbeds(prepared).length ? prepared : null;
 }

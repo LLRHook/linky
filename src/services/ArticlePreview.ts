@@ -5,6 +5,7 @@ import { isIP } from 'node:net';
 import type { APIEmbed } from 'discord.js';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
+import { formatLinkedInPost, isLinkedInPostUrl, linkedInVideoName, parseLinkedInPost, type LinkedInPost } from './LinkedIn';
 import { formatPdfSize, isPdf, parsePdf, type PdfDocument } from './PdfPreview';
 import { SOCIAL_PROVIDERS } from './SocialProviders';
 import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialStatus, parseTruthSocialUrl,
@@ -26,6 +27,8 @@ export interface ArticlePreview {
   pdf?: PdfDocument;
   /** Truth Social serves no per-post page metadata; its public status API supplies an authored post card. */
   truthSocial?: TruthSocialPost;
+  /** LinkedIn's page metadata names a generic logo; the post's JSON-LD supplies an authored card and its video. */
+  linkedIn?: LinkedInPost;
 }
 export interface ArticleLookupOptions {
   resolve4?: (hostname: string) => Promise<string[]>;
@@ -36,6 +39,8 @@ export interface ArticleLookupOptions {
   pageRetryMs?: number;
   /** Operator relay for Truth Social's status API when its bot protection blocks this host (see docs/truth-social-relay.md). */
   truthSocialRelay?: TruthSocialRelay;
+  /** How long a LinkedIn post's video download may run after its page metadata arrives. */
+  videoTimeoutMs?: number;
 }
 export interface TruthSocialRelay { hostname: string; token: string }
 
@@ -45,6 +50,8 @@ const MAX_PDF_BYTES = 4 * 1024 * 1024;
 const BING = 'www.bing.com', TELEGRAPH_HOSTS = ['telegraph.co.uk', 'www.telegraph.co.uk'];
 // Uploaded Truth Social media: one post image, one avatar, and every cached copy together.
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024, MAX_AVATAR_BYTES = 1024 * 1024, MAX_CACHED_FILE_BYTES = 32 * 1024 * 1024;
+// An uploaded LinkedIn video stays inside the per-message article upload budget (ArticlePosts).
+const MAX_LINKEDIN_VIDEO_BYTES = 15 * 1024 * 1024;
 // Media downloads stop this long before the lookup deadline, so a slow download costs only its upload.
 const MEDIA_MARGIN_MS = 250;
 // Truth Social's bot protection rejects generic and bare product user agents but accepts this identified browser-style one
@@ -438,10 +445,12 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
   const connect = options.connect ?? connectHttps, now = options.now ?? Date.now;
   const timeout = Math.max(1, Math.min(5000, options.timeoutMs ?? 5000));
   const pageRetry = Math.max(0, Math.min(2000, options.pageRetryMs ?? 1200));
+  const videoTimeout = Math.max(1, Math.min(30_000, options.videoTimeoutMs ?? 15_000));
   type Pending = { promise: Promise<ArticlePreview | null>; controller: AbortController; subscribers: number };
   const pending = new Map<string, Pending>();
   const cache = new Map<string, { value: ArticlePreview | null; expires: number }>();
-  const fileBytes = (value: ArticlePreview | null) => value?.truthSocial?.files?.reduce((total, file) => total + file.data.byteLength, 0) ?? 0;
+  const fileBytes = (value: ArticlePreview | null) => [...value?.truthSocial?.files ?? [], ...value?.linkedIn?.files ?? []]
+    .reduce((total, file) => total + file.data.byteLength, 0);
   let cachedFileBytes = 0;
   const forget = (key: string) => {
     cachedFileBytes -= fileBytes(cache.get(key)?.value ?? null);
@@ -560,9 +569,41 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
       ...(post.text ? { description: post.text } : {}), ...(post.image ? { image: post.image } : {}),
       ...(post.publishedAt ? { publishedAt: post.publishedAt } : {}), truthSocial: post };
   }
+  /**
+   * A LinkedIn post's card media stays on LinkedIn's CDN, which Discord's proxy reads; its MP4 is uploaded so
+   * Discord plays it. The download has its own window after the page metadata, then the card links the MP4.
+   */
+  async function requestLinkedIn(source: string, post: LinkedInPost, signal: AbortSignal,
+    extend: (ms: number) => void): Promise<ArticlePreview | null> {
+    for (const asset of [post.image, post.author.avatar, post.video]) {
+      if (!asset) continue;
+      try { await publicAddresses(new URL(asset).hostname, signal); }
+      catch {
+        if (asset === post.video) return null;
+        if (asset === post.image) delete post.image; else delete post.author.avatar;
+      }
+    }
+    const name = linkedInVideoName(post);
+    if (post.video && name) {
+      extend(videoTimeout);
+      const video = new URL(post.video), media = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, videoTimeout - MEDIA_MARGIN_MS))]);
+      const data = await attempt(() => fetchBody(video.hostname, video.pathname + video.search, 'video/mp4', /^video\/mp4(?:\s*;|$)/i, media,
+        response => readBytes(response, media, MAX_LINKEDIN_VIDEO_BYTES)), signal);
+      // An MP4 starts with its ftyp box; anything else is not uploaded as a playable video.
+      if (data && data.byteLength > 12 && new TextDecoder().decode(data.subarray(4, 8)) === 'ftyp') post.files = [{ name, url: post.video, data }];
+    }
+    if (signal.aborted) return null;
+    return { source, url: post.url, title: post.title ?? (post.video ? 'LinkedIn video' : 'LinkedIn post'), publisher: 'LinkedIn',
+      ...(post.text ? { description: post.text } : {}), ...(post.image ? { image: post.image } : {}),
+      ...(post.publishedAt ? { publishedAt: post.publishedAt } : {}), linkedIn: post };
+  }
   async function request(source: string, controller: AbortController): Promise<ArticlePreview | null> {
-    const { signal } = controller, deadline = Date.now() + timeout, timer = setTimeout(() => controller.abort(), timeout), seen = new Set<string>();
-    let current = new URL(source);
+    const { signal } = controller, deadline = Date.now() + timeout, seen = new Set<string>();
+    let timer = setTimeout(() => controller.abort(), timeout);
+    const extend = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => controller.abort(), ms); };
+    // LinkedIn share links carry the sharer's tracking parameters; the post page does not need them.
+    const untracked = (url: URL) => { if (isLinkedInPostUrl(url.href)) url.search = ''; return url; };
+    let current = untracked(new URL(source));
     try {
       const truthSocial = parseTruthSocialUrl(source);
       if (truthSocial) return await requestTruthSocial(source, truthSocial, signal, deadline);
@@ -587,7 +628,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
             if (!location || /[\\\s\u0000-\u001f\u007f]/.test(location)) return null;
             const next = parseArticleUrl(resolveUrl(location, current));
             if (!next) return null;
-            current = new URL(next);
+            current = untracked(new URL(next));
             continue;
           }
           const type = response.headers.get('content-type') ?? '';
@@ -615,7 +656,12 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
             const document = isPdf(data) ? parsePdf(data, current, total) : null;
             return document && !signal.aborted ? { source, url: current.href, title: document.title, publisher: current.hostname, pdf: document } : null;
           }
-          const article = parseMetadata(await readHead(response, signal), source, current);
+          const html = await readHead(response, signal);
+          if (isLinkedInPostUrl(current.href)) {
+            const head = headMetadata(html), post = parseLinkedInPost(head.json, head.meta.get('og:url'));
+            if (post) return await requestLinkedIn(source, post, signal, extend);
+          }
+          const article = parseMetadata(html, source, current);
           if (article?.image) {
             try { await publicAddresses(new URL(article.image).hostname, signal); }
             catch { delete article.image; }
@@ -678,6 +724,7 @@ export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
   if (!source || !url || typeof article.title !== 'string' || typeof article.publisher !== 'string') return [];
   // A Truth Social permalink renders only from its verified status; its placeholder page metadata never does.
   if (parseTruthSocialUrl(source)) return article.truthSocial?.url === url ? formatTruthSocialPost(article.truthSocial) : [];
+  if (article.linkedIn) return article.linkedIn.url === url ? formatLinkedInPost(article.linkedIn) : [];
   const title = literal(article.title, 256), publisher = literal(article.publisher, 180);
   if (!title || !publisher) return [];
   const host = new URL(url).hostname;
