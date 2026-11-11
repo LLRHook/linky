@@ -1,0 +1,28 @@
+# Media inside Linky cards
+
+Single LinkedIn and Truth Social video cards use a Components V2 panel: post text above the uploaded video, with author, counts, time and controls. The shared article builder accepts an uploaded MP4 from any article provider, with an optional uploaded author avatar. Automatic reposts, `/fix` and **Apps → Fix with Linky** use it. A missing gallery keeps the automatic source and removes its replacement; a manual response clears media and uploads and retains a V2 notice and original-link controls.
+
+Standalone Erome prepared attachments, including transcoded MP4s and JPEG/PNG images, now put their text and media in one V2 panel too. Hosted Erome originals and additional-item galleries already use V2. Erome media verification requires the matching file, Discord media type, proxy and positive dimensions. Legacy loose attachments also require the prepared byte size. These are Discord metadata checks; they do not establish playback on a client.
+
+## Publication paths and compatibility constraints
+
+This audit covers every media upload publisher in `src/commands` and `src/services`, plus image-card formatters. Source files are references to this implementation, rather than dated production playback evidence.
+
+| Path | Disposition and evidence |
+| --- | --- |
+| One article-family video card, automatic or manual | Shared V2 panel. `src/services/ArticlePosts.ts:113`, `src/services/SocialLinkService.ts:374`, `src/commands/fix.ts:323`; manual verification and rollback: `src/commands/fixMedia.ts:27`. |
+| Standalone Erome prepared attachment | V2 container with text and gallery, for video or image. `src/services/UploadedMedia.ts:4`, `src/services/SocialLinkService.ts:377`, `src/commands/fix.ts:325`; media metadata: `src/services/EromeDelivery.ts:52`. |
+| Erome hosted original and Load next item | Existing V2 gallery, unchanged. `src/services/EromeMedia.ts:47`, `src/services/EromeAlbumSessions.ts:154`, `src/commands/fixMedia.ts:128`. |
+| Article video or Erome media beside copied source attachments | Keeps legacy attachment delivery: source files may be documents, spoilers or arbitrary media with their own names and descriptions. The single-media panel cannot represent that complete set; this batch preserves source-file integrity instead of silently dropping or reinterpreting them. Selection: `src/services/SocialLinkService.ts:374` and `:377`; copy loop: `:344`. Tests: `tests/social-links.test.ts` “a LinkedIn video beside copied source attachments keeps the card with the video as an attachment”; `tests/erome-delivery.test.ts` “Replace copies source attachments through the attachment path; failed copies keep the original”. |
+| Erome beside native fixer links, translated cards or YouTube cards | Keeps legacy content, embeds and attachment so each native preview remains eligible. V2 cannot carry content or embeds; this batch provides no replacement for those other previews. Guards: `src/services/SocialLinkService.ts:377`, `src/commands/fix.ts:325`. Tests include “manual mixed-platform failure is still reported when the Erome upload succeeds”. |
+| Multiple article cards, unrelated uploads, or more than 4000 text characters | Keeps the established card and attachment path. The builder intentionally represents only one card with one video and its optional avatar; converting the whole mixed set would require a separate layout. `src/services/ArticlePosts.ts:115`; tests: `tests/article-video.test.ts` “article video blocks retain multi-card, multiple-video, unrelated-upload and text-limit fallbacks”. |
+| Suppressed automatic embeds | Keeps the existing suppressed publication path; a V2 gallery would override the sharer's suppression choice. `src/services/SocialLinkService.ts:375` and `:379`. |
+| No Attach Files, exhausted upload budget, failed download | No uploaded video; the embed shows the poster and Play video link. Truth Social image cards retain original image addresses when their upload cannot be sent. `src/services/ArticlePosts.ts:72`, `src/services/ArticlePreview.ts:579`. |
+| Long X translations | A text attachment preserves the complete translation; it is not loose card media. Photos stay inside embeds and videos retain their native fixer preview. `src/services/TweetPresentation.ts:61`, `:66`, `:148`. |
+| Native Discord unfurls, including fixer-domain X/Instagram/TikTok/Facebook and YouTube video players | Discord owns these players. Linky cannot restructure them. They remain outside this change; authored statistics or caption text does not turn the native player into an uploaded bot card. |
+
+Copied source attachments, mixed previews and the other explicit fallbacks above remain compatibility exceptions to a single media panel. They are not claimed as converted. Reply mode leaves source attachments on the original, so an otherwise eligible single-card reply can use the panel.
+
+## Evidence and reproduction
+
+All automated tests use synthetic bytes and injected HTTP/Discord responses, without a Discord token or network requests. Run `node --import tsx --test tests/article-video.test.ts tests/linkedin.test.ts tests/truth-social.test.ts tests/social-links.test.ts tests/manual-fix.test.ts tests/erome-delivery.test.ts` on Node 26. The standalone Erome tests cover both media types and both manual entry points, missing-gallery rollback, and metadata rejection for wrong filename, type, proxy, dimensions or host. The article and manual tests cover exact media matching and source/settings/cancellation races. Run `npm run validate` for the repository's complete local gate. Live Discord rendering and client playback remain separate release checks.

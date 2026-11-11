@@ -7,24 +7,24 @@ import type { EromeAlbumSessions } from '../services/EromeAlbumSessions';
 import { eromeMediaComponents, messageHasEromeMedia, sendEromeMedia, watchEromeMedia,
   type EromeMedia, type EromeMediaBinding } from '../services/EromeMedia';
 import type { ExpectedPreview, PreviewResult } from '../services/PreviewRecovery';
-import { messageHasArticleVideo, type PreparedArticle } from '../services/ArticlePosts';
 
-interface ManualArticleVideoDelivery {
+interface ManualMediaBlockDelivery {
   interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction;
   attempt: ReturnType<typeof createDeliveryAttempt>;
-  posts: readonly PreparedArticle[];
+  verifyMedia: (message: Message) => Promise<boolean>;
   block: APIMessageTopLevelComponent[];
   files: AttachmentBuilder[];
   buttonRows: () => ActionRowBuilder<ButtonBuilder>[];
   preferencesCurrent: () => boolean;
   sourceCurrent: () => Promise<boolean>;
   expected: readonly ExpectedPreview[];
+  failureText?: () => string;
   observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
 }
 
 /** V2 is sticky: every failure removes the gallery and uploads while keeping a V2 notice and original links. */
-export async function publishManualArticleVideo({ interaction, attempt, posts, block, files, buttonRows,
-  preferencesCurrent, sourceCurrent, expected, observePreview }: ManualArticleVideoDelivery): Promise<void> {
+export async function publishManualMediaBlock({ interaction, attempt, verifyMedia, block, files, buttonRows,
+  preferencesCurrent, sourceCurrent, expected, failureText, observePreview }: ManualMediaBlockDelivery): Promise<void> {
   const context = attempt.context;
   let published: Message | undefined, rollbackAttempted = false;
   const current = async () => !context.signal?.aborted && preferencesCurrent() && await sourceCurrent() &&
@@ -35,7 +35,7 @@ export async function publishManualArticleVideo({ interaction, attempt, posts, b
     const details = published ? await attempt.controls(published.id) : [];
     await interaction.editReply({ flags: MessageFlags.IsComponentsV2, content: null, embeds: [], attachments: [],
       components: [{ type: ComponentType.TextDisplay,
-        content: 'The media preview could not be confirmed or its source or settings changed. The original post is unchanged and available below.' },
+        content: failureText?.() ?? 'The media preview could not be confirmed or its source or settings changed. The original post is unchanged and available below.' },
       ...buttonRows().map(row => row.toJSON()), ...details.map(row => row.toJSON())], allowedMentions: { parse: [] } });
     observePreview?.(expected, { ok: false, missing: [...expected], videoMetadata: false });
   };
@@ -45,12 +45,12 @@ export async function publishManualArticleVideo({ interaction, attempt, posts, b
     published = await interaction.editReply({ flags: MessageFlags.IsComponentsV2, content: null, embeds: [], attachments: [], files,
       components: [...block, ...buttonRows().map(row => row.toJSON())], allowedMentions: { parse: [] } });
     stage?.finish();
-    if (!await current() || !messageHasArticleVideo(published.components, posts)) { await rollback(); return; }
+    if (!await current() || !await verifyMedia(published)) { await rollback(); return; }
     const details = await attempt.controls(published.id);
     if (!await current()) { await rollback(); return; }
     published = await interaction.editReply({ components: [...block, ...buttonRows().map(row => row.toJSON()),
       ...details.map(row => row.toJSON())], allowedMentions: { parse: [] } });
-    if (!await current() || !messageHasArticleVideo(published.components, posts)) { await rollback(); return; }
+    if (!await current() || !await verifyMedia(published)) { await rollback(); return; }
     observePreview?.(expected, { ok: true, missing: [], videoMetadata: true });
     attempt.finish('confirmed');
   } catch (error) {

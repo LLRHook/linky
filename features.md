@@ -461,6 +461,23 @@ Priority guide: crit / high / med / low.
 
 - **Implementation:** Both manual entry points publish the shared panel through publishManualArticleVideo. V2-only rollback removes uploads and media on missing gallery, source/settings changes, cancellation and publication errors; final controls retain and recheck the panel. tests/manual-fix.test.ts plus tests/manual-media.test.ts: 87 pass, zero skipped; five mutations caught. README and article docs updated.
 
+### [FEAT-1794401068] Group standalone prepared Erome media and document compatibility fallbacks
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/services/UploadedMedia.ts, src/services/EromeDelivery.ts, src/services/ArticlePosts.ts, src/services/SocialLinkService.ts, src/commands/fix.ts, src/commands/fixMedia.ts, tests/erome-delivery.test.ts, docs/media-blocks.md, docs/erome-previews.md, docs/article-previews.md, README.md
+- **Why:** Media-blocks charter I4: show Linky-authored post text and its media together.
+- **Approach:** Standalone Erome attachment delivery groups text and image or video into Components V2, with matching-media verification and rollback for automatic and manual paths. Record every remaining loose-media path and its compatibility constraint with file and line evidence.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] Standalone Erome attachment delivery groups text and image or video into Components V2, with matching-media verification and rollback for automatic and manual paths. Record every remaining loose-media path and its compatibility constraint with file and line evidence.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+- **Implementation:** Standalone prepared Erome MP4/JPEG/PNG media now shares a V2 text/gallery container in automatic and manual delivery. The shared manual publisher keeps V2 rollback and revalidates controls. Matching gallery plus Erome metadata is mandatory; legacy byte-size checks remain for loose attachments. Ten mutation checks fail as expected; affected tests pass (336, zero skipped). docs/media-blocks.md inventories every remaining compatibility exception with source line references, and README/Erome/article docs explain the changes.
+
 ---
 
 ## Shipped

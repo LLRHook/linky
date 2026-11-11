@@ -7,7 +7,7 @@ import { getProviderCandidates, parseSocialUrl } from '../services/SocialProvide
 import { parseYouTubeUrl } from '../services/YouTube';
 import { findArticleLinks, parseArticleUrl, type ArticleLookup } from '../services/ArticlePreview';
 import { ARTICLE_MIXED_GUIDANCE, articleAttachments, articleEmbeds, fitArticleFiles, hasMixedArticleLinks,
-  articleVideoComponents, isArticleVideo, prepareArticlePosts } from '../services/ArticlePosts';
+  articleVideoComponents, isArticleVideo, messageHasArticleVideo, prepareArticlePosts } from '../services/ArticlePosts';
 import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from '../services/YouTubeCommunity';
 import { originalPostUrl } from '../services/RepostPresentation';
@@ -30,7 +30,8 @@ import type { InstagramTranslation } from '../services/InstagramTranslation';
 import { translateRepost } from '../services/TweetPresentation';
 import type { TweetTranslation } from '../services/TweetTranslation';
 import { instagramShortcodes, repostExpectations } from '../services/RepostDelivery';
-import { manualButtons, publishHostedErome, publishManualArticleVideo } from './fixMedia';
+import { messageHasUploadedMedia, uploadedMediaComponents } from '../services/UploadedMedia';
+import { manualButtons, publishHostedErome, publishManualMediaBlock } from './fixMedia';
 
 const installs = [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall];
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel];
@@ -321,9 +322,17 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     const nativeExpected = expected.filter(item => !item.explicitEmbeds);
     const inlineVideo = !erome && !presentation.embeds?.length && !community.length && !presentation.translationFiles?.length
       ? articleVideoComponents(articles, rendered) : null;
-    if (inlineVideo) {
-      await publishManualArticleVideo({ interaction, attempt, posts: articles, block: inlineVideo, files, buttonRows,
-        preferencesCurrent, sourceCurrent, expected, observePreview });
+    const inlineErome = erome && !presentation.embeds?.length && !community.length && !articles.length &&
+      !presentation.translationFiles?.length && onlyEromeLinks(original) ? uploadedMediaComponents(erome.file.name, rendered) : null;
+    const inlineBlock = inlineVideo ?? inlineErome;
+    if (inlineBlock) {
+      await publishManualMediaBlock({ interaction, attempt, block: inlineBlock, files, buttonRows,
+        verifyMedia: async message => inlineVideo ? messageHasArticleVideo(message.components, articles)
+          : messageHasUploadedMedia(message.components, erome!.file.name) && await verifyErome(message, erome!.file),
+        failureText: eromeSource ? () => eromeAllowed()
+          ? 'The media preview could not be confirmed. The album is unchanged and available below.'
+          : 'Erome previews are no longer allowed here. The album is unchanged and available below.' : undefined,
+        preferencesCurrent: () => preferencesCurrent() && (!eromeSource || eromeAllowed()), sourceCurrent, expected, observePreview });
       return;
     }
     previewWatch = nativeExpected.length ? armPreview?.(interaction.channelId, nativeExpected, context) : undefined;

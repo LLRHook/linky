@@ -27,6 +27,7 @@ import { findReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from './EromeDelivery';
 import { fitsAttachmentBudget, guildAttachmentBudget } from './AttachmentLimits';
+import { messageHasUploadedMedia, uploadedMediaComponents } from './UploadedMedia';
 import { eromeMediaComponents, onlyEromeLinks, watchEromeMedia, sendEromeMedia, messageHasEromeMedia,
   type EromeMedia, type EromeMediaPreparer, type EromeMediaBinding } from './EromeMedia';
 import { createDeliveryProgress } from './DeliveryProgress';
@@ -373,6 +374,10 @@ export function createLinkRepostHandler(
       const inlineVideo = !originalMedia && !erome && !attachments.length && !translationFiles.length &&
         !(translated.embeds?.length) && !community.length && !youtubeCards.length && !message.flags.has(MessageFlags.SuppressEmbeds)
         ? articleVideoComponents(articles, content) : null;
+      const inlineErome = !originalMedia && erome && !attachments.length && !translated.translationFiles?.length &&
+        !translated.embeds?.length && !community.length && !articles.length && !youtubeCards.length && onlyEromeLinks(inputContent) &&
+        !message.flags.has(MessageFlags.SuppressEmbeds) ? uploadedMediaComponents(erome.file.name, content) : null;
+      const inlineBlock = inlineVideo ?? inlineErome;
       await progress.stop();
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       if (delivery.context.signal?.aborted) {
@@ -389,14 +394,14 @@ export function createLinkRepostHandler(
           flags: MessageFlags.IsComponentsV2 as const,
           components: eromeMediaComponents(preparedMedia!, content,
             repostControls(inputContent, { remove: false }).map(row => row.toJSON())),
-        } : inlineVideo ? {
+        } : inlineBlock ? {
           flags: MessageFlags.IsComponentsV2 as const, files,
-          components: [...inlineVideo, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
+          components: [...inlineBlock, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
         } : { content, ...(embeds ? { embeds } : {}), files,
           components: repostControls(inputContent, { remove: false }) }),
         allowedMentions,
         ...(silentFlag ? {
-          flags: (originalMedia || inlineVideo ? MessageFlags.IsComponentsV2 : 0) | silentFlag,
+          flags: (originalMedia || inlineBlock ? MessageFlags.IsComponentsV2 : 0) | silentFlag,
         } : {}),
         ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds as const } : {}),
       };
@@ -404,7 +409,7 @@ export function createLinkRepostHandler(
       // A tagged replacement uses a fresh send; its quiet progress message has a separate nonce.
       const reuseProgress = progressMessage && !allowedMentions.users.length;
       const send = () => reuseProgress
-        ? progressMessage!.edit({ ...publicationBody, ...(preparedMedia || inlineVideo ? { content: null, embeds: [], attachments: [] } : {}) })
+        ? progressMessage!.edit({ ...publicationBody, ...(preparedMedia || inlineBlock ? { content: null, embeds: [], attachments: [] } : {}) })
         : channel.send({ ...publicationBody, nonce, enforceNonce: true,
           ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) });
       const publishStage = delivery.context.trace?.startStage('publish');
@@ -450,6 +455,7 @@ export function createLinkRepostHandler(
       // A card's uploaded video is listed as a message attachment; images the card displays are not.
       // A single-block video must appear inside its block.
       if (inlineVideo ? !messageHasArticleVideo(replacement.components, articles)
+        : inlineErome ? !messageHasUploadedMedia(replacement.components, erome!.file.name)
         : replacement.attachments.size !== files.length - articleUploads.filter(file => !isArticleVideo(file.name)).length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         await removeReplacement();
@@ -463,6 +469,7 @@ export function createLinkRepostHandler(
         if (delivery.context.signal?.aborted) return { ok: false, missing: [...expected], videoMetadata: false };
         // The block was checked above; it carries no embed for the card matcher to read.
         if (inlineVideo) return { ok: true, missing: [], videoMetadata: true };
+        if (inlineErome) return { ok: eromeVerified, missing: [], videoMetadata: Boolean(eromeVerified && erome?.kind !== 'image') };
         const stage = expected.length ? delivery.context.trace?.startStage('preview') : undefined;
         const result = await verifyPublishedPreviews(replacement, expected, {
           verifyNative: native => previewWatch?.verify(replacement) ?? verifyPreview(replacement, native),
@@ -602,10 +609,10 @@ export function createLinkRepostHandler(
       if (rememberRepost) await replacement.edit({
         components: originalMedia ? eromeMediaComponents(originalMedia, content,
           [...repostControls(inputContent), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
-          : inlineVideo ? [...inlineVideo, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
+          : inlineBlock ? [...inlineBlock, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
           : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions,
       });
-      if ((originalMedia || explicitCards.length) && reply) {
+      if ((originalMedia || inlineErome || explicitCards.length) && reply) {
         if (await stopExpired()) return;
         const current = await message.fetch(true);
         if (await stopExpired()) return;

@@ -6,6 +6,7 @@ import type { ServerPreferences } from './ServerSettings';
 import type { DeliveryContext } from './DeliveryContext';
 import type { EromeSelection } from './EromeAlbum';
 import type { EromeItemInfo } from './EromeMedia';
+import { messageHasUploadedMedia } from './UploadedMedia';
 
 export type EromeStage = 'queued' | 'downloading' | 'preparing' | 'cached';
 export type EromeProgress = (stage: EromeStage) => void | Promise<void>;
@@ -38,7 +39,7 @@ export function eromeNotice(videoCount: number, kind?: 'video' | 'image'): strin
 }
 
 /** Confirm Discord accepted the prepared file with matching media type, size and dimensions. */
-export async function verifyEromeAttachment(message: Pick<Message, 'attachments' | 'fetch'>, file: AttachmentBuilder,
+export async function verifyEromeAttachment(message: Pick<Message, 'attachments' | 'fetch'> & Partial<Pick<Message, 'components'>>, file: AttachmentBuilder,
   sleep: (ms: number) => Promise<unknown> = delay): Promise<boolean> {
   if (!Buffer.isBuffer(file.attachment) || !file.name) return false;
   const size = file.attachment.length;
@@ -48,6 +49,12 @@ export async function verifyEromeAttachment(message: Pick<Message, 'attachments'
       await sleep(wait);
       try { current = await message.fetch(true); } catch { return false; }
     }
+    const type = file.name.endsWith('.png') ? 'image/png' : file.name.endsWith('.jpg') ? 'image/jpeg' : 'video/mp4';
+    // Media consumed by a gallery need not be listed as a loose message attachment. Confirm the same
+    // uploaded filename in its panel with Discord's media type, proxy and dimensions, as for hosted galleries.
+    if (messageHasUploadedMedia(current.components ?? [], file.name, media => media.content_type === type &&
+      typeof media.proxy_url === 'string' && Boolean(media.proxy_url) &&
+      typeof media.width === 'number' && media.width > 0 && typeof media.height === 'number' && media.height > 0)) return true;
     if (current.attachments.some(attachment => attachment.name === file.name && attachment.size === size &&
       attachment.contentType === (file.name.endsWith('.png') ? 'image/png' : file.name.endsWith('.jpg') ? 'image/jpeg' : 'video/mp4') &&
       (attachment.width ?? 0) > 0 && (attachment.height ?? 0) > 0)) return true;

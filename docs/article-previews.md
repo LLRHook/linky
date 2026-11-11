@@ -40,6 +40,8 @@ Video posts upload the MP4 rendition the page names (LinkedIn's 640p copy on `dm
 
 The single-video panel is shared by article-family cards, regardless of provider. It accepts one uploaded MP4 and an optional uploaded author avatar. Multiple cards, unrelated uploads and text beyond the 4000-character component limit retain the embed path. Automatic reposts, `/fix` and **Apps → Fix with Linky** use the same panel. Linky checks that the returned panel contains the prepared video before accepting it. A manual response that loses its video, changes source or loses permission clears its uploads and panel while keeping a Components V2 notice and original-link controls; V2 messages cannot switch back to ordinary content and embeds.
 
+The [media presentation audit](media-blocks.md) records copied-source-file, mixed-card and native-preview compatibility exceptions, and the existing image-card paths.
+
 ## Request limits and privacy
 
 Linky requests only public HTTPS pages, with no cookies or user credentials. DNS results must be public IPv4 addresses and the connection is pinned to a validated address while retaining normal TLS verification. Each redirect is checked again. Literal IPs, local hostnames, credentials, explicit ports, common account/API paths and known social-provider endpoints are rejected. Some otherwise public pages therefore remain unsupported.
