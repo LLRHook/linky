@@ -240,8 +240,12 @@ export function formatTruthSocialPost(post: TruthSocialPost): APIEmbed[] {
       (post.videoUrl !== undefined && truthSocialVideo(post.videoUrl) !== post.videoUrl) ||
       (post.author.avatar !== undefined && truthSocialAsset(post.author.avatar) !== post.author.avatar)) return [];
   const files = post.files ?? [];
-  if (!Array.isArray(files) || files.length > 2 || files.some(file => !FILE_NAME.test(file?.name ?? '') ||
-      !(file.data instanceof Uint8Array) || !file.data.byteLength || ![post.image, post.author.avatar].includes(file.url))) return [];
+  const videoName = `truth-${link.id}.mp4`;
+  if (!Array.isArray(files) || files.length > 3 || files.some(file =>
+      !file || !(file.data instanceof Uint8Array) || !file.data.byteLength ||
+      !(file.name === videoName && post.videoUrl && file.url === post.videoUrl ||
+        FILE_NAME.test(file?.name ?? '') && [post.image, post.author.avatar].includes(file.url)))) return [];
+  const uploaded = files.some(file => file.name === videoName && file.url === post.videoUrl);
   const shown = (url: string) => {
     const file = files.find(item => item.url === url);
     return file ? `attachment://${file.name}` : url;
@@ -257,11 +261,11 @@ export function formatTruthSocialPost(post: TruthSocialPost): APIEmbed[] {
     const site = typeof post.link.site === 'string' ? literal(post.link.site, 100) : '';
     parts.push(`**Link:** ${literal(post.link.title, 300)}${site ? ` · ${site}` : ''}`);
   }
-  if (post.videoUrl) parts.push(`**[▶ Play video](${post.videoUrl})**`);
-  else if (post.video) parts.push('*Video: open the post to play it.*');
-  else if (post.mediaCount > 1) parts.push(`*${post.mediaCount} images: open the post to see all of them.*`);
+  if (post.videoUrl && !uploaded) parts.push(`**[▶ Play video](${post.videoUrl})**`);
+  else if (post.video && !uploaded) parts.push('*Video: open the post to play it.*');
+  else if (!post.video && post.mediaCount > 1) parts.push(`*${post.mediaCount} images: open the post to see all of them.*`);
   const description = parts.filter(Boolean).join('\n\n');
-  if (!description && !post.image) return [];
+  if (!description && !post.image && !uploaded) return [];
   const counts = post.counts && [[post.counts.replies, 'replies'], [post.counts.reposts, 'ReTruths'], [post.counts.likes, 'likes']]
     .map(([value, label]) => `${compact.format(value as number)} ${label}`).join(' · ');
   const footer = post.via === 'archive' ? 'Truth Social · via Trump’s Truth archive' : counts ? `Truth Social · ${counts}` : 'Truth Social';
@@ -270,7 +274,7 @@ export function formatTruthSocialPost(post: TruthSocialPost): APIEmbed[] {
     title: post.repostedBy ? literal(`ReTruthed by ${post.repostedBy}`, 256) : 'Truth Social post', url: link.url, color: 0x5448ee,
     author: { name: `${name} (@${post.author.handle})`, url: `https://${TRUTH_SOCIAL_HOST}/@${post.author.handle}`,
       ...(post.author.avatar ? { icon_url: shown(post.author.avatar) } : {}) },
-    ...(description ? { description } : {}), ...(post.image ? { image: { url: shown(post.image) } } : {}),
+    ...(description ? { description } : {}), ...(post.image && !uploaded ? { image: { url: shown(post.image) } } : {}),
     footer: { text: footer },
     ...(date ? { timestamp: date } : {}),
   }];

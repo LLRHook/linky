@@ -83,11 +83,12 @@ export async function prepareArticlePosts(sources: readonly string[], lookup?: A
   if (signal?.aborted || posts.some((post, index) => !post || post.source !== sources[index])) return null;
   const prepared = posts.map((post, index): PreparedArticle => {
     const embeds = formatArticlePreview(post!), shown = JSON.stringify(embeds);
-    const linkedIn = post!.linkedIn?.files ?? [];
-    const files = [...post!.truthSocial?.files ?? [], ...linkedIn].filter(file =>
-      linkedIn.includes(file) && isArticleVideo(file.name) || shown.includes(JSON.stringify(`attachment://${file.name}`)));
+    const uploads = [...post!.truthSocial?.files ?? [], ...post!.linkedIn?.files ?? []];
+    const files = uploads.filter(file => isArticleVideo(file.name) || shown.includes(JSON.stringify(`attachment://${file.name}`)));
     // Without its upload, a video card shows the poster and links the MP4 instead.
-    const withoutFiles = linkedIn.length ? formatArticlePreview({ ...post!, linkedIn: { ...post!.linkedIn!, files: [] } }) : [];
+    const withoutFiles = uploads.length ? formatArticlePreview({ ...post!,
+      ...(post!.linkedIn ? { linkedIn: { ...post!.linkedIn!, files: [] } } : {}),
+      ...(post!.truthSocial ? { truthSocial: { ...post!.truthSocial!, files: [] } } : {}) }) : [];
     return { source: sources[index], embeds, ...(files.length ? { files } : {}), ...(withoutFiles.length ? { withoutFiles } : {}) };
   });
   return articleEmbeds(prepared).length ? prepared : null;

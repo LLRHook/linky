@@ -427,6 +427,23 @@ Priority guide: crit / high / med / low.
 
 - **Implementation:** General filename recognition and video selection support provider-independent MP4 panels with an uploaded avatar. Two new tests and eight existing LinkedIn tests pass; four mutation checks fail as expected. Limits and legacy fallbacks remain. See docs/article-previews.md, General video panels.
 
+### [FEAT-1794400619] Truth Social video upload and inline playback
+- [x] **Priority:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/services/TruthSocial.ts, src/services/ArticlePreview.ts, src/services/ArticlePosts.ts, tests/truth-social.test.ts, tests/social-links.test.ts, README.md, docs/article-previews.md
+- **Why:** Media-blocks charter I1: show Linky-authored post text and its media together.
+- **Approach:** Download allow-listed Truth Social or archive MP4s with a 15 MiB cap, ftyp header check and an independent window capped at 15 seconds. Single automatic video posts use the shared panel; download failures retain the poster and Play video card.
+- **Library / dependency notes:** Reuse discord.js Components V2 and existing bounded media requests; no new dependencies.
+- **Acceptance criteria:**
+  - [x] Download allow-listed Truth Social or archive MP4s with a 15 MiB cap, ftyp header check and an independent window capped at 15 seconds. Single automatic video posts use the shared panel; download failures retain the poster and Play video card.
+  - [x] Named offline tests and mutation checks cover new critical assertions; docs match the result.
+- **Test plan:** Inject synthetic HTTP/Discord responses; prove the change fails before, passes after, and fails under mutation.
+- **Out of scope:** Native Discord fixer-domain unfurls, live playback claims, limits increases, merge and deployment.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+
+- **Implementation:** Truth Social uploads allow-listed API/archive MP4s through the shared LinkedIn download helper (15 MiB, video/mp4, ftyp, at most 15 seconds, pinned public DNS, no redirects or cookies). Avatar and video share the general panel; failure and permission/budget fallback restore original media URLs. tests/truth-social.test.ts and the Truth Social automatic panel test pass; five mutation checks fail as expected. README and article preview docs updated.
+
 ---
 
 ## Shipped

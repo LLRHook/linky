@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RequestOptions } from 'node:https';
 import { createArticleLookup, findArticleLinks, formatArticlePreview, type ArticleLookupOptions } from '../src/services/ArticlePreview';
-import { articleAttachments, fitArticleFiles, prepareArticlePosts, withoutArticleFiles } from '../src/services/ArticlePosts';
+import { articleAttachments, articleVideoComponents, fitArticleFiles, prepareArticlePosts, withoutArticleFiles } from '../src/services/ArticlePosts';
 import { expectedPreviews, inspectPreviews } from '../src/services/PreviewRecovery';
 import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialRelay, parseTruthSocialStatus,
   parseTruthSocialUrl } from '../src/services/TruthSocial';
@@ -31,6 +31,8 @@ const fixture = (connect: NonNullable<ArticleLookupOptions['connect']>, extra: A
 const assetHost = (settings: RequestOptions) => /^static-assets(?:-\d{1,2})?\.truthsocial\.com$/.test(settings.hostname ?? '');
 const pageCalls = (calls: RequestOptions[]) => calls.filter(call => !assetHost(call));
 const picture = (type = 'image/jpeg', bytes = 4) => new Response(new Uint8Array(bytes).fill(7), { headers: { 'content-type': type } });
+const mp4 = (size = 64) => { const bytes = new Uint8Array(size); bytes.set(new TextEncoder().encode('ftyp'), 4);
+  return new Response(bytes, { headers: { 'content-type': 'video/mp4' } }); };
 const blocked = () => new Response('<!DOCTYPE html><title>Attention Required! | Cloudflare</title>', {
   status: 403, headers: { 'content-type': 'text/html; charset=UTF-8' } });
 const placeholder = (url = source) => new Response(`<html><head><title>Truth Social</title><meta property="og:title" content="Truth Social">
@@ -43,6 +45,86 @@ const archiveItem = (postId: string, body: string, extra = '') => `<item>
   <truth:originalId>${postId}</truth:originalId><archive:postType>original</archive:postType><archive:removed>false</archive:removed>${extra}</item>`;
 const feed = (...items: string[]) => new Response(`<?xml version="1.0"?><rss><channel>${items.join('')}</channel></rss>`,
   { headers: { 'content-type': 'application/xml;charset=UTF-8' } });
+
+test('Truth Social videos upload bounded MP4s from either allowed CDN and prepare a single panel with avatar and fallback', async () => {
+  for (const videoUrl of [asset('media_attachments/files/123/original/movie.mp4'), archiveMediaUrl('movie.mp4')]) {
+    const f = fixture(async settings => settings.hostname === 'truthsocial.com'
+      ? json(status({ media_attachments: [{ type: 'video', url: videoUrl, preview_url: photo }] }))
+      : settings.path?.endsWith('.mp4') ? mp4(15 * 1024 * 1024) : picture());
+    const posts = (await prepareArticlePosts([source], f.lookup))!;
+    assert(posts);
+    assert.deepEqual(articleAttachments(posts).map(file => file.name).sort(), [`truth-${id}-avatar.jpg`, `truth-${id}.mp4`].sort());
+    assert.equal(posts[0].embeds[0].image, undefined);
+    assert.doesNotMatch(posts[0].embeds[0].description ?? '', /Play video|open the post to play/);
+    const components = articleVideoComponents(posts, 'Shared by someone');
+    assert(components);
+    assert.match(JSON.stringify(components), new RegExp(`attachment://truth-${id}\\.mp4`));
+    const [fallback] = fitArticleFiles(posts, false);
+    assert.equal(fallback.files, undefined);
+    assert.deepEqual(fallback.embeds[0].image, { url: photo });
+    assert.match(fallback.embeds[0].description!, /Play video/);
+    const call = f.calls.find(call => call.path?.endsWith('.mp4'))!;
+    assert(call);
+    assert.equal((call.headers as Record<string, string>).authorization, undefined);
+    assert.equal((call.headers as Record<string, string>).cookie, undefined);
+    await f.lookup(source);
+    assert.equal(f.calls.filter(call => call.path?.endsWith('.mp4')).length, 1, 'validated bytes are cached');
+  }
+});
+
+test('Truth Social video download rejects oversized, malformed, redirected and stalled media but retains the poster and link', async () => {
+  const videoUrl = asset('media_attachments/files/123/original/movie.mp4');
+  const variants = [
+    () => { const response = mp4(); response.headers.set('content-length', String(15 * 1024 * 1024 + 1)); return response; },
+    () => mp4(15 * 1024 * 1024 + 1),
+    () => new Response(new Uint8Array(64), { headers: { 'content-type': 'video/mp4' } }),
+    () => { const response = mp4(); response.headers.set('content-type', 'text/html'); return response; },
+    () => new Response(mp4().body, { status: 302, headers: { 'content-type': 'video/mp4', location: 'https://evil.com/movie.mp4' } }),
+    () => { throw Error('unavailable'); },
+  ];
+  for (const respond of variants) {
+    const f = fixture(async settings => settings.hostname === 'truthsocial.com'
+      ? json(status({ media_attachments: [{ type: 'video', url: videoUrl, preview_url: photo }] }))
+      : settings.path?.endsWith('.mp4') ? respond() : picture());
+    const posts = (await prepareArticlePosts([source], f.lookup))!;
+    assert(!articleAttachments(posts).some(file => file.name?.endsWith('.mp4')));
+    assert.match(posts[0].embeds[0].description!, /Play video/);
+    assert.equal(articleVideoComponents(posts, ''), null);
+    assert(!f.calls.some(call => call.hostname === 'evil.com'));
+  }
+  const stalled = fixture(async (settings, signal) => settings.hostname === 'truthsocial.com'
+    ? json(status({ media_attachments: [{ type: 'video', url: videoUrl, preview_url: photo }] }))
+    : settings.path?.endsWith('.mp4')
+      ? new Promise<Response>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+      : picture(), { videoTimeoutMs: 350 });
+  const posts = (await prepareArticlePosts([source], stalled.lookup))!;
+  assert(posts);
+  assert(!articleAttachments(posts).some(file => file.name?.endsWith('.mp4')));
+  assert.match(posts[0].embeds[0].description!, /Play video/);
+});
+
+test('Truth Social video gets its own window after metadata and caller cancellation still stops it', async () => {
+  const videoUrl = asset('media_attachments/files/123/original/movie.mp4');
+  for (const cancel of [false, true]) {
+    const controller = new AbortController();
+    const f = fixture(async (settings, signal) => {
+      if (settings.hostname === 'truthsocial.com') {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        return json(status({ media_attachments: [{ type: 'video', url: videoUrl }] }));
+      }
+      if (!settings.path?.endsWith('.mp4')) return picture();
+      if (cancel) controller.abort();
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 100);
+        signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+      });
+      return mp4();
+    }, { timeoutMs: 80, videoTimeoutMs: 500 });
+    const posts = await prepareArticlePosts([source], f.lookup, controller.signal);
+    if (cancel) assert.equal(posts, null);
+    else { assert(posts); assert(articleAttachments(posts).some(file => file.name === `truth-${id}.mp4`)); }
+  }
+});
 
 test('Truth Social post permalinks normalize; profiles, API paths and lookalikes do not', () => {
   assert.deepEqual(parseTruthSocialUrl(source), { id, handle: 'realDonaldTrump', url: source });
