@@ -4,7 +4,7 @@ import { devNull } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const MAX_CANDIDATE_FILES = 30;
+const MAX_CANDIDATE_FILES = 30;
 export const MAX_CANDIDATE_BYTES = 200_000;
 
 const protectedSource = new Set([
