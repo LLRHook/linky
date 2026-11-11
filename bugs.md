@@ -145,6 +145,19 @@ in that maintenance branch and are not re-filed here._
 - **Bump:** patch
 - **Status:** fixed-pending-migration
 
+
+### [BUG-1794403249] Private article image uploads fail CDN confirmation
+- [x] **Severity:** med
+- **Area:** previews, commands
+- **File(s):** src/services/PreviewRecovery.ts, tests/preview-recovery.test.ts, tests/manual-fix.test.ts
+- **Observation:** The pre-existing sameMedia matcher accepts only /attachments/, so private article images and author avatars returned under /ephemeral-attachments/ cannot confirm. It also accepts userinfo and an explicit default port after URL normalization.
+- **Expected:** Confirm both Discord upload paths with exact host, two snowflake identifiers and filename, HTTPS, no credentials or explicit port.
+- **Repro / Notes:** tests/preview-recovery.test.ts "article image and avatar confirmations accept public and ephemeral uploads with exact safe CDN identity"; tests/manual-fix.test.ts private image confirmation. Offline fixtures only; the image-matching gap predates PR #104.
+- **Bump:** patch
+- **Status:** fixed-pending-migration
+- **Fix:** Accept both Discord attachment paths for exact uploaded image/avatar confirmation; reject userinfo and explicit ports. Public/private CDN identity and private slash/Apps tests pass (104/104); reverting ephemeral path support fails both new tests.
+
+
 ---
 
 - **Fix:** Recheck current source/settings/cancellation after both awaited media verifications. The final-verification regression fails before the change and under mutation, then passes for slash/Apps settings/cancellation and Apps source changes. The source and uploads are preserved or removed using the existing V2 rollback.

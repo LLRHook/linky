@@ -426,6 +426,28 @@ test('two resolved TikTok shares need both exact post IDs and cannot share one m
   assert.equal(inspectPreviews([embed(first), embed(second)], items).ok, true);
 });
 
+test('article image and avatar confirmations accept public and ephemeral uploads with exact safe CDN identity', () => {
+  const source = 'https://publisher.example.com/article/test';
+  const cards: APIEmbed[] = [{ url: source, title: 'A public article',
+    image: { url: 'attachment://truth-123.jpg' }, author: { name: 'Author', icon_url: 'attachment://truth-123-avatar.png' } }];
+  const expected = expectedPreviews(source, `<${source}>`, [], [{ source, embeds: cards }]);
+  for (const host of ['cdn.discordapp.com', 'media.discordapp.net']) for (const path of ['ephemeral-attachments', 'attachments']) {
+    const cdn = `https://${host}/${path}/123456789012345678/223456789012345678/`;
+    const actual = { ...cards[0], image: { url: cdn + 'truth-123.jpg?ex=1' },
+      author: { ...cards[0].author!, icon_url: cdn + 'truth-123-avatar.png?ex=1' } };
+    assert.equal(inspectPreviews([actual], expected).ok, true, cdn);
+    for (const bad of [cdn.replace('https:', 'http:'), cdn.replace(host, 'evil.example'),
+      cdn.replace(host, host + '.evil.example'), cdn.replace(host, host + ':8443'),
+      cdn.replace(host, host + ':443'), cdn.replace(host, 'user@' + host), cdn.replace(host, 'user:pass@' + host),
+      cdn.replace('/123456789012345678/', '/123/'), cdn.replace(`/${path}/`, '/other/')]) {
+      assert.equal(inspectPreviews([{ ...actual, image: { url: bad + 'truth-123.jpg' } }], expected).ok, false, bad);
+      assert.equal(inspectPreviews([{ ...actual, author: { ...actual.author, icon_url: bad + 'truth-123-avatar.png' } }], expected).ok, false, bad);
+    }
+    assert.equal(inspectPreviews([{ ...actual, image: { url: cdn + 'other.jpg' } }], expected).ok, false);
+    assert.equal(inspectPreviews([{ ...actual, author: { ...actual.author, icon_url: cdn + 'other.png' } }], expected).ok, false);
+  }
+});
+
 test('article confirmations require the exact publisher card and cannot claim native video metadata', () => {
   const source = 'https://publisher.example.com/article/old-path';
   const url = 'https://publisher.example.com/news/canonical-path';

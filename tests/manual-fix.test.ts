@@ -1176,6 +1176,28 @@ test('manual Truth Social videos use the shared panel in slash and Apps commands
   }
 });
 
+test('private slash and Apps image cards confirm ephemeral Discord uploads', async () => {
+  for (const context of [false, true]) {
+    const f = communityCommand(TRUTH_URL, context), edit = f.input.editReply;
+    f.input.memberPermissions = new PermissionsBitField(0n);
+    const outcomes: DeliveryOutcome[] = [];
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      const card = f.response.embeds[0]?.toJSON();
+      if (card?.image?.url?.startsWith('attachment://')) f.response.embeds = [{ toJSON: () => ({ ...card, image: {
+        url: 'https://media.discordapp.net/ephemeral-attachments/123456789012345678/223456789012345678/truth-117497314507062631.jpg?ex=1',
+      } }) }];
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => truthPost(source),
+      diagnostics: diagnosticsStub({ outcomes }) });
+    assert.equal(f.events.find(event => event.name === 'defer')!.payload.flags, MessageFlags.Ephemeral);
+    assert.deepEqual(outcomes, ['confirmed']);
+    assert.match(f.response.embeds[0].toJSON().image!.url, /ephemeral-attachments/);
+    assert(!f.events.some(event => event.payload.attachments?.length === 0));
+  }
+});
+
 test('manual Truth Social cards upload their image, confirm at the Discord CDN address and drop the upload when unconfirmed', async () => {
   const cdn = 'https://cdn.discordapp.com/attachments/123456789012345678/223456789012345678/truth-117497314507062631.jpg?ex=1';
   for (const scenario of ['confirmed', 'unconfirmed', 'no-attach'] as const) {
