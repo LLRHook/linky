@@ -142,6 +142,29 @@ test('standalone Erome prepared video and image previews group text and media in
   }
 });
 
+test('automatic inline Erome replies recheck source and scope after ownership and final Details binding', async () => {
+  for (const change of ['none', 'source', 'settings', 'disabled']) {
+    const f = automatic(); f.state.preferences = { mode: 'reply' };
+    let bindings = 0;
+    await f.run({ diagnostics: diagnosticsStub({ bind: async () => {
+      bindings++;
+      assert.equal(f.records.length, 1, 'ownership was durably saved before the late change');
+      if (change === 'source') f.source.content += ' edited';
+      if (change === 'settings') f.state.preferences = { mode: 'reply', platforms: { erome: false } };
+      if (change === 'disabled') f.state.enabled = false;
+      return true;
+    } }) });
+    assert.equal(bindings, 1, change);
+    assert.equal(f.outputs.length, 1, change);
+    assert.equal(f.records[0].mode, 'reply', change);
+    assert.equal(f.outputs[0].options.flags, MessageFlags.IsComponentsV2);
+    assert.match(JSON.stringify(f.outputs[0].options.components), /attachment:\/\/linky-video.mp4/);
+    assert.equal(f.outputs[0].edits.length, 1, 'the final controls edit completed');
+    assert.equal(f.state.originalDeleted, false, change);
+    assert.equal(f.outputs[0].deleted, change !== 'none', change);
+  }
+});
+
 test('operator Erome restrictions make no media calls and leave automatic sources unchanged', async () => {
   for (const guildIds of [[], ['1700000000000000099']]) {
     const f = automatic(); f.state.preferences = { eromeChannels: 'all', platforms: { erome: true } };
