@@ -390,6 +390,24 @@ Priority guide: crit / high / med / low.
 - **Status:** in-progress
 - **Implementation:** New `src/services/LinkedIn.ts` (URL recognition, JSON-LD parser, signed-CDN validation, card formatter); `createArticleLookup` strips tracking from LinkedIn post addresses, routes post pages through the parser, and downloads the MP4 in an extended window; `prepareArticlePosts` keeps the video upload and a no-upload fallback card; delivery counts the video as a listed attachment; `/diagnose` recognizes LinkedIn posts. Local live lookup of the reported link: card plus a 2.28 MB MP4 in under 1 s. Discord playback from production not yet checked.
 
+### [FEAT-1794398737] LinkedIn video posts as one block with the video inside
+- [ ] **Priority:** medium
+- **Area:** previews, media
+- **File(s):** src/services/ArticlePosts.ts, src/services/SocialLinkService.ts, tests/linkedin.test.ts, tests/social-links.test.ts, docs/article-previews.md, README.md
+- **Why:** After FEAT-1794395496 shipped, a user saw the LinkedIn repost arrive as two pieces: the uploaded video above, and the post card below it. They asked for one block with the post text on top and the video underneath, as TikTok and Facebook embeds look. Discord does not play a video inside a bot-authored embed, so the card and the upload cannot merge as an embed.
+- **Approach:** When the automatic repost is exactly one card with its uploaded video, and nothing else needs embeds or attachments (no copied source files, translation files, other cards or suppressed embeds), publish it as a Components V2 message, as Erome originals already are: the shared-by text, then a container in LinkedIn blue holding the author (with logo thumbnail), the linked title and post text, the video in a media gallery, and the counts and post time. Verification checks that the published container shows the uploaded video; no embed is involved. Every other case keeps the card plus attachment, or the poster and Play video link.
+- **Library / dependency notes:** No new dependencies; discord.js 14 Components V2 types.
+- **Acceptance criteria:**
+  - The reported LinkedIn video link publishes one V2 message whose container holds the text, then the video, then counts and time; Remove and Details controls follow it.
+  - A published message whose block lost the video is removed and the original kept.
+  - Copied source attachments, missing Attach Files, multiple cards or text too long for one message keep the earlier card presentation.
+  - Author names render as inert text (no markdown or mentions).
+- **Test plan:** `tests/linkedin.test.ts` block builder and verifier units; `tests/social-links.test.ts` delivery wiring and fallbacks (mutation-checked). Live: the reported link in Discord after deploy.
+- **Out of scope:** Manual `/fix` responses (they keep the card plus attachment), multi-video posts, other platforms.
+- **Bump:** minor
+- **Status:** in-progress
+- **Implementation:** `articleVideoComponents` builds the block from the prepared card; `messageHasArticleVideo` confirms the published block shows the video; `SocialLinkService` publishes and finishes the block as Components V2 when it applies.
+
 ---
 
 ## Shipped
