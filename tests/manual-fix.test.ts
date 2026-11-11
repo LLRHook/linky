@@ -1052,6 +1052,36 @@ test('three manual articles allow hidden social links and require an exact echoe
   assert.deepEqual(originalControls(mismatch), [ARTICLE_URL]);
 });
 
+const LINKEDIN_URL = 'https://lnkd.in/p/eMizdACP';
+const linkedInPermalink = 'https://www.linkedin.com/posts/rtx_turn-bold-engineering-ideas-into-real-world-activity-7500720890129756160-lOHY';
+const linkedInVideo = 'https://dms.licdn.com/playlist/vid/v2/D4E10AQGwmDk6ncG1cg/mp4-640p-30fp-crf28/B4EaBfptUzG4BI-/0/1788311170094?e=2147483647&v=beta&t=76k7toleEmMEweImIAQh26xjwzdppqZyX8kWMrWX4_w';
+const linkedInPost = (source: string): ArticlePreview => ({ source, url: linkedInPermalink, title: 'LinkedIn video', publisher: 'LinkedIn', linkedIn: {
+  url: linkedInPermalink, author: { name: 'RTX' }, text: 'Ready to build what’s next?', video: linkedInVideo, imageCount: 0,
+  files: [{ name: 'linkedin-7500720890129756160.mp4', url: linkedInVideo, data: new Uint8Array([1, 2, 3]) }] } });
+
+test('manual LinkedIn cards upload the MP4 and remove it with an unconfirmed card', async () => {
+  for (const scenario of ['confirmed', 'unconfirmed'] as const) {
+    const f = communityCommand(LINKEDIN_URL), edit = f.input.editReply;
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      // Discord lists the uploaded video as the reply's own attachment.
+      if (payload.files?.length) Object.assign(f.response, { attachments: new Collection([['video', { name: 'linkedin-7500720890129756160.mp4' }]]) });
+      if (scenario === 'unconfirmed' && payload.embeds?.length) {
+        const card = payload.embeds[0].toJSON?.() ?? payload.embeds[0];
+        f.response.embeds = [{ toJSON: () => ({ ...card, title: 'Wrong post' }) }];
+      }
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => linkedInPost(source) });
+    const published = f.events.find(event => event.name === 'edit' && event.payload.embeds?.length)!.payload;
+    assert.deepEqual(published.files.map((file: AttachmentBuilder) => file.name), ['linkedin-7500720890129756160.mp4']);
+    if (scenario === 'unconfirmed') {
+      assert.match(f.response.content, /preview could not be confirmed/);
+      assert.deepEqual(f.events.at(-1)?.payload.attachments, [], 'the video is removed with its card');
+    } else assert.doesNotMatch(f.response.content, /could not/, scenario);
+  }
+});
+
 const TRUTH_URL = 'https://truthsocial.com/@realDonaldTrump/117497314507062631';
 const truthImage = 'https://static-assets-1.truthsocial.com/tmtg:prime-ts-assets/media_attachments/files/117/497/original/d2c8ca4d0b00e832.jpg';
 const truthPost = (source: string): ArticlePreview => ({ source, url: source, title: 'Truth Social post', publisher: 'Truth Social', truthSocial: {

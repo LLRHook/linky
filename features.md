@@ -372,6 +372,24 @@ Priority guide: crit / high / med / low.
 - **Status:** shipped-pending-migration
 - **Implementation:** New dependency-free `src/services/PdfPreview.ts` parses a bounded object graph (direct and object-stream objects, Flate only with 4 MiB per stream and 24 MiB per file, a shared 4M-token budget, nesting depth 24, textual reference detection), the information dictionary and XMP title, the page count, and the first page's upright text runs through ToUnicode CMaps or simple encodings with TJ word spacing. Titles come from metadata (placeholders and editor file names rejected), else the largest upright first-page heading that reads as words, else the file name; encrypted files expose only page count and file name. `createArticleLookup` accepts `application/pdf` (or octet-stream for `.pdf` paths) with a PDF header, reads a 4 MiB prefix within the existing deadline, rate and cache limits, and `formatArticlePreview` renders `PDF document: <host>`, the literal title, declared author, page count, size, creation time and a footer naming the title source. Delivery, confirmation, settings and ownership rules are unchanged. The reported KITP PDF and nine other public PDFs (arXiv, IRS, Federal Reserve, Supreme Court, bitcoin.org and others) were checked locally; the reported one returns "Proof by OpenAI of the Existence of Quantum Yang-Mills theory", 2 pages, 87 KB. Same validation run as BUG-1793283258.
 
+### [FEAT-1794395496] LinkedIn post cards with playable video
+- [ ] **Priority:** high
+- **Area:** previews, media
+- **File(s):** src/services/LinkedIn.ts (new), src/services/ArticlePreview.ts, src/services/ArticlePosts.ts, src/services/SocialLinkService.ts, src/commands/fix.ts, src/commands/diagnose.ts, tests/linkedin.test.ts (new), tests/social-links.test.ts, tests/manual-fix.test.ts, docs/article-previews.md, README.md
+- **Why:** On 2026-11-11 a user shared `https://lnkd.in/p/eMizdACP` (an RTX video post). Linky's article reader followed the redirect and produced a card with only the excerpt: LinkedIn's signed-out pages label every post `og:type=article` with a generic logo as `og:image` (no file extension, so it was rejected), and the video was absent. Users asked for the video and media to load.
+- **Approach:** For `www.linkedin.com/posts/...` and `/feed/update/urn:li:...` pages (directly or after an `lnkd.in` redirect, with tracking parameters stripped), read the page's Schema.org `VideoObject` or `SocialMediaPosting` JSON-LD whose `@id` equals `og:url`. Build an authored card (author with profile and logo, post text, video title or shared-link title, first image and image count, reactions, comments, time). Download the JSON-LD `contentUrl` MP4 (signed `dms.licdn.com` address, ≤15 MiB, `video/mp4` with an `ftyp` header, 15 s window after metadata) and upload it with the card so Discord plays it; images stay on `media.licdn.com`. Without the upload, the card shows the poster and a Play video link. Discord lists the uploaded video as a message attachment, so the replacement attachment check and the manual-fix failure path account for it.
+- **Library / dependency notes:** No new dependencies.
+- **Acceptance criteria:**
+  - The reported link resolves to `https://www.linkedin.com/posts/rtx_turn-bold-engineering-ideas-into-real-world-activity-7500720890129756160-lOHY` and prepares a card plus `linkedin-7500720890129756160.mp4`.
+  - Image posts show their first image and image count; text posts show their text.
+  - Foreign media hosts, unsigned addresses, mismatched JSON-LD and non-MP4 or oversized videos are rejected or fall back to the link.
+  - Without Attach Files the card shows the poster and links the MP4; an unconfirmed manual card removes its video.
+- **Test plan:** `tests/linkedin.test.ts` parser, formatter and lookup units through the fixture connector; `tests/social-links.test.ts` and `tests/manual-fix.test.ts` delivery wiring (both mutation-checked). Live: the reported link from the production host and a Discord playback check.
+- **Out of scope:** LinkedIn Pulse articles (ordinary article cards), document/carousel posts, multi-image galleries, private or login-only posts, higher video renditions.
+- **Bump:** minor
+- **Status:** in-progress
+- **Implementation:** New `src/services/LinkedIn.ts` (URL recognition, JSON-LD parser, signed-CDN validation, card formatter); `createArticleLookup` strips tracking from LinkedIn post addresses, routes post pages through the parser, and downloads the MP4 in an extended window; `prepareArticlePosts` keeps the video upload and a no-upload fallback card; delivery counts the video as a listed attachment; `/diagnose` recognizes LinkedIn posts. Local live lookup of the reported link: card plus a 2.28 MB MP4 in under 1 s. Discord playback from production not yet checked.
+
 ---
 
 ## Shipped

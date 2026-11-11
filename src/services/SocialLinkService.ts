@@ -41,7 +41,7 @@ import { sourceMentionUsers } from './SourceMentions';
 import type { MobileShareLinkNormalizer } from './MobileShareLinks';
 import { findArticleLinks, type ArticleLookup } from './ArticlePreview';
 import { ARTICLE_MIXED_GUIDANCE, articleAttachments, articleEmbeds, fitArticleFiles, hasMixedArticleLinks,
-  prepareArticlePosts } from './ArticlePosts';
+  isArticleVideo, prepareArticlePosts } from './ArticlePosts';
 import { bypassLinky, canCopy, sourceVersion } from './RepostEligibility';
 import { canonicalRepostLinks, instagramShortcodes, repostExpectations, requiredRepostPermissions } from './RepostDelivery';
 
@@ -239,7 +239,7 @@ export function createLinkRepostHandler(
       };
       const articleStage = articleLinks.length ? delivery.context.trace?.startStage('resolve') : undefined;
       const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, delivery.context.signal) : [];
-      // Truth Social media is uploaded with its card; without Attach Files the card links the original addresses.
+      // Truth Social and LinkedIn media is uploaded with its card; without Attach Files the card links the original addresses.
       const articles = prepared && fitArticleFiles(prepared, Boolean(permissions?.has(PermissionFlagsBits.AttachFiles)));
       articleStage?.finish(articles ? 'ok' : delivery.context.signal?.aborted ? 'cancelled' : 'unavailable');
       if (articles === null) { delivery.finish(delivery.context.signal?.aborted ? 'cancelled' : 'unavailable'); return; }
@@ -439,7 +439,8 @@ export function createLinkRepostHandler(
         await removeReplacement();
         return;
       }
-      if (replacement.attachments.size !== files.length - articleUploads.length) {
+      // A card's uploaded video is listed as a message attachment; images the card displays are not.
+      if (replacement.attachments.size !== files.length - articleUploads.filter(file => !isArticleVideo(file.name)).length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         await removeReplacement();
         return;

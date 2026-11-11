@@ -1984,6 +1984,40 @@ test('Truth Social cards upload their image, and the echo at its Discord CDN add
   assert(plain.events.includes('delete original'));
 });
 
+const LINKEDIN_URL = 'https://lnkd.in/p/eMizdACP';
+const linkedInPermalink = 'https://www.linkedin.com/posts/rtx_turn-bold-engineering-ideas-into-real-world-activity-7500720890129756160-lOHY';
+const linkedInVideo = 'https://dms.licdn.com/playlist/vid/v2/D4E10AQGwmDk6ncG1cg/mp4-640p-30fp-crf28/B4EaBfptUzG4BI-/0/1788311170094?e=2147483647&v=beta&t=76k7toleEmMEweImIAQh26xjwzdppqZyX8kWMrWX4_w';
+const linkedInLookup = async (source: string) => ({ source, url: linkedInPermalink, title: 'LinkedIn video', publisher: 'LinkedIn', linkedIn: {
+  url: linkedInPermalink, author: { name: 'RTX' }, text: 'Ready to build what’s next?', video: linkedInVideo, imageCount: 0,
+  files: [{ name: 'linkedin-7500720890129756160.mp4', url: linkedInVideo, data: new Uint8Array([1, 2, 3]) }] } });
+
+test('LinkedIn video cards upload the MP4, which Discord lists as the message attachment', async () => {
+  const f = fixture(); f.source.content = LINKEDIN_URL;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, { platforms: ['articles'], lookupArticle: linkedInLookup })(f.source as unknown as Message);
+  assert.equal(f.sent.length, 1);
+  assert.deepEqual(f.sent[0].files?.map(file => (file as { name?: string }).name), ['linkedin-7500720890129756160.mp4']);
+  const embed = f.sent[0].embeds![0];
+  assert.equal(('toJSON' in embed ? embed.toJSON() : embed).image, undefined);
+  assert(f.events.includes('delete original'));
+
+  // A reply that lost the video is not accepted.
+  const lost = fixture(); lost.source.content = LINKEDIN_URL;
+  const send = lost.source.channel.send;
+  lost.source.channel.send = async options => { const result = await send(options); result.attachments = new Collection(); return result; };
+  await createLinkRepostHandler(CHANNEL_ID, lost.log, undefined, { platforms: ['articles'], lookupArticle: linkedInLookup })(lost.source as unknown as Message);
+  assert(!lost.events.includes('delete original'));
+  assert(lost.events.includes('delete replacement'));
+
+  // Without Attach Files the card links the MP4 and uploads nothing.
+  const plain = fixture(); plain.source.content = LINKEDIN_URL;
+  plain.permissions.remove(PermissionFlagsBits.Administrator, PermissionFlagsBits.AttachFiles);
+  await createLinkRepostHandler(CHANNEL_ID, plain.log, undefined, { platforms: ['articles'], lookupArticle: linkedInLookup })(plain.source as unknown as Message);
+  assert.equal(plain.sent[0].files?.length ?? 0, 0);
+  const linked = plain.sent[0].embeds![0];
+  assert.match(('toJSON' in linked ? linked.toJSON() : linked).description ?? '', /Play video\]\(https:\/\/dms\.licdn\.com\//);
+  assert(plain.events.includes('delete original'));
+});
+
 test('article reply mode keeps originals without Manage Messages permission', async () => {
   const f = fixture(); f.source.content = ARTICLE_URL;
   f.permissions.remove(PermissionFlagsBits.ManageMessages);

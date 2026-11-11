@@ -11,6 +11,7 @@ import { parseYouTubeUrl } from '../services/YouTube';
 import { parseYouTubeCommunityUrl } from '../services/YouTubeCommunity';
 import { parseArticleUrl } from '../services/ArticlePreview';
 import { parseTruthSocialUrl } from '../services/TruthSocial';
+import { isLinkedInPostUrl } from '../services/LinkedIn';
 import { hasMobileShareLinks } from '../services/MobileShareLinks';
 import { effectivePreferences, PLATFORM_NAMES } from './settings';
 import { parseEromeUrl } from '../services/Erome';
@@ -90,6 +91,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     if (!platform) lines.push('Link format: unsupported. Use an HTTPS post link for a listed platform.');
     else {
       lines.push(platform === 'articles' ? parseTruthSocialUrl(link) ? 'Link format: recognized Truth Social post; the post has not been fetched.'
+        : isLinkedInPostUrl(link) ? 'Link format: recognized LinkedIn post; the post has not been fetched.'
         : 'Link format: public article candidate; metadata has not been fetched.' : `Link format: recognized ${PLATFORM_NAMES[platform]} URL.`);
       if (hasMobileShareLinks(link, [platform])) lines.push('This mobile/share URL shape is recognized. Redirect shares require a public destination before previewing; direct Reddit aliases already contain the post ID. No link was resolved or fetched by this check.');
       if (!effective.platforms.includes(platform)) lines.push(config.rewritePlatforms.includes(platform) &&
@@ -104,6 +106,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
         } else lines.push('Erome previews require an age-restricted server channel or a thread in one under this server’s setting. An admin can change /settings erome_channels. No media was fetched.');
       } else if (platform === 'articles' && parseTruthSocialUrl(link)) {
         lines.push('Public Truth Social posts use a Linky card with the author, text and, when available, the first image or video poster, counts and post time. Videos get a Play video link when the operator’s Truth Social relay or the @realDonaldTrump archive supplies one; otherwise they play on Truth Social. Private, sensitive or content-warning posts keep the original. The Articles setting controls these cards. No post was fetched by this check.');
+      } else if (platform === 'articles' && isLinkedInPostUrl(link)) {
+        lines.push('Public LinkedIn posts use a Linky card with the author, post text, first image, reactions, comments and post time. A video post uploads its MP4 (up to 15 MiB) so Discord plays it; without Attach Files, or when the video is larger or slow, the card shows the poster and a Play video link. lnkd.in share links resolve to the post first. The Articles setting controls these cards. No post was fetched by this check.');
       } else if (platform === 'articles') {
         lines.push('Articles normally need public HTTPS pages with usable article metadata. Linky shows the publisher’s headline, short excerpt and image when available. When The Telegraph blocks the bot, Linky uses Bing News’s entry for that exact article (labelled Headline via Bing News), or else a card labelled Title from URL. Public PDFs get a document card with a title from the document’s metadata, first-page heading or file name (labelled), page count and size. Up to three articles can share one preview; keep them separate from other links. Other pages without usable metadata stay unchanged. No page was fetched by this check.');
       } else if (parseYouTubeCommunityUrl(link)) {

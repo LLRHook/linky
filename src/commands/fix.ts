@@ -7,7 +7,7 @@ import { getProviderCandidates, parseSocialUrl } from '../services/SocialProvide
 import { parseYouTubeUrl } from '../services/YouTube';
 import { findArticleLinks, parseArticleUrl, type ArticleLookup } from '../services/ArticlePreview';
 import { ARTICLE_MIXED_GUIDANCE, articleAttachments, articleEmbeds, fitArticleFiles, hasMixedArticleLinks,
-  prepareArticlePosts } from '../services/ArticlePosts';
+  isArticleVideo, prepareArticlePosts } from '../services/ArticlePosts';
 import { COMMUNITY_MIXED_GUIDANCE, hasMixedYouTubeCommunityLinks, communityEmbedBudget, findYouTubeCommunityLinks, parseYouTubeCommunityUrl, prepareYouTubeCommunityPosts,
   type YouTubeCommunityLookup } from '../services/YouTubeCommunity';
 import { originalPostUrl } from '../services/RepostPresentation';
@@ -224,7 +224,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (articleLinks.length) context.trace?.setPath('explicit');
     const articleStage = articleLinks.length ? context.trace?.startStage('resolve') : undefined;
     const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal) : [];
-    // Truth Social media is uploaded with its card; without Attach Files the card links the original addresses.
+    // Truth Social and LinkedIn media is uploaded with its card; without Attach Files the card links the original addresses.
     const articles = prepared && fitArticleFiles(prepared,
       !interaction.inGuild() || Boolean(interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles)));
     articleStage?.finish(articles ? 'ok' : 'unavailable');
@@ -376,8 +376,9 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (!preview.ok || context.signal?.aborted) await interaction.editReply({ content: rendered + (context.signal?.aborted
       ? '\n-# This preview reached its time limit. The original post link is available below; try again later.'
       : '\n-# A useful preview could not be confirmed. The original post link is available below.'),
-      // Removing a card would show its uploads as loose attachments; keep only the message's own files.
-      ...(articles.length ? { embeds: [], ...(articleUploads.length ? { attachments: [...message.attachments.values()] } : {}) } : {}),
+      // Removing a card would show its uploads as loose attachments; keep only the message's own files, not a card's video.
+      ...(articles.length ? { embeds: [], ...(articleUploads.length
+        ? { attachments: [...message.attachments.values()].filter(file => !isArticleVideo(file.name)) } : {}) } : {}),
       ...(erome && !eromeVerified ? { attachments: [] } : {}), allowedMentions: { parse: [] } });
     const details = await attempt.controls(message.id);
     if (await stopChangedPreferences()) return;
