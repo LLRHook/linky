@@ -146,7 +146,7 @@ test('automatic inline Erome replies recheck source and scope after ownership an
   for (const change of ['none', 'source', 'settings', 'disabled']) {
     const f = automatic(); f.state.preferences = { mode: 'reply' };
     let bindings = 0;
-    await f.run({ diagnostics: diagnosticsStub({ bind: async () => {
+    await f.run({ diagnostics: diagnosticsStub({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', bind: async () => {
       bindings++;
       assert.equal(f.records.length, 1, 'ownership was durably saved before the late change');
       if (change === 'source') f.source.content += ' edited';
