@@ -18,9 +18,11 @@ export function messageHasUploadedMedia(components: readonly { toJSON(): unknown
     if (url === `attachment://${name}`) return true;
     try {
       const address = new URL(String(url));
-      return address.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(address.hostname) && !address.port &&
+      // URL normalizes an explicit :443 away; check the raw authority as well.
+      return address.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(address.hostname) &&
+        !address.port && !/:\d+$/.test(String(url).split('/')[2] ?? '') &&
         !address.username && !address.password &&
-        /^\/attachments\/\d{17,20}\/\d{17,20}\/[^/]+$/.test(address.pathname) && address.pathname.endsWith(`/${name}`);
+        /^\/(?:ephemeral-attachments|attachments)\/\d{17,20}\/\d{17,20}\/[^/]+$/.test(address.pathname) && address.pathname.endsWith(`/${name}`);
     } catch { return false; }
   };
   const galleries = (value: unknown, depth = 0): boolean => {

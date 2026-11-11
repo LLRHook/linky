@@ -2,6 +2,8 @@
 
 Single LinkedIn and Truth Social video cards use a Components V2 panel: post text above the uploaded video, with author, counts, time and controls. The shared article builder accepts an uploaded MP4 from any article provider, with an optional uploaded author avatar. Automatic reposts, `/fix` and **Apps → Fix with Linky** use it. A missing gallery keeps the automatic source and removes its replacement; a manual response clears media and uploads and retains a V2 notice and original-link controls.
 
+Private manual responses can confirm uploads under Discord's `/ephemeral-attachments/` path as well as `/attachments/`. Both require HTTPS on `cdn.discordapp.com` or `media.discordapp.net`, two 17–20 digit identifiers and the exact prepared filename, without ports or user credentials. Signed CDN query strings are permitted. `tests/uploaded-media.test.ts` covers both paths and their rejection boundaries; `tests/manual-fix.test.ts` covers private slash and Apps video confirmation.
+
 Standalone Erome prepared attachments, including transcoded MP4s and JPEG/PNG images, now put their text and media in one V2 panel too. Hosted Erome originals and additional-item galleries already use V2. Erome media verification requires the matching file, Discord media type, proxy and positive dimensions. Legacy loose attachments also require the prepared byte size. These are Discord metadata checks; they do not establish playback on a client.
 
 ## Publication paths and compatibility constraints

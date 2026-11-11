@@ -1093,6 +1093,30 @@ test('manual video cards in slash and Apps commands use the same verified panel 
   }
 });
 
+test('private slash and Apps video panels confirm ephemeral Discord uploads without rollback', async () => {
+  for (const context of [false, true]) {
+    const f = command(LINKEDIN_URL, context), edit = f.input.editReply;
+    f.input.memberPermissions = new PermissionsBitField(0n);
+    const outcomes: DeliveryOutcome[] = [];
+    f.input.editReply = async payload => {
+      const result = await edit(payload);
+      if (payload.components) {
+        const normalized = JSON.parse(JSON.stringify(payload.components).replaceAll(
+          'attachment://linkedin-7500720890129756160.mp4',
+          'https://cdn.discordapp.com/ephemeral-attachments/123456789012345678/223456789012345678/linkedin-7500720890129756160.mp4?ex=1'));
+        f.response.components = normalized.map((c: unknown) => ({ toJSON: () => c }));
+      }
+      return result;
+    };
+    await execute(f.interaction, articleConfig, { lookupArticle: async source => linkedInPost(source),
+      diagnostics: diagnosticsStub({ outcomes }) });
+    assert.equal(f.events.find(event => event.name === 'defer')!.payload.flags, MessageFlags.Ephemeral);
+    assert.deepEqual(outcomes, ['confirmed']);
+    assert.match(JSON.stringify(f.response.components.map(c => c.toJSON())), /ephemeral-attachments/);
+    assert(!f.events.some(event => JSON.stringify(event.payload.components ?? []).includes('could not be confirmed')));
+  }
+});
+
 test('manual video panels revoke media when source, settings or cancellation change during publish, Details or final controls', async () => {
   for (const kind of ['source', 'preferences', 'cancelled']) for (const phase of ['publish', 'binding', 'controls']) {
     const f = command(LINKEDIN_URL, true), edit = f.input.editReply, controller = new AbortController();
