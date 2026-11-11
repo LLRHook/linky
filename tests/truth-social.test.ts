@@ -6,6 +6,7 @@ import { articleAttachments, articleVideoComponents, fitArticleFiles, prepareArt
 import { expectedPreviews, inspectPreviews } from '../src/services/PreviewRecovery';
 import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialRelay, parseTruthSocialStatus,
   parseTruthSocialUrl } from '../src/services/TruthSocial';
+import { deferred } from './support/discord';
 
 const id = '117497314507062631';
 const source = `https://truthsocial.com/@realDonaldTrump/${id}`;
@@ -100,6 +101,40 @@ test('Truth Social video download rejects oversized, malformed, redirected and s
   const posts = (await prepareArticlePosts([source], stalled.lookup))!;
   assert(posts);
   assert(!articleAttachments(posts).some(file => file.name?.endsWith('.mp4')));
+  assert.match(posts[0].embeds[0].description!, /Play video/);
+});
+
+test('Truth Social video windows stay capped at fifteen seconds when the operator requests thirty', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.method(AbortSignal, 'timeout', (ms: number) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error('synthetic timeout')), ms);
+    return controller.signal;
+  });
+  const started = deferred();
+  const videoUrl = asset('media_attachments/files/123/original/movie.mp4');
+  let downloadSignal: AbortSignal | undefined;
+  const f = fixture(async (settings, signal) => {
+    if (settings.hostname === 'truthsocial.com') return json(status({
+      media_attachments: [{ type: 'video', url: videoUrl, preview_url: photo }],
+    }));
+    if (!settings.path?.endsWith('.mp4')) return picture();
+    downloadSignal = signal;
+    return new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(mp4()), 14_900);
+      signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+      started.resolve();
+    });
+  }, { videoTimeoutMs: 30_000 });
+  const pending = prepareArticlePosts([source], f.lookup);
+  await started.promise;
+  // The 250 ms media margin must expire before 15 s; the whole request is still current at 14.9 s.
+  t.mock.timers.tick(14_900);
+  const posts = await pending;
+  assert(posts, 'the post survives the bounded video timeout');
+  assert.equal(downloadSignal?.aborted, true);
+  assert(!articleAttachments(posts).some(file => file.name?.endsWith('.mp4')));
+  assert.deepEqual(posts[0].embeds[0].image, { url: `attachment://truth-${id}.jpg` });
   assert.match(posts[0].embeds[0].description!, /Play video/);
 });
 
