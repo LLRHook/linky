@@ -104,6 +104,18 @@ test('Truth Social video download rejects oversized, malformed, redirected and s
   assert.match(posts[0].embeds[0].description!, /Play video/);
 });
 
+test('Truth Social video uploads require the exact post filename and source media URL', () => {
+  const videoUrl = asset('media_attachments/files/123/original/movie.mp4');
+  const post = parseTruthSocialStatus(status({ media_attachments: [{ type: 'video', url: videoUrl, preview_url: photo }] }), link)!;
+  const file = { name: `truth-${id}.mp4`, url: videoUrl, data: new Uint8Array([1]) };
+  assert.equal(formatTruthSocialPost({ ...post, files: [file] }).length, 1);
+  for (const bad of [{ ...file, name: 'unrelated.mp4' }, { ...file, name: 'truth-117497314507062632.mp4' },
+    { ...file, url: asset('media_attachments/files/456/original/other.mp4') },
+    { ...file, url: photo }, { ...file, data: new Uint8Array() }]) {
+    assert.deepEqual(formatTruthSocialPost({ ...post, files: [bad] }), [], bad.name + ' ' + bad.url);
+  }
+});
+
 test('Truth Social video windows stay capped at fifteen seconds when the operator requests thirty', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   t.mock.method(AbortSignal, 'timeout', (ms: number) => {

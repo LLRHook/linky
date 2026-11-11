@@ -19,6 +19,15 @@ test('uploaded panels accept exact public and ephemeral Discord attachment paths
   }
 });
 
+test('uploaded panel CDN matching rejects userinfo on public and ephemeral media URLs', () => {
+  for (const host of ['cdn.discordapp.com', 'media.discordapp.net']) for (const path of ['attachments', 'ephemeral-attachments']) {
+    for (const userinfo of ['user@', 'user:pass@', ':pass@']) {
+      const url = `https://${userinfo}${host}/${path}/${ids}/${name}`;
+      assert.equal(messageHasUploadedMedia(panel(url), name), false, url);
+    }
+  }
+});
+
 test('uploaded panel CDN matching rejects wrong hosts, schemes, ports, snowflakes and filenames', () => {
   for (const path of ['attachments', 'ephemeral-attachments']) {
     const url = `https://cdn.discordapp.com/${path}/${ids}/${name}`;
