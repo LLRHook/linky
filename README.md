@@ -112,3 +112,17 @@ CI tests Node.js 22, 24 and 26, deployment safeguards and the production contain
 [VERIFICATION.md](VERIFICATION.md) is the release-readiness protocol: it runs the CI commands verbatim, maps every shipped change to its proving test and re-ticks the privacy and safety constraints above. Known defects are tracked in [bugs.md](bugs.md), planned work in [features.md](features.md), and verified fixes and features are migrated into [CHANGELOG.md](CHANGELOG.md).
 
 [MIT license](LICENSE).
+
+## Setup
+
+<!-- cycle:tracker-setup begin (written by trackers.py install) -->
+**Once per clone**, set up the tracker merge driver and pre-commit lint (Claude Code sessions do this automatically):
+
+```bash
+python3 .cycle/trackers.py install
+```
+
+```powershell
+python .cycle\trackers.py install
+```
+<!-- cycle:tracker-setup end -->
