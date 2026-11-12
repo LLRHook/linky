@@ -11,7 +11,7 @@ const MAX_EVENT_BYTES = 1_000_000;
 const normalize = title => title.trim().toLowerCase().replace(/\s+/g, ' ');
 
 /** Section bodies keyed by normalized `##` heading; a repeated heading keeps its first body. */
-export function sections(body) {
+function sections(body) {
   const found = new Map();
   let current;
   for (const line of String(body ?? '').replace(/<!--[\s\S]*?(?:-->|$)/g, '').split(/\r\n|\r|\n/)) {

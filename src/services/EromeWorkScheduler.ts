@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import type { DeliveryContext, StageOutcome } from './DeliveryContext';
 
-export type EromeWorkProfile = 'original' | 'attachment';
+type EromeWorkProfile = 'original' | 'attachment';
 export type EromeAdmissionFailure = 'queue_full' | 'deadline' | 'cancelled' | 'closed' | 'cleanup_failed';
 export class EromeAdmissionError extends Error {
   constructor(readonly reason: EromeAdmissionFailure) { super(`erome_${reason}`); this.name = 'EromeAdmissionError'; }

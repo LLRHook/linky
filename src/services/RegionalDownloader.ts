@@ -9,8 +9,8 @@ import {
 } from './RegionalProtocol';
 
 const HEAD_TIMEOUT_MS = 2_000, DOWNLOAD_TIMEOUT_MS = 10_000, MAX_HEADER_BYTES = 8192;
-export type RegionalSourceInspection = Readonly<{ bytes: number; etag: string }>;
-export type RegionalInput = { source: string; album: string };
+type RegionalSourceInspection = Readonly<{ bytes: number; etag: string }>;
+type RegionalInput = { source: string; album: string };
 export type RegionalObservation = {
   kind: 'head' | 'part' | 'complete' | 'admission';
   outcome: 'ok' | 'failed' | 'cancelled' | 'rejected';

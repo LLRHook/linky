@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 const CRAWLER_UA = 'Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)';
 const MAX_BYTES = 512 * 1024;
 const MAX_REDIRECTS = 3;
-export const EXPECTATIONS = ['video', 'image', 'text', 'unavailable'];
+const EXPECTATIONS = ['video', 'image', 'text', 'unavailable'];
 
 const decode = value => value.replace(/&(amp|lt|gt|quot|#39|#x27);/g, (_, name) =>
   ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': '\'', '#x27': '\'' })[name]);

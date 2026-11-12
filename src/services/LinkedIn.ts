@@ -25,7 +25,7 @@ export interface LinkedInPost {
   files?: TruthSocialFile[];
 }
 
-export const LINKEDIN_HOST = 'www.linkedin.com';
+const LINKEDIN_HOST = 'www.linkedin.com';
 const HOSTS = new Set([LINKEDIN_HOST, 'linkedin.com']);
 // `/posts/<author>_<slug>-activity-<id>-<suffix>`; shared links also use `ugcPost` or `share` ids.
 const POST_PATH = /^\/posts\/[^/?#\s]{1,400}-(?:activity|ugcPost|share)-\d{15,22}-[A-Za-z0-9_-]{2,8}\/?$/;
@@ -35,7 +35,6 @@ const ACTIVITY = /-activity-(\d{15,22})-[A-Za-z0-9_-]{2,8}$/;
 const SIGNED = '(?:\\/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,120}){1,12}\\?e=\\d{1,12}&v=beta&t=[A-Za-z0-9_-]{8,200}$';
 const IMAGE = new RegExp(`^https:\\/\\/media\\.licdn\\.com\\/dms\\/image${SIGNED}`);
 const VIDEO = new RegExp(`^https:\\/\\/dms\\.licdn\\.com\\/playlist\\/vid${SIGNED}`);
-const FILE_NAME = /^linkedin-\d{15,22}\.mp4$/;
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -61,11 +60,11 @@ export function linkedInPermalink(raw: unknown): string | null {
   return url && POST_PATH.test(url.pathname) ? `https://${LINKEDIN_HOST}${url.pathname.replace(/\/$/, '')}` : null;
 }
 
-export function linkedInImage(value: unknown): string | null {
+function linkedInImage(value: unknown): string | null {
   return typeof value === 'string' && value.length <= 1024 && IMAGE.test(value) ? value : null;
 }
 
-export function linkedInVideo(value: unknown): string | null {
+function linkedInVideo(value: unknown): string | null {
   return typeof value === 'string' && value.length <= 1024 && VIDEO.test(value) ? value : null;
 }
 
@@ -73,10 +72,6 @@ export function linkedInVideo(value: unknown): string | null {
 export function linkedInVideoName(post: Pick<LinkedInPost, 'url'>): string | null {
   const id = ACTIVITY.exec(linkedInPermalink(post.url) ?? '')?.[1];
   return id ? `linkedin-${id}.mp4` : null;
-}
-
-export function isLinkedInVideoFile(name: unknown): boolean {
-  return typeof name === 'string' && FILE_NAME.test(name);
 }
 
 function text(value: unknown, maximum = 10_000): string {

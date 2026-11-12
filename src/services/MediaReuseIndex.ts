@@ -7,7 +7,7 @@ import type { MediaMime } from './MediaAssetStore';
 
 const TTL = 7 * 24 * 60 * 60_000, CAPACITY = 1024, MAX_BYTES = 2 * 1024 * 1024;
 export type ReuseSource = { album: string; source: string; etag: string; bytes: number; mimeType: MediaMime };
-export type ReuseValue = { id: string; size: number; sha256: string; mimeType: MediaMime;
+type ReuseValue = { id: string; size: number; sha256: string; mimeType: MediaMime;
   metadata: { width: number; height: number; duration?: number; fps?: number } };
 type Entry = ReuseValue & { key: string; lastUsed: number };
 export type MediaReuseIndex = {
