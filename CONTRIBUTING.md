@@ -40,8 +40,9 @@ For bugs, include expected and actual behavior, a reproducible public link where
 
 `bugs.md`, `features.md`, `CHANGELOG.md` and `VERIFICATION.md` are interlocked: defects and features are filed, work is verified against `VERIFICATION.md`, and shipped or fixed entries are migrated into `CHANGELOG.md`.
 
-- File a `BUG-<id>` in `bugs.md / ## Open` when you find a bug, in the same change; never silently fix one. When the fix lands, tick it, add a `**Fix:**` line and set `Status: fixed-pending-migration`.
-- File a `FEAT-<id>` in `features.md / ## Open` before writing feature code. When it ships, tick it, add an `**Implementation:**` line and set `Status: shipped-pending-migration`.
-- Ids are UNIX-epoch timestamps (`date +%s`), never sequential. Append new entries at the end of their section and change `Status:` in place. The trackers carry `merge=union` so concurrent appends merge; the only physical move between sections happens at the release verification run.
+- The trackers hold active work only and are written only with `python .cycle/trackers.py` (format and commands: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md)). Run `python .cycle/trackers.py install` once per clone; it sets the per-entry `merge=tracker` driver and the pre-commit lint that rejects hand edits.
+- File a `BUG` in `bugs.md` when you find a bug, in the same change (`trackers.py add --tracker bugs.md --json -`); never silently fix one. When the fix lands: `set <ID> Status fixed-pending-migration`, `set <ID> Fix "<summary>"`, `set <ID> Docs "<files or none>"`.
+- File a `FEAT` in `features.md` before writing feature code. When it ships: `set <ID> Status shipped-pending-migration` plus `Implementation` and `Docs`.
+- `add` mints the UNIX-epoch id. After any merge or rebase, `python .cycle/trackers.py lint` must report 0 errors before you commit. Only the release verification run migrates entries (`trackers.py migrate`), which moves each into `CHANGELOG.md` and removes it from the tracker.
 - Every ticket carries a `Bump:` (`major | minor | patch`). Migration copies a one-liner with the id and bump marker into `CHANGELOG.md / Unreleased`.
 - A green `VERIFICATION.md` run appends a `Verified` entry to `CHANGELOG.md` and updates the test counts in `VERIFICATION.md`. When a doc claim drifts from the code, fix it with evidence or file a `docs` bug; do not edit a claim without checking.

@@ -4,11 +4,9 @@
 Dockerfile text eol=lf
 .githooks/* text eol=lf
 
-# Append-mostly project-cycle trackers: auto-merge concurrent appends instead
-# of conflicting. Ids are UNIX-epoch timestamps and entries are append-only +
-# sorted-on-read, so union keeping both sides is safe. The one operation union
-# can't merge is moving an entry between sections — do that only at release
-# migration (single-owner). See CONTRIBUTING.md.
-bugs.md      merge=union
-features.md  merge=union
-CHANGELOG.md merge=union
+# Project-cycle trackers merge per entry (keyed by id) with the driver that
+# `python .cycle/trackers.py install` registers, so an edited entry merges as
+# one change instead of being duplicated. See CONTRIBUTING.md.
+bugs.md      merge=tracker text eol=lf
+features.md  merge=tracker text eol=lf
+CHANGELOG.md merge=tracker text eol=lf

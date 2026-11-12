@@ -70,6 +70,7 @@ server is available.
 
 ## Stage 1 — Static / spec compliance review
 
+- [ ] 1.0 Tracker integrity: `python .cycle/trackers.py lint` reports 0 errors. A `UNION`, `NODRIVER` or `ADOPT` warning means the clone or trackers need `/cycle-init upgrade`.
 - [ ] 1.1 Strict production build (CI step "TypeScript build (strict)"): `npm run build` exits 0. `tsconfig.json` has `strict`, `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noFallthroughCasesInSwitch`.
 - [ ] 1.2 Regional worker type-check (CI step "Check regional video workers"): `npm run check:workers` exits 0.
 - [ ] 1.3 Dependency audit (CI job "Dependency audit"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
@@ -79,7 +80,7 @@ server is available.
 - [ ] 1.7 Performance anti-pattern scan of the message hot path (`src/bot.ts` message handler → `SocialLinkService`): no per-message disk read in the loop, no unbounded regex on message bodies, no await per link before detection completes. Record any finding as a `BUG` (area `perf`).
 - [ ] 1.8 No lint or formatter is wired in this repo (no ESLint/Prettier config); do not invent one here.
 
-A failure in 1.1–1.3 is a hard block.
+A failure in 1.0–1.3 is a hard block.
 
 ## Stage 2 — Automated builds & tests
 
