@@ -584,3 +584,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** Retire failed cleanup records only more than seven days after expiry, for legacy suffix/card/controls state. One durable terminal notice, numeric code/status passed to logger; journal write failure retains state and retry notice. Red 4/25 failed; green 26 pass; retirement mutation killed 4 tests.
 - **Docs:** README.md; docs/delivery-reliability.md
+
+### [BUG-1794864951] Link replacement failure log omits error class
+- [ ] **Severity:** low
+- **Area:** diagnostics
+- **File(s):** src/services/SocialLinkService.ts:629-636
+- **Observation:** L1 found one automatic X link replacement failure without numeric Discord code; the cause cannot be identified from the retained log.
+- **Expected:** Add error.name only to the existing sanitized log, without message, stack or user content.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Ticket only per driver. Future test: thrown TypeError logs name TypeError, without error text or Discord identity.
+- **Bump:** patch
+- **Status:** open
