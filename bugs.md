@@ -539,3 +539,18 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** Corrected the existing window sentence in BUG-1794864397 to include Facebook in the eight-second group; red doc assertion failed, green passed, and omitting Facebook again failed mutation check.
 - **Docs:** docs/delivery-reliability.md
+
+### [BUG-1794864603] Rejected preview reconcile fetch fails the delivery
+- [x] **Severity:** med
+- **Area:** delivery, previews
+- **File(s):** src/services/PreviewWatcher.ts; src/commands/fix.ts; tests/preview-watcher.test.ts; tests/manual-fix.test.ts; tests/delivery-recovery.test.ts
+- **Observation:** Single REST reconcile rejects with Discord code 50001 / HTTP 403, rethrows and records discord-failure. L1 observed 8 of 24 manual attempts with discord-failure in seven days, and 4 interaction errors in retained 4.2-day logs.
+- **Expected:** Unreadable reconcile resolves unconfirmed without throwing; successful reconcile still confirms; originals remain unless confirmed; manual diagnostics record metadata-unconfirmed.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Inject DiscordAPIError 50001/403 at message.fetch, assert watcher ok false and manual metadata-unconfirmed; run source-retention integration cases and successful reconcile control.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Unreadable reconcile returns current unconfirmed metadata instead of throwing; Gateway success survives rejection. Regression red 3 failures; green 167 pass; rethrow mutation fails watcher and automatic/manual outcome tests. fix.ts callers already finish unavailable / metadata-unconfirmed correctly, so no caller code change.
+- **Docs:** none (bounded REST reconciliation documentation remains accurate)

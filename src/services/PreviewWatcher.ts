@@ -96,8 +96,8 @@ export class PreviewWatcher {
           try {
             const reconciled = await Promise.race([message.fetch(true), timeout]);
             if (reconciled && !stopped) accept(inspectPreviews(reconciled.embeds.map(embed => embed.toJSON()), expected));
-          } catch (error) {
-            if (!latest.ok && !stopped) throw error;
+          } catch {
+            // An unreadable snapshot cannot confirm metadata. Keep any concurrent Gateway success.
           } finally { clearTimeout(timer); wake = undefined; }
         }
         return latest;

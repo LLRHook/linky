@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Client, type APIEmbed, type Message } from 'discord.js';
+import { Client, DiscordAPIError, type APIEmbed, type Message } from 'discord.js';
 import { expectedPreviews } from '../src/services/PreviewRecovery';
 import { PreviewWatcher } from '../src/services/PreviewWatcher';
 
@@ -108,9 +108,14 @@ test('concurrent watchers use one listener and a late REST snapshot cannot overw
   assert.equal(client.listenerCount('raw'), count - 1);
 });
 
-test('deleted messages still reject and a mismatched bot output is never fetched', async t => {
+test('unreadable or deleted reconcile snapshots remain unconfirmed and mismatched output is never fetched', async t => {
   const { watcher } = fixture(t);
-  await assert.rejects(watcher.arm(channel, expected).verify(message([], async () => { throw new Error('Unknown Message'); })), /Unknown Message/);
+  for (const error of [new DiscordAPIError({ code: 50001, message: 'Missing Access' }, 50001, 403, 'GET', 'https://discord.example/message', {}),
+    new Error('Unknown Message')]) {
+    const result = await watcher.arm(channel, expected).verify(message([], async () => { throw error; }));
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.missing, expected);
+  }
   const untrusted = message([], async () => { assert.fail('Wrong author must not fetch'); });
   Object.assign(untrusted, { author: { id: 'wrong' } });
   assert.equal((await watcher.arm(channel, expected).verify(untrusted)).ok, false);
@@ -169,6 +174,15 @@ test('Instagram still confirms immediately and other platforms retain the four-s
   await Promise.resolve();
   assert.equal(fetches, 1);
   assert.equal((await pending).ok, false);
+});
+
+test('a rejected reconcile cannot erase a concurrent matching Gateway update', async t => {
+  const { client, watcher } = fixture(t, { gatewayWaitMs: 0 });
+  const result = await watcher.arm(channel, expected).verify(message([], async () => {
+    raw(client, [embed]);
+    throw new Error('Unreadable snapshot');
+  }));
+  assert.equal(result.ok, true);
 });
 
 for (const [platform, original, rewritten] of [
