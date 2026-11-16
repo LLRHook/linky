@@ -16,6 +16,8 @@ Cleanup state is separate from both histories: `data/reposts.json` retains owner
 
 ## What is recorded
 
+An intentional no-op after preparation (including `youtubeDisplay=preview` with an unchanged native message) is discarded from Details diagnostics and the archive, without adding an outcome value. A real source-edit cancellation remains `cancelled`. Persisted file schemas are unchanged.
+
 Operational preview-failure logs list the attempted catalogue provider names in order. Preview-confirmation logs name the provider from the useful embed that matched, or `canonical` / `unattributed`; a delayed primary embed is not credited to the fallback. These labels contain no URLs and are not stored in either delivery-history format. ProviderHealth continues to require its existing attributable paired evidence before changing routing.
 
 Each finalized attempt has a random attempt ID, start timestamp, platform, automatic/manual mode, a fixed outcome, delivery path, elapsed time, bounded stage timings and a cache hit/miss when observed. Only those allowed fields are copied. Discord user, server, channel and message IDs, source and media URLs, captions, message text, media bytes, credentials and arbitrary error messages are excluded.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, Collection, DiscordAPIError, MessageFlags, MessageType, PermissionsBitField,
@@ -11,7 +11,7 @@ import { ProviderHealth } from '../src/services/ProviderHealth';
 import { PreviewWatcher } from '../src/services/PreviewWatcher';
 import { getProviderCandidates } from '../src/services/SocialProviders';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
+import { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { TweetTranslation } from '../src/services/TweetTranslation';
@@ -1558,4 +1558,28 @@ test('failure logs list every attempted provider in order and late primary confi
     assert(providers.every(name => /^[a-z][a-z0-9-]*$/.test(name)), 'only catalogue names enter provider log fields');
     assert.equal(f.state.originalDeleted, success);
   }
+});
+
+test('YouTube preview no-op discards diagnostics and archive while a source-edit cancellation is still recorded', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'L6-noop-'));
+  const path = join(directory, 'diagnostics.json'), archive: unknown[] = [];
+  const diagnostics = new DeliveryDiagnostics({ path, archive: { record: value => { archive.push(value); return true; } } });
+  t.after(async () => { await diagnostics.close(); await rm(directory, { recursive: true, force: true }); });
+  await diagnostics.ready;
+  const f = delivery(`https://youtu.be/${YOUTUBE_ID}`);
+  f.state.preferences = { mode: 'replace', youtubeDisplay: 'preview' };
+  await f.create({ diagnostics, lookupYouTube: async () => { assert.fail('Preview-only skips lookup'); },
+    publishYouTube: async () => { assert.fail('Preview-only skips publish'); } })(f.source);
+  await diagnostics.flush();
+  assert.deepEqual(f.events, []); assert.equal(f.state.originalDeleted, false);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).attempts, [], 'no attempt of any outcome is persisted');
+  assert.deepEqual(archive, [], 'no attempt of any outcome is archived');
+  const cancelled = delivery();
+  cancelled.state.duringPreview = async () => { cancelled.source.content = 'Edited source'; cancelled.state.remoteContent = 'Edited source'; };
+  await cancelled.create({ diagnostics })(cancelled.source);
+  await diagnostics.flush();
+  const attempts = JSON.parse(await readFile(path, 'utf8')).attempts;
+  assert.equal(attempts.length, 1); assert.equal(attempts[0].outcome, 'cancelled');
+  assert.deepEqual(archive.map(value => (value as { outcome: string }).outcome), ['cancelled']);
+  assert.equal(cancelled.state.originalDeleted, false);
 });

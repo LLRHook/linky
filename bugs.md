@@ -605,7 +605,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** open
 
 ### [BUG-1794864952] YouTube preview-display no-op is recorded as cancelled
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** diagnostics, youtube
 - **File(s):** src/services/SocialLinkService.ts:293; src/services/DeliveryAttempt.ts:52
 - **Observation:** 19 of 26 cancelled attempts in the seven-day investigation were intended YouTube preview-display no-ops; closing the unfinished attempt records cancelled.
@@ -614,7 +614,10 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Ticket only per driver. Future test: youtubeDisplay=preview leaves native message unchanged and does not emit cancelled. The observation is an attempt count within the sampled seven days, not a production improvement claim.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Discard the opened unfinished trace when preparation produces no change, with an in-memory diagnostics removal API and no new outcome or persisted field. The unchanged YouTube preview-only source produces no diagnostic or archive attempt; real source-edit cancellation still records cancelled. Regression reads the real written diagnostics JSON and captures the archive sink.
+- **Docs:** docs/delivery-reliability.md; docs/operator-reliability.md
 
 ### [BUG-1794864954] Preview failure logs omit provider history and matched-provider attribution
 - [x] **Severity:** low

@@ -290,7 +290,10 @@ export function createLinkRepostHandler(
         catch { log.warn(context, 'YouTube lookup unavailable; keeping native links'); }
       }
       // Preview-only keeps Discord's already-native YouTube message untouched.
-      if (rewritten === inputContent && !youtube.size && !community.length && !articles.length && !erome && !originalMedia) return;
+      if (rewritten === inputContent && !youtube.size && !community.length && !articles.length && !erome && !originalMedia) {
+        delivery.discard();
+        return;
+      }
       const replyContext = await findReplyContext(message, findRepost);
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       const body = formatLinkRepost(rewritten, message.author.id, replyContext);
