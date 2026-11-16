@@ -18,7 +18,7 @@ Public article cards add publisher-labelled headlines, short metadata excerpts a
 
 The current release work adds bounded Instagram and Reddit mobile-share resolution, private per-server `/autofix` preferences, setup readiness and explicit sample tests, three Instagram presentation choices, and public YouTube community text/image cards. Each has focused failure and retention tests. Public-page parsing and provider media remain external dependencies. Release and live validation are tracked with the implementation PR; these notes do not establish an uptime or conversion improvement.
 
-The native-preview investigation reproduced a useful Instagram Reel update at about 7.5 seconds, after the previous check window. Instagram now gets an eight-second Gateway window, returning immediately on a matching preview. X retains four seconds. Other Instagram posts returned empty media after 20 seconds, so the new wait does not make unavailable media successful. The earlier X discrepancy did not reproduce in fresh controlled plain-link and attributed-post checks.
+The native-preview investigation reproduced a useful Instagram Reel update at about 7.5 seconds, after the previous check window. Instagram, TikTok and Facebook get an eight-second Gateway window, returning immediately on a matching preview. X and Reddit allow ten seconds for slow large-video unfurls; other platforms retain four seconds. Other Instagram posts returned empty media after 20 seconds, so the new wait does not make unavailable media successful. The earlier X discrepancy did not reproduce in fresh controlled plain-link and attributed-post checks.
 
 ## Original priorities and remaining work
 

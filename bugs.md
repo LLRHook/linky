@@ -509,3 +509,30 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Bump:** patch
 - **Status:** fixed-pending-migration
 - **Fix:** Both sentences now read "Node.js 22, 24 and 26"; `SECURITY_AUDIT.md` points at `bugs.md` for follow-up work.
+
+### [BUG-1794864397] X and Reddit preview wait ends before large-video unfurls arrive
+- [x] **Severity:** med
+- **Area:** delivery, previews
+- **File(s):** src/services/PreviewWatcher.ts; tests/preview-watcher.test.ts; README.md; docs/delivery-reliability.md; docs/product-roadmap.md
+- **Observation:** 2026-11-16 investigation: Discord embeds for large X videos arrived in 6-9 seconds and a vxReddit video in 8.2 seconds (one poll trial per URL), after the current 4,000 ms window. Seven days to 2026-11-16: 11 of 227 X delivery attempts metadata-unconfirmed (4.8%); 210 confirmed spans all censored below 4,000 ms.
+- **Expected:** X and Reddit wait at most 10,000 ms; Instagram, TikTok and Facebook retain 8,000 ms; other platforms retain 4,000 ms. Matching updates still wake immediately, and originals require confirmed previews.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Fake timers: matching X and Reddit updates at 9,000 ms confirm; other platforms stop at 4,000 ms; no update remains unconfirmed and preserves the source; custom waits clamp at 10,000 ms. Measure X metadata-unconfirmed rate, unit delivery attempts: baseline 11/227 (4.8%) in seven days to 2026-11-16, minimum 200 X attempts after deploy, noise floor 3 attempts; below 200 report insufficient sample. Known cost: truly unembeddable posts take about 24 s instead of about 10 s before replacement removal. Driver approved this tradeoff; matcher, providers and fallback order unchanged.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** 10 s X/Reddit Gateway window with 10 s caller clamp; immediate success, 8/4 s defaults and unconfirmed source retention covered. Red: 4 failing new timing tests; green: 92 passing watcher/delivery cases; wait and clamp mutations killed.
+- **Docs:** README.md; docs/delivery-reliability.md; docs/product-roadmap.md
+
+### [BUG-1794864398] Delivery reliability window documentation omits Facebook
+- [ ] **Severity:** low
+- **Area:** docs, delivery
+- **File(s):** docs/delivery-reliability.md
+- **Observation:** Before this batch the guide says eight seconds for Instagram or TikTok only, while PreviewWatcher also grants Facebook eight seconds.
+- **Expected:** Describe every platform window correctly, including Facebook.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Compare living guide with PreviewWatcher defaults; update the same sentence as the slow-unfurl fix and check that Facebook is included.
+- **Bump:** patch
+- **Status:** open
