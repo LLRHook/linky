@@ -608,3 +608,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Ticket only per driver. Future test: youtubeDisplay=preview leaves native message unchanged and does not emit cancelled. The observation is an attempt count within the sampled seven days, not a production improvement claim.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1794864954] Preview failure logs omit provider history and matched-provider attribution
+- [ ] **Severity:** low
+- **Area:** diagnostics, providers
+- **File(s):** src/services/SocialLinkService.ts; src/services/DeliveryAttempt.ts
+- **Observation:** L1-F03/C7: failure log lists only last provider; 4 of 15 fallback attempts confirmed among 227 X attempts in seven days, but a late primary embed can satisfy source identity without proving which provider recovered.
+- **Expected:** Report attempted providers and attribute confirmed metadata only to the provider host that matched, keeping canonical or unattributed results distinct.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Ticket only per driver. Preserve current strict matcher and ProviderHealth credit safeguards. Future regression: delayed primary embed during fallback is not credited to fallback; no URLs, message text or user data added to persisted diagnostics.
+- **Bump:** patch
+- **Status:** open
