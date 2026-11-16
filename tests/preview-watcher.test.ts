@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Client, DiscordAPIError, type APIEmbed, type Message } from 'discord.js';
-import { expectedPreviews } from '../src/services/PreviewRecovery';
+import { expectedPreviews, waitForPreviews } from '../src/services/PreviewRecovery';
 import { PreviewWatcher } from '../src/services/PreviewWatcher';
-import { capturedProviderError, capturedErrorSource } from './fixtures/provider-error';
+import { capturedProviderError, capturedErrorSource, xProviderError } from './fixtures/provider-error';
 
 const source = 'https://www.instagram.com/reel/RealPost/';
 const fixed = 'https://fkinstagram.com/reel/RealPost/';
@@ -335,4 +335,61 @@ test('pre-send useful evidence cannot be overwritten by a later error card for t
   raw(client, [capturedProviderError]);
   const result = await watch.verify(message([], async () => { assert.fail('Useful pre-send evidence needs no REST'); }));
   assert.equal(result.ok, true);
+});
+
+for (const [priorHost, nextHost] of [['fixupx.com', 'vxtwitter.com'], ['vxtwitter.com', 'fixupx.com']]) {
+  const source = 'https://x.com/public/status/123';
+  const prior = xProviderError(`https://${priorHost}/public/status/123`);
+  const next = `https://${nextHost}/public/status/123`;
+  const items = expectedPreviews(source, next);
+  const useful: APIEmbed = { url: next, title: 'Public post', description: 'Useful content' };
+  for (const preSend of [false, true]) {
+    test(`stale ${priorHost} error abstains for ${nextHost} (${preSend ? 'pending event' : 'cached snapshot'})`, async t => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+      const watch = watcher.arm(channel, items);
+      if (preSend) raw(client, [prior]);
+      let settled = false;
+      const pending = watch.verify(message(preSend ? [] : [prior], async () => {
+        assert.fail('The fallback Gateway embed must arrive before reconciliation');
+      })).then(result => { settled = true; return result; });
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      const settledEarly = settled;
+      t.mock.timers.tick(3_000);
+      raw(client, [useful]);
+      const result = await pending;
+      assert.equal(settledEarly, false, 'a previous provider card must not terminate this attempt');
+      assert.equal(result.ok, true);
+      assert.equal(result.attributed?.[0].providerId, items[0].providerId);
+    });
+  }
+  test(`polling ignores stale ${priorHost} error and fetches useful ${nextHost} metadata`, async () => {
+    let fetches = 0;
+    const result = await waitForPreviews(message([prior], async () => { fetches++; return message([useful]); }), items,
+      { intervals: [1], sleep: async () => {} });
+    assert.equal(fetches, 1);
+    assert.equal(result.ok, true);
+  });
+}
+
+test('canonical-host error cards abstain until the bounded provider wait', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+  const items = expectedPreviews(capturedErrorSource, capturedProviderError.url!);
+  let fetches = 0;
+  const pending = watcher.arm(channel, items).verify(message([], async () => { fetches++; return message(); }));
+  raw(client, [{ ...capturedProviderError, url: capturedErrorSource }]);
+  t.mock.timers.tick(9_999); await Promise.resolve(); assert.equal(fetches, 0);
+  t.mock.timers.tick(1); assert.equal((await pending).ok, false); assert.equal(fetches, 1);
+});
+
+test('a useful send snapshot wins over a pre-send error card from the attempted provider', async t => {
+  const { client, watcher } = fixture(t);
+  const items = expectedPreviews(capturedErrorSource, capturedProviderError.url!);
+  const watch = watcher.arm(channel, items);
+  raw(client, [capturedProviderError]);
+  const result = await watch.verify(message([{ url: capturedProviderError.url, title: 'Public post', description: 'Useful content' }],
+    async () => { assert.fail('Useful send snapshot needs no reconciliation'); }));
+  assert.equal(result.ok, true);
+  assert.equal(result.providerError, undefined);
 });

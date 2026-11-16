@@ -20,7 +20,7 @@ import { YouTubeStats, YOUTUBE_STATS_TTL } from '../src/services/YouTubeStats';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import { type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
-import { capturedProviderError, capturedErrorSource } from './fixtures/provider-error';
+import { capturedErrorSource, xProviderError } from './fixtures/provider-error';
 
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -49,7 +49,7 @@ function delivery(content = ORIGINAL_X) {
   const mentions = { users: new Collection<string, { id: string }>(), repliedUser: null as { id: string } | null };
   const expectedChecks: ExpectedPreview[][] = [];
   const state = {
-    enabled: true, preferences: { mode: 'replace' } as ServerPreferences,
+    enabled: true, preferences: { mode: 'replace' } as ServerPreferences, editReturnsClone: false,
     remoteContent: content, editedTimestamp: null as number | null, originalDeleted: false,
     render: (_round: number, _message: Message): APIEmbed[] => [xPreview],
     duringPreview: async (_round: number): Promise<void> => {},
@@ -71,12 +71,13 @@ function delivery(content = ORIGINAL_X) {
         delete: async () => { entry.deleted = true; events.push(`delete:${id}`); },
         edit: async (edit: MessageEditOptions) => {
           entry.edits.push(edit);
-          if (typeof edit.content === 'string') output.content = edit.content;
-          if (edit.embeds) output.embeds = edit.embeds.map(embed => ({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed }));
-          if (edit.components) output.components = storeComponents(edit.components);
+          const updated = state.editReturnsClone ? { ...output } : output;
+          if (typeof edit.content === 'string') updated.content = edit.content;
+          if (edit.embeds) updated.embeds = edit.embeds.map(embed => ({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed }));
+          if (edit.components) updated.components = storeComponents(edit.components);
           events.push(`edit:${id}:${typeof edit.content === 'string' ? 'content' : 'controls'}`);
           await state.duringEdit(edit);
-          return output;
+          return updated;
         },
       });
       entry.message = output as unknown as Message;
@@ -178,7 +179,7 @@ test('automatic captured error cards finish two provider waits in 500 fake ms an
         forbidden.forbid('Recognised card must end the wait without REST')(); return message;
       } }));
       t.mock.timers.tick(250); waits++;
-      client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [capturedProviderError] } } as never);
+      client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [xProviderError(expected[0].url)] } } as never);
       return pending;
     } };
   } })(f.source);
@@ -1605,4 +1606,34 @@ test('replacement failure logs only a bounded alphanumeric error name and numeri
       ...(typeof name === 'string' && accepted.has(name) ? ['errorName'] : [])].sort());
     assert.equal(f.state.originalDeleted, false);
   }
+});
+
+test('automatic fallback waits through the stale primary card after a clone edit and confirms provider two at 3 s', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = delivery(), outcomes: DeliveryOutcome[] = [];
+  f.state.editReturnsClone = true;
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client);
+  t.after(() => watcher.close());
+  const primaryError = xProviderError(PRIMARY_X);
+  let attempts = 0;
+  await f.create({ diagnostics: diagnosticsStub({ outcomes }), armPreview: (channel, expected, context) => {
+    const watch = watcher.arm(channel, expected, context);
+    return { close: () => watch.close(), verify: message => {
+      const round = ++attempts;
+      if (round === 1) message.embeds = [];
+      else assert.deepEqual(message.embeds.map(embed => embed.toJSON()), [primaryError], 'edit clone leaves cached embeds untouched');
+      const pending = watch.verify(message);
+      t.mock.timers.tick(round === 1 ? 250 : 3_000);
+      const card = round === 1 ? primaryError : { ...xPreview, url: ALTERNATE_X };
+      Object.assign(message, { embeds: [{ toJSON: () => card }] });
+      client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [card] } } as never);
+      return pending;
+    } };
+  } })(f.source);
+  assert.equal(attempts, 2);
+  assert.equal(f.state.originalDeleted, true, 'useful fallback preview must authorize replacement');
+  assert.equal(f.sent[0].deleted, false);
+  assert.deepEqual(outcomes, ['confirmed']);
 });

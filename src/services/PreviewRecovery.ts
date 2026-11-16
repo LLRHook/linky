@@ -178,8 +178,9 @@ export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly 
     ok: expected.length > 0 && missing.length === 0,
     missing,
     ...(matchedProviders.length ? { matchedProviders } : {}),
-    ...(missing.length > 0 && missing.every(item => !item.explicitEmbeds &&
-      embeds.some(embed => samePost(embed, item) && providerErrorCard(embed, item))) ? { providerError: true } : {}),
+    ...(missing.length > 0 && missing.every(item =>
+      embeds.some(embed => samePost(embed, item) && providerErrorCard(embed, item) &&
+        parseProviderUrl(embed.url!)?.providerId === item.providerId)) ? { providerError: true } : {}),
     videoMetadata: embeds.some(embed => Boolean(embed.video?.url) && expected.some(item => matches(embed, item))),
     attributed: expected.filter(item => embeds.some(embed => embed.type !== 'rich' && matches(embed, item) &&
       (parseProviderUrl(embed.url!)?.providerId === item.providerId || (item.providerId === 'youtube' && parseYouTubeUrl(embed.url!) !== null)))),

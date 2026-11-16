@@ -18,7 +18,7 @@ import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } f
 import { kitpPdf, pdfResponse, pdfTitle, pdfUrl } from './fixtures/pdf';
 import { bingNewsFeed, telegraphBlocked, telegraphHeadline, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
 import { buttonInteraction, commandInteraction, diagnosticsStub, type InteractionEvent } from './support/discord';
-import { capturedProviderError, capturedErrorSource } from './fixtures/provider-error';
+import { capturedErrorSource, xProviderError } from './fixtures/provider-error';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
 const UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -43,13 +43,48 @@ test('manual captured error cards end both waits early, remain unconfirmed and p
       return { close: () => watch.close(), verify: message => {
         const pending = watch.verify(message);
         t.mock.timers.tick(250); waits++;
-        client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [capturedProviderError] } } as never);
+        client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [xProviderError(expected[0].url)] } } as never);
         return pending;
       } };
     } });
     assert.equal(waits, 2);
     assert.deepEqual(outcomes, ['metadata-unconfirmed']);
     assert.match(f.response.content, /useful preview could not be confirmed/i);
+  }
+});
+
+test('manual fallback waits through a stale primary REST card and confirms provider two at 3 s', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client);
+  t.after(() => watcher.close());
+  for (const context of [false, true]) {
+    const source = 'https://x.com/public/status/123';
+    const primaryError = xProviderError(source.replace('x.com', 'fixupx.com'));
+    const alternate = source.replace('x.com', 'vxtwitter.com');
+    const f = command(source, context), outcomes: DeliveryOutcome[] = [];
+    f.state.render = body => body.includes('vxtwitter.com') ? [primaryError] : [];
+    Object.assign(f.response, { channelId: f.input.channelId, author: { id: BOT }, fetch: async () => {
+      assert.fail('The useful fallback Gateway update arrives before reconciliation');
+    } });
+    let attempts = 0;
+    await execute(f.interaction, config, { diagnostics: diagnosticsStub({ outcomes }), armPreview: (channel, expected, options) => {
+      const watch = watcher.arm(channel, expected, options);
+      return { close: () => watch.close(), verify: message => {
+        const round = ++attempts;
+        if (round === 2) assert.deepEqual(message.embeds.map(embed => embed.toJSON()), [primaryError], 'PATCH response still has prior card');
+        const pending = watch.verify(message);
+        t.mock.timers.tick(round === 1 ? 250 : 3_000);
+        const card: APIEmbed = round === 1 ? primaryError : { url: alternate, title: 'Public post', description: 'Useful content' };
+        Object.assign(message, { embeds: [{ toJSON: () => card }] });
+        client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [card] } } as never);
+        return pending;
+      } };
+    } });
+    assert.equal(attempts, 2);
+    assert.deepEqual(outcomes, ['confirmed']);
+    assert.match(f.response.content, /vxtwitter\.com/);
   }
 });
 
