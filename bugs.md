@@ -572,7 +572,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Assignee:** Victor Ivanov
 - **Status:** fixed-pending-migration
 - **Fix:** Numeric-only code/status reaches sanitized logger. Optional persisted permission clock retires ordinary and pending records at 24 h of consecutive permission-failing sweeps; successful/nonpermission checks reset it. Legacy journals load; malformed maps fail closed. Red 6 failed of 39; green 41 incl logger tests; terminal-retirement mutation killed.
-- **Docs:** docs/delivery-reliability.md
+- **Docs:** docs/delivery-reliability.md; docs/self-hosting.md
+- **Log:**
+  - 2026-11-16 Validation: Batch seam regression: repost retirement leaves failed YouTube cleanup on its separate seven-day expiry lifecycle, preserving the source. Self-hosting state/rollback wording updated.
 
 ### [BUG-1794864802] YouTube statistics cleanup retains expired failures indefinitely
 - [x] **Severity:** med
@@ -587,7 +589,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Assignee:** Victor Ivanov
 - **Status:** fixed-pending-migration
 - **Fix:** Retire failed cleanup records only more than seven days after expiry, for legacy suffix/card/controls state. One durable terminal notice, numeric code/status passed to logger; journal write failure retains state and retry notice. Red 4/25 failed; green 26 pass; retirement mutation killed 4 tests.
-- **Docs:** README.md; docs/delivery-reliability.md
+- **Docs:** README.md; docs/delivery-reliability.md; docs/self-hosting.md
 
 ### [BUG-1794864951] Link replacement failure log omits error class
 - [ ] **Severity:** low

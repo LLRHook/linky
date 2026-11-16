@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MessageFlags } from 'discord.js';
 import { logCleanupFailure } from '../src/services/CleanupFailure';
+import { YouTubeStats } from '../src/services/YouTubeStats';
 import { RepostRegistry, REPOST_RETENTION_MS, REMOVE_REPOST_CUSTOM_ID, type RepostInteraction, type RepostMessage, type RepostRecord } from '../src/services/RepostRegistry';
 
 const NOW = Date.UTC(2026, 8, 12);
@@ -658,4 +659,27 @@ test('repost cleanup numeric error details reach the logger without message text
   assert.deepEqual(logs[0].fields, { code: 50001, status: 403 });
   assert(!JSON.stringify(logs).includes('private detail'));
   assert(!JSON.stringify(logs).includes(AUTHOR));
+});
+
+test('repost retirement leaves expired YouTube cleanup on its own seven-day lifecycle and preserves the source', async t => {
+  const f = await fixture(t), path = join(dirname(f.path), 'youtube-stats.json');
+  let now = NOW;
+  await writeFile(path, JSON.stringify([{ kind: 'controls', channelId: CHANNEL, messageId: f.replacement.id,
+    expiresAt: NOW, videoIds: ['dQw4w9WgXcQ'] }]));
+  const stats = new YouTubeStats({ path, botUserId: BOT, now: () => now,
+    fetchMessage: async () => { throw { code: 50001, status: 403 }; } });
+  const registry = f.manager({ removeRelated: record => stats.removeForMessage(record.replacementId) });
+  await registry.remember(f.record);
+  f.failDelete({ code: 50013, status: 403 });
+  await registry.handleRemove(f.interaction().value);
+  await registry.sweep();
+  now += 24 * 60 * 60_000; f.advance(24 * 60 * 60_000);
+  await registry.sweep();
+  assert.equal(registry.findByReplacement(f.replacement.id), undefined);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).length, 1);
+  now += 7 * 24 * 60 * 60_000;
+  await stats.sweep();
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), []);
+  assert.deepEqual(f.deleted, []);
+  assert(f.messages.has(f.source.id));
 });
