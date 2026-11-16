@@ -593,7 +593,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Docs:** README.md; docs/delivery-reliability.md; docs/self-hosting.md
 
 ### [BUG-1794864951] Link replacement failure log omits error class
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** diagnostics
 - **File(s):** src/services/SocialLinkService.ts:629-636
 - **Observation:** L1 found one automatic X link replacement failure without numeric Discord code; the cause cannot be identified from the retained log.
@@ -602,7 +602,10 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Ticket only per driver. Future test: thrown TypeError logs name TypeError, without error text or Discord identity.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Existing replacement-failure log adds errorName only from a complete name matching ASCII letter then zero to 63 ASCII letters/digits. Invalid, nonstring, oversized and newline-tainted names are omitted. No message, stack, cause or additional error properties are logged; numeric Discord fields and existing context are retained. Tests include TypeError privacy and allowed/invalid boundaries.
+- **Docs:** docs/operator-reliability.md
 
 ### [BUG-1794864952] YouTube preview-display no-op is recorded as cancelled
 - [x] **Severity:** low

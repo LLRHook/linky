@@ -1583,3 +1583,26 @@ test('YouTube preview no-op discards diagnostics and archive while a source-edit
   assert.deepEqual(archive.map(value => (value as { outcome: string }).outcome), ['cancelled']);
   assert.equal(cancelled.state.originalDeleted, false);
 });
+
+test('replacement failure logs only a bounded alphanumeric error name and numeric Discord fields', async () => {
+  const accepted = new Set(['TypeError', 'Error42', 'A'.repeat(64)]);
+  for (const name of ['TypeError', 'Error42', 'A'.repeat(64), 'Bad Name', 'TypeError\nprivate', 'TypeError\n', 'TypeError\r',
+    'A'.repeat(65), '', '9Error', 42, undefined]) {
+    const f = delivery(), logs: { fields: unknown; text: string }[] = [];
+    const error = Object.assign(new TypeError('PRIVATE_ERROR_MESSAGE_DO_NOT_LOG'), { name,
+      code: 50001, status: 403, cause: 'PRIVATE_CAUSE_DO_NOT_LOG' });
+    f.state.duringPreview = async () => { throw error; };
+    const capture = (fields: unknown, text?: string) => { logs.push({ fields, text: text ?? '' }); };
+    await f.create({}, { info: capture, warn: capture, error: capture })(f.source);
+    const entry = logs.find(row => row.text === 'link replacement failed; no further deletion will be attempted');
+    assert(entry);
+    const fields = entry.fields as Record<string, unknown>;
+    if (typeof name === 'string' && accepted.has(name)) assert.equal(fields.errorName, name);
+    else assert.equal(Object.hasOwn(fields, 'errorName'), false);
+    assert.equal(fields.errorCode, 50001); assert.equal(fields.status, 403);
+    assert(!/PRIVATE_ERROR_MESSAGE|PRIVATE_CAUSE|"stack"|"cause"|"message"/.test(JSON.stringify(entry)));
+    assert.deepEqual(Object.keys(fields).sort(), ['messageId', 'channelId', 'guildId', 'errorCode', 'status',
+      ...(typeof name === 'string' && accepted.has(name) ? ['errorName'] : [])].sort());
+    assert.equal(f.state.originalDeleted, false);
+  }
+});

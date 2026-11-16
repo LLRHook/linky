@@ -633,8 +633,10 @@ export function createLinkRepostHandler(
     } catch (err) {
       cleanupDelivery?.finish(cleanupDelivery.context.signal?.aborted ? 'timeout' : 'discord-failure');
       if (rollback) await rollback().catch(() => log.warn(context, 'Could not remove incomplete preview'));
-      const failure = err as { code?: unknown; status?: unknown } | null;
+      const failure = err as { code?: unknown; status?: unknown; name?: unknown } | null;
       log.error({ ...context, ...(typeof failure?.code === 'number' ? { errorCode: failure.code } : {}),
+        ...(typeof failure?.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.exec(failure.name)?.[0] === failure.name
+          ? { errorName: failure.name } : {}),
         ...(typeof failure?.status === 'number' ? { status: failure.status } : {}) },
       'link replacement failed; no further deletion will be attempted');
       if (refresh) throw err;
