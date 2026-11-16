@@ -94,7 +94,7 @@ function delivery(content = ORIGINAL_X) {
       return { ...source, content: state.remoteContent, editedTimestamp: state.editedTimestamp } as unknown as Message;
     },
   });
-  const create = (options: HandlerOptions = {}) => createLinkRepostHandler([], { info() {}, warn() {}, error() {} },
+  const create = (options: HandlerOptions = {}, log: Parameters<typeof createLinkRepostHandler>[1] = { info() {}, warn() {}, error() {} }) => createLinkRepostHandler([], log,
     forbidden.forbid('this fixture never requests attachment downloads'), {
       serverEnabled: () => state.enabled, serverPreferences: () => state.preferences,
       verifyPreview: async (message, expected) => {
@@ -1542,5 +1542,20 @@ test('mixed guidance removes stale owned notices after Details binding or final 
       lookupYouTubeCommunity: forbidden.forbid('no lookup for mixed guidance') })(f.source);
     assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1);
     assert.equal(f.sent[0].deleted, true, `${phase}/${revoke}`);
+  }
+});
+
+test('failure logs list every attempted provider in order and late primary confirmation names the matching provider', async () => {
+  for (const success of [false, true]) {
+    const f = delivery(), logs: { fields: unknown; text: string }[] = [];
+    f.state.render = round => success && round === 2 ? [xPreview] : [];
+    const capture = (fields: unknown, text?: string) => { logs.push({ fields, text: text ?? '' }); };
+    await f.create({}, { info: capture, warn: capture, error: capture })(f.source);
+    const entry = logs.find(row => row.text === (success ? 'Useful Discord preview observed' : 'Keeping original: no useful preview appeared'));
+    assert(entry);
+    const providers = (entry.fields as { providers: string[] }).providers;
+    assert.deepEqual(providers, success ? ['fixupx'] : ['fixupx', 'fixvx']);
+    assert(providers.every(name => /^[a-z][a-z0-9-]*$/.test(name)), 'only catalogue names enter provider log fields');
+    assert.equal(f.state.originalDeleted, success);
   }
 });

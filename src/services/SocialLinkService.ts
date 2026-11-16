@@ -515,12 +515,13 @@ export function createLinkRepostHandler(
       }
       if (!preview.ok && !captionFallback) {
         await removeReplacement();
-        log.warn({ ...resultContext, providers: expected.map(item => item.providerId) }, 'Keeping original: no useful preview appeared');
+        log.warn({ ...resultContext, providers: providerAttempts.flatMap(attempt => attempt.expected.map(item => item.providerId)) },
+          'Keeping original: no useful preview appeared');
         delivery.finish('metadata-unconfirmed');
         await failureNotice('Linky could not confirm a preview. Your original is still here. You can retry or check Details.');
         return;
       }
-      log.info({ ...resultContext, providers: expected.map(item => item.providerId), videoMetadata: preview.videoMetadata,
+      log.info({ ...resultContext, providers: preview.matchedProviders ?? ['unattributed'], videoMetadata: preview.videoMetadata,
         playbackChecked: false, translatedTextPosts: textStatusIds.size },
       captionFallback ? 'Translated Instagram caption delivered; kept original because preview could not be verified' :
         erome || originalMedia ? 'Erome media metadata confirmed; client playback not checked' :

@@ -473,3 +473,21 @@ test('article confirmations require the exact publisher card and cannot claim na
   const health = new PreviewHealth(); health.record(expected, success);
   assert.match(health.describe(source), /publisher metadata/);
 });
+
+test('confirmation provider labels follow matched embed hosts including canonical and unattributed cards', () => {
+  const source = 'https://x.com/public/status/123';
+  const items = expectedPreviews(source, 'https://vxtwitter.com/public/status/123');
+  for (const [url, provider] of [[source, 'canonical'], ['https://fixupx.com/public/status/123', 'fixupx'],
+    ['https://vxtwitter.com/public/status/123', 'fixvx']]) {
+    const result = inspectPreviews([{ url, title: 'Public post', description: 'Useful content' }], items);
+    assert.equal(result.ok, true);
+    assert.deepEqual((result as typeof result & { matchedProviders?: string[] }).matchedProviders, [provider]);
+    assert.deepEqual(result.attributed?.map(item => item.providerId), provider === 'fixvx' ? ['fixvx'] : [], 'routing safeguards stay strict');
+  }
+  const articleSource = 'https://publisher.example.com/article/test';
+  const cards = formatArticlePreview({ source: articleSource, url: articleSource, title: 'Public article', publisher: 'Publisher' });
+  const explicit = expectedPreviews(articleSource, `<${articleSource}>`, [], [{ source: articleSource, embeds: cards }]);
+  const result = inspectPreviews(cards, explicit);
+  assert.equal(result.ok, true);
+  assert.deepEqual((result as typeof result & { matchedProviders?: string[] }).matchedProviders, ['unattributed']);
+});

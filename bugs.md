@@ -617,7 +617,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** open
 
 ### [BUG-1794864954] Preview failure logs omit provider history and matched-provider attribution
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** diagnostics, providers
 - **File(s):** src/services/SocialLinkService.ts; src/services/DeliveryAttempt.ts
 - **Observation:** L1-F03/C7: failure log lists only last provider; 4 of 15 fallback attempts confirmed among 227 X attempts in seven days, but a late primary embed can satisfy source identity without proving which provider recovered.
@@ -626,7 +626,10 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Ticket only per driver. Preserve current strict matcher and ProviderHealth credit safeguards. Future regression: delayed primary embed during fallback is not credited to fallback; no URLs, message text or user data added to persisted diagnostics.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Failure logs retain ordered provider history from every attempt. Confirmation logs use catalogue names from useful matched embed hosts, canonical for native hosts and unattributed for authored/indeterminate metadata; delayed primary embeds are not credited to fallback. ProviderHealth safeguards remain unchanged. No persisted fields added, so rollback-loader proof is not required; both report formats remain unchanged.
+- **Docs:** docs/delivery-reliability.md; docs/operator-reliability.md
 
 ### [BUG-1794864955] Production image lacks a source commit label
 - [ ] **Severity:** low

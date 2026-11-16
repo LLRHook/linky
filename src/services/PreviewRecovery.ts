@@ -29,6 +29,8 @@ export interface PreviewResult {
   videoMetadata: boolean;
   /** Only matching embeds whose URL identifies the attempted provider. Canonical source URLs remain unattributed. */
   attributed?: ExpectedPreview[];
+  /** Catalogue names from useful matched embeds, or canonical/unattributed; log-only, never persisted. */
+  matchedProviders?: string[];
 }
 
 export function expectedPreviews(original: string, rendered: string, communityPosts: readonly PreparedCommunityPost[] = [],
@@ -166,9 +168,16 @@ function matchesArticle(embeds: readonly APIEmbed[], expected: ExpectedPreview):
 
 export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly ExpectedPreview[]): PreviewResult {
   const missing = expected.filter(item => !matchesExpectation(embeds, item));
+  const matchedProviders = expected.filter(item => !missing.includes(item)).map(item => {
+    const embed = embeds.find(embed => matches(embed, item));
+    if (!embed?.url) return 'unattributed';
+    return parseProviderUrl(embed.url)?.providerId ??
+      (parseSocialUrl(embed.url) || parseYouTubeUrl(embed.url) ? 'canonical' : 'unattributed');
+  });
   return {
     ok: expected.length > 0 && missing.length === 0,
     missing,
+    ...(matchedProviders.length ? { matchedProviders } : {}),
     ...(missing.length > 0 && missing.every(item => !item.explicitEmbeds &&
       embeds.some(embed => samePost(embed, item) && providerErrorCard(embed, item))) ? { providerError: true } : {}),
     videoMetadata: embeds.some(embed => Boolean(embed.video?.url) && expected.some(item => matches(embed, item))),
@@ -187,7 +196,9 @@ export async function verifyPublishedPreviews(message: Message, expected: readon
   const latest = explicit.length && native.length ? await message.fetch(true).catch(() => null) : message;
   const cards = explicit.length ? inspectPreviews(latest?.embeds.map(embed => embed.toJSON()) ?? [], explicit)
     : { ok: true, missing: [], videoMetadata: false };
-  return { ...observed, ok: observed.ok && cards.ok, missing: [...observed.missing, ...cards.missing] };
+  const matchedProviders = [...observed.matchedProviders ?? [], ...cards.matchedProviders ?? []];
+  return { ...observed, ok: observed.ok && cards.ok, missing: [...observed.missing, ...cards.missing],
+    ...(matchedProviders.length ? { matchedProviders } : {}) };
 }
 
 /** A bounded wait for Discord's asynchronously generated embeds, never a playback claim. */
