@@ -569,3 +569,18 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** Numeric-only code/status reaches sanitized logger. Optional persisted permission clock retires ordinary and pending records at 24 h of consecutive permission-failing sweeps; successful/nonpermission checks reset it. Legacy journals load; malformed maps fail closed. Red 6 failed of 39; green 41 incl logger tests; terminal-retirement mutation killed.
 - **Docs:** docs/delivery-reliability.md
+
+### [BUG-1794864802] YouTube statistics cleanup retains expired failures indefinitely
+- [x] **Severity:** med
+- **Area:** youtube, cleanup
+- **File(s):** src/services/YouTubeStats.ts; src/bot.ts; tests/youtube-stats.test.ts
+- **Observation:** 368 cleanup warnings in retained 4.2-day production logs; 7 of 9 entries expired, 3 failing for 11-18 days. Cleanup discards error code and status and has no retry-age limit.
+- **Expected:** Log numeric code and status only; drop an entry when cleanup still fails more than seven days after expiry, with one terminal log. Successful cleanup removes it immediately.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Driver retention policy, unit elapsed days since expiry per entry: baseline indefinite retention (3 stale entries 11-18 days), minimum one failed cleanup after age exceeds 7 days, noise floor zero early-drop tolerance; at or below 7 days retain and retry, unavailable expiry is rejected by schema. Test retained at 6 days and exactly 7, dropped at 8, success immediate, numeric-only logging, no repeated terminal log and legacy state load.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Retire failed cleanup records only more than seven days after expiry, for legacy suffix/card/controls state. One durable terminal notice, numeric code/status passed to logger; journal write failure retains state and retry notice. Red 4/25 failed; green 26 pass; retirement mutation killed 4 tests.
+- **Docs:** README.md; docs/delivery-reliability.md

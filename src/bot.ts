@@ -313,7 +313,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         path: join(dirname(settings.settingsPath), 'youtube-stats.json'),
         botUserId: readyClient.user.id,
         fetchMessage,
-        onError: () => log.warn('YouTube statistics cleanup failed; retained records will be retried'),
+        onError: error => logCleanupFailure(log, error),
       });
       youtubeStats.start();
       registry = new RepostRegistry({
