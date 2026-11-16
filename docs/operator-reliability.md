@@ -36,6 +36,8 @@ Set `DELIVERY_LOG_RETENTION_DAYS=30` in the host's `.env`, then restart or deplo
 
 ## Pull a daily report with trend context
 
+Before attributing a report to a code revision, read the running container's image ID with `docker inspect linky --format '{{.Image}}'` and inspect that image's `org.opencontainers.image.revision` label. For the latest built image the one-line command is `docker image inspect linky:latest --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'`. Empty or absent labels on older or manual builds mean the image revision is unknown; checkout state and timestamps alone do not establish it. See [deployment provenance and rollback](self-hosting.md#checks-and-deployment) for the first-rollout limitation and enforcement on subsequent deployments.
+
 In a compiled checkout:
 
 ```sh

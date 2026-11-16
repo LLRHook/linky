@@ -41,10 +41,22 @@ cat > "$test_dir/bin/docker" <<'MOCK'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "$MOCK_DIR/events"
 case "$1" in
+  image)
+    [[ "$2" == inspect && "$3" == sha256:current ]] || exit 96
+    [[ "$MOCK_CASE" != label-inspect-failure ]] || exit 1
+    if [[ "$MOCK_CASE" == label-mismatch ]]; then
+      printf '2222222222222222222222222222222222222222\n'
+    elif [[ "$MOCK_CASE" != label-empty ]]; then
+      printf '%s\n' "$MOCK_SHA"
+    fi ;;
   inspect)
     [[ "$MOCK_CASE" != missing ]] || exit 1
     if [[ "$3" == '{{.Image}}' ]]; then
-      printf 'sha256:previous\n'
+      if [[ -f "$MOCK_DIR/started" && ! -f "$MOCK_DIR/rolled-back" ]]; then
+        printf 'sha256:current\n'
+      else
+        printf 'sha256:previous\n'
+      fi
     elif [[ "$MOCK_CASE" == same-unhealthy && ! -f "$MOCK_DIR/built" ]]; then
       printf 'false 0 2026-09-11T00:00:00Z\n'
     elif [[ "$MOCK_CASE" == stale-startup-logs && "$3" == *'{{.State.StartedAt}}'* ]]; then
@@ -69,6 +81,10 @@ case "$1" in
     [[ " $* " == *' -p linky '* ]] || exit 91
     if [[ " $* " == *' build '* ]]; then
       [[ "$MOCK_CASE" != build ]] || exit 1
+      [[ "${LINKY_SOURCE_REVISION:-}" == "$MOCK_SHA" ]] || {
+        printf 'Build must receive the verified source revision.\n' >&2; exit 97;
+      }
+      printf '%s\n' "$LINKY_SOURCE_REVISION" > "$MOCK_DIR/build-revision"
       touch "$MOCK_DIR/built"
     elif [[ " $* " == *' up '* ]]; then
       [[ -f "$MOCK_DIR/built" ]] || exit 92
@@ -129,6 +145,9 @@ run_case() {
   # The bot's offline-time line is reported when present and never required.
   if [[ "$name" == success ]]; then
     grep -qx 'Back online after 1.3 s offline' "$MOCK_DIR/output"
+    [[ $(cat "$MOCK_DIR/build-revision") == "$MOCK_SHA" ]]
+    grep -qx "Running image revision: $MOCK_SHA" "$MOCK_DIR/output"
+    grep -q 'docker image inspect sha256:current' "$MOCK_DIR/events"
   else
     ! grep -q 'Back online' "$MOCK_DIR/output"
   fi
@@ -142,7 +161,7 @@ run_case() {
     stale|dirty|branch|fetch|missing|marker-missing|marker-invalid|compose-missing|merge)
       [[ ! -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/started" ]] ;;
     build) [[ -e "$MOCK_DIR/merged" && ! -e "$MOCK_DIR/started" ]] ;;
-    startup|restart|stopped|up|retry-startup|rollback-failure|stale-startup-logs)
+    startup|restart|stopped|up|retry-startup|rollback-failure|stale-startup-logs|label-mismatch|label-empty|label-inspect-failure)
       [[ -e "$MOCK_DIR/rolled-back" ]]
       grep -q -- '--force-recreate linky' "$MOCK_DIR/events"
       grep -q -- 'docker compose -f .*/.git/linky-deploy/previous-compose.yml' "$MOCK_DIR/events"
@@ -167,12 +186,15 @@ run_case marker-invalid 1
 run_case compose-missing 1
 run_case merge 1
 run_case build 1
+run_case success 0
+run_case label-mismatch 1
+run_case label-empty 1
+run_case label-inspect-failure 1
 run_case startup 1
 run_case restart 1
 run_case stopped 1
 run_case up 1
 run_case rollback-failure 1
-run_case success 0
 run_case head-ahead 1
 run_case same-healthy 0
 run_case same-unhealthy 0
