@@ -684,3 +684,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** File only per L6 round 1 driver decision; do not build here. Run npm test once on the target commit and compare each runner summary with the Stage 2 table and 2.1 prose. Unit: test cases per runner at one named commit; baseline documented 1190 TS / 62 ESM versus observed 1418 TS / 85 ESM at 1d8ff1b; minimum one complete run; noise floor zero unexplained count mismatches; abstain if any runner did not complete. Refresh from the final target, not the historical L8 count.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1794873497] Ignore a leading UTF-8 byte-order mark in PR evidence bodies
+- [ ] **Severity:** low
+- **Area:** tooling, ci
+- **File(s):** ops/pr-evidence-check.mjs; tests/pr-evidence-check.test.mjs
+- **Observation:** On PRs 108 and 109 on 2026-11-16, a PowerShell-written body with a leading UTF-8 mark failed the evidence gate with Section ## Tickets is missing or empty despite containing that section. The checker startsWith heading parser treats the mark as part of the heading.
+- **Expected:** Ignore one leading UTF-8 byte-order mark before parsing required headings; a marked complete body should pass and genuinely absent or empty sections must still fail.
+- **Req:** unknown
+- **Depends on:** none (driver-requested follow-up)
+- **Repro / Notes:** File only per L6 round 1 driver decision; do not build here. In a regression call missingEvidence with a complete template body prefixed with U+FEFF and expect an empty missing list. Control: the same unmarked body passes; removing Tickets still fails. No token, message content or Discord identity is needed.
+- **Bump:** patch
+- **Status:** open
