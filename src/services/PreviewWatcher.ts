@@ -61,8 +61,9 @@ export class PreviewWatcher {
     const subscribed = !stopped && this.watches.size < Math.max(1, Math.min(128, this.options.maxActive ?? 128));
     if (subscribed) { this.watches.add(receive); this.disposers.add(close); }
     signal?.addEventListener('abort', close, { once: true });
-    // A failed send whose caller forgets cleanup cannot retain a subscription forever.
-    if (!stopped) { lifetime = setTimeout(close, 30_000); lifetime.unref(); }
+    // Preserve the former send/reconcile boundary: 30 s lifetime + (10 s maximum wait - former 4 s wait).
+    // A failed send whose caller forgets cleanup still cannot retain a subscription forever.
+    if (!stopped) { lifetime = setTimeout(close, 36_000); lifetime.unref(); }
     return { close, verify: async message => {
       if (verified) return latest;
       verified = true;
@@ -76,10 +77,11 @@ export class PreviewWatcher {
       try {
         if (!latest.ok && subscribed) {
           await new Promise<void>(resolve => {
-            // Instagram, TikTok and Facebed can need cold media preparation; useful updates still wake immediately.
-            const gatewayWaitMs = expected.some(item => item.platform === 'instagram' || item.platform === 'tiktok' ||
+            // Large X/Reddit videos and cold media can arrive late; useful updates still wake immediately.
+            const gatewayWaitMs = expected.some(item => item.platform === 'x' || item.platform === 'reddit') ? 10_000 :
+              expected.some(item => item.platform === 'instagram' || item.platform === 'tiktok' ||
               item.platform === 'facebook') ? 8_000 : 4_000;
-            const timer = setTimeout(resolve, Math.max(0, Math.min(8_000, this.options.gatewayWaitMs ?? gatewayWaitMs)));
+            const timer = setTimeout(resolve, Math.max(0, Math.min(10_000, this.options.gatewayWaitMs ?? gatewayWaitMs)));
             wake = () => { clearTimeout(timer); resolve(); };
             if (latest.ok || stopped) wake();
           });
@@ -95,8 +97,8 @@ export class PreviewWatcher {
           try {
             const reconciled = await Promise.race([message.fetch(true), timeout]);
             if (reconciled && !stopped) accept(inspectPreviews(reconciled.embeds.map(embed => embed.toJSON()), expected));
-          } catch (error) {
-            if (!latest.ok && !stopped) throw error;
+          } catch {
+            // An unreadable snapshot cannot confirm metadata. Keep any concurrent Gateway success.
           } finally { clearTimeout(timer); wake = undefined; }
         }
         return latest;

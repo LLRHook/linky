@@ -281,6 +281,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** The shared provider builder requests `?legacy` before fragments for automatic, manual and resolved-share previews. Regression fixtures cover canonical image/video confirmation, Replace/Reply modes, missing/unrelated metadata, original-post controls and source preservation. Node 26 validation passes (1,273 TypeScript tests, 74 script tests, 24 deployment safeguards; eight expected container-only skips). Local and Hostinger probes confirm HTTP 200, matching image metadata and no component payload for the reported legacy URL; a live Discord render was not exercised.
 - **Docs:** docs/provider-checks.md records the format requirement and observation limits.
+- **Log:**
+  - 2026-11-16 Evidence: Seven days to 2026-11-16: Reddit metadata-unconfirmed 10 of 25 delivery attempts after the fix was deployed (L1 platform-span evidence); one driver vxReddit video trial unfurled at 8.2 s (evidence/driver/unfurl-timing-others.out). Counts describe this sample; deployment improvement requires a subsequent adequate sample.
 
 ### [BUG-1792164560] PR template assertion fails on Windows CRLF checkouts
 - [x] **Severity:** low
@@ -418,6 +420,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Owned source 1559304608327929888 and notice 1559304628900991091. The native Twitch source card rendered, but that does not establish Linky provider delivery. Host-network control and Retry are being checked.
 - **Bump:** patch
 - **Status:** open
+- **Log:**
+  - 2026-11-16 Evidence: 2026-11-16 driver live fixture: fxtwitch returned a components embed with no video at 2.5 s (one Twitch clip; evidence/driver/unfurl-timing-others.out). This is a selected render observation, not a provider success-rate estimate.
 
 ### [BUG-1793043364] MyAnimeList catalogue previews are rejected as unverifiable articles
 - [x] **Severity:** med
@@ -509,3 +513,141 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Bump:** patch
 - **Status:** fixed-pending-migration
 - **Fix:** Both sentences now read "Node.js 22, 24 and 26"; `SECURITY_AUDIT.md` points at `bugs.md` for follow-up work.
+
+### [BUG-1794864397] X and Reddit preview wait ends before large-video unfurls arrive
+- [x] **Severity:** med
+- **Area:** delivery, previews
+- **File(s):** src/services/PreviewWatcher.ts; tests/preview-watcher.test.ts; README.md; docs/delivery-reliability.md; docs/product-roadmap.md
+- **Observation:** 2026-11-16 investigation: Discord embeds for large X videos arrived in 6-9 seconds and a vxReddit video in 8.2 seconds (one poll trial per URL), after the current 4,000 ms window. Seven days to 2026-11-16: 11 of 227 X delivery attempts metadata-unconfirmed (4.8%); 210 confirmed spans all censored below 4,000 ms.
+- **Expected:** X and Reddit wait at most 10,000 ms; Instagram, TikTok and Facebook retain 8,000 ms; other platforms retain 4,000 ms. Matching updates still wake immediately, and originals require confirmed previews.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Fake timers: matching X and Reddit updates at 9,000 ms confirm; other platforms stop at 4,000 ms; no update remains unconfirmed and preserves the source; custom waits clamp at 10,000 ms. Measure X metadata-unconfirmed rate, unit delivery attempts: baseline 11/227 (4.8%) in seven days to 2026-11-16, minimum 200 X attempts after deploy, noise floor 3 attempts; below 200 report insufficient sample. Known cost: truly unembeddable posts take about 24 s instead of about 10 s before replacement removal. Driver approved this tradeoff; matcher, providers and fallback order unchanged.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** 10 s X/Reddit Gateway window and caller clamp; immediate success, 8/4 s defaults and unconfirmed source retention covered. Round 1 F2: watch lifetime is 36 s from arm, equal to prior 30 s plus the 6 s added to the maximum default wait. Missed Gateway snapshots reconcile after 21 s and 25,999 ms sends; an abandoned watch expires at 36 s and releases its slot. Red 3 failures; restored 20/20 pass; reverting lifetime to 30 s causes 3 failures.
+- **Docs:** README.md; docs/delivery-reliability.md (including 36 s lifetime and slow-send boundary); docs/product-roadmap.md
+
+### [BUG-1794864398] Delivery reliability window documentation omits Facebook
+- [x] **Severity:** low
+- **Area:** docs, delivery
+- **File(s):** docs/delivery-reliability.md
+- **Observation:** Before this batch the guide says eight seconds for Instagram or TikTok only, while PreviewWatcher also grants Facebook eight seconds.
+- **Expected:** Describe every platform window correctly, including Facebook.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Compare living guide with PreviewWatcher defaults; update the same sentence as the slow-unfurl fix and check that Facebook is included.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Corrected the existing window sentence in BUG-1794864397 to include Facebook in the eight-second group; red doc assertion failed, green passed, and omitting Facebook again failed mutation check.
+- **Docs:** docs/delivery-reliability.md
+
+### [BUG-1794864603] Rejected preview reconcile fetch fails the delivery
+- [x] **Severity:** med
+- **Area:** delivery, previews
+- **File(s):** src/services/PreviewWatcher.ts; src/commands/fix.ts; tests/preview-watcher.test.ts; tests/manual-fix.test.ts; tests/delivery-recovery.test.ts
+- **Observation:** Single REST reconcile rejects with Discord code 50001 / HTTP 403, rethrows and records discord-failure. L1 observed 8 of 24 manual attempts with discord-failure in seven days, and 4 interaction errors in retained 4.2-day logs.
+- **Expected:** Unreadable reconcile resolves unconfirmed without throwing; successful reconcile still confirms; originals remain unless confirmed; manual diagnostics record metadata-unconfirmed.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Inject DiscordAPIError 50001/403 at message.fetch, assert watcher ok false and manual metadata-unconfirmed; run source-retention integration cases and successful reconcile control.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Unreadable reconcile returns current unconfirmed metadata instead of throwing; Gateway success survives rejection. Regression red 3 failures; green 167 pass; rethrow mutation fails watcher and automatic/manual outcome tests. fix.ts callers already finish unavailable / metadata-unconfirmed correctly, so no caller code change.
+- **Docs:** none (bounded REST reconciliation documentation remains accurate)
+
+### [BUG-1794864628] Repost cleanup retries permission failures without error detail or grace limit
+- [x] **Severity:** med
+- **Area:** delivery, cleanup
+- **File(s):** src/services/RepostRegistry.ts; src/bot.ts; tests/repost-registry.test.ts
+- **Observation:** 570 repost cleanup warnings in retained 4.2-day production logs, bursts of 10 roughly every 30 minutes. Errors discard numeric code and status; ordinary records retry until retention and pending work can retry indefinitely.
+- **Expected:** Log numeric Discord code and HTTP status only. Remove a record after every observed sweep failed with permission code 50001/50013 or HTTP 403 for at least 24 hours; other errors keep existing retry behavior.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Driver policy: per-record elapsed hours since first consecutive permission-failing sweep, minimum two failed sweeps spanning 24 h, zero early-drop tolerance; abstain and retain if evidence is incomplete, nonpermission, or less than 24 h. Baseline: no permission grace limit, 570 warnings/4.2 days; policy bounds retries, does not claim permission will stay denied. Prove before/at 24 h, restart persistence, reset on successful sweep or another error, 500/timeout retained, numeric-only logs and old journals load. Keep 100-record sweep bound.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Numeric-only cleanup errors; retire consecutive permission failures at 24 hours. Round 1 F1: permission clocks now persist atomically in sibling reposts-permission.json; ownership journal stays exactly records/refresh/remove and loads with actual base 4d5653c reader. Missing/unreadable/malformed observations default empty, orphan entries discarded, failed sibling or journal writes retain ownership and cannot claim retirement. Regression red 3 failures; restored 44/44 pass; wrong-target sibling mutation caught.
+- **Docs:** docs/delivery-reliability.md; docs/self-hosting.md; docs/operator-reliability.md; VERIFICATION.md state-file inventory. README.md and ignore files checked: no explicit state-file allowlist requires a change; data/ already ignored and excluded from image inputs.
+- **Log:**
+  - 2026-11-16 Validation: Batch seam regression: repost retirement leaves failed YouTube cleanup on its separate seven-day expiry lifecycle, preserving the source. Self-hosting state/rollback wording updated.
+  - 2026-11-16 Decision: Driver Round 1 F1 requires rollback-safe sibling observations. Main journal schema unchanged from 4d5653c; base-loader probe passes after a permission-failing sweep. Observation corruption cannot block startup.
+
+### [BUG-1794864802] YouTube statistics cleanup retains expired failures indefinitely
+- [x] **Severity:** med
+- **Area:** youtube, cleanup
+- **File(s):** src/services/YouTubeStats.ts; src/bot.ts; tests/youtube-stats.test.ts
+- **Observation:** 368 cleanup warnings in retained 4.2-day production logs; 7 of 9 entries expired, 3 failing for 11-18 days. Cleanup discards error code and status and has no retry-age limit.
+- **Expected:** Log numeric code and status only; drop an entry when cleanup still fails more than seven days after expiry, with one terminal log. Successful cleanup removes it immediately.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Driver retention policy, unit elapsed days since expiry per entry: baseline indefinite retention (3 stale entries 11-18 days), minimum one failed cleanup after age exceeds 7 days, noise floor zero early-drop tolerance; at or below 7 days retain and retry, unavailable expiry is rejected by schema. Test retained at 6 days and exactly 7, dropped at 8, success immediate, numeric-only logging, no repeated terminal log and legacy state load.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Retire failed cleanup records only more than seven days after expiry, for legacy suffix/card/controls state. One durable terminal notice, numeric code/status passed to logger; journal write failure retains state and retry notice. Red 4/25 failed; green 26 pass; retirement mutation killed 4 tests.
+- **Docs:** README.md; docs/delivery-reliability.md; docs/self-hosting.md
+
+### [BUG-1794864951] Link replacement failure log omits error class
+- [ ] **Severity:** low
+- **Area:** diagnostics
+- **File(s):** src/services/SocialLinkService.ts:629-636
+- **Observation:** L1 found one automatic X link replacement failure without numeric Discord code; the cause cannot be identified from the retained log.
+- **Expected:** Add error.name only to the existing sanitized log, without message, stack or user content.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Ticket only per driver. Future test: thrown TypeError logs name TypeError, without error text or Discord identity.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1794864952] YouTube preview-display no-op is recorded as cancelled
+- [ ] **Severity:** low
+- **Area:** diagnostics, youtube
+- **File(s):** src/services/SocialLinkService.ts:293; src/services/DeliveryAttempt.ts:52
+- **Observation:** 19 of 26 cancelled attempts in the seven-day investigation were intended YouTube preview-display no-ops; closing the unfinished attempt records cancelled.
+- **Expected:** Do not count the intentional no-op as a delivery attempt, or give it a distinct outcome.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Ticket only per driver. Future test: youtubeDisplay=preview leaves native message unchanged and does not emit cancelled. The observation is an attempt count within the sampled seven days, not a production improvement claim.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1794864954] Preview failure logs omit provider history and matched-provider attribution
+- [ ] **Severity:** low
+- **Area:** diagnostics, providers
+- **File(s):** src/services/SocialLinkService.ts; src/services/DeliveryAttempt.ts
+- **Observation:** L1-F03/C7: failure log lists only last provider; 4 of 15 fallback attempts confirmed among 227 X attempts in seven days, but a late primary embed can satisfy source identity without proving which provider recovered.
+- **Expected:** Report attempted providers and attribute confirmed metadata only to the provider host that matched, keeping canonical or unattributed results distinct.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Ticket only per driver. Preserve current strict matcher and ProviderHealth credit safeguards. Future regression: delayed primary embed during fallback is not credited to fallback; no URLs, message text or user data added to persisted diagnostics.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1794864955] Production image lacks a source commit label
+- [ ] **Severity:** low
+- **Area:** deployment, provenance
+- **File(s):** Dockerfile; .github/workflows/deploy.yml
+- **Observation:** L1 could infer deployed source revision from image creation time and an empty source diff, but docker image metadata carries no commit label proving the revision.
+- **Expected:** Label built image with its source commit and prove deployed revision from image metadata.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Ticket only per driver. Future test: build receives actual commit SHA and OCI revision label equals it; never infer a proven revision from timestamps alone.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1794864956] Recognized provider error cards should end preview waits early
+- [ ] **Severity:** low
+- **Area:** delivery, previews
+- **File(s):** src/services/PreviewWatcher.ts; tests/preview-watcher.test.ts
+- **Observation:** Longer X waits also delay truly unavailable posts. Existing matcher rejects provider error cards; watcher currently wakes only for useful previews.
+- **Expected:** Consider an early unconfirmed result only for a recognized provider error card tied to the expected post, preserving rejection of empty or unrelated embeds.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Deferred optional work per driver: no implementation here. Before coding derive an explicit terminal-card classification from a real captured sanitized fixture, including pre-send events, multiple expected posts, races with useful metadata and source preservation. Do not modify BUG-1791838422 or weaken useful-preview matching. Baseline truly unembeddable X path about 24 s after window change; minimum one captured card plus positive/negative fixture controls; noise floor zero false confirmations; abstain on unrecognized cards and keep bounded wait.
+- **Bump:** patch
+- **Status:** open

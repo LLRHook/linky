@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Client, type APIEmbed, type Message } from 'discord.js';
+import { Client, DiscordAPIError, type APIEmbed, type Message } from 'discord.js';
 import { expectedPreviews } from '../src/services/PreviewRecovery';
 import { PreviewWatcher } from '../src/services/PreviewWatcher';
 
@@ -108,9 +108,14 @@ test('concurrent watchers use one listener and a late REST snapshot cannot overw
   assert.equal(client.listenerCount('raw'), count - 1);
 });
 
-test('deleted messages still reject and a mismatched bot output is never fetched', async t => {
+test('unreadable or deleted reconcile snapshots remain unconfirmed and mismatched output is never fetched', async t => {
   const { watcher } = fixture(t);
-  await assert.rejects(watcher.arm(channel, expected).verify(message([], async () => { throw new Error('Unknown Message'); })), /Unknown Message/);
+  for (const error of [new DiscordAPIError({ code: 50001, message: 'Missing Access' }, 50001, 403, 'GET', 'https://discord.example/message', {}),
+    new Error('Unknown Message')]) {
+    const result = await watcher.arm(channel, expected).verify(message([], async () => { throw error; }));
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.missing, expected);
+  }
   const untrusted = message([], async () => { assert.fail('Wrong author must not fetch'); });
   Object.assign(untrusted, { author: { id: 'wrong' } });
   assert.equal((await watcher.arm(channel, expected).verify(untrusted)).ok, false);
@@ -162,11 +167,107 @@ test('Instagram still confirms immediately and other platforms retain the four-s
   const immediate = watcher.arm(channel, expected).verify(message([], async () => { assert.fail('Early preview needs no fetch'); }));
   raw(client, [embed]);
   assert.equal((await immediate).ok, true);
-  const x = expectedPreviews('https://x.com/jack/status/20', 'https://fixupx.com/jack/status/20');
+  const other = expectedPreviews('https://bsky.app/profile/example.com/post/3abc', 'https://bskx.app/profile/example.com/post/3abc');
   let fetches = 0;
-  const pending = watcher.arm(channel, x).verify(message([], async () => { fetches++; return message(); }));
+  const pending = watcher.arm(channel, other).verify(message([], async () => { fetches++; return message(); }));
   t.mock.timers.tick(4_000);
   await Promise.resolve();
   assert.equal(fetches, 1);
   assert.equal((await pending).ok, false);
+});
+
+test('a rejected reconcile cannot erase a concurrent matching Gateway update', async t => {
+  const { client, watcher } = fixture(t, { gatewayWaitMs: 0 });
+  const result = await watcher.arm(channel, expected).verify(message([], async () => {
+    raw(client, [embed]);
+    throw new Error('Unreadable snapshot');
+  }));
+  assert.equal(result.ok, true);
+});
+
+for (const [platform, original, rewritten] of [
+  ['X', 'https://x.com/public/status/123', 'https://fixupx.com/public/status/123'],
+  ['Reddit', 'https://www.reddit.com/r/example/comments/abc123/example/', 'https://vxreddit.com/r/example/comments/abc123/example/'],
+]) {
+  test(`${platform} video metadata at nine seconds confirms without a premature reconcile`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+    const items = expectedPreviews(original, rewritten);
+    assert.equal(items.length, 1);
+    let fetches = 0;
+    const pending = watcher.arm(channel, items).verify(message([], async () => { fetches++; return message(); }));
+    t.mock.timers.tick(9_000);
+    await Promise.resolve();
+    assert.equal(fetches, 0, 'wait for the observed slow large-video unfurl');
+    raw(client, [{ url: rewritten, video: { url: 'https://cdn.example/video.mp4' } }]);
+    assert.equal((await pending).ok, true);
+    assert.equal(fetches, 0);
+  });
+}
+
+test('X without an update remains unconfirmed after ten seconds and one reconcile', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { watcher } = fixture(t, { gatewayWaitMs: undefined });
+  const items = expectedPreviews('https://x.com/public/status/123', 'https://fixupx.com/public/status/123');
+  let fetches = 0;
+  const pending = watcher.arm(channel, items).verify(message([], async () => { fetches++; return message(); }));
+  t.mock.timers.tick(9_999);
+  await Promise.resolve();
+  assert.equal(fetches, 0);
+  t.mock.timers.tick(1);
+  const result = await pending;
+  assert.equal(fetches, 1);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.missing, items);
+});
+
+test('caller-supplied Gateway waits cannot exceed ten seconds', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { watcher } = fixture(t, { gatewayWaitMs: 60_000 });
+  let fetches = 0;
+  const pending = watcher.arm(channel, expected).verify(message([], async () => { fetches++; return message(); }));
+  t.mock.timers.tick(9_999);
+  await Promise.resolve();
+  assert.equal(fetches, 0);
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  assert.equal(fetches, 1, 'the configured maximum must end the Gateway wait');
+  assert.equal((await pending).ok, false);
+  assert.equal(fetches, 1);
+});
+
+for (const sendMs of [21_000, 25_999]) {
+  test(`a ${sendMs} ms send still reconciles a missed X Gateway preview`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { watcher } = fixture(t, { gatewayWaitMs: undefined });
+    const url = 'https://fixupx.com/public/status/123';
+    const items = expectedPreviews('https://x.com/public/status/123', url);
+    const watch = watcher.arm(channel, items);
+    t.mock.timers.tick(sendMs);
+    let fetches = 0;
+    const pending = watch.verify(message([], async () => {
+      fetches++;
+      return message([{ url, video: { url: 'https://cdn.example/video.mp4' } }]);
+    }));
+    for (let i = 0; i < 10; i++) { t.mock.timers.tick(1_000); await Promise.resolve(); }
+    assert.equal((await pending).ok, true);
+    assert.equal(fetches, 1);
+  });
+}
+
+test('a never-published watch expires at 36 seconds and releases its capacity slot', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { client, watcher } = fixture(t, { gatewayWaitMs: undefined, maxActive: 1 });
+  const abandoned = watcher.arm(channel, expected);
+  t.mock.timers.tick(35_999);
+  let fetches = 0;
+  const beforeExpiry = watcher.arm(channel, expected).verify(message([], async () => { fetches++; return message(); }));
+  await Promise.resolve();
+  assert.equal(fetches, 1, 'slot is occupied before its lifetime ends');
+  assert.equal((await beforeExpiry).ok, false);
+  t.mock.timers.tick(1);
+  assert.equal((await abandoned.verify(message([embed]))).ok, false, 'expired watch cannot confirm');
+  const pending = watcher.arm(channel, expected).verify(message([], async () => { assert.fail('Released slot should receive Gateway metadata'); }));
+  raw(client, [embed]);
+  assert.equal((await pending).ok, true);
 });

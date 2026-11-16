@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ApplicationCommandType, ApplicationIntegrationType, AttachmentBuilder, Collection, InteractionContextType, MessageFlags,
+import { ApplicationCommandType, ApplicationIntegrationType, AttachmentBuilder, Client, Collection, DiscordAPIError, InteractionContextType, MessageFlags,
   PermissionFlagsBits, PermissionsBitField, type ButtonInteraction, type ChatInputCommandInteraction,
   type APIEmbed, type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../src/config';
 import { data, contextData, execute, manualLinks, removeManual } from '../src/commands/fix';
 import { inspectPreviews, type ExpectedPreview, type PreviewResult } from '../src/services/PreviewRecovery';
+import { PreviewWatcher } from '../src/services/PreviewWatcher';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import type { ServerPreferences } from '../src/services/ServerSettings';
@@ -67,6 +68,24 @@ function previewChecks(fixture: ReturnType<typeof command>) {
   };
   return { checks, observations, dependencies };
 }
+
+test('manual unreadable reconciles record metadata-unconfirmed and preserve the source', async t => {
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client, { gatewayWaitMs: 0 });
+  t.after(() => watcher.close());
+  for (const context of [false, true]) {
+    const f = command('https://x.com/public/status/123', context), outcomes: DeliveryOutcome[] = [];
+    f.state.render = () => [];
+    Object.assign(f.response, { channelId: f.input.channelId, author: { id: BOT }, fetch: async () => {
+      throw new DiscordAPIError({ code: 50001, message: 'Missing Access' }, 50001, 403, 'GET', 'https://discord.example/message', {});
+    } });
+    await execute(f.interaction, config, { diagnostics: diagnosticsStub({ outcomes }),
+      armPreview: (channel, expected, context) => watcher.arm(channel, expected, context) });
+    assert.deepEqual(outcomes, ['metadata-unconfirmed']);
+    assert.match(f.response.content, /useful preview could not be confirmed/i);
+  }
+});
 
 test('explicit fixing rejects a vxTwitter service-error fallback and preserves the source', async () => {
   for (const context of [false, true]) {

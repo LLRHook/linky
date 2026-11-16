@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { ButtonStyle, ComponentType, EmbedType, type APIEmbed, type APIMessageTopLevelComponent, type MessageEditOptions } from 'discord.js';
 import { formatYouTubeStatistics } from '../src/services/YouTube';
 import { YouTubeStats, YOUTUBE_STATS_TTL, type StatsMessage } from '../src/services/YouTubeStats';
+import { logCleanupFailure } from '../src/services/CleanupFailure';
 
 const BOT = '1491240385031311470', CHANNEL = '373953687812440066';
 const VIDEO = 'dQw4w9WgXcQ', SECOND = 'u0_UyltqaFI';
@@ -25,7 +26,7 @@ const setComponents = (message: StatsMessage, components: APIMessageTopLevelComp
 };
 
 async function fixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), 'linky-youtube-')), path = join(directory, 'expiry.json');
+  const directory = await mkdtemp(join(tmpdir(), 'L2-linky-youtube-')), path = join(directory, 'expiry.json');
   let time = 0, fetchError: unknown, writeError = false, nextId = 1491240385031311471n;
   const messages = new Map<string, TestMessage>();
   const errors: Error[] = [], edits: { id: string; options: MessageEditOptions }[] = [], removed: string[] = [], managers: YouTubeStats[] = [];
@@ -298,4 +299,66 @@ test('a full cleanup journal skips new publications before editing Discord', asy
     messageId: String(2000000000000000000n + BigInt(i)), expiresAt: YOUTUBE_STATS_TTL, videoIds: [VIDEO] }))));
   assert.equal(await f.manager().publish(f.video, cards), null);
   assert.equal(f.edits.length, 0); assert.equal((await f.records()).length, 10_000);
+});
+
+for (const kind of ['controls', 'card', 'legacy']) {
+  test(`${kind} failed cleanup is retained at six and seven days past expiry, then dropped at eight days`, async t => {
+    const f = await fixture(t);
+    if (kind === 'controls') await f.manager().publish(f.video, cards);
+    else await writeFile(f.path, JSON.stringify([kind === 'card'
+      ? { kind: 'card', channelId: CHANNEL, messageId: f.video.id, expiresAt: YOUTUBE_STATS_TTL }
+      : legacy(f.video)]));
+    f.failFetch({ code: 50001, status: 403, message: 'private detail', userId: BOT });
+    f.advance(7 * YOUTUBE_STATS_TTL);
+    await f.manager().sweep();
+    assert.equal((await f.records()).length, 1, 'six days past expiry is still retryable');
+    assert.deepEqual({ ...f.errors.at(-1) }, { code: 50001, status: 403 });
+    const logs: { fields: unknown; message: string }[] = [];
+    logCleanupFailure({ warn: (fields, message) => logs.push({ fields, message }) }, f.errors.at(-1)!);
+    assert.deepEqual(logs[0].fields, { code: 50001, status: 403 });
+    assert(!JSON.stringify(logs).includes('private detail'));
+    assert(!JSON.stringify(logs).includes(BOT));
+    f.advance(YOUTUBE_STATS_TTL);
+    await f.manager().sweep();
+    assert.equal((await f.records()).length, 1, 'exactly seven days is still retryable');
+    f.advance(YOUTUBE_STATS_TTL);
+    const before = f.errors.length;
+    await f.manager().sweep();
+    assert.deepEqual(await f.records(), []);
+    assert.equal(f.errors.length, before + 1, 'terminal retirement emits one notice');
+    assert.match(f.errors.at(-1)!.message, /seven days.*removed/i);
+    await f.manager().sweep();
+    assert.equal(f.errors.length, before + 1);
+    assert.equal(f.removed.length, 0, 'dropping cleanup metadata does not delete Discord output');
+    assert(f.messages.has(f.video.id));
+  });
+}
+
+test('YouTube cleanup success removes an entry immediately while server errors also retire after seven days', async t => {
+  for (const failure of [undefined, { status: 500 }, new Error('Timeout')]) {
+    const f = await fixture(t), manager = f.manager();
+    await manager.publish(f.video, cards);
+    f.failFetch(failure);
+    f.advance(YOUTUBE_STATS_TTL);
+    await manager.sweep();
+    assert.equal((await f.records()).length, failure ? 1 : 0);
+    if (failure) {
+      f.advance(8 * YOUTUBE_STATS_TTL);
+      await manager.sweep();
+      assert.deepEqual(await f.records(), []);
+    }
+  }
+});
+
+test('a failed terminal journal write retains the YouTube record and does not claim retirement', async t => {
+  const f = await fixture(t), manager = f.manager(f.write);
+  await manager.publish(f.video, cards);
+  f.failFetch({ code: 50001, status: 403 });
+  f.advance(9 * YOUTUBE_STATS_TTL);
+  f.failWrite();
+  await assert.rejects(manager.sweep(), /disk denied/);
+  assert.equal((await f.records()).length, 1);
+  assert.equal(f.errors.length, 1);
+  assert.deepEqual({ ...f.errors[0] }, { code: 50001, status: 403 });
+  assert(!f.errors[0].message.includes('record removed'));
 });

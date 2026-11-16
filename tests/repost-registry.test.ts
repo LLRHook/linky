@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MessageFlags } from 'discord.js';
+import { logCleanupFailure } from '../src/services/CleanupFailure';
+import { YouTubeStats } from '../src/services/YouTubeStats';
 import { RepostRegistry, REPOST_RETENTION_MS, REMOVE_REPOST_CUSTOM_ID, type RepostInteraction, type RepostMessage, type RepostRecord } from '../src/services/RepostRegistry';
 
 const NOW = Date.UTC(2026, 8, 12);
@@ -13,7 +15,7 @@ const GUILD = snowflake(-10_000, 4), CHANNEL = snowflake(-10_000, 5);
 type Options = ConstructorParameters<typeof RepostRegistry>[0];
 
 async function fixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), 'linky-reposts-'));
+  const directory = await mkdtemp(join(tmpdir(), 'L2-linky-reposts-'));
   const path = join(directory, 'reposts.json');
   const messages = new Map<string, RepostMessage>(), deleted: string[] = [], fetched: string[] = [];
   const errors: Error[] = [], permissionChecks: string[] = [], managers: RepostRegistry[] = [];
@@ -555,4 +557,187 @@ test('a long failing cleanup backlog cannot starve later pending removals', asyn
   await registry.sweep();
   assert.equal((await f.saved()).records.length, 100);
   assert((await f.saved()).records.every((record: RepostRecord) => denied.has(record.replacementId)));
+});
+
+for (const failure of [{ code: 50001, status: 403 }, { code: 50013 }, { status: 403 }]) {
+  test(`permission cleanup ${JSON.stringify(failure)} is retained before 24 hours and dropped durably at 24 hours`, async t => {
+    const f = await fixture(t);
+    const options = { fetchMessage: async () => { throw { ...failure, message: 'private content', userId: AUTHOR }; } };
+    const registry = f.manager(options);
+    await registry.remember(f.record);
+    await registry.sweep();
+    assert(registry.findByReplacement(f.replacement.id));
+    assert.deepEqual({ ...f.errors[0] }, failure, 'report only numeric code and status');
+    f.advance(24 * 60 * 60_000 - 1);
+    await f.manager(options).sweep();
+    assert.equal((await f.saved()).records.length, 1);
+    const restarted = f.manager(options);
+    f.advance(1);
+    const before = f.errors.length;
+    await restarted.sweep();
+    assert.equal(restarted.findByReplacement(f.replacement.id), undefined);
+    assert.deepEqual(await f.saved(), { records: [], remove: [], refresh: [] });
+    assert.equal(f.errors.length, before + 1, 'one terminal log, no retry warning too');
+    assert.match(f.errors.at(-1)!.message, /permission.*24 hours.*removed/i);
+    await f.manager(options).sweep();
+    assert.equal(f.errors.length, before + 1, 'removed record cannot warn again');
+    assert.deepEqual(f.deleted, [], 'terminal retirement does not delete Discord messages');
+  });
+}
+
+test('successful sweeps and nonpermission errors reset the consecutive permission clock', async t => {
+  for (const interruption of [null, { status: 500 }, new Error('Timeout')]) {
+    const f = await fixture(t);
+    let failure: unknown = { code: 50001 };
+    const registry = f.manager({ fetchMessage: async (_channel, id) => {
+      if (failure) throw failure;
+      return f.messages.get(id) ?? null;
+    } });
+    await registry.remember(f.record);
+    await registry.sweep();
+    f.advance(23 * 60 * 60_000);
+    failure = interruption;
+    await registry.sweep();
+    failure = { code: 50001 };
+    await registry.sweep();
+    f.advance(2 * 60 * 60_000);
+    await registry.sweep();
+    assert(registry.findByReplacement(f.replacement.id), 'an interruption starts a new grace period');
+    f.advance(22 * 60 * 60_000);
+    await registry.sweep();
+    assert.equal(registry.findByReplacement(f.replacement.id), undefined);
+  }
+});
+
+test('pending cleanup with server errors or timeouts keeps the existing retry behavior beyond 24 hours', async t => {
+  for (const failure of [{ status: 500 }, new Error('Timeout'), { code: '50001', status: '403' }]) {
+    const f = await fixture(t), registry = f.manager();
+    await registry.remember(f.record);
+    f.failDelete(failure);
+    await registry.handleRemove(f.interaction().value);
+    for (let day = 0; day < 3; day++) {
+      f.advance(24 * 60 * 60_000);
+      await registry.sweep();
+      assert(registry.findByReplacement(f.replacement.id));
+      assert.deepEqual((await f.saved()).remove, [f.replacement.id]);
+    }
+    assert.deepEqual({ ...f.errors.at(-1) }, 'status' in failure && typeof failure.status === 'number' ? { status: 500 } : {});
+  }
+});
+
+test('pending removal permission failures retire the record and both intents after the grace period', async t => {
+  const f = await fixture(t), registry = f.manager();
+  await registry.remember(f.record);
+  f.failDelete({ code: 50013 });
+  assert.equal(await registry.retry(f.record, async () => assert.fail('Cannot regenerate')), false);
+  await registry.sweep();
+  f.advance(24 * 60 * 60_000);
+  await registry.sweep();
+  assert.deepEqual(await f.saved(), { records: [], remove: [], refresh: [] });
+  assert(f.messages.has(f.source.id));
+});
+
+test('permission sweeps preserve the legacy three-key journal and persist clocks in a sibling file', async t => {
+  const f = await fixture(t);
+  const options = { fetchMessage: async () => { throw { code: 50001 }; } };
+  const registry = f.manager(options);
+  await registry.remember(f.record);
+  await registry.sweep();
+  assert.deepEqual(Object.keys(await f.saved()).sort(), ['records', 'refresh', 'remove']);
+  const path = join(dirname(f.path), 'reposts-permission.json');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { [f.replacement.id]: NOW });
+  f.advance(24 * 60 * 60_000);
+  await f.manager(options).sweep();
+  assert.deepEqual(await f.saved(), { records: [], remove: [], refresh: [] });
+});
+
+test('missing, unreadable and malformed permission siblings mean no observations and never lose ownership', async t => {
+  for (const value of [undefined, 'unreadable', '{broken', 'null', '[]', JSON.stringify({ invalid: NOW }),
+    JSON.stringify({ [snowflake(0)]: -1 }), JSON.stringify({ [snowflake(0)]: 'yesterday' })]) {
+    const f = await fixture(t), registry = f.manager();
+    await registry.remember(f.record);
+    const path = join(dirname(f.path), 'reposts-permission.json');
+    if (value === 'unreadable') await mkdir(path);
+    else if (value !== undefined) await writeFile(path, value);
+    const restored = f.manager({ fetchMessage: async () => { throw { code: 50001 }; } });
+    assert.deepEqual(restored.findByReplacement(f.replacement.id), f.record);
+    f.advance(48 * 60 * 60_000);
+    await restored.sweep();
+    assert.deepEqual(restored.findByReplacement(f.replacement.id), f.record, 'no prior clock can authorize retirement');
+    assert.equal((await f.saved()).records.length, 1);
+  }
+});
+
+test('orphan permission observations are discarded before a matching new ownership record is added', async t => {
+  const f = await fixture(t);
+  const legacy = { records: [f.record], remove: [], refresh: [] };
+  await writeFile(f.path, JSON.stringify(legacy));
+  const orphan = { ...f.record, sourceId: snowflake(-1_000, 1), replacementId: snowflake(0, 1) };
+  const path = join(dirname(f.path), 'reposts-permission.json');
+  await writeFile(path, JSON.stringify({ [f.replacement.id]: NOW, [orphan.replacementId]: NOW - 24 * 60 * 60_000 }));
+  const registry = f.manager({ fetchMessage: async () => { throw { code: 50001 }; } });
+  await registry.remember(orphan);
+  await registry.sweep();
+  assert(registry.findByReplacement(orphan.replacementId), 'orphan history cannot age new ownership');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { [f.replacement.id]: NOW, [orphan.replacementId]: NOW });
+});
+
+test('a failed sibling write prevents retirement, while a failed journal write never claims retirement', async t => {
+  for (const failingFile of ['reposts-permission.json', 'reposts.json']) {
+    const f = await fixture(t);
+    let denied = false;
+    const registry = f.manager({ fetchMessage: async () => { throw { code: 50001 }; },
+      write: async (path, content) => {
+        if (denied && path.endsWith(failingFile)) throw new Error('disk denied');
+        await writeFile(path, content);
+      } });
+    await registry.remember(f.record);
+    await registry.sweep();
+    f.advance(24 * 60 * 60_000);
+    denied = true;
+    const before = f.errors.length;
+    await registry.sweep();
+    assert(registry.findByReplacement(f.replacement.id));
+    assert.equal((await f.saved()).records.length, 1);
+    assert(!f.errors.slice(before).some(error => /record removed/.test(error.message)));
+    denied = false;
+    await registry.sweep();
+    assert.equal(registry.findByReplacement(f.replacement.id), undefined);
+    assert.match(f.errors.at(-1)!.message, /record removed/);
+  }
+});
+
+test('repost cleanup numeric error details reach the logger without message text or identities', async t => {
+  const f = await fixture(t), logs: { fields: unknown; message: string }[] = [];
+  const registry = f.manager({ fetchMessage: async () => { throw { code: 50001, status: 403, message: 'private detail', userId: AUTHOR }; },
+    onError: error => logCleanupFailure({ warn: (fields, message) => logs.push({ fields, message }) }, error) });
+  await registry.remember(f.record);
+  await registry.sweep();
+  assert.equal(logs.length, 1);
+  assert.deepEqual(logs[0].fields, { code: 50001, status: 403 });
+  assert(!JSON.stringify(logs).includes('private detail'));
+  assert(!JSON.stringify(logs).includes(AUTHOR));
+});
+
+test('repost retirement leaves expired YouTube cleanup on its own seven-day lifecycle and preserves the source', async t => {
+  const f = await fixture(t), path = join(dirname(f.path), 'youtube-stats.json');
+  let now = NOW;
+  await writeFile(path, JSON.stringify([{ kind: 'controls', channelId: CHANNEL, messageId: f.replacement.id,
+    expiresAt: NOW, videoIds: ['dQw4w9WgXcQ'] }]));
+  const stats = new YouTubeStats({ path, botUserId: BOT, now: () => now,
+    fetchMessage: async () => { throw { code: 50001, status: 403 }; } });
+  const registry = f.manager({ removeRelated: record => stats.removeForMessage(record.replacementId) });
+  await registry.remember(f.record);
+  f.failDelete({ code: 50013, status: 403 });
+  await registry.handleRemove(f.interaction().value);
+  await registry.sweep();
+  now += 24 * 60 * 60_000; f.advance(24 * 60 * 60_000);
+  await registry.sweep();
+  assert.equal(registry.findByReplacement(f.replacement.id), undefined);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).length, 1);
+  now += 7 * 24 * 60 * 60_000;
+  await stats.sweep();
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), []);
+  assert.deepEqual(f.deleted, []);
+  assert(f.messages.has(f.source.id));
 });

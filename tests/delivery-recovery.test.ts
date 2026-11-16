@@ -3,11 +3,12 @@ import { afterEach, test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Collection, MessageFlags, MessageType, PermissionsBitField,
+import { Client, Collection, DiscordAPIError, MessageFlags, MessageType, PermissionsBitField,
   type APIEmbed, type APIMessageTopLevelComponent, type Message, type MessageCreateOptions, type MessageEditOptions } from 'discord.js';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
 import { expectedPreviews, inspectPreviews, type ExpectedPreview } from '../src/services/PreviewRecovery';
 import { ProviderHealth } from '../src/services/ProviderHealth';
+import { PreviewWatcher } from '../src/services/PreviewWatcher';
 import { getProviderCandidates } from '../src/services/SocialProviders';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
@@ -115,6 +116,42 @@ function delivery(content = ORIGINAL_X) {
     });
   return { source: source as unknown as Message, mentions, state, sent, events, remembered, expectedChecks, create };
 }
+
+test('a watcher with a rejected reconcile keeps the original and records metadata-unconfirmed', async t => {
+  const f = delivery(), outcomes: DeliveryOutcome[] = [];
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client, { gatewayWaitMs: 0 });
+  t.after(() => watcher.close());
+  await f.create({ diagnostics: diagnosticsStub({ outcomes }), armPreview: (channel, expected, context) => {
+    const watch = watcher.arm(channel, expected, context);
+    return { close: () => watch.close(), verify: message => watch.verify(Object.assign(message, {
+      embeds: [], fetch: async () => {
+        throw new DiscordAPIError({ code: 50001, message: 'Missing Access' }, 50001, 403, 'GET', 'https://discord.example/message', {});
+      },
+    })) };
+  } })(f.source);
+  assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.sent[0].deleted, true);
+  assert.deepEqual(outcomes, ['metadata-unconfirmed']);
+});
+
+test('a watcher with no update keeps the original and discards the unconfirmed replacement', async t => {
+  const f = delivery();
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client, { gatewayWaitMs: 0 });
+  t.after(() => watcher.close());
+  await f.create({ armPreview: (channel, expected, context) => {
+    const watch = watcher.arm(channel, expected, context);
+    return { close: () => watch.close(), verify: message => watch.verify(Object.assign(message, {
+      embeds: [], fetch: async () => ({ embeds: [] }) as unknown as Message,
+    })) };
+  } })(f.source);
+  assert.equal(f.state.originalDeleted, false);
+  assert.equal(f.sent[0].deleted, true);
+  assert.equal(f.remembered.at(-1)?.mode, 'reply');
+});
 
 test('a matching X error card cannot authorize deletion of the original', async () => {
   const f = delivery();
