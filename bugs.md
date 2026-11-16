@@ -526,7 +526,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Docs:** README.md; docs/delivery-reliability.md; docs/product-roadmap.md
 
 ### [BUG-1794864398] Delivery reliability window documentation omits Facebook
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** docs, delivery
 - **File(s):** docs/delivery-reliability.md
 - **Observation:** Before this batch the guide says eight seconds for Instagram or TikTok only, while PreviewWatcher also grants Facebook eight seconds.
@@ -535,4 +535,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Compare living guide with PreviewWatcher defaults; update the same sentence as the slow-unfurl fix and check that Facebook is included.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Corrected the existing window sentence in BUG-1794864397 to include Facebook in the eight-second group; red doc assertion failed, green passed, and omitting Facebook again failed mutation check.
+- **Docs:** docs/delivery-reliability.md
