@@ -18,11 +18,40 @@ import { myAnimeListHtml, myAnimeListImage, myAnimeListTitle, myAnimeListUrl } f
 import { kitpPdf, pdfResponse, pdfTitle, pdfUrl } from './fixtures/pdf';
 import { bingNewsFeed, telegraphBlocked, telegraphHeadline, telegraphUrl, telegraphUrlTitle } from './fixtures/telegraph';
 import { buttonInteraction, commandInteraction, diagnosticsStub, type InteractionEvent } from './support/discord';
+import { capturedProviderError, capturedErrorSource } from './fixtures/provider-error';
 
 const BOT = '1491240385031311470', REQUESTER = '111111111111111111', OTHER = '222222222222222222';
 const UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['instagram', 'tiktok', 'x'],
   translateTweets: false, settingsPath: 'unused' };
+
+test('manual captured error cards end both waits early, remain unconfirmed and preserve the source', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client);
+  t.after(() => watcher.close());
+  for (const context of [false, true]) {
+    const f = command(capturedErrorSource, context), outcomes: DeliveryOutcome[] = [];
+    f.state.render = () => [];
+    Object.assign(f.response, { channelId: f.input.channelId, author: { id: BOT }, fetch: async () => {
+      assert.fail('Recognised card must end the wait without REST');
+    } });
+    let waits = 0;
+    await execute(f.interaction, config, { diagnostics: diagnosticsStub({ outcomes }), armPreview: (channel, expected, options) => {
+      const watch = watcher.arm(channel, expected, options);
+      return { close: () => watch.close(), verify: message => {
+        const pending = watch.verify(message);
+        t.mock.timers.tick(250); waits++;
+        client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [capturedProviderError] } } as never);
+        return pending;
+      } };
+    } });
+    assert.equal(waits, 2);
+    assert.deepEqual(outcomes, ['metadata-unconfirmed']);
+    assert.match(f.response.content, /useful preview could not be confirmed/i);
+  }
+});
 
 function command(content = 'https://twitter.com/jack/status/20?s=46', context = false) {
   const events: InteractionEvent[] = [];

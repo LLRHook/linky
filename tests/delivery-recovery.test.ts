@@ -20,6 +20,7 @@ import { YouTubeStats, YOUTUBE_STATS_TTL } from '../src/services/YouTubeStats';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import { type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
+import { capturedProviderError, capturedErrorSource } from './fixtures/provider-error';
 
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -160,6 +161,30 @@ test('a matching X error card cannot authorize deletion of the original', async 
   await f.create()(f.source);
   assert.equal(f.state.originalDeleted, false);
   assert(f.sent[0].deleted, 'discard the unusable replacement');
+});
+
+test('automatic captured error cards finish two provider waits in 500 fake ms and keep the original', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = delivery(capturedErrorSource), outcomes: DeliveryOutcome[] = [];
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client);
+  t.after(() => watcher.close());
+  let waits = 0;
+  await f.create({ diagnostics: diagnosticsStub({ outcomes }), armPreview: (channel, expected, context) => {
+    const watch = watcher.arm(channel, expected, context);
+    return { close: () => watch.close(), verify: message => {
+      const pending = watch.verify(Object.assign(message, { embeds: [], fetch: async () => {
+        forbidden.forbid('Recognised card must end the wait without REST')(); return message;
+      } }));
+      t.mock.timers.tick(250); waits++;
+      client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [capturedProviderError] } } as never);
+      return pending;
+    } };
+  } })(f.source);
+  assert.equal(waits, 2, 'two 250 ms card arrivals replace the roughly 24 s unembeddable baseline');
+  assert.equal(f.state.originalDeleted, false); assert.equal(f.sent[0].deleted, true);
+  assert.deepEqual(outcomes, ['metadata-unconfirmed']);
 });
 
 test('vxTwitter scan-error fallback keeps the source and an owned Retry notice with Details', async () => {

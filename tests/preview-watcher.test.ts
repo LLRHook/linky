@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { Client, DiscordAPIError, type APIEmbed, type Message } from 'discord.js';
 import { expectedPreviews } from '../src/services/PreviewRecovery';
 import { PreviewWatcher } from '../src/services/PreviewWatcher';
+import { capturedProviderError, capturedErrorSource } from './fixtures/provider-error';
 
 const source = 'https://www.instagram.com/reel/RealPost/';
 const fixed = 'https://fkinstagram.com/reel/RealPost/';
@@ -67,7 +68,7 @@ test('a missed Gateway event causes exactly one REST reconciliation', async t =>
   assert.equal(fetches, 1);
 });
 
-test('a vxTwitter service-error event and REST echo cannot wake or confirm a post preview', async t => {
+test('a vxTwitter service-error event ends the wait without confirming a post preview', async t => {
   const { client, watcher } = fixture(t, { gatewayWaitMs: 0 });
   const url = 'https://vxtwitter.com/public/status/123';
   const items = expectedPreviews('https://x.com/public/status/123', url);
@@ -79,7 +80,7 @@ test('a vxTwitter service-error event and REST echo cannot wake or confirm a pos
   assert.equal(result.ok, false);
   assert.deepEqual(result.missing, items);
   assert.deepEqual(result.attributed, []);
-  assert.equal(fetches, 1);
+  assert.equal(fetches, 0);
 });
 
 test('a stuck REST fetch and explicit cancellation both terminate within the bounded wait', async t => {
@@ -270,4 +271,68 @@ test('a never-published watch expires at 36 seconds and releases its capacity sl
   const pending = watcher.arm(channel, expected).verify(message([], async () => { assert.fail('Released slot should receive Gateway metadata'); }));
   raw(client, [embed]);
   assert.equal((await pending).ok, true);
+});
+
+for (const beforeSend of [false, true]) {
+  test(`captured error card ends X wait early unconfirmed (pre-send=${beforeSend}) and releases capacity`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { client, watcher } = fixture(t, { gatewayWaitMs: undefined, maxActive: 1 });
+    const items = expectedPreviews(capturedErrorSource, capturedProviderError.url!);
+    const watch = watcher.arm(channel, items);
+    let settled = false;
+    if (beforeSend) raw(client, [capturedProviderError]);
+    const pending = watch.verify(message([], async () => { assert.fail('Recognised error needs no reconcile'); }))
+      .then(result => { settled = true; return result; });
+    if (!beforeSend) { t.mock.timers.tick(250); raw(client, [capturedProviderError]); }
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    assert.equal(settled, true, 'finish at the error card rather than the ten-second deadline');
+    const result = await pending;
+    assert.equal(result.ok, false); assert.deepEqual(result.missing, items);
+    assert.deepEqual(result.attributed, []);
+    const next = watcher.arm(channel, items).verify(message([], async () => { assert.fail('Capacity must be released'); }));
+    raw(client, [{ url: capturedProviderError.url, title: 'Public post', description: 'Useful content' }]);
+    assert.equal((await next).ok, true);
+  });
+}
+
+test('unrecognised, empty, unrelated and wrong-post cards abstain until the bounded X wait', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+  const items = expectedPreviews(capturedErrorSource, capturedProviderError.url!);
+  let fetches = 0;
+  const pending = watcher.arm(channel, items).verify(message([], async () => { fetches++; return message(); }));
+  for (const card of [{ url: capturedProviderError.url }, { ...capturedProviderError, url: 'https://evil.example/post' },
+    { ...capturedProviderError, url: 'https://vxtwitter.com/public/status/123' },
+    { url: capturedProviderError.url, title: 'Unknown failure' }]) raw(client, [card]);
+  t.mock.timers.tick(9_999); await Promise.resolve(); assert.equal(fetches, 0);
+  t.mock.timers.tick(1); assert.equal((await pending).ok, false); assert.equal(fetches, 1);
+});
+
+test('partial error evidence waits for the other post, then useful metadata leaves only the error unconfirmed', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+  const second = 'https://vxtwitter.com/public/status/123';
+  const items = expectedPreviews(`${capturedErrorSource} https://x.com/public/status/123`, `${capturedProviderError.url} ${second}`);
+  let settled = false;
+  const pending = watcher.arm(channel, items).verify(message([], async () => { assert.fail('All unresolved posts have error evidence'); }))
+    .then(result => { settled = true; return result; });
+  raw(client, [capturedProviderError]);
+  await Promise.resolve(); assert.equal(settled, false);
+  t.mock.timers.tick(500);
+  raw(client, [capturedProviderError, { url: second, title: 'Public post', description: 'Useful content' }]);
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(settled, true);
+  const result = await pending;
+  assert.equal(result.ok, false); assert.deepEqual(result.missing, [items[0]]);
+  assert.equal(result.attributed?.[0].source, items[1].source);
+});
+
+test('pre-send useful evidence cannot be overwritten by a later error card for the same message', async t => {
+  const { client, watcher } = fixture(t);
+  const items = expectedPreviews(capturedErrorSource, capturedProviderError.url!);
+  const watch = watcher.arm(channel, items);
+  raw(client, [{ url: capturedProviderError.url, title: 'Public post', description: 'Useful content' }]);
+  raw(client, [capturedProviderError]);
+  const result = await watch.verify(message([], async () => { assert.fail('Useful pre-send evidence needs no REST'); }));
+  assert.equal(result.ok, true);
 });

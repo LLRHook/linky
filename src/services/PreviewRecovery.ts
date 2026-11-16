@@ -23,6 +23,8 @@ export interface ExpectedPreview {
 export interface PreviewResult {
   ok: boolean;
   missing: ExpectedPreview[];
+  /** Every unresolved native post has a recognised error card in this snapshot. Never confirmation. */
+  providerError?: boolean;
   /** Discord supplied video metadata; this does not establish client playback. */
   videoMetadata: boolean;
   /** Only matching embeds whose URL identifies the attempted provider. Canonical source URLs remain unattributed. */
@@ -77,20 +79,26 @@ export function previewIdentity(raw: string): string | null {
   return `${source.platform}:${id}`;
 }
 
-function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
-  if (expected.explicitEmbeds) return false;
-  if (!embed.url) return false;
-  const observed = previewIdentity(embed.url);
-  const same = observed !== null && observed === previewIdentity(expected.url);
-  if (!same) return false;
-  if (expected.captionFree && embed.description?.trim()) return false;
+function providerErrorCard(embed: APIEmbed, expected: ExpectedPreview): boolean {
   const title = embed.title?.trim() ?? '', description = embed.description?.trim() ?? '';
   const errorTitle = /^(?:error(?:\s+\d+)?|not found|temporarily unavailable|(?:tweet|post|video) (?:not found|unavailable|deleted)|something went wrong)$/i;
   const errorText = /^(?:sorry,? (?:that |this )?(?:post|tweet) (?:doesn.t exist|could not be found)|this (?:tweet|post|video) (?:is (?:unavailable|private)|has been deleted)|could not (?:find|load) (?:this |the )?(?:tweet|post|video)|try again later)/i;
   // The service's branded scan-error card is not the requested post, even with a logo/video.
   const scanError = expected.platform === 'x' && /^vxTwitter\s*\/\s*fixvx$/i.test(title) &&
     /^failed to scan your link!(?:\s|$)/i.test(description);
-  if (errorTitle.test(title) || errorText.test(description) || scanError) return false;
+  return errorTitle.test(title) || errorText.test(description) || scanError;
+}
+
+function samePost(embed: APIEmbed, expected: ExpectedPreview): boolean {
+  if (!embed.url) return false;
+  const observed = previewIdentity(embed.url);
+  return observed !== null && observed === previewIdentity(expected.url);
+}
+
+function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
+  if (expected.explicitEmbeds || !samePost(embed, expected)) return false;
+  if (expected.captionFree && embed.description?.trim()) return false;
+  if (providerErrorCard(embed, expected)) return false;
   const media = Boolean(embed.video?.url || embed.image?.url || embed.thumbnail?.url);
   const source = parseSocialUrl(expected.source);
   const videoPost = expected.requireVideo || expected.platform === 'youtube' || expected.platform === 'twitch' ||
@@ -161,6 +169,8 @@ export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly 
   return {
     ok: expected.length > 0 && missing.length === 0,
     missing,
+    ...(missing.length > 0 && missing.every(item => !item.explicitEmbeds &&
+      embeds.some(embed => samePost(embed, item) && providerErrorCard(embed, item))) ? { providerError: true } : {}),
     videoMetadata: embeds.some(embed => Boolean(embed.video?.url) && expected.some(item => matches(embed, item))),
     attributed: expected.filter(item => embeds.some(embed => embed.type !== 'rich' && matches(embed, item) &&
       (parseProviderUrl(embed.url!)?.providerId === item.providerId || (item.providerId === 'youtube' && parseYouTubeUrl(embed.url!) !== null)))),
@@ -188,7 +198,7 @@ export async function waitForPreviews(message: Pick<Message, 'embeds' | 'fetch'>
   let current = message;
   let result = inspectPreviews(current.embeds.map(embed => embed.toJSON()), expected);
   for (const ms of intervals) {
-    if (result.ok) break;
+    if (result.ok || result.providerError) break;
     await sleep(ms);
     current = await message.fetch(true);
     result = inspectPreviews(current.embeds.map(embed => embed.toJSON()), expected);

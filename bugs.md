@@ -641,7 +641,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** open
 
 ### [BUG-1794864956] Recognized provider error cards should end preview waits early
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** delivery, previews
 - **File(s):** src/services/PreviewWatcher.ts; tests/preview-watcher.test.ts
 - **Observation:** Longer X waits also delay truly unavailable posts. Existing matcher rejects provider error cards; watcher currently wakes only for useful previews.
@@ -650,4 +650,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Deferred optional work per driver: no implementation here. Before coding derive an explicit terminal-card classification from a real captured sanitized fixture, including pre-send events, multiple expected posts, races with useful metadata and source preservation. Do not modify BUG-1791838422 or weaken useful-preview matching. Baseline truly unembeddable X path about 24 s after window change; minimum one captured card plus positive/negative fixture controls; noise floor zero false confirmations; abstain on unrecognized cards and keep bounded wait.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Shared unchanged error-card classifier; identity-bound terminal unconfirmed results wake active and pre-send watchers and skip reconciliation. Multiple posts end early only when all remaining posts have recognised errors; unknown cards abstain. Automatic and manual captured-card regressions preserve sources. Baseline about 24 s per unembeddable X delivery; expected about twice card-arrival time over two providers (500 ms for two 250 ms arrivals in fake-timer tests only). Minimum one captured card plus positive and negative controls; noise floor zero false confirmations; no live performance claim.
+- **Docs:** README.md; docs/delivery-reliability.md; VERIFICATION.md
