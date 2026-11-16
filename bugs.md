@@ -672,3 +672,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Docs:** README.md; docs/delivery-reliability.md; VERIFICATION.md
 - **Log:**
   - 2026-11-16 Review: Driver round 1 F1/F3: stale-provider regression was blocking; corrected using provider host equality. New regressions failed before correction; provider-condition and send-snapshot mutations are caught. Classifier regexes and source-deletion requirements unchanged.
+
+### [BUG-1794873496] Refresh stale automated test counts in VERIFICATION.md
+- [ ] **Severity:** low
+- **Area:** docs, tests
+- **File(s):** VERIFICATION.md:91; VERIFICATION.md:102
+- **Observation:** L8 measured 1418 TypeScript tests and 85 Node ESM tests at PR 109 head 1d8ff1b; VERIFICATION.md still states 1190 and 62. This drift predates L6 changes and round 1 adds further regression tests.
+- **Expected:** Update the current baseline and procedure expectations using exact runner-reported counts at the commit actually tested; keep passed, failed and host-skipped counts separate.
+- **Req:** unknown
+- **Depends on:** none (driver-requested follow-up)
+- **Repro / Notes:** File only per L6 round 1 driver decision; do not build here. Run npm test once on the target commit and compare each runner summary with the Stage 2 table and 2.1 prose. Unit: test cases per runner at one named commit; baseline documented 1190 TS / 62 ESM versus observed 1418 TS / 85 ESM at 1d8ff1b; minimum one complete run; noise floor zero unexplained count mismatches; abstain if any runner did not complete. Refresh from the final target, not the historical L8 count.
+- **Bump:** patch
+- **Status:** open
