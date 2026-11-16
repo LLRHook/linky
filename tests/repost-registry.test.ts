@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MessageFlags } from 'discord.js';
+import { logCleanupFailure } from '../src/services/CleanupFailure';
 import { RepostRegistry, REPOST_RETENTION_MS, REMOVE_REPOST_CUSTOM_ID, type RepostInteraction, type RepostMessage, type RepostRecord } from '../src/services/RepostRegistry';
 
 const NOW = Date.UTC(2026, 8, 12);
@@ -13,7 +14,7 @@ const GUILD = snowflake(-10_000, 4), CHANNEL = snowflake(-10_000, 5);
 type Options = ConstructorParameters<typeof RepostRegistry>[0];
 
 async function fixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), 'linky-reposts-'));
+  const directory = await mkdtemp(join(tmpdir(), 'L2-linky-reposts-'));
   const path = join(directory, 'reposts.json');
   const messages = new Map<string, RepostMessage>(), deleted: string[] = [], fetched: string[] = [];
   const errors: Error[] = [], permissionChecks: string[] = [], managers: RepostRegistry[] = [];
@@ -555,4 +556,106 @@ test('a long failing cleanup backlog cannot starve later pending removals', asyn
   await registry.sweep();
   assert.equal((await f.saved()).records.length, 100);
   assert((await f.saved()).records.every((record: RepostRecord) => denied.has(record.replacementId)));
+});
+
+for (const failure of [{ code: 50001, status: 403 }, { code: 50013 }, { status: 403 }]) {
+  test(`permission cleanup ${JSON.stringify(failure)} is retained before 24 hours and dropped durably at 24 hours`, async t => {
+    const f = await fixture(t);
+    const options = { fetchMessage: async () => { throw { ...failure, message: 'private content', userId: AUTHOR }; } };
+    const registry = f.manager(options);
+    await registry.remember(f.record);
+    await registry.sweep();
+    assert(registry.findByReplacement(f.replacement.id));
+    assert.deepEqual({ ...f.errors[0] }, failure, 'report only numeric code and status');
+    f.advance(24 * 60 * 60_000 - 1);
+    await f.manager(options).sweep();
+    assert.equal((await f.saved()).records.length, 1);
+    const restarted = f.manager(options);
+    f.advance(1);
+    const before = f.errors.length;
+    await restarted.sweep();
+    assert.equal(restarted.findByReplacement(f.replacement.id), undefined);
+    assert.deepEqual(await f.saved(), { records: [], remove: [], refresh: [] });
+    assert.equal(f.errors.length, before + 1, 'one terminal log, no retry warning too');
+    assert.match(f.errors.at(-1)!.message, /permission.*24 hours.*removed/i);
+    await f.manager(options).sweep();
+    assert.equal(f.errors.length, before + 1, 'removed record cannot warn again');
+    assert.deepEqual(f.deleted, [], 'terminal retirement does not delete Discord messages');
+  });
+}
+
+test('successful sweeps and nonpermission errors reset the consecutive permission clock', async t => {
+  for (const interruption of [null, { status: 500 }, new Error('Timeout')]) {
+    const f = await fixture(t);
+    let failure: unknown = { code: 50001 };
+    const registry = f.manager({ fetchMessage: async (_channel, id) => {
+      if (failure) throw failure;
+      return f.messages.get(id) ?? null;
+    } });
+    await registry.remember(f.record);
+    await registry.sweep();
+    f.advance(23 * 60 * 60_000);
+    failure = interruption;
+    await registry.sweep();
+    failure = { code: 50001 };
+    await registry.sweep();
+    f.advance(2 * 60 * 60_000);
+    await registry.sweep();
+    assert(registry.findByReplacement(f.replacement.id), 'an interruption starts a new grace period');
+    f.advance(22 * 60 * 60_000);
+    await registry.sweep();
+    assert.equal(registry.findByReplacement(f.replacement.id), undefined);
+  }
+});
+
+test('pending cleanup with server errors or timeouts keeps the existing retry behavior beyond 24 hours', async t => {
+  for (const failure of [{ status: 500 }, new Error('Timeout'), { code: '50001', status: '403' }]) {
+    const f = await fixture(t), registry = f.manager();
+    await registry.remember(f.record);
+    f.failDelete(failure);
+    await registry.handleRemove(f.interaction().value);
+    for (let day = 0; day < 3; day++) {
+      f.advance(24 * 60 * 60_000);
+      await registry.sweep();
+      assert(registry.findByReplacement(f.replacement.id));
+      assert.deepEqual((await f.saved()).remove, [f.replacement.id]);
+    }
+    assert.deepEqual({ ...f.errors.at(-1) }, 'status' in failure && typeof failure.status === 'number' ? { status: 500 } : {});
+  }
+});
+
+test('pending removal permission failures retire the record and both intents after the grace period', async t => {
+  const f = await fixture(t), registry = f.manager();
+  await registry.remember(f.record);
+  f.failDelete({ code: 50013 });
+  assert.equal(await registry.retry(f.record, async () => assert.fail('Cannot regenerate')), false);
+  await registry.sweep();
+  f.advance(24 * 60 * 60_000);
+  await registry.sweep();
+  assert.deepEqual(await f.saved(), { records: [], remove: [], refresh: [] });
+  assert(f.messages.has(f.source.id));
+});
+
+test('legacy ownership journals load without permission state; malformed permission state fails closed', async t => {
+  const f = await fixture(t);
+  const legacy = { records: [f.record], remove: [], refresh: [] };
+  await writeFile(f.path, JSON.stringify(legacy));
+  assert.deepEqual(f.manager().findByReplacement(f.replacement.id), f.record);
+  for (const permissionFailures of [null, [], { [f.source.id]: NOW }, { [f.replacement.id]: -1 },
+    { [f.replacement.id]: 'yesterday' }, { [f.replacement.id]: 1.5 }]) {
+    await writeFile(f.path, JSON.stringify({ ...legacy, permissionFailures }));
+    assert.throws(() => f.manager(), /Invalid repost ownership/);
+  }
+});
+
+test('repost cleanup numeric error details reach the logger without message text or identities', async t => {
+  const f = await fixture(t), logs: { fields: unknown; message: string }[] = [];
+  const registry = f.manager({ fetchMessage: async () => { throw { code: 50001, status: 403, message: 'private detail', userId: AUTHOR }; },
+    onError: error => logCleanupFailure({ warn: (fields, message) => logs.push({ fields, message }) }, error) });
+  await registry.remember(f.record);
+  await registry.sweep();
+  assert.equal(logs.length, 1);
+  assert.deepEqual(logs[0].fields, { code: 50001, status: 403 });
+  assert(!JSON.stringify(logs).includes('private detail'));
+  assert(!JSON.stringify(logs).includes(AUTHOR));
 });

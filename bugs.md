@@ -554,3 +554,18 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** Unreadable reconcile returns current unconfirmed metadata instead of throwing; Gateway success survives rejection. Regression red 3 failures; green 167 pass; rethrow mutation fails watcher and automatic/manual outcome tests. fix.ts callers already finish unavailable / metadata-unconfirmed correctly, so no caller code change.
 - **Docs:** none (bounded REST reconciliation documentation remains accurate)
+
+### [BUG-1794864628] Repost cleanup retries permission failures without error detail or grace limit
+- [x] **Severity:** med
+- **Area:** delivery, cleanup
+- **File(s):** src/services/RepostRegistry.ts; src/bot.ts; tests/repost-registry.test.ts
+- **Observation:** 570 repost cleanup warnings in retained 4.2-day production logs, bursts of 10 roughly every 30 minutes. Errors discard numeric code and status; ordinary records retry until retention and pending work can retry indefinitely.
+- **Expected:** Log numeric Discord code and HTTP status only. Remove a record after every observed sweep failed with permission code 50001/50013 or HTTP 403 for at least 24 hours; other errors keep existing retry behavior.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Driver policy: per-record elapsed hours since first consecutive permission-failing sweep, minimum two failed sweeps spanning 24 h, zero early-drop tolerance; abstain and retain if evidence is incomplete, nonpermission, or less than 24 h. Baseline: no permission grace limit, 570 warnings/4.2 days; policy bounds retries, does not claim permission will stay denied. Prove before/at 24 h, restart persistence, reset on successful sweep or another error, 500/timeout retained, numeric-only logs and old journals load. Keep 100-record sweep bound.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Numeric-only code/status reaches sanitized logger. Optional persisted permission clock retires ordinary and pending records at 24 h of consecutive permission-failing sweeps; successful/nonpermission checks reset it. Legacy journals load; malformed maps fail closed. Red 6 failed of 39; green 41 incl logger tests; terminal-retirement mutation killed.
+- **Docs:** docs/delivery-reliability.md

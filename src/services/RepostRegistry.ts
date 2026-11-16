@@ -1,12 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { atomicWrite } from './AtomicWrite';
+import { cleanupFailure, type CleanupFailure } from './CleanupFailure';
 import { DISCORD_ID } from './LinkConfiguration';
 import { MessageFlags, type InteractionDeferReplyOptions, type InteractionEditReplyOptions, type InteractionReplyOptions } from 'discord.js';
 
 export const REMOVE_REPOST_CUSTOM_ID = 'linky:remove';
 export const REPOST_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const CAPACITY = 10_000;
+const PERMISSION_RETRY_MS = 24 * 60 * 60_000;
 const FIELDS = ['guildId', 'channelId', 'sourceId', 'replacementId', 'authorId', 'mode'];
 
 export interface RepostRecord {
@@ -64,10 +66,10 @@ interface Options {
   regenerate?: Regenerate;
   now?: () => number;
   write?: (path: string, value: string) => Promise<void>;
-  onError?: (error: Error) => void;
+  onError?: (error: CleanupFailure) => void;
 }
 
-interface Journal { records: RepostRecord[]; remove: string[]; refresh: string[] }
+interface Journal { records: RepostRecord[]; remove: string[]; refresh: string[]; permissionFailures?: Record<string, number> }
 const createdAt = (id: string) => Number(BigInt(id) >> 22n) + 1_420_070_400_000;
 const missing = (error: unknown) => {
   const failure = error as { code?: number; status?: number } | null;
@@ -121,14 +123,18 @@ export class RepostRegistry {
       throw new Error('Could not load repost ownership records.');
     }
     const data = saved as Journal;
-    if (!data || typeof data !== 'object' || Object.keys(data).sort().join(',') !== 'records,refresh,remove' ||
+    if (!data || typeof data !== 'object' || Object.keys(data).some(key => !['records', 'refresh', 'remove', 'permissionFailures'].includes(key)) ||
       !Array.isArray(data.records) || data.records.length > CAPACITY || !data.records.every(validRecord) ||
       !Array.isArray(data.remove) || !Array.isArray(data.refresh) ||
       new Set(data.records.map(r => r.replacementId)).size !== data.records.length ||
       new Set(data.records.map(r => r.sourceId)).size !== data.records.length ||
       [data.remove, data.refresh].some(ids => ids.length > CAPACITY || new Set(ids).size !== ids.length ||
         ids.some(id => !data.records.some(r => r.replacementId === id))) ||
-      data.refresh.some(id => data.records.find(r => r.replacementId === id)?.mode !== 'reply')) {
+      data.refresh.some(id => data.records.find(r => r.replacementId === id)?.mode !== 'reply') ||
+      (data.permissionFailures !== undefined && (!data.permissionFailures || typeof data.permissionFailures !== 'object' ||
+        Array.isArray(data.permissionFailures) || Object.keys(data.permissionFailures).length > CAPACITY ||
+        Object.entries(data.permissionFailures).some(([id, since]) => !data.records.some(r => r.replacementId === id) ||
+          !Number.isSafeInteger(since) || since < 0)))) {
       throw new Error('Invalid repost ownership records.');
     }
     this.journal = data;
@@ -136,7 +142,8 @@ export class RepostRegistry {
 
   private async change<T>(update: (next: Journal) => T): Promise<T> {
     const operation = this.pending.then(async () => {
-      const next: Journal = { records: this.journal.records.map(r => ({ ...r })), remove: [...this.journal.remove], refresh: [...this.journal.refresh] };
+      const next: Journal = { records: this.journal.records.map(r => ({ ...r })), remove: [...this.journal.remove], refresh: [...this.journal.refresh],
+        ...(this.journal.permissionFailures ? { permissionFailures: { ...this.journal.permissionFailures } } : {}) };
       const result = update(next);
       if (JSON.stringify(next) !== JSON.stringify(this.journal)) {
         await (this.options.write ?? atomicWrite)(this.path, JSON.stringify(next) + '\n');
@@ -155,8 +162,10 @@ export class RepostRegistry {
     finally { if (this.sources.get(sourceId) === task) this.sources.delete(sourceId); }
   }
 
-  private report(): void {
-    try { this.options.onError?.(new Error('Repost ownership or cleanup failed; pending work will be retried.')); }
+  private report(error?: unknown, terminal = false): void {
+    try { this.options.onError?.(cleanupFailure(terminal
+      ? 'Repost cleanup permission failures persisted for at least 24 hours; ownership record removed.'
+      : 'Repost ownership or cleanup failed; pending work will be retried.', error)); }
     catch { /* Reporting must not interrupt durable cleanup. */ }
   }
 
@@ -164,6 +173,13 @@ export class RepostRegistry {
     next.records = next.records.filter(r => r.replacementId !== id);
     next.remove = next.remove.filter(value => value !== id);
     next.refresh = next.refresh.filter(value => value !== id);
+    this.resetPermissionFailure(next, id);
+  }
+
+  private resetPermissionFailure(next: Journal, id: string): void {
+    if (!next.permissionFailures) return;
+    delete next.permissionFailures[id];
+    if (!Object.keys(next.permissionFailures).length) delete next.permissionFailures;
   }
 
   private prune(next: Journal): void {
@@ -211,7 +227,7 @@ export class RepostRegistry {
         next.records.push(copy);
         return true;
       });
-    } catch { this.report(); return false; }
+    } catch (error) { this.report(error); return false; }
   }
 
   forget(replacementId: string): Promise<void> {
@@ -273,7 +289,7 @@ export class RepostRegistry {
     });
   }
 
-  private async process(sourceId: string, regenerate = this.options.regenerate): Promise<boolean> {
+  private async process(sourceId: string, regenerate = this.options.regenerate, report: (error?: unknown) => void = error => this.report(error)): Promise<boolean> {
     const record = this.findBySource(sourceId);
     if (!record) return true;
     const id = record.replacementId;
@@ -281,28 +297,28 @@ export class RepostRegistry {
       let message: RepostMessage | null;
       try {
         message = await this.options.fetchMessage(record.channelId, id);
-      } catch (error) { if (missing(error)) message = null; else { this.report(); return false; } }
-      if (message && !this.owned(message, record)) { this.report(); return false; }
+      } catch (error) { if (missing(error)) message = null; else { report(error); return false; } }
+      if (message && !this.owned(message, record)) { report(); return false; }
       try { await this.options.removeRelated?.({ ...record }); }
-      catch { this.report(); return false; }
+      catch (error) { report(error); return false; }
       try { if (message) await message.delete(); }
-      catch (error) { if (!missing(error)) { this.report(); return false; } }
+      catch (error) { if (!missing(error)) { report(error); return false; } }
       try { await this.options.afterReplacementRemoved?.({ ...record }); }
-      catch { this.report(); return false; }
+      catch (error) { report(error); return false; }
       await this.change(next => {
         next.remove = next.remove.filter(value => value !== id);
         if (!next.refresh.includes(id)) this.drop(next, id);
       });
     }
     if (this.journal.refresh.includes(id)) {
-      if (!regenerate) { this.report(); return false; }
+      if (!regenerate) { report(); return false; }
       try {
         const source = await this.options.fetchMessage(record.channelId, record.sourceId);
         if (source && sameSource(record, source) && source.author.id === record.authorId && typeof source.content === 'string') {
           if (await regenerate(source) === 'retry') return false;
         }
-        else if (source) { this.report(); return false; }
-      } catch (error) { if (!missing(error)) { this.report(); return false; } }
+        else if (source) { report(); return false; }
+      } catch (error) { if (!missing(error)) { report(error); return false; } }
       await this.change(next => {
         const current = next.records.find(entry => entry.sourceId === sourceId);
         if (current && current.replacementId !== id && next.refresh.includes(current.replacementId)) {
@@ -328,7 +344,7 @@ export class RepostRegistry {
       });
       await this.reply(interaction, removed ? 'Removed Linky’s repost.' :
         'Could not remove the repost yet. Linky will retry.');
-    } catch { this.report(); await this.reply(interaction, 'Could not save this removal. Try again.'); }
+    } catch (error) { this.report(error); await this.reply(interaction, 'Could not save this removal. Try again.'); }
     return true;
   }
 
@@ -345,7 +361,7 @@ export class RepostRegistry {
         if (!source || !sameSource(current, source) || source.author.id !== current.authorId || typeof source.content !== 'string') return false;
         await this.schedule(current, true);
         return await this.process(current.sourceId, regenerate);
-      } catch { this.report(); return false; }
+      } catch (error) { this.report(error); return false; }
     });
   }
 
@@ -398,6 +414,7 @@ export class RepostRegistry {
       for (const record of selected) await this.forSource(record.sourceId, async () => {
         const current = this.findByReplacement(record.replacementId);
         if (!current) return;
+        let failure: { error: unknown } | undefined;
         try {
           if (!this.journal.remove.includes(current.replacementId) && !this.journal.refresh.includes(current.replacementId)) {
             let source: RepostMessage | null;
@@ -407,8 +424,23 @@ export class RepostRegistry {
             else if (sameSource(current, source) && source.author.id === current.authorId &&
               (source.editedTimestamp ?? 0) > createdAt(current.replacementId)) await this.schedule(current, true);
           }
-          await this.process(current.sourceId);
-        } catch { this.report(); }
+          await this.process(current.sourceId, this.options.regenerate, error => { failure = { error }; });
+        } catch (error) { failure = { error }; }
+        // Only consecutive permission-failing sweeps count. Other errors and successful checks reset the clock.
+        const detail = cleanupFailure('', failure?.error);
+        const permission = failure && ([50001, 50013].includes(detail.code ?? 0) || detail.status === 403);
+        const terminal = (permission || this.journal.permissionFailures?.[current.replacementId] !== undefined) && await this.change(next => {
+          if (!next.records.some(r => r.replacementId === current.replacementId)) return false;
+          if (!permission) { this.resetPermissionFailure(next, current.replacementId); return false; }
+          const since = next.permissionFailures?.[current.replacementId];
+          if (since !== undefined && this.now() - since >= PERMISSION_RETRY_MS) {
+            this.drop(next, current.replacementId);
+            return true;
+          }
+          (next.permissionFailures ??= {})[current.replacementId] = since ?? this.now();
+          return false;
+        }).catch(error => { this.report(error); return false; });
+        if (failure) this.report(failure.error, terminal);
       });
     })();
     this.sweepPending = operation.finally(() => { this.sweepPending = undefined; });
@@ -417,8 +449,8 @@ export class RepostRegistry {
 
   start(): void {
     if (this.timer) return;
-    void this.sweep().catch(() => this.report());
-    this.timer = setInterval(() => { void this.sweep().catch(() => this.report()); }, 5 * 60_000);
+    void this.sweep().catch(error => this.report(error));
+    this.timer = setInterval(() => { void this.sweep().catch(error => this.report(error)); }, 5 * 60_000);
     this.timer.unref();
   }
 

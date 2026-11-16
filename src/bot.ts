@@ -24,6 +24,7 @@ import { createYouTubeCommunityLookup } from './services/YouTubeCommunity';
 import { createArticleLookup } from './services/ArticlePreview';
 import { YouTubeStats } from './services/YouTubeStats';
 import { RepostRegistry } from './services/RepostRegistry';
+import { logCleanupFailure } from './services/CleanupFailure';
 import { PreviewHealth } from './services/PreviewRecovery';
 import { replyToYouTubeControl } from './services/YouTubeInteractions';
 import { evaluateScope } from './services/ServerScope';
@@ -330,7 +331,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
           const send = channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
           return Boolean(channel.permissionsFor(member)?.has([PermissionFlagsBits.ViewChannel, send]));
         },
-        onError: () => log.warn('Repost ownership cleanup will be retried'),
+        onError: error => logCleanupFailure(log, error),
       });
       registry.start();
       await checkpoint.start();
