@@ -596,3 +596,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Ticket only per driver. Future test: thrown TypeError logs name TypeError, without error text or Discord identity.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1794864952] YouTube preview-display no-op is recorded as cancelled
+- [ ] **Severity:** low
+- **Area:** diagnostics, youtube
+- **File(s):** src/services/SocialLinkService.ts:293; src/services/DeliveryAttempt.ts:52
+- **Observation:** 19 of 26 cancelled attempts in the seven-day investigation were intended YouTube preview-display no-ops; closing the unfinished attempt records cancelled.
+- **Expected:** Do not count the intentional no-op as a delivery attempt, or give it a distinct outcome.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Ticket only per driver. Future test: youtubeDisplay=preview leaves native message unchanged and does not emit cancelled. The observation is an attempt count within the sampled seven days, not a production improvement claim.
+- **Bump:** patch
+- **Status:** open
