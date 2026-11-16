@@ -115,6 +115,20 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
             linky:ci-unlabelled node -e 'require("./dist/services/SocialLinkService")'
 
+      - name: Verify Compose passes the source revision to the build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Production builds through Compose; the deploy tests mock it, so check the real interpolation here.
+          touch .env
+          trap 'rm -f .env' EXIT
+          actual=$(LINKY_SOURCE_REVISION=compose-probe docker compose config --format json |
+            jq -er '.services.linky.build.args.LINKY_SOURCE_REVISION')
+          test "$actual" = compose-probe
+          absent=$(env -u LINKY_SOURCE_REVISION docker compose config --format json |
+            jq -r '.services.linky.build.args.LINKY_SOURCE_REVISION')
+          test -z "$absent"
+
       - name: Scan production image for fixable vulnerabilities
         shell: bash
         run: |
