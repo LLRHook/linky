@@ -604,8 +604,10 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Bump:** patch
 - **Assignee:** Victor Ivanov
 - **Status:** fixed-pending-migration
-- **Fix:** Existing replacement-failure log adds errorName only from a complete name matching ASCII letter then zero to 63 ASCII letters/digits. Invalid, nonstring, oversized and newline-tainted names are omitted. No message, stack, cause or additional error properties are logged; numeric Discord fields and existing context are retained. Tests include TypeError privacy and allowed/invalid boundaries.
+- **Fix:** Round 1 F4: read err.name exactly once into a local value, then validate and log only that snapshot. Complete ASCII alphanumeric class names beginning with a letter and at most 64 characters are allowed; invalid or nonstring names are omitted. Changing-getter regression prevents a later read from substituting arbitrary content. Existing message/stack/cause and boundary privacy tests remain passing.
 - **Docs:** docs/operator-reliability.md
+- **Log:**
+  - 2026-11-16 Review: Driver round 1 F4: alternating getter test failed before fix and passes with one name read. Mutation restoring repeated property reads fails the named test.
 
 ### [BUG-1794864952] YouTube preview-display no-op is recorded as cancelled
 - [x] **Severity:** low

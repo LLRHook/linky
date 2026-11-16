@@ -1625,6 +1625,22 @@ test('replacement failure logs only a bounded alphanumeric error name and numeri
   }
 });
 
+test('replacement error name is read once before validation and logging despite a changing getter', async () => {
+  const f = delivery(), logs: { fields: unknown; text: string }[] = [];
+  let reads = 0;
+  const error = Object.defineProperty(new Error('SYNTHETIC_PRIVATE_MESSAGE'), 'name', {
+    get: () => ++reads < 4 ? 'TypeError' : 'https://example.invalid/PRIVATE?user=1',
+  });
+  f.state.duringPreview = async () => { throw error; };
+  const capture = (fields: unknown, text?: string) => { logs.push({ fields, text: text ?? '' }); };
+  await f.create({}, { info: capture, warn: capture, error: capture })(f.source);
+  const entry = logs.find(row => row.text === 'link replacement failed; no further deletion will be attempted');
+  assert(entry);
+  assert.equal((entry.fields as { errorName?: unknown }).errorName, 'TypeError');
+  assert.equal(reads, 1);
+  assert.doesNotMatch(JSON.stringify(entry), /PRIVATE|example\.invalid|SYNTHETIC_PRIVATE_MESSAGE/);
+});
+
 test('automatic fallback waits through the stale primary card after a clone edit and confirms provider two at 3 s', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = delivery(), outcomes: DeliveryOutcome[] = [];
