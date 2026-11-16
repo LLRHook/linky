@@ -1,6 +1,9 @@
 services:
   linky:
-    build: .
+    build:
+      context: .
+      args:
+        LINKY_SOURCE_REVISION: ${LINKY_SOURCE_REVISION:-}
     image: linky:latest
     container_name: linky
     restart: unless-stopped

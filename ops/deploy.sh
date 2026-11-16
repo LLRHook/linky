@@ -31,6 +31,17 @@ wait_for_bot() {
   return 1
 }
 
+verify_image_revision() {
+  local expected=$1 image actual
+  image=$(docker inspect --format '{{.Image}}' linky) || return 1
+  actual=$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}') || return 1
+  printf 'Running image revision: %s\n' "$actual"
+  [[ "$actual" == "$expected" ]] || {
+    printf 'Running image revision does not match deployed commit %s.\n' "$expected" >&2
+    return 1
+  }
+}
+
 rollback() {
   local previous_image=$1 previous_compose=$2
   printf 'Startup failed; restoring the previous image and configuration.\n' >&2
@@ -98,11 +109,11 @@ main() {
     return 1
   }
 
-  if ! compose build linky; then
+  if ! LINKY_SOURCE_REVISION="$revision" compose build linky; then
     printf 'Build failed; the existing bot is still running.\n' >&2
     return 1
   fi
-  if ! compose up -d --no-build linky || ! wait_for_bot; then
+  if ! compose up -d --no-build linky || ! wait_for_bot || ! verify_image_revision "$revision"; then
     rollback "$previous_image" "$previous_compose"
     return 1
   fi

@@ -105,7 +105,14 @@ runner prints. A changed count means tests appeared or vanished — investigate 
 - [ ] 2.4 **2b — Coverage of the change.** No coverage tool is wired (`c8`/`nyc` absent). Fall back to the 2a mapping and, for each changed `src/` file since the last Verified SHA, name the test file that exercises it (`git diff --stat <sha>..HEAD -- src`). Uncovered changed files block.
 - [ ] 2.5 Production container (CI job "Production container"), run from the repo root with Docker available:
   ```bash
-  docker build --tag linky:ci .
+  LINKY_SOURCE_REVISION=$(git rev-parse HEAD)
+  docker build --build-arg LINKY_SOURCE_REVISION="$LINKY_SOURCE_REVISION" --tag linky:ci .
+  actual=$(docker image inspect linky:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+  test "$actual" = "$LINKY_SOURCE_REVISION"
+  docker build --tag linky:ci-unlabelled .
+  actual=$(docker image inspect linky:ci-unlabelled --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+  test -z "$actual"
+  docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges linky:ci-unlabelled node -e 'require("./dist/services/SocialLinkService")'
   ```
   ```bash
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --volume /app/data linky:ci node -e 'const assert = require("node:assert/strict"); const fs = require("node:fs"); assert.notEqual(process.getuid(), 0); require("./dist/services/SocialLinkService"); const file = "/app/data/ci-check"; fs.writeFileSync(file, "writable"); assert.equal(fs.readFileSync(file, "utf8"), "writable"); fs.unlinkSync(file);'
@@ -116,7 +123,7 @@ runner prints. A changed count means tests appeared or vanished — investigate 
   ```bash
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 --env LINKY_VIDEO_RUNTIME_TEST=true --mount type=bind,src="$PWD/tests/video-runtime.test.mjs",dst=/tmp/video-runtime.test.mjs,readonly linky:ci node --test /tmp/video-runtime.test.mjs
   ```
-  Expected: build exits 0; the module check exits 0; the archive run prints `ℹ tests 1` / `ℹ fail 0`; the video run prints `ℹ tests 7` / `ℹ fail 0`. On Git Bash set `MSYS_NO_PATHCONV=1` and use `$(pwd -W)` for `src=`. Run the pinned local Trivy recipe in Appendix F; both scans must exit 0. CI results do not establish a local pass.
+  Expected: both builds and label assertions exit 0; the image without a revision loads its production module; the module check exits 0; the archive run prints `ℹ tests 1` / `ℹ fail 0`; the video run prints `ℹ tests 7` / `ℹ fail 0`. On Git Bash set `MSYS_NO_PATHCONV=1` and use `$(pwd -W)` for `src=`. Run the pinned local Trivy recipe in Appendix F; both scans must exit 0. CI results do not establish a local pass.
 - [ ] 2.6 **2c — Flake check.** Run `npm test` a second time and diff the sorted `✔`/`✖`/`﹣` lines of both runs; any difference quarantines that test as a `BUG` (area `tests`) and the run is not green.
 - [ ] 2.7 Local matrix: repeat the exact Stage 1–2 commands in clean `node:22`, `node:24` and `node:26` checkouts when dependencies or the toolchain changed since the prior baseline. Record versions, executed/skipped counts and exits in `.vv/last-run.md`; CI results do not establish a pass.
 
@@ -169,7 +176,7 @@ Re-tick the non-negotiable contracts stated in the README and `docs/`:
 - [ ] 5.6 Translation stays within the durable 15,000 characters/day budget (`tests/translation-budget.test.ts`).
 - [ ] 5.7 Erome is disabled on the hosted bot and requires an age-restricted channel by default on self-hosted instances (`tests/erome-album-policy.test.ts`).
 - [ ] 5.8 Runtime hardening: image runs as `node`, read-only root, `cap_drop: [ALL]`, `no-new-privileges`, no npm/yarn in the runtime (Stage 2.5 module check asserts non-root; `Dockerfile` and `docker-compose.yml` retain the flags).
-- [ ] 5.9 Deploy only ships the exact tested `main` SHA, refuses dirty trees and superseded commits, and rolls back on failed startup (`bash tests/deploy.test.sh`).
+- [ ] 5.9 Deploy only ships the exact tested `main` SHA, refuses dirty trees and superseded commits, and rolls back on failed startup or a missing, unreadable or mismatched running-image revision (`bash tests/deploy.test.sh`). Read the latest image label with `docker image inspect linky:latest --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'`; inspect the container's image ID for running-code evidence (see `docs/self-hosting.md`, including the first rollout's empty-label limitation).
 
 ## Stage 6 — Reporting
 
