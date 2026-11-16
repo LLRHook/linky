@@ -281,6 +281,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** The shared provider builder requests `?legacy` before fragments for automatic, manual and resolved-share previews. Regression fixtures cover canonical image/video confirmation, Replace/Reply modes, missing/unrelated metadata, original-post controls and source preservation. Node 26 validation passes (1,273 TypeScript tests, 74 script tests, 24 deployment safeguards; eight expected container-only skips). Local and Hostinger probes confirm HTTP 200, matching image metadata and no component payload for the reported legacy URL; a live Discord render was not exercised.
 - **Docs:** docs/provider-checks.md records the format requirement and observation limits.
+- **Log:**
+  - 2026-11-16 Evidence: Seven days to 2026-11-16: Reddit metadata-unconfirmed 10 of 25 delivery attempts after the fix was deployed (L1 platform-span evidence); one driver vxReddit video trial unfurled at 8.2 s (evidence/driver/unfurl-timing-others.out). Counts describe this sample; deployment improvement requires a subsequent adequate sample.
 
 ### [BUG-1792164560] PR template assertion fails on Windows CRLF checkouts
 - [x] **Severity:** low
@@ -418,6 +420,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Owned source 1559304608327929888 and notice 1559304628900991091. The native Twitch source card rendered, but that does not establish Linky provider delivery. Host-network control and Retry are being checked.
 - **Bump:** patch
 - **Status:** open
+- **Log:**
+  - 2026-11-16 Evidence: 2026-11-16 driver live fixture: fxtwitch returned a components embed with no video at 2.5 s (one Twitch clip; evidence/driver/unfurl-timing-others.out). This is a selected render observation, not a provider success-rate estimate.
 
 ### [BUG-1793043364] MyAnimeList catalogue previews are rejected as unverifiable articles
 - [x] **Severity:** med
