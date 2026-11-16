@@ -620,3 +620,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Ticket only per driver. Preserve current strict matcher and ProviderHealth credit safeguards. Future regression: delayed primary embed during fallback is not credited to fallback; no URLs, message text or user data added to persisted diagnostics.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1794864955] Production image lacks a source commit label
+- [ ] **Severity:** low
+- **Area:** deployment, provenance
+- **File(s):** Dockerfile; .github/workflows/deploy.yml
+- **Observation:** L1 could infer deployed source revision from image creation time and an empty source diff, but docker image metadata carries no commit label proving the revision.
+- **Expected:** Label built image with its source commit and prove deployed revision from image metadata.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Ticket only per driver. Future test: build receives actual commit SHA and OCI revision label equals it; never infer a proven revision from timestamps alone.
+- **Bump:** patch
+- **Status:** open
