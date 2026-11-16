@@ -526,8 +526,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Bump:** patch
 - **Assignee:** Victor Ivanov
 - **Status:** fixed-pending-migration
-- **Fix:** 10 s X/Reddit Gateway window with 10 s caller clamp; immediate success, 8/4 s defaults and unconfirmed source retention covered. Red: 4 failing new timing tests; green: 92 passing watcher/delivery cases; wait and clamp mutations killed.
-- **Docs:** README.md; docs/delivery-reliability.md; docs/product-roadmap.md
+- **Fix:** 10 s X/Reddit Gateway window and caller clamp; immediate success, 8/4 s defaults and unconfirmed source retention covered. Round 1 F2: watch lifetime is 36 s from arm, equal to prior 30 s plus the 6 s added to the maximum default wait. Missed Gateway snapshots reconcile after 21 s and 25,999 ms sends; an abandoned watch expires at 36 s and releases its slot. Red 3 failures; restored 20/20 pass; reverting lifetime to 30 s causes 3 failures.
+- **Docs:** README.md; docs/delivery-reliability.md (including 36 s lifetime and slow-send boundary); docs/product-roadmap.md
 
 ### [BUG-1794864398] Delivery reliability window documentation omits Facebook
 - [x] **Severity:** low

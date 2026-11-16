@@ -235,3 +235,39 @@ test('caller-supplied Gateway waits cannot exceed ten seconds', async t => {
   assert.equal((await pending).ok, false);
   assert.equal(fetches, 1);
 });
+
+for (const sendMs of [21_000, 25_999]) {
+  test(`a ${sendMs} ms send still reconciles a missed X Gateway preview`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { watcher } = fixture(t, { gatewayWaitMs: undefined });
+    const url = 'https://fixupx.com/public/status/123';
+    const items = expectedPreviews('https://x.com/public/status/123', url);
+    const watch = watcher.arm(channel, items);
+    t.mock.timers.tick(sendMs);
+    let fetches = 0;
+    const pending = watch.verify(message([], async () => {
+      fetches++;
+      return message([{ url, video: { url: 'https://cdn.example/video.mp4' } }]);
+    }));
+    for (let i = 0; i < 10; i++) { t.mock.timers.tick(1_000); await Promise.resolve(); }
+    assert.equal((await pending).ok, true);
+    assert.equal(fetches, 1);
+  });
+}
+
+test('a never-published watch expires at 36 seconds and releases its capacity slot', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { client, watcher } = fixture(t, { gatewayWaitMs: undefined, maxActive: 1 });
+  const abandoned = watcher.arm(channel, expected);
+  t.mock.timers.tick(35_999);
+  let fetches = 0;
+  const beforeExpiry = watcher.arm(channel, expected).verify(message([], async () => { fetches++; return message(); }));
+  await Promise.resolve();
+  assert.equal(fetches, 1, 'slot is occupied before its lifetime ends');
+  assert.equal((await beforeExpiry).ok, false);
+  t.mock.timers.tick(1);
+  assert.equal((await abandoned.verify(message([embed]))).ok, false, 'expired watch cannot confirm');
+  const pending = watcher.arm(channel, expected).verify(message([], async () => { assert.fail('Released slot should receive Gateway metadata'); }));
+  raw(client, [embed]);
+  assert.equal((await pending).ok, true);
+});

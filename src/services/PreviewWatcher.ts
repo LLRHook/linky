@@ -61,8 +61,9 @@ export class PreviewWatcher {
     const subscribed = !stopped && this.watches.size < Math.max(1, Math.min(128, this.options.maxActive ?? 128));
     if (subscribed) { this.watches.add(receive); this.disposers.add(close); }
     signal?.addEventListener('abort', close, { once: true });
-    // A failed send whose caller forgets cleanup cannot retain a subscription forever.
-    if (!stopped) { lifetime = setTimeout(close, 30_000); lifetime.unref(); }
+    // Preserve the former send/reconcile boundary: 30 s lifetime + (10 s maximum wait - former 4 s wait).
+    // A failed send whose caller forgets cleanup still cannot retain a subscription forever.
+    if (!stopped) { lifetime = setTimeout(close, 36_000); lifetime.unref(); }
     return { close, verify: async message => {
       if (verified) return latest;
       verified = true;
