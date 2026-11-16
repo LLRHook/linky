@@ -110,7 +110,15 @@ bash tests/deploy.test.sh
 
 CI tests Node.js 22, 24 and 26, deployment safeguards, and the production container, with the dependency audit and secret scan as separate jobs; the `CI gate` check passes only when every job passes. See [contribution guide](../CONTRIBUTING.md) for live preview checks.
 
-The hosted bot deploys after CI passes for a push to `main`. Deployment accepts only the current tested commit, builds before replacing the bot, checks its Discord connection, and prints how long the bot was offline. Failed startup restores the previous image and deployed Compose configuration. The server's `.env` and data volume are preserved.
+The hosted bot deploys after CI passes for a push to `main`. Deployment accepts only the current tested commit, builds before replacing the bot, checks its Discord connection, and prints how long the bot was offline. It supplies the verified full commit as the `LINKY_SOURCE_REVISION` build argument and compares the running container's image label with that commit. Failed startup, a missing/unreadable label or a revision mismatch restores the previous image and deployed Compose configuration without advancing the successful-deployment marker. The server's `.env` and data volume are preserved. Successful output still ends with `LINKY_DEPLOYED_SHA=<sha>`.
+
+Read the latest image's source revision with:
+
+```bash
+docker image inspect linky:latest --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+```
+
+To identify the running container rather than the mutable `latest` tag, first run `docker inspect linky --format '{{.Image}}'`, then use that image ID in the same `docker image inspect` command. The OCI label `org.opencontainers.image.revision` records the supplied build revision; it is not a signature. Manual builds can set `LINKY_SOURCE_REVISION=$(git rev-parse HEAD) docker compose build linky`. Without the argument the label is empty and the image still builds and starts. During the first rollout of this change the already-parsed older deploy script builds the new files without a revision; the following deployment uses the new script and enforces the label. Rollback starts the previous image and Compose configuration without applying the new revision check to the restored image.
 
 Operators use `/root/linky`, configure `LINKY_DEPLOY_HOST`, `LINKY_SSH_KEY` and `LINKY_SSH_KNOWN_HOSTS`, and install `ops/ssh-deploy.sh` as `/usr/local/sbin/linky-deploy` with a restricted SSH key and pinned host key. After the first successful manual deployment, run `git rev-parse HEAD > .git/linky-deployed-revision` to initialize the rollback marker. Connection establishment retries automatically; for a failed deployment, inspect its logs and rerun the failed Deploy job. Disable Deploy in GitHub Actions to pause updates.
 

@@ -629,16 +629,19 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** open
 
 ### [BUG-1794864955] Production image lacks a source commit label
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** deployment, provenance
-- **File(s):** Dockerfile; .github/workflows/deploy.yml
+- **File(s):** Dockerfile; docker-compose.yml; ops/deploy.sh; tests/deploy.test.sh; .github/workflows/ci.yml
 - **Observation:** L1 could infer deployed source revision from image creation time and an empty source diff, but docker image metadata carries no commit label proving the revision.
 - **Expected:** Label built image with its source commit and prove deployed revision from image metadata.
 - **Req:** unknown
 - **Depends on:** none (driver-approved independent fix)
-- **Repro / Notes:** Ticket only per driver. Future test: build receives actual commit SHA and OCI revision label equals it; never infer a proven revision from timestamps alone.
+- **Repro / Notes:** Acceptance: supplied full SHA appears in image metadata; absent argument still builds and starts; old parsed script/new files and old image/old Compose remain compatible. tests/deploy.test.sh covers verified build input, running-image inspection, mismatch/empty/inspect-error rollback, unchanged success marker, stale HEAD and retries. Local Docker checks and two mutation checks captured by L5; production and Discord checks remain with the driver.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Pass the verified full revision from deploy.sh through Compose to an OCI image revision label after cached build layers. Read the running container image label after readiness and roll back on missing, unreadable or mismatched labels before updating the deployment marker. CI tests supplied and absent arguments; deployment regressions and local Docker probes cover compatibility and rollback.
+- **Docs:** README.md; VERIFICATION.md; docs/self-hosting.md; docs/operator-reliability.md
 
 ### [BUG-1794864956] Recognized provider error cards should end preview waits early
 - [ ] **Severity:** low
