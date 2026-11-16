@@ -1585,6 +1585,23 @@ test('YouTube preview no-op discards diagnostics and archive while a source-edit
   assert.equal(cancelled.state.originalDeleted, false);
 });
 
+for (const result of ['throws', 'empty'] as const) {
+  test(`attempted YouTube lookup failures retain the previous cancelled outcome instead of being discarded (${result})`, async () => {
+    const f = delivery(`https://youtu.be/${YOUTUBE_ID}`), outcomes: DeliveryOutcome[] = [];
+    f.state.preferences = { mode: 'replace', youtubeDisplay: 'counts' };
+    let calls = 0;
+    await f.create({ diagnostics: diagnosticsStub({ outcomes }), lookupYouTube: async () => {
+      calls++;
+      if (result === 'throws') throw new Error('Synthetic lookup failure');
+      return new Map();
+    }, publishYouTube: async () => { assert.fail('Failed lookup must not publish'); } })(f.source);
+    assert.equal(calls, 1);
+    assert.deepEqual(f.events, []);
+    assert.equal(f.state.originalDeleted, false);
+    assert.deepEqual(outcomes, ['cancelled'], result);
+  });
+}
+
 test('replacement failure logs only a bounded alphanumeric error name and numeric Discord fields', async () => {
   const accepted = new Set(['TypeError', 'Error42', 'A'.repeat(64)]);
   for (const name of ['TypeError', 'Error42', 'A'.repeat(64), 'Bad Name', 'TypeError\nprivate', 'TypeError\n', 'TypeError\r',

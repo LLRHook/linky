@@ -619,8 +619,10 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Bump:** patch
 - **Assignee:** Victor Ivanov
 - **Status:** fixed-pending-migration
-- **Fix:** Discard the opened unfinished trace when preparation produces no change, with an in-memory diagnostics removal API and no new outcome or persisted field. The unchanged YouTube preview-only source produces no diagnostic or archive attempt; real source-edit cancellation still records cancelled. Regression reads the real written diagnostics JSON and captures the archive sink.
+- **Fix:** Round 1 F2: discard an unchanged-message trace only when no YouTube lookup was attempted (including preview display). An attempted lookup that throws or returns no statistics keeps the previous cancelled outcome; source-edit cancellation also remains recorded. M6 regression persists the trace, discards it without an explicit flush, then restarts the real loader and proves it cannot return as interrupted. Removing changed() from discard fails that test. No new persisted fields or outcome values.
 - **Docs:** docs/delivery-reliability.md; docs/operator-reliability.md
+- **Log:**
+  - 2026-11-16 Review: Driver round 1 F2/F3: throwing and empty YouTube lookups each have a failing-before regression and stay cancelled; intended preview-only no-op still leaves no attempt. Automatic discard persistence/restart test kills M6. M5/M7 duplicate guards retained per driver.
 
 ### [BUG-1794864954] Preview failure logs omit provider history and matched-provider attribution
 - [x] **Severity:** low

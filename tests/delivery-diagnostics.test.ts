@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -28,6 +29,26 @@ async function fixture(t: { after: (fn: () => Promise<unknown>) => void }) {
   });
   return path;
 }
+
+test('discard automatically removes a persisted trace before restart without an explicit flush', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'L6-discard-restart-'));
+  const path = join(directory, 'delivery.json');
+  // Synchronous injected writes make the scheduled-write boundary deterministic, while load uses the real file.
+  const write = async (target: string, content: string) => { writeFileSync(target, content); };
+  const diagnostics = new DeliveryDiagnostics({ path, write });
+  let restarted: DeliveryDiagnostics | undefined;
+  t.after(async () => { await diagnostics.close(); await restarted?.close(); await rm(directory, { recursive: true, force: true }); });
+  await diagnostics.ready;
+  const trace = diagnostics.begin(request);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).attempts[0].id, trace.id, 'opened trace was already persisted');
+  diagnostics.discard(trace.id);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  restarted = new DeliveryDiagnostics({ path, write });
+  await restarted.ready;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).attempts, [], 'discarded no-op must not return as interrupted');
+});
 
 test('delivery spans are monotonic, overlap safely, finish once, and retain no input text', async t => {
   const path = await fixture(t);

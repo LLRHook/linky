@@ -285,13 +285,14 @@ export function createLinkRepostHandler(
       }
       let youtube = new Map<string, YouTubeStatistics>();
       const youtubeDisplay = preferences.youtubeDisplay ?? 'counts-and-comment';
-      if (youtubeLinks.length && youtubeDisplay !== 'preview') {
+      const youtubeLookupAttempted = youtubeLinks.length > 0 && youtubeDisplay !== 'preview';
+      if (youtubeLookupAttempted) {
         try { youtube = await lookupYouTube!(youtubeLinks.map(link => link.id), youtubeDisplay); }
         catch { log.warn(context, 'YouTube lookup unavailable; keeping native links'); }
       }
       // Preview-only keeps Discord's already-native YouTube message untouched.
       if (rewritten === inputContent && !youtube.size && !community.length && !articles.length && !erome && !originalMedia) {
-        delivery.discard();
+        if (!youtubeLookupAttempted) delivery.discard();
         return;
       }
       const replyContext = await findReplyContext(message, findRepost);

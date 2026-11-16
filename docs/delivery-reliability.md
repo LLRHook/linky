@@ -48,7 +48,7 @@ Album controls use at most 512 in-memory sessions, expiring after 24 hours or a 
 
 ## Local retention and operations
 
-An intentional no-op after preparation (including `youtubeDisplay=preview` with an unchanged native message) is discarded from Details diagnostics and the archive, without adding an outcome value. A real source-edit cancellation remains `cancelled`. Persisted file schemas are unchanged.
+An intended no-op after preparation, when no YouTube lookup was attempted (including `youtubeDisplay=preview` with an unchanged native message), is discarded from Details diagnostics and the archive without adding an outcome value. An attempted YouTube lookup that fails or returns no statistics keeps its previous `cancelled` outcome. A real source-edit cancellation remains `cancelled`. Persisted file schemas are unchanged.
 
 The seven-day history below powers Discord Details. A separate private operator archive retains sanitized finalized measurements for 30 days by default within a 64 MiB cap, without Discord identities, URLs or message content. Run `npm run report:deliveries -- --days 7` after building, or the container command in [operator reliability](operator-reliability.md), for trend analysis; use `--days 1` for the daily review. It reports coverage and data-loss limitations. Public hosted Linky excludes Erome; the Erome paths in this document apply to self-hosted instances and the dated historical validation below.
 
