@@ -632,3 +632,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Ticket only per driver. Future test: build receives actual commit SHA and OCI revision label equals it; never infer a proven revision from timestamps alone.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1794864956] Recognized provider error cards should end preview waits early
+- [ ] **Severity:** low
+- **Area:** delivery, previews
+- **File(s):** src/services/PreviewWatcher.ts; tests/preview-watcher.test.ts
+- **Observation:** Longer X waits also delay truly unavailable posts. Existing matcher rejects provider error cards; watcher currently wakes only for useful previews.
+- **Expected:** Consider an early unconfirmed result only for a recognized provider error card tied to the expected post, preserving rejection of empty or unrelated embeds.
+- **Req:** unknown
+- **Depends on:** none (driver-approved independent fix)
+- **Repro / Notes:** Deferred optional work per driver: no implementation here. Before coding derive an explicit terminal-card classification from a real captured sanitized fixture, including pre-send events, multiple expected posts, races with useful metadata and source preservation. Do not modify BUG-1791838422 or weaken useful-preview matching. Baseline truly unembeddable X path about 24 s after window change; minimum one captured card plus positive/negative fixture controls; noise floor zero false confirmations; abstain on unrecognized cards and keep bounded wait.
+- **Bump:** patch
+- **Status:** open
