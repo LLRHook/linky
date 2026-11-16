@@ -571,10 +571,11 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Bump:** patch
 - **Assignee:** Victor Ivanov
 - **Status:** fixed-pending-migration
-- **Fix:** Numeric-only code/status reaches sanitized logger. Optional persisted permission clock retires ordinary and pending records at 24 h of consecutive permission-failing sweeps; successful/nonpermission checks reset it. Legacy journals load; malformed maps fail closed. Red 6 failed of 39; green 41 incl logger tests; terminal-retirement mutation killed.
-- **Docs:** docs/delivery-reliability.md; docs/self-hosting.md
+- **Fix:** Numeric-only cleanup errors; retire consecutive permission failures at 24 hours. Round 1 F1: permission clocks now persist atomically in sibling reposts-permission.json; ownership journal stays exactly records/refresh/remove and loads with actual base 4d5653c reader. Missing/unreadable/malformed observations default empty, orphan entries discarded, failed sibling or journal writes retain ownership and cannot claim retirement. Regression red 3 failures; restored 44/44 pass; wrong-target sibling mutation caught.
+- **Docs:** docs/delivery-reliability.md; docs/self-hosting.md; docs/operator-reliability.md; VERIFICATION.md state-file inventory. README.md and ignore files checked: no explicit state-file allowlist requires a change; data/ already ignored and excluded from image inputs.
 - **Log:**
   - 2026-11-16 Validation: Batch seam regression: repost retirement leaves failed YouTube cleanup on its separate seven-day expiry lifecycle, preserving the source. Self-hosting state/rollback wording updated.
+  - 2026-11-16 Decision: Driver Round 1 F1 requires rollback-safe sibling observations. Main journal schema unchanged from 4d5653c; base-loader probe passes after a permission-failing sweep. Observation corruption cannot block startup.
 
 ### [BUG-1794864802] YouTube statistics cleanup retains expired failures indefinitely
 - [x] **Severity:** med

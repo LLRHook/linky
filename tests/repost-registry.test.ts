@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MessageFlags } from 'discord.js';
@@ -637,15 +637,73 @@ test('pending removal permission failures retire the record and both intents aft
   assert(f.messages.has(f.source.id));
 });
 
-test('legacy ownership journals load without permission state; malformed permission state fails closed', async t => {
+test('permission sweeps preserve the legacy three-key journal and persist clocks in a sibling file', async t => {
+  const f = await fixture(t);
+  const options = { fetchMessage: async () => { throw { code: 50001 }; } };
+  const registry = f.manager(options);
+  await registry.remember(f.record);
+  await registry.sweep();
+  assert.deepEqual(Object.keys(await f.saved()).sort(), ['records', 'refresh', 'remove']);
+  const path = join(dirname(f.path), 'reposts-permission.json');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { [f.replacement.id]: NOW });
+  f.advance(24 * 60 * 60_000);
+  await f.manager(options).sweep();
+  assert.deepEqual(await f.saved(), { records: [], remove: [], refresh: [] });
+});
+
+test('missing, unreadable and malformed permission siblings mean no observations and never lose ownership', async t => {
+  for (const value of [undefined, 'unreadable', '{broken', 'null', '[]', JSON.stringify({ invalid: NOW }),
+    JSON.stringify({ [snowflake(0)]: -1 }), JSON.stringify({ [snowflake(0)]: 'yesterday' })]) {
+    const f = await fixture(t), registry = f.manager();
+    await registry.remember(f.record);
+    const path = join(dirname(f.path), 'reposts-permission.json');
+    if (value === 'unreadable') await mkdir(path);
+    else if (value !== undefined) await writeFile(path, value);
+    const restored = f.manager({ fetchMessage: async () => { throw { code: 50001 }; } });
+    assert.deepEqual(restored.findByReplacement(f.replacement.id), f.record);
+    f.advance(48 * 60 * 60_000);
+    await restored.sweep();
+    assert.deepEqual(restored.findByReplacement(f.replacement.id), f.record, 'no prior clock can authorize retirement');
+    assert.equal((await f.saved()).records.length, 1);
+  }
+});
+
+test('orphan permission observations are discarded before a matching new ownership record is added', async t => {
   const f = await fixture(t);
   const legacy = { records: [f.record], remove: [], refresh: [] };
   await writeFile(f.path, JSON.stringify(legacy));
-  assert.deepEqual(f.manager().findByReplacement(f.replacement.id), f.record);
-  for (const permissionFailures of [null, [], { [f.source.id]: NOW }, { [f.replacement.id]: -1 },
-    { [f.replacement.id]: 'yesterday' }, { [f.replacement.id]: 1.5 }]) {
-    await writeFile(f.path, JSON.stringify({ ...legacy, permissionFailures }));
-    assert.throws(() => f.manager(), /Invalid repost ownership/);
+  const orphan = { ...f.record, sourceId: snowflake(-1_000, 1), replacementId: snowflake(0, 1) };
+  const path = join(dirname(f.path), 'reposts-permission.json');
+  await writeFile(path, JSON.stringify({ [f.replacement.id]: NOW, [orphan.replacementId]: NOW - 24 * 60 * 60_000 }));
+  const registry = f.manager({ fetchMessage: async () => { throw { code: 50001 }; } });
+  await registry.remember(orphan);
+  await registry.sweep();
+  assert(registry.findByReplacement(orphan.replacementId), 'orphan history cannot age new ownership');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { [f.replacement.id]: NOW, [orphan.replacementId]: NOW });
+});
+
+test('a failed sibling write prevents retirement, while a failed journal write never claims retirement', async t => {
+  for (const failingFile of ['reposts-permission.json', 'reposts.json']) {
+    const f = await fixture(t);
+    let denied = false;
+    const registry = f.manager({ fetchMessage: async () => { throw { code: 50001 }; },
+      write: async (path, content) => {
+        if (denied && path.endsWith(failingFile)) throw new Error('disk denied');
+        await writeFile(path, content);
+      } });
+    await registry.remember(f.record);
+    await registry.sweep();
+    f.advance(24 * 60 * 60_000);
+    denied = true;
+    const before = f.errors.length;
+    await registry.sweep();
+    assert(registry.findByReplacement(f.replacement.id));
+    assert.equal((await f.saved()).records.length, 1);
+    assert(!f.errors.slice(before).some(error => /record removed/.test(error.message)));
+    denied = false;
+    await registry.sweep();
+    assert.equal(registry.findByReplacement(f.replacement.id), undefined);
+    assert.match(f.errors.at(-1)!.message, /record removed/);
   }
 });
 

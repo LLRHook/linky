@@ -12,6 +12,8 @@ The bot collects delivery measurements on its own host. Public Linky runs on Hos
 
 The archive is separate from the website's optional metrics adapter. No log endpoint is exposed. Keep it outside the public media directory and retain the existing `linky-data` volume during deployment. The Linux archive directory is owner-only, with owner-only daily record files. One bot process owns an archive directory.
 
+Cleanup state is separate from both histories: `data/reposts.json` retains ownership in its original three-key schema, while `data/reposts-permission.json` holds expendable permission-failure timestamps. Keep both under the persistent data volume. Missing, unreadable or malformed observations reset the grace history without preventing startup or removing ownership. Previous images ignore the sibling file during rollback. See [cleanup retention](delivery-reliability.md#local-retention-and-operations).
+
 ## What is recorded
 
 Each finalized attempt has a random attempt ID, start timestamp, platform, automatic/manual mode, a fixed outcome, delivery path, elapsed time, bounded stage timings and a cache hit/miss when observed. Only those allowed fields are copied. Discord user, server, channel and message IDs, source and media URLs, captions, message text, media bytes, credentials and arbitrary error messages are excluded.

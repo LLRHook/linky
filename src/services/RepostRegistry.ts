@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { atomicWrite } from './AtomicWrite';
 import { cleanupFailure, type CleanupFailure } from './CleanupFailure';
 import { DISCORD_ID } from './LinkConfiguration';
@@ -69,7 +69,7 @@ interface Options {
   onError?: (error: CleanupFailure) => void;
 }
 
-interface Journal { records: RepostRecord[]; remove: string[]; refresh: string[]; permissionFailures?: Record<string, number> }
+interface Journal { records: RepostRecord[]; remove: string[]; refresh: string[] }
 const createdAt = (id: string) => Number(BigInt(id) >> 22n) + 1_420_070_400_000;
 const missing = (error: unknown) => {
   const failure = error as { code?: number; status?: number } | null;
@@ -103,6 +103,7 @@ function changed(before: SourceMessage, after: SourceMessage, record: RepostReco
 /** Durable ownership and retry intents; never stores message text or API data. */
 export class RepostRegistry {
   private journal: Journal = { records: [], remove: [], refresh: [] };
+  private permissionFailures: Record<string, number> = {};
   private pending: Promise<unknown> = Promise.resolve();
   private sources = new Map<string, Promise<unknown>>();
   private timer?: ReturnType<typeof setInterval>;
@@ -110,11 +111,13 @@ export class RepostRegistry {
   private cursor = 0;
   private pendingCursor = 0;
   private readonly path: string;
+  private readonly permissionPath: string;
   private readonly now: () => number;
 
   constructor(private readonly options: Options) {
     if (!DISCORD_ID.test(options.botUserId)) throw new Error('Repost ownership requires a Discord bot ID.');
     this.path = resolve(options.path);
+    this.permissionPath = join(dirname(this.path), 'reposts-permission.json');
     this.now = options.now ?? Date.now;
     let saved: unknown;
     try { saved = JSON.parse(readFileSync(this.path, 'utf8')); }
@@ -123,32 +126,46 @@ export class RepostRegistry {
       throw new Error('Could not load repost ownership records.');
     }
     const data = saved as Journal;
-    if (!data || typeof data !== 'object' || Object.keys(data).some(key => !['records', 'refresh', 'remove', 'permissionFailures'].includes(key)) ||
+    if (!data || typeof data !== 'object' || Object.keys(data).sort().join(',') !== 'records,refresh,remove' ||
       !Array.isArray(data.records) || data.records.length > CAPACITY || !data.records.every(validRecord) ||
       !Array.isArray(data.remove) || !Array.isArray(data.refresh) ||
       new Set(data.records.map(r => r.replacementId)).size !== data.records.length ||
       new Set(data.records.map(r => r.sourceId)).size !== data.records.length ||
       [data.remove, data.refresh].some(ids => ids.length > CAPACITY || new Set(ids).size !== ids.length ||
         ids.some(id => !data.records.some(r => r.replacementId === id))) ||
-      data.refresh.some(id => data.records.find(r => r.replacementId === id)?.mode !== 'reply') ||
-      (data.permissionFailures !== undefined && (!data.permissionFailures || typeof data.permissionFailures !== 'object' ||
-        Array.isArray(data.permissionFailures) || Object.keys(data.permissionFailures).length > CAPACITY ||
-        Object.entries(data.permissionFailures).some(([id, since]) => !data.records.some(r => r.replacementId === id) ||
-          !Number.isSafeInteger(since) || since < 0)))) {
+      data.refresh.some(id => data.records.find(r => r.replacementId === id)?.mode !== 'reply')) {
       throw new Error('Invalid repost ownership records.');
     }
     this.journal = data;
+    // Observations are expendable. Old images ignore this sibling and still load the unchanged ownership journal.
+    try {
+      const observations: unknown = JSON.parse(readFileSync(this.permissionPath, 'utf8'));
+      if (observations && typeof observations === 'object' && !Array.isArray(observations) &&
+        Object.keys(observations).length <= CAPACITY && Object.entries(observations).every(([id, since]) =>
+          DISCORD_ID.test(id) && Number.isSafeInteger(since) && typeof since === 'number' && since >= 0)) {
+        const ids = new Set(data.records.map(record => record.replacementId));
+        this.permissionFailures = Object.fromEntries(Object.entries(observations).filter(([id]) => ids.has(id)));
+      }
+    } catch { /* Missing, unreadable or malformed observations must never block ownership loading. */ }
   }
 
-  private async change<T>(update: (next: Journal) => T): Promise<T> {
+  private async change<T>(update: (next: Journal, failures: Record<string, number>) => T): Promise<T> {
     const operation = this.pending.then(async () => {
-      const next: Journal = { records: this.journal.records.map(r => ({ ...r })), remove: [...this.journal.remove], refresh: [...this.journal.refresh],
-        ...(this.journal.permissionFailures ? { permissionFailures: { ...this.journal.permissionFailures } } : {}) };
-      const result = update(next);
+      const next: Journal = { records: this.journal.records.map(r => ({ ...r })), remove: [...this.journal.remove], refresh: [...this.journal.refresh] };
+      const failures = { ...this.permissionFailures };
+      const result = update(next, failures);
+      const ids = new Set(next.records.map(record => record.replacementId));
+      for (const id of Object.keys(failures)) if (!ids.has(id)) delete failures[id];
+      // A failed observation write must prevent retirement. If the journal write then fails, ownership stays intact;
+      // a restart may lose only observation history and conservatively start another grace period.
+      if (JSON.stringify(failures) !== JSON.stringify(this.permissionFailures)) {
+        await (this.options.write ?? atomicWrite)(this.permissionPath, JSON.stringify(failures) + '\n');
+      }
       if (JSON.stringify(next) !== JSON.stringify(this.journal)) {
         await (this.options.write ?? atomicWrite)(this.path, JSON.stringify(next) + '\n');
         this.journal = next;
       }
+      this.permissionFailures = failures;
       return result;
     });
     this.pending = operation.catch(() => {});
@@ -173,13 +190,6 @@ export class RepostRegistry {
     next.records = next.records.filter(r => r.replacementId !== id);
     next.remove = next.remove.filter(value => value !== id);
     next.refresh = next.refresh.filter(value => value !== id);
-    this.resetPermissionFailure(next, id);
-  }
-
-  private resetPermissionFailure(next: Journal, id: string): void {
-    if (!next.permissionFailures) return;
-    delete next.permissionFailures[id];
-    if (!Object.keys(next.permissionFailures).length) delete next.permissionFailures;
   }
 
   private prune(next: Journal): void {
@@ -429,15 +439,15 @@ export class RepostRegistry {
         // Only consecutive permission-failing sweeps count. Other errors and successful checks reset the clock.
         const detail = cleanupFailure('', failure?.error);
         const permission = failure && ([50001, 50013].includes(detail.code ?? 0) || detail.status === 403);
-        const terminal = (permission || this.journal.permissionFailures?.[current.replacementId] !== undefined) && await this.change(next => {
+        const terminal = (permission || this.permissionFailures[current.replacementId] !== undefined) && await this.change((next, failures) => {
           if (!next.records.some(r => r.replacementId === current.replacementId)) return false;
-          if (!permission) { this.resetPermissionFailure(next, current.replacementId); return false; }
-          const since = next.permissionFailures?.[current.replacementId];
+          if (!permission) { delete failures[current.replacementId]; return false; }
+          const since = failures[current.replacementId];
           if (since !== undefined && this.now() - since >= PERMISSION_RETRY_MS) {
             this.drop(next, current.replacementId);
             return true;
           }
-          (next.permissionFailures ??= {})[current.replacementId] = since ?? this.now();
+          failures[current.replacementId] = since ?? this.now();
           return false;
         }).catch(error => { this.report(error); return false; });
         if (failure) this.report(failure.error, terminal);
