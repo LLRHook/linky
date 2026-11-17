@@ -285,12 +285,16 @@ export function createLinkRepostHandler(
       }
       let youtube = new Map<string, YouTubeStatistics>();
       const youtubeDisplay = preferences.youtubeDisplay ?? 'counts-and-comment';
-      if (youtubeLinks.length && youtubeDisplay !== 'preview') {
+      const youtubeLookupAttempted = youtubeLinks.length > 0 && youtubeDisplay !== 'preview';
+      if (youtubeLookupAttempted) {
         try { youtube = await lookupYouTube!(youtubeLinks.map(link => link.id), youtubeDisplay); }
         catch { log.warn(context, 'YouTube lookup unavailable; keeping native links'); }
       }
       // Preview-only keeps Discord's already-native YouTube message untouched.
-      if (rewritten === inputContent && !youtube.size && !community.length && !articles.length && !erome && !originalMedia) return;
+      if (rewritten === inputContent && !youtube.size && !community.length && !articles.length && !erome && !originalMedia) {
+        if (!youtubeLookupAttempted) delivery.discard();
+        return;
+      }
       const replyContext = await findReplyContext(message, findRepost);
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       const body = formatLinkRepost(rewritten, message.author.id, replyContext);
@@ -515,12 +519,13 @@ export function createLinkRepostHandler(
       }
       if (!preview.ok && !captionFallback) {
         await removeReplacement();
-        log.warn({ ...resultContext, providers: expected.map(item => item.providerId) }, 'Keeping original: no useful preview appeared');
+        log.warn({ ...resultContext, providers: providerAttempts.flatMap(attempt => attempt.expected.map(item => item.providerId)) },
+          'Keeping original: no useful preview appeared');
         delivery.finish('metadata-unconfirmed');
         await failureNotice('Linky could not confirm a preview. Your original is still here. You can retry or check Details.');
         return;
       }
-      log.info({ ...resultContext, providers: expected.map(item => item.providerId), videoMetadata: preview.videoMetadata,
+      log.info({ ...resultContext, providers: preview.matchedProviders ?? ['unattributed'], videoMetadata: preview.videoMetadata,
         playbackChecked: false, translatedTextPosts: textStatusIds.size },
       captionFallback ? 'Translated Instagram caption delivered; kept original because preview could not be verified' :
         erome || originalMedia ? 'Erome media metadata confirmed; client playback not checked' :
@@ -629,8 +634,11 @@ export function createLinkRepostHandler(
     } catch (err) {
       cleanupDelivery?.finish(cleanupDelivery.context.signal?.aborted ? 'timeout' : 'discord-failure');
       if (rollback) await rollback().catch(() => log.warn(context, 'Could not remove incomplete preview'));
-      const failure = err as { code?: unknown; status?: unknown } | null;
+      const failure = err as { code?: unknown; status?: unknown; name?: unknown } | null;
+      const errorName = failure?.name;
       log.error({ ...context, ...(typeof failure?.code === 'number' ? { errorCode: failure.code } : {}),
+        ...(typeof errorName === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.exec(errorName)?.[0] === errorName
+          ? { errorName } : {}),
         ...(typeof failure?.status === 'number' ? { status: failure.status } : {}) },
       'link replacement failed; no further deletion will be attempted');
       if (refresh) throw err;

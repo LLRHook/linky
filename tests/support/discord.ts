@@ -143,6 +143,7 @@ export function diagnosticsStub({ id = 'attempt', outcomes, paths, bind = async 
     begin: () => ({ id, setPath: (path: string) => { paths?.push(path); }, startStage: () => ({ finish() {} }),
       finish: (outcome: DeliveryOutcome) => { outcomes?.push(outcome); } }),
     bind,
+    discard() {},
   } as unknown as DeliveryDiagnostics;
 }
 

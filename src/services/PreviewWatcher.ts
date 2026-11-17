@@ -34,7 +34,10 @@ export class PreviewWatcher {
     let wake: (() => void) | undefined;
     let lifetime: NodeJS.Timeout | undefined;
     const pending = new Map<string, PreviewResult>();
-    const accept = (result: PreviewResult) => { if (!latest.ok || result.ok) latest = result; if (result.ok) wake?.(); };
+    const accept = (result: PreviewResult) => {
+      if (!latest.ok || result.ok) latest = result;
+      if (latest.ok || latest.providerError) wake?.();
+    };
     const receive = (data: Record<string, unknown>) => {
       if (stopped || data.channel_id !== channelId || typeof data.id !== 'string' ||
         (targetId !== undefined && data.id !== targetId) || !Array.isArray(data.embeds)) return;
@@ -45,9 +48,9 @@ export class PreviewWatcher {
       let result: PreviewResult;
       try { result = inspectPreviews(embeds, expected); } catch { return; }
       if (targetId) accept(result);
-      else if (result.ok) {
+      else if (result.ok || result.providerError) {
         // Discord can emit MESSAGE_CREATE before the REST send resolves. Never accumulate channel history.
-        pending.set(data.id, result);
+        if (!pending.get(data.id)?.ok || result.ok) pending.set(data.id, result);
         if (pending.size > 16) pending.delete(pending.keys().next().value!);
       }
     };
@@ -73,9 +76,10 @@ export class PreviewWatcher {
       targetId = message.id;
       const cached = pending.get(targetId);
       pending.clear();
-      accept(cached?.ok ? cached : inspectPreviews(message.embeds.map(embed => embed.toJSON()), expected));
+      const snapshot = inspectPreviews(message.embeds.map(embed => embed.toJSON()), expected);
+      accept(snapshot.ok ? snapshot : cached ?? snapshot);
       try {
-        if (!latest.ok && subscribed) {
+        if (!latest.ok && !latest.providerError && subscribed) {
           await new Promise<void>(resolve => {
             // Large X/Reddit videos and cold media can arrive late; useful updates still wake immediately.
             const gatewayWaitMs = expected.some(item => item.platform === 'x' || item.platform === 'reddit') ? 10_000 :
@@ -83,11 +87,11 @@ export class PreviewWatcher {
               item.platform === 'facebook') ? 8_000 : 4_000;
             const timer = setTimeout(resolve, Math.max(0, Math.min(10_000, this.options.gatewayWaitMs ?? gatewayWaitMs)));
             wake = () => { clearTimeout(timer); resolve(); };
-            if (latest.ok || stopped) wake();
+            if (latest.ok || latest.providerError || stopped) wake();
           });
           wake = undefined;
         }
-        if (!latest.ok && !stopped) {
+        if (!latest.ok && !latest.providerError && !stopped) {
           // A reconnect can miss the update. Reconcile once, never start a polling loop.
           let timer: NodeJS.Timeout | undefined;
           const timeout = new Promise<undefined>(resolve => {

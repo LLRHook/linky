@@ -16,6 +16,12 @@ Cleanup state is separate from both histories: `data/reposts.json` retains owner
 
 ## What is recorded
 
+The `link replacement failed` operational log includes `errorName` only for a complete ASCII alphanumeric error class beginning with a letter, at most 64 characters. Invalid names are omitted. This adds no error message, stack, cause or arbitrary property to the existing numeric-code and delivery-context log. The delivery histories do not store the error name.
+
+An intended no-op after preparation, when no YouTube lookup was attempted (including `youtubeDisplay=preview` with an unchanged native message), is discarded from Details diagnostics and the archive without adding an outcome value. An attempted YouTube lookup that fails or returns no statistics keeps its previous `cancelled` outcome. A real source-edit cancellation remains `cancelled`. Persisted file schemas are unchanged.
+
+Operational preview-failure logs list the attempted catalogue provider names in order. Preview-confirmation logs name the provider from the useful embed that matched, or `canonical` / `unattributed`; a delayed primary embed is not credited to the fallback. These labels contain no URLs and are not stored in either delivery-history format. ProviderHealth continues to require its existing attributable paired evidence before changing routing.
+
 Each finalized attempt has a random attempt ID, start timestamp, platform, automatic/manual mode, a fixed outcome, delivery path, elapsed time, bounded stage timings and a cache hit/miss when observed. Only those allowed fields are copied. Discord user, server, channel and message IDs, source and media URLs, captions, message text, media bytes, credentials and arbitrary error messages are excluded.
 
 The `explicit` path identifies messages containing Linky-authored YouTube community or article cards. Confirmation checks Discord's returned fields and image references against the prepared cards. It is not a native provider observation or a video-playback check; do not combine it with native video confirmation when comparing reliability. `articles` is a separate platform. Its resolve stage includes metadata retrieval; an unavailable result can mean a nonarticle page, blocked or missing metadata, a network limit or a failed request. Do not label every unavailable article candidate as a publisher outage. Article cache observations are not currently instrumented.

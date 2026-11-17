@@ -44,6 +44,9 @@ export function createDeliveryAttempt(request: DeliveryRequest, diagnostics?: De
     finish(outcome: DeliveryOutcome): void {
       if (!finished) { finished = true; trace?.finish(outcome); }
     },
+    discard(): void {
+      if (!finished) { finished = true; if (trace) diagnostics?.discard(trace.id); }
+    },
     async controls(messageId: string): Promise<ActionRowBuilder<ButtonBuilder>[]> {
       return bindDeliveryDetails(diagnostics, trace?.id, messageId);
     },

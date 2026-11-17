@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, Collection, DiscordAPIError, MessageFlags, MessageType, PermissionsBitField,
@@ -11,7 +11,7 @@ import { ProviderHealth } from '../src/services/ProviderHealth';
 import { PreviewWatcher } from '../src/services/PreviewWatcher';
 import { getProviderCandidates } from '../src/services/SocialProviders';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
-import type { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
+import { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { TweetTranslation } from '../src/services/TweetTranslation';
@@ -20,6 +20,7 @@ import { YouTubeStats, YOUTUBE_STATS_TTL } from '../src/services/YouTubeStats';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import { type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { botMessage, createForbidden, diagnosticsStub, reached, repostSource, sendableChannel } from './support/discord';
+import { capturedErrorSource, xProviderError } from './fixtures/provider-error';
 
 const GUILD = '1700000000000000001', CHANNEL = '1700000000000000002';
 const UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -48,7 +49,7 @@ function delivery(content = ORIGINAL_X) {
   const mentions = { users: new Collection<string, { id: string }>(), repliedUser: null as { id: string } | null };
   const expectedChecks: ExpectedPreview[][] = [];
   const state = {
-    enabled: true, preferences: { mode: 'replace' } as ServerPreferences,
+    enabled: true, preferences: { mode: 'replace' } as ServerPreferences, editReturnsClone: false,
     remoteContent: content, editedTimestamp: null as number | null, originalDeleted: false,
     render: (_round: number, _message: Message): APIEmbed[] => [xPreview],
     duringPreview: async (_round: number): Promise<void> => {},
@@ -70,12 +71,13 @@ function delivery(content = ORIGINAL_X) {
         delete: async () => { entry.deleted = true; events.push(`delete:${id}`); },
         edit: async (edit: MessageEditOptions) => {
           entry.edits.push(edit);
-          if (typeof edit.content === 'string') output.content = edit.content;
-          if (edit.embeds) output.embeds = edit.embeds.map(embed => ({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed }));
-          if (edit.components) output.components = storeComponents(edit.components);
+          const updated = state.editReturnsClone ? { ...output } : output;
+          if (typeof edit.content === 'string') updated.content = edit.content;
+          if (edit.embeds) updated.embeds = edit.embeds.map(embed => ({ toJSON: () => 'toJSON' in embed ? embed.toJSON() : embed }));
+          if (edit.components) updated.components = storeComponents(edit.components);
           events.push(`edit:${id}:${typeof edit.content === 'string' ? 'content' : 'controls'}`);
           await state.duringEdit(edit);
-          return output;
+          return updated;
         },
       });
       entry.message = output as unknown as Message;
@@ -93,7 +95,7 @@ function delivery(content = ORIGINAL_X) {
       return { ...source, content: state.remoteContent, editedTimestamp: state.editedTimestamp } as unknown as Message;
     },
   });
-  const create = (options: HandlerOptions = {}) => createLinkRepostHandler([], { info() {}, warn() {}, error() {} },
+  const create = (options: HandlerOptions = {}, log: Parameters<typeof createLinkRepostHandler>[1] = { info() {}, warn() {}, error() {} }) => createLinkRepostHandler([], log,
     forbidden.forbid('this fixture never requests attachment downloads'), {
       serverEnabled: () => state.enabled, serverPreferences: () => state.preferences,
       verifyPreview: async (message, expected) => {
@@ -160,6 +162,30 @@ test('a matching X error card cannot authorize deletion of the original', async 
   await f.create()(f.source);
   assert.equal(f.state.originalDeleted, false);
   assert(f.sent[0].deleted, 'discard the unusable replacement');
+});
+
+test('automatic captured error cards finish two provider waits in 500 fake ms and keep the original', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = delivery(capturedErrorSource), outcomes: DeliveryOutcome[] = [];
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client);
+  t.after(() => watcher.close());
+  let waits = 0;
+  await f.create({ diagnostics: diagnosticsStub({ outcomes }), armPreview: (channel, expected, context) => {
+    const watch = watcher.arm(channel, expected, context);
+    return { close: () => watch.close(), verify: message => {
+      const pending = watch.verify(Object.assign(message, { embeds: [], fetch: async () => {
+        forbidden.forbid('Recognised card must end the wait without REST')(); return message;
+      } }));
+      t.mock.timers.tick(250); waits++;
+      client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [xProviderError(expected[0].url)] } } as never);
+      return pending;
+    } };
+  } })(f.source);
+  assert.equal(waits, 2, 'two 250 ms card arrivals replace the roughly 24 s unembeddable baseline');
+  assert.equal(f.state.originalDeleted, false); assert.equal(f.sent[0].deleted, true);
+  assert.deepEqual(outcomes, ['metadata-unconfirmed']);
 });
 
 test('vxTwitter scan-error fallback keeps the source and an owned Retry notice with Details', async () => {
@@ -1518,4 +1544,129 @@ test('mixed guidance removes stale owned notices after Details binding or final 
     assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1);
     assert.equal(f.sent[0].deleted, true, `${phase}/${revoke}`);
   }
+});
+
+test('failure logs list every attempted provider in order and late primary confirmation names the matching provider', async () => {
+  for (const success of [false, true]) {
+    const f = delivery(), logs: { fields: unknown; text: string }[] = [];
+    f.state.render = round => success && round === 2 ? [xPreview] : [];
+    const capture = (fields: unknown, text?: string) => { logs.push({ fields, text: text ?? '' }); };
+    await f.create({}, { info: capture, warn: capture, error: capture })(f.source);
+    const entry = logs.find(row => row.text === (success ? 'Useful Discord preview observed' : 'Keeping original: no useful preview appeared'));
+    assert(entry);
+    const providers = (entry.fields as { providers: string[] }).providers;
+    assert.deepEqual(providers, success ? ['fixupx'] : ['fixupx', 'fixvx']);
+    assert(providers.every(name => /^[a-z][a-z0-9-]*$/.test(name)), 'only catalogue names enter provider log fields');
+    assert.equal(f.state.originalDeleted, success);
+  }
+});
+
+test('YouTube preview no-op discards diagnostics and archive while a source-edit cancellation is still recorded', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'L6-noop-'));
+  const path = join(directory, 'diagnostics.json'), archive: unknown[] = [];
+  const diagnostics = new DeliveryDiagnostics({ path, archive: { record: value => { archive.push(value); return true; } } });
+  t.after(async () => { await diagnostics.close(); await rm(directory, { recursive: true, force: true }); });
+  await diagnostics.ready;
+  const f = delivery(`https://youtu.be/${YOUTUBE_ID}`);
+  f.state.preferences = { mode: 'replace', youtubeDisplay: 'preview' };
+  await f.create({ diagnostics, lookupYouTube: async () => { assert.fail('Preview-only skips lookup'); },
+    publishYouTube: async () => { assert.fail('Preview-only skips publish'); } })(f.source);
+  await diagnostics.flush();
+  assert.deepEqual(f.events, []); assert.equal(f.state.originalDeleted, false);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).attempts, [], 'no attempt of any outcome is persisted');
+  assert.deepEqual(archive, [], 'no attempt of any outcome is archived');
+  const cancelled = delivery();
+  cancelled.state.duringPreview = async () => { cancelled.source.content = 'Edited source'; cancelled.state.remoteContent = 'Edited source'; };
+  await cancelled.create({ diagnostics })(cancelled.source);
+  await diagnostics.flush();
+  const attempts = JSON.parse(await readFile(path, 'utf8')).attempts;
+  assert.equal(attempts.length, 1); assert.equal(attempts[0].outcome, 'cancelled');
+  assert.deepEqual(archive.map(value => (value as { outcome: string }).outcome), ['cancelled']);
+  assert.equal(cancelled.state.originalDeleted, false);
+});
+
+for (const result of ['throws', 'empty'] as const) {
+  test(`attempted YouTube lookup failures retain the previous cancelled outcome instead of being discarded (${result})`, async () => {
+    const f = delivery(`https://youtu.be/${YOUTUBE_ID}`), outcomes: DeliveryOutcome[] = [];
+    f.state.preferences = { mode: 'replace', youtubeDisplay: 'counts' };
+    let calls = 0;
+    await f.create({ diagnostics: diagnosticsStub({ outcomes }), lookupYouTube: async () => {
+      calls++;
+      if (result === 'throws') throw new Error('Synthetic lookup failure');
+      return new Map();
+    }, publishYouTube: async () => { assert.fail('Failed lookup must not publish'); } })(f.source);
+    assert.equal(calls, 1);
+    assert.deepEqual(f.events, []);
+    assert.equal(f.state.originalDeleted, false);
+    assert.deepEqual(outcomes, ['cancelled'], result);
+  });
+}
+
+test('replacement failure logs only a bounded alphanumeric error name and numeric Discord fields', async () => {
+  const accepted = new Set(['TypeError', 'Error42', 'A'.repeat(64)]);
+  for (const name of ['TypeError', 'Error42', 'A'.repeat(64), 'Bad Name', 'TypeError\nprivate', 'TypeError\n', 'TypeError\r',
+    'A'.repeat(65), '', '9Error', 42, undefined]) {
+    const f = delivery(), logs: { fields: unknown; text: string }[] = [];
+    const error = Object.assign(new TypeError('PRIVATE_ERROR_MESSAGE_DO_NOT_LOG'), { name,
+      code: 50001, status: 403, cause: 'PRIVATE_CAUSE_DO_NOT_LOG' });
+    f.state.duringPreview = async () => { throw error; };
+    const capture = (fields: unknown, text?: string) => { logs.push({ fields, text: text ?? '' }); };
+    await f.create({}, { info: capture, warn: capture, error: capture })(f.source);
+    const entry = logs.find(row => row.text === 'link replacement failed; no further deletion will be attempted');
+    assert(entry);
+    const fields = entry.fields as Record<string, unknown>;
+    if (typeof name === 'string' && accepted.has(name)) assert.equal(fields.errorName, name);
+    else assert.equal(Object.hasOwn(fields, 'errorName'), false);
+    assert.equal(fields.errorCode, 50001); assert.equal(fields.status, 403);
+    assert(!/PRIVATE_ERROR_MESSAGE|PRIVATE_CAUSE|"stack"|"cause"|"message"/.test(JSON.stringify(entry)));
+    assert.deepEqual(Object.keys(fields).sort(), ['messageId', 'channelId', 'guildId', 'errorCode', 'status',
+      ...(typeof name === 'string' && accepted.has(name) ? ['errorName'] : [])].sort());
+    assert.equal(f.state.originalDeleted, false);
+  }
+});
+
+test('replacement error name is read once before validation and logging despite a changing getter', async () => {
+  const f = delivery(), logs: { fields: unknown; text: string }[] = [];
+  let reads = 0;
+  const error = Object.defineProperty(new Error('SYNTHETIC_PRIVATE_MESSAGE'), 'name', {
+    get: () => ++reads < 4 ? 'TypeError' : 'https://example.invalid/PRIVATE?user=1',
+  });
+  f.state.duringPreview = async () => { throw error; };
+  const capture = (fields: unknown, text?: string) => { logs.push({ fields, text: text ?? '' }); };
+  await f.create({}, { info: capture, warn: capture, error: capture })(f.source);
+  const entry = logs.find(row => row.text === 'link replacement failed; no further deletion will be attempted');
+  assert(entry);
+  assert.equal((entry.fields as { errorName?: unknown }).errorName, 'TypeError');
+  assert.equal(reads, 1);
+  assert.doesNotMatch(JSON.stringify(entry), /PRIVATE|example\.invalid|SYNTHETIC_PRIVATE_MESSAGE/);
+});
+
+test('automatic fallback waits through the stale primary card after a clone edit and confirms provider two at 3 s', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = delivery(), outcomes: DeliveryOutcome[] = [];
+  f.state.editReturnsClone = true;
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client);
+  t.after(() => watcher.close());
+  const primaryError = xProviderError(PRIMARY_X);
+  let attempts = 0;
+  await f.create({ diagnostics: diagnosticsStub({ outcomes }), armPreview: (channel, expected, context) => {
+    const watch = watcher.arm(channel, expected, context);
+    return { close: () => watch.close(), verify: message => {
+      const round = ++attempts;
+      if (round === 1) message.embeds = [];
+      else assert.deepEqual(message.embeds.map(embed => embed.toJSON()), [primaryError], 'edit clone leaves cached embeds untouched');
+      const pending = watch.verify(message);
+      t.mock.timers.tick(round === 1 ? 250 : 3_000);
+      const card = round === 1 ? primaryError : { ...xPreview, url: ALTERNATE_X };
+      Object.assign(message, { embeds: [{ toJSON: () => card }] });
+      client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: message.id, channel_id: channel, embeds: [card] } } as never);
+      return pending;
+    } };
+  } })(f.source);
+  assert.equal(attempts, 2);
+  assert.equal(f.state.originalDeleted, true, 'useful fallback preview must authorize replacement');
+  assert.equal(f.sent[0].deleted, false);
+  assert.deepEqual(outcomes, ['confirmed']);
 });

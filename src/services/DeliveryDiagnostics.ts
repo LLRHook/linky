@@ -159,6 +159,14 @@ export class DeliveryDiagnostics {
     };
   }
 
+  /** Forget an intentional no-op before finalization; it is not a delivery or an archive event. */
+  discard(id: string): void {
+    const record = this.records.get(id);
+    if (!record || record.outcome) return;
+    this.remove(id);
+    this.changed();
+  }
+
   /** Returns true only once the requester/message binding is durable. Never expose Details before this. */
   bind(id: string, messageId: string): Promise<boolean> {
     return this.within((async () => {

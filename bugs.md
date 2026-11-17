@@ -593,7 +593,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Docs:** README.md; docs/delivery-reliability.md; docs/self-hosting.md
 
 ### [BUG-1794864951] Link replacement failure log omits error class
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** diagnostics
 - **File(s):** src/services/SocialLinkService.ts:629-636
 - **Observation:** L1 found one automatic X link replacement failure without numeric Discord code; the cause cannot be identified from the retained log.
@@ -602,10 +602,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Ticket only per driver. Future test: thrown TypeError logs name TypeError, without error text or Discord identity.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Round 1 F4: read err.name exactly once into a local value, then validate and log only that snapshot. Complete ASCII alphanumeric class names beginning with a letter and at most 64 characters are allowed; invalid or nonstring names are omitted. Changing-getter regression prevents a later read from substituting arbitrary content. Existing message/stack/cause and boundary privacy tests remain passing.
+- **Docs:** docs/operator-reliability.md
+- **Log:**
+  - 2026-11-16 Review: Driver round 1 F4: alternating getter test failed before fix and passes with one name read. Mutation restoring repeated property reads fails the named test.
 
 ### [BUG-1794864952] YouTube preview-display no-op is recorded as cancelled
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** diagnostics, youtube
 - **File(s):** src/services/SocialLinkService.ts:293; src/services/DeliveryAttempt.ts:52
 - **Observation:** 19 of 26 cancelled attempts in the seven-day investigation were intended YouTube preview-display no-ops; closing the unfinished attempt records cancelled.
@@ -614,10 +619,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Ticket only per driver. Future test: youtubeDisplay=preview leaves native message unchanged and does not emit cancelled. The observation is an attempt count within the sampled seven days, not a production improvement claim.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Round 1 F2: discard an unchanged-message trace only when no YouTube lookup was attempted (including preview display). An attempted lookup that throws or returns no statistics keeps the previous cancelled outcome; source-edit cancellation also remains recorded. M6 regression persists the trace, discards it without an explicit flush, then restarts the real loader and proves it cannot return as interrupted. Removing changed() from discard fails that test. No new persisted fields or outcome values.
+- **Docs:** docs/delivery-reliability.md; docs/operator-reliability.md
+- **Log:**
+  - 2026-11-16 Review: Driver round 1 F2/F3: throwing and empty YouTube lookups each have a failing-before regression and stay cancelled; intended preview-only no-op still leaves no attempt. Automatic discard persistence/restart test kills M6. M5/M7 duplicate guards retained per driver.
 
 ### [BUG-1794864954] Preview failure logs omit provider history and matched-provider attribution
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** diagnostics, providers
 - **File(s):** src/services/SocialLinkService.ts; src/services/DeliveryAttempt.ts
 - **Observation:** L1-F03/C7: failure log lists only last provider; 4 of 15 fallback attempts confirmed among 227 X attempts in seven days, but a late primary embed can satisfy source identity without proving which provider recovered.
@@ -626,7 +636,10 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Ticket only per driver. Preserve current strict matcher and ProviderHealth credit safeguards. Future regression: delayed primary embed during fallback is not credited to fallback; no URLs, message text or user data added to persisted diagnostics.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Failure logs retain ordered provider history from every attempt. Confirmation logs use catalogue names from useful matched embed hosts, canonical for native hosts and unattributed for authored/indeterminate metadata; delayed primary embeds are not credited to fallback. ProviderHealth safeguards remain unchanged. No persisted fields added, so rollback-loader proof is not required; both report formats remain unchanged.
+- **Docs:** docs/delivery-reliability.md; docs/operator-reliability.md
 
 ### [BUG-1794864955] Production image lacks a source commit label
 - [x] **Severity:** low
@@ -644,7 +657,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Docs:** README.md; VERIFICATION.md; docs/self-hosting.md; docs/operator-reliability.md
 
 ### [BUG-1794864956] Recognized provider error cards should end preview waits early
-- [ ] **Severity:** low
+- [x] **Severity:** low
 - **Area:** delivery, previews
 - **File(s):** src/services/PreviewWatcher.ts; tests/preview-watcher.test.ts
 - **Observation:** Longer X waits also delay truly unavailable posts. Existing matcher rejects provider error cards; watcher currently wakes only for useful previews.
@@ -652,5 +665,34 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Req:** unknown
 - **Depends on:** none (driver-approved independent fix)
 - **Repro / Notes:** Deferred optional work per driver: no implementation here. Before coding derive an explicit terminal-card classification from a real captured sanitized fixture, including pre-send events, multiple expected posts, races with useful metadata and source preservation. Do not modify BUG-1791838422 or weaken useful-preview matching. Baseline truly unembeddable X path about 24 s after window change; minimum one captured card plus positive/negative fixture controls; noise floor zero false confirmations; abstain on unrecognized cards and keep bounded wait.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Round 1: recognised error cards end a wait only for the same post AND attempted catalogue provider; prior-provider, canonical and unrecognised hosts abstain. Six stale cached/pending/polling regressions cover both provider orders. Automatic clone-edit and manual slash/Apps stale-REST sequences confirm fallback metadata at 3 s. Useful send snapshots override pre-send error evidence (M3). Removed unreachable explicit-card guard (M2): authored provider IDs cannot equal any parseProviderUrl catalogue ID. Captured vxTwitter fields apply only on the vxTwitter attempt; first-attempt fixupx card is synthetic and uses unchanged generic Error/Try again later rules. Baseline about 24 s for two-provider unavailable X delivery; own-provider errors at 250 ms each finish two waits in 500 fake ms; minimum captured card plus controls; zero false confirmations; no live timing claim.
+- **Docs:** README.md; docs/delivery-reliability.md; VERIFICATION.md
+- **Log:**
+  - 2026-11-16 Review: Driver round 1 F1/F3: stale-provider regression was blocking; corrected using provider host equality. New regressions failed before correction; provider-condition and send-snapshot mutations are caught. Classifier regexes and source-deletion requirements unchanged.
+
+### [BUG-1794873496] Refresh stale automated test counts in VERIFICATION.md
+- [ ] **Severity:** low
+- **Area:** docs, tests
+- **File(s):** VERIFICATION.md:91; VERIFICATION.md:102
+- **Observation:** L8 measured 1418 TypeScript tests and 85 Node ESM tests at PR 109 head 1d8ff1b; VERIFICATION.md still states 1190 and 62. This drift predates L6 changes and round 1 adds further regression tests.
+- **Expected:** Update the current baseline and procedure expectations using exact runner-reported counts at the commit actually tested; keep passed, failed and host-skipped counts separate.
+- **Req:** unknown
+- **Depends on:** none (driver-requested follow-up)
+- **Repro / Notes:** File only per L6 round 1 driver decision; do not build here. Run npm test once on the target commit and compare each runner summary with the Stage 2 table and 2.1 prose. Unit: test cases per runner at one named commit; baseline documented 1190 TS / 62 ESM versus observed 1418 TS / 85 ESM at 1d8ff1b; minimum one complete run; noise floor zero unexplained count mismatches; abstain if any runner did not complete. Refresh from the final target, not the historical L8 count.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1794873497] Ignore a leading UTF-8 byte-order mark in PR evidence bodies
+- [ ] **Severity:** low
+- **Area:** tooling, ci
+- **File(s):** ops/pr-evidence-check.mjs; tests/pr-evidence-check.test.mjs
+- **Observation:** On PRs 108 and 109 on 2026-11-16, a PowerShell-written body with a leading UTF-8 mark failed the evidence gate with Section ## Tickets is missing or empty despite containing that section. The checker startsWith heading parser treats the mark as part of the heading.
+- **Expected:** Ignore one leading UTF-8 byte-order mark before parsing required headings; a marked complete body should pass and genuinely absent or empty sections must still fail.
+- **Req:** unknown
+- **Depends on:** none (driver-requested follow-up)
+- **Repro / Notes:** File only per L6 round 1 driver decision; do not build here. In a regression call missingEvidence with a complete template body prefixed with U+FEFF and expect an empty missing list. Control: the same unmarked body passes; removing Tickets still fails. No token, message content or Discord identity is needed.
 - **Bump:** patch
 - **Status:** open
