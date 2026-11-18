@@ -41,13 +41,23 @@ test('a TikTok share link is satisfied by the canonical post metadata and a full
 
 test('error cards, missing media, HTTP failures and cross-origin redirects are reported without satisfying Linky', async () => {
   const reel = { source: 'https://www.instagram.com/reel/DdFKS1ABmK4/', expect: 'video' };
-  const byHost = {
-    'fkinstagram.com': respond(200, page({ 'og:url': 'https://www.instagram.com/reel/DdFKS1ABmK4/', 'og:title': 'Error', 'og:description': 'Try again later' })),
-    'oginstagram.com': respond(403, ''),
-  };
-  const result = await assessSource(reel, services, { fetch: async url => byHost[new URL(url).hostname] });
+  const outcome = result => result.providers.map(item => [item.providerId, item.status, item.satisfied]);
+  const errorCard = source => page({ 'og:url': source, 'og:title': 'Error', 'og:description': 'Try again later' });
+  // Instagram has one provider; the retired Instagram7 host is never requested.
+  const requested = [];
+  const refused = await assessSource(reel, services, { fetch: async url => { requested.push(new URL(url).hostname); return respond(403, ''); } });
+  assert.equal(refused.ok, false);
+  assert.deepEqual(outcome(refused), [['oginstagram', 403, false]]);
+  assert.deepEqual(requested, ['oginstagram.com']);
+  const failedReel = await assessSource(reel, services, { fetch: async () => respond(200, errorCard(reel.source)) });
+  assert.equal(failedReel.ok, false);
+  assert.deepEqual(outcome(failedReel), [['oginstagram', 200, false]]);
+  // Each catalogued provider is reported in order when a platform has two.
+  const post = { source: 'https://x.com/jack/status/20', expect: 'text' };
+  const byHost = { 'fixupx.com': respond(200, errorCard(post.source)), 'vxtwitter.com': respond(403, '') };
+  const result = await assessSource(post, services, { fetch: async url => byHost[new URL(url).hostname] });
   assert.equal(result.ok, false);
-  assert.deepEqual(result.providers.map(item => [item.providerId, item.status, item.satisfied]), [['instagram7', 200, false], ['oginstagram', 403, false]]);
+  assert.deepEqual(outcome(result), [['fixupx', 200, false], ['fixvx', 403, false]]);
   const thumbnailOnly = await assessSource(reel, services, { fetch: async () => respond(200, page({ 'og:url': 'https://www.instagram.com/reel/DdFKS1ABmK4/', 'og:image': 'https://cdn.example/t.jpg' })) });
   assert.equal(thumbnailOnly.ok, false, 'a Reel thumbnail without video metadata is not a useful preview');
   const redirected = await assessSource({ source: 'https://x.com/jack/status/20', expect: 'text' }, services,

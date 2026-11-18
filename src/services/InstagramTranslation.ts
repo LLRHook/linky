@@ -7,7 +7,7 @@ export interface InstagramTranslation {
   text: string;
   languages: string[];
   mediaOnlyUrl: string;
-  /** Provider hints only; the API does not establish working media or list every carousel item. */
+  /** Provider hints only (`GraphImage` or `GraphVideo` per listed item); they do not establish working media. */
   mediaTypes: string[];
 }
 
@@ -29,14 +29,33 @@ export function parseInstagramUrl(value: string): { sourceUrl: string; shortcode
   } catch { return null; }
 }
 
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
+/**
+ * Plain caption from OGInstagram's Note `content`: an optional bold statistics paragraph, then one caption
+ * paragraph with `<br>` line breaks and `<a>` links. Tags are removed before entities are decoded, so escaped
+ * markup in a caption stays literal text.
+ */
+function captionText(content: string): string {
+  return content.replace(/^<p><b>[^<]*<\/b><\/p>/, '')
+    .replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>\s*<p>/gi, '\n\n').replace(/<[^>]*>/g, '')
+    .replace(/&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|(amp|lt|gt|quot|apos));/gi, (entity: string, decimal?: string, hex?: string, name?: string) => {
+      if (name) return ENTITIES[name.toLowerCase()];
+      const code = decimal ? Number(decimal) : parseInt(hex!, 16);
+      return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : entity;
+    });
+}
+
+/** OGInstagram serves the post as an ActivityStreams Note at its card URL when asked for that media type. */
 async function metadata(sourceUrl: string, shortcode: string, fetchJson: typeof fetch): Promise<unknown> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined, reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     const operation = (async () => {
-      const response = await fetchJson(`${INSTAGRAM_PROVIDER.origin}/api/${shortcode}${/\/(?:reels?|tv)\//.test(sourceUrl) ? '?kind=reel' : ''}`, {
+      // The provider has no /tv/ route; it serves any shortcode, including a legacy IGTV one, under /p/.
+      const response = await fetchJson(`${INSTAGRAM_PROVIDER.origin}/${/\/reels?\//.test(sourceUrl) ? 'reel' : 'p'}/${shortcode}/`, {
         signal: controller.signal, redirect: 'error', credentials: 'omit',
-        headers: { Accept: 'application/json', 'User-Agent': 'LinkyBot/1.0 (+https://linkybot.dev)' },
+        headers: { Accept: 'application/activity+json', 'User-Agent': 'LinkyBot/1.0 (+https://linkybot.dev)' },
       });
       const declaredLength = Number(response.headers.get('content-length'));
       if (!response.ok || !response.body || declaredLength > MAX_BODY_BYTES) {
@@ -83,23 +102,29 @@ export function createInstagramLookup(translate: Translate, fetchJson: typeof fe
       const value = await metadata(sourceUrl, shortcode, fetchJson);
       if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
       const data = value as Record<string, unknown>;
-      if (typeof data.Username !== 'string' || !/^[A-Za-z0-9._]{1,30}$/.test(data.Username.trim()) ||
-          typeof data.Caption !== 'string' || !data.Caption.trim() || Buffer.byteLength(data.Caption) > MAX_TEXT_BYTES ||
-          !Array.isArray(data.Medias) || !data.Medias.length || data.Medias.length > 20) return null;
+      // The Note must be this post, written by an account on the provider's own origin.
+      const actor = `${INSTAGRAM_PROVIDER.origin}/`;
+      const username = typeof data.attributedTo === 'string' && data.attributedTo.startsWith(actor) ? data.attributedTo.slice(actor.length) : '';
+      if (data.type !== 'Note' || (data.id !== `${actor}p/${shortcode}` && data.id !== `${actor}reel/${shortcode}`) ||
+          !/^[A-Za-z0-9._]{1,30}$/.test(username) || typeof data.content !== 'string' ||
+          !Array.isArray(data.attachment) || !data.attachment.length || data.attachment.length > 20) return null;
+      const caption = captionText(data.content).trim();
+      if (!caption || Buffer.byteLength(caption) > MAX_TEXT_BYTES) return null;
       const mediaTypes: string[] = [];
-      for (const media of data.Medias) {
-        if (!media || typeof media !== 'object' || !['GraphImage', 'GraphVideo'].includes(media.TypeName)) return null;
-        mediaTypes.push(media.TypeName);
+      for (const media of data.attachment as unknown[]) {
+        const type = media && typeof media === 'object' ? (media as { mediaType?: unknown }).mediaType : undefined;
+        if (typeof type !== 'string' || !/^(?:image|video)\/[a-z0-9.+-]{1,40}$/i.test(type)) return null;
+        mediaTypes.push(/^video\//i.test(type) ? 'GraphVideo' : 'GraphImage');
       }
       // Send the full caption, including English introductions and later non-English paragraphs.
-      const translated = await translate(data.Caption);
+      const translated = await translate(caption);
       if (!translated || typeof translated.text !== 'string' || !translated.text.trim() ||
           Buffer.byteLength(translated.text) > MAX_TEXT_BYTES || !Array.isArray(translated.languages) || translated.languages.length > 32 ||
           translated.languages.some(language => typeof language !== 'string' || !/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(language))) return null;
       const languages = [...new Set(translated.languages.map(language => language.toLowerCase()))]
         .filter(language => !['en', 'und', 'zxx', 'mul'].includes(language.split('-')[0]));
       if (!languages.length || languages.length > 8) return null;
-      return { shortcode, username: data.Username.trim(), text: translated.text.trim(), languages,
+      return { shortcode, username, text: translated.text.trim(), languages,
         mediaOnlyUrl: `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${shortcode}/`, mediaTypes };
     } catch { return null; }
   }

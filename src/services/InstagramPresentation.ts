@@ -58,7 +58,7 @@ export async function addInstagramCaptions<T extends CaptionPresentation>(
     const content = mapLinks(presentation.content, (url, position) => {
       if (!visibleLink(presentation.content, position)) return url;
       const provider = parseProviderUrl(url);
-      const source = parseInstagramUrl(provider?.providerId === INSTAGRAM_PROVIDER.id ? provider.sourceUrl : url);
+      const source = parseInstagramUrl(provider?.platform === 'instagram' ? provider.sourceUrl : url);
       const originalSource = source && sources.get(source.shortcode);
       if (!source || !originalSource) return url;
       included.set(source.shortcode, originalSource);
@@ -85,7 +85,7 @@ export async function addInstagramCaptions<T extends CaptionPresentation>(
   const media = mapLinks(presentation.content, (url, position) => {
     if (!visibleLink(presentation.content, position)) return url;
     const provider = parseProviderUrl(url);
-    const source = parseInstagramUrl(provider?.providerId === INSTAGRAM_PROVIDER.id ? provider.sourceUrl : url);
+    const source = parseInstagramUrl(provider?.platform === 'instagram' ? provider.sourceUrl : url);
     const post = source && posts.get(source.shortcode);
     if (!post) return url;
     included.set(post.shortcode, post);

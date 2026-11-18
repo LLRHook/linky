@@ -209,18 +209,18 @@ function originalControls(fixture: ReturnType<typeof command>) {
 }
 
 test('manual preference changes during preview verification clear the stale preview before recovery', async () => {
-  const f = command('https://instagram.com/reel/ABC/');
+  const f = command('https://x.com/jack/status/20');
   let preferences: ServerPreferences = {};
   await execute(f.interaction, config, { serverPreferences: () => preferences, verifyPreview: async (_message, expected) => {
-    preferences = { platforms: { instagram: false } };
+    preferences = { platforms: { x: false } };
     return { ok: false, missing: [...expected], videoMetadata: false };
   } });
-  assert(!f.events.some(event => String(event.payload?.content).includes('oginstagram.com')));
+  assert(!f.events.some(event => String(event.payload?.content).includes('vxtwitter.com')));
   assert.match(f.response.content, /settings changed/i);
   const cleared = f.events.at(-1)!.payload;
   assert.deepEqual(cleared.embeds, []);
   assert.equal(cleared.flags, MessageFlags.SuppressEmbeds);
-  assert.deepEqual(originalControls(f), ['https://www.instagram.com/reel/ABC/']);
+  assert.deepEqual(originalControls(f), ['https://x.com/jack/status/20']);
 });
 
 function button() {
@@ -249,7 +249,7 @@ test('manual parser uses supported explicit URLs, canonicalizes Twitter and dedu
   assert.deepEqual(manualLinks('https://twitter.com/jack/status/20?s=46 https://x.com/jack/status/20?other=1', config),
     [{ source: 'https://x.com/jack/status/20', fixed: 'https://fixupx.com/jack/status/20' }]);
   assert.deepEqual(manualLinks('https://www.instagram.com/reel/ABC/?igsh=share', config),
-    [{ source: 'https://www.instagram.com/reel/ABC/', fixed: 'https://fkinstagram.com/reel/ABC/' }]);
+    [{ source: 'https://www.instagram.com/reel/ABC/', fixed: 'https://oginstagram.com/reel/ABC/' }]);
   assert.deepEqual(manualLinks('https://vm.tiktok.com/ABC/', config),
     [{ source: 'https://vm.tiktok.com/ABC/', fixed: 'https://tnktok.com/ABC/' }]);
 });
@@ -440,7 +440,7 @@ test('manual mixed translations cover selected links only and confirm delivered 
   });
   assert.deepEqual(lookups, ['20']);
   assert.match(f.response.content, /<https:\/\/fixupx\.com\/jack\/status\/20>/);
-  assert.match(f.response.content, /fkinstagram\.com\/p\/ABC\//);
+  assert.match(f.response.content, /oginstagram.com\/p\/ABC\//);
   assert.match(f.response.content, /tnktok\.com\/ABC\//);
   assert.doesNotMatch(f.response.content, /status\/(?:21|22)/);
   assert.deepEqual(preview.checks[0].map(item => item.platform), ['instagram', 'tiktok']);
@@ -526,32 +526,33 @@ test('manual X fallback verifies the alternate on the same response and preserve
   for (const event of f.events.filter(event => event.name === 'edit')) assert.deepEqual(event.payload.allowedMentions, { parse: [] });
 });
 
-test('manual Instagram fallback recovers slash and context actions on the same response', async () => {
+test('manual Instagram delivery confirms OGInstagram for slash and context actions on the first response', async () => {
   const original = 'https://www.instagram.com/p/DdKVPMEhTXe/?igsh=tracking';
-  const primary = 'https://fkinstagram.com/p/DdKVPMEhTXe/', alternate = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+  const primary = 'https://oginstagram.com/p/DdKVPMEhTXe/';
   for (const context of [false, true]) {
     const f = command(original, context), preview = previewChecks(f);
-    f.state.render = content => content === alternate
-      ? [{ url: alternate, image: { url: 'https://media.example/requested-photo.jpg' } }] : [];
+    f.state.render = content => content === primary
+      ? [{ url: primary, image: { url: 'https://media.example/requested-photo.jpg' } }] : [];
     await execute(f.interaction, config, preview.dependencies);
-    assert.deepEqual(f.events.map(event => event.name), ['defer', 'edit', 'edit']);
-    assert.deepEqual(f.events.filter(event => event.name === 'edit').map(event => event.payload.content), [primary, alternate]);
-    assert.deepEqual(preview.observations.map(item => item.result.ok), [false, true]);
-    assert.equal(f.response.content, alternate);
+    assert.deepEqual(f.events.map(event => event.name), ['defer', 'edit']);
+    assert.deepEqual(f.events.filter(event => event.name === 'edit').map(event => event.payload.content), [primary]);
+    assert.deepEqual(preview.checks.map(items => items.map(item => item.providerId)), [['oginstagram']]);
+    assert.deepEqual(preview.observations.map(item => item.result.ok), [true]);
+    assert.equal(f.response.content, primary);
     assert.deepEqual(originalControls(f), ['https://www.instagram.com/p/DdKVPMEhTXe/']);
     assert.equal(f.input.targetMessage.content, original);
     for (const event of f.events.filter(event => event.name === 'edit')) assert.deepEqual(event.payload.allowedMentions, { parse: [] });
   }
 });
 
-test('manual Instagram recovery reports failure when both providers return a matching error card', async () => {
+test('manual Instagram delivery reports failure when its only provider returns a matching error card', async () => {
   const original = 'https://www.instagram.com/p/DdKVPMEhTXe/';
   const f = command(original, true), preview = previewChecks(f);
   f.state.render = content => [{ url: content.split('\n')[0], title: 'Error', description: 'Could not retrieve this post.' }];
   await execute(f.interaction, config, preview.dependencies);
-  assert.deepEqual(preview.checks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
+  assert.deepEqual(preview.checks.map(items => items.map(item => item.providerId)), [['oginstagram']]);
   assert(preview.observations.every(item => !item.result.ok));
-  assert.equal(f.events.filter(event => event.name === 'edit').length, 3);
+  assert.equal(f.events.filter(event => event.name === 'edit').length, 2, 'initial response and final status only');
   assert.match(f.response.content, /preview could not be confirmed/i);
   assert.deepEqual(originalControls(f), [original]);
   assert.equal(f.input.targetMessage.content, original);
@@ -580,7 +581,7 @@ test('missing, unrelated and matching error previews exhaust manual X recovery w
 });
 
 test('manual recovery changes only the failed provider and excludes hidden or capped source links', async () => {
-  const instagram = 'https://fkinstagram.com/reels/DdFKS1ABmK4/';
+  const instagram = 'https://oginstagram.com/reels/DdFKS1ABmK4/';
   const f = command('https://x.com/jack/status/20 https://instagram.com/reels/DdFKS1ABmK4/ ' +
     '||https://x.com/jack/status/999|| <https://youtu.be/dQw4w9WgXcQ>', true);
   f.state.render = (_content, edit) => [
@@ -590,7 +591,7 @@ test('manual recovery changes only the failed provider and excludes hidden or ca
   const preview = previewChecks(f);
   await execute(f.interaction, config, preview.dependencies);
   assert.equal(preview.checks.length, 2);
-  assert.deepEqual(preview.checks.map(items => items.map(item => item.providerId)), [['fixupx', 'instagram7'], ['fixvx', 'instagram7']]);
+  assert.deepEqual(preview.checks.map(items => items.map(item => item.providerId)), [['fixupx', 'oginstagram'], ['fixvx', 'oginstagram']]);
   assert.deepEqual(preview.observations[0].result.missing.map(item => item.providerId), ['fixupx']);
   assert.equal(f.response.content, `https://vxtwitter.com/jack/status/20\n${instagram}`);
   assert.deepEqual(originalControls(f), ['https://x.com/jack/status/20', 'https://www.instagram.com/reels/DdFKS1ABmK4/']);
@@ -619,7 +620,7 @@ test('manual YouTube uses native video metadata without requiring an API key or 
 
 test('an Instagram reel thumbnail or a YouTube counts card cannot count as manual video recovery', async () => {
   for (const [source, embed] of [
-    ['https://instagram.com/reel/ABC/', { url: 'https://fkinstagram.com/reel/ABC/', thumbnail: { url: 'https://media.example/photo.jpg' } }],
+    ['https://instagram.com/reel/ABC/', { url: 'https://oginstagram.com/reel/ABC/', thumbnail: { url: 'https://media.example/photo.jpg' } }],
     ['https://youtu.be/dQw4w9WgXcQ', { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', title: 'YouTube stats', fields: [{ name: 'Views', value: '42' }] }],
   ] as const) {
     const f = command(source), preview = previewChecks(f);
@@ -697,7 +698,7 @@ test('manual mobile shares acknowledge before network work and verify the resolv
     const share = platform === 'reddit' ? 'https://www.reddit.com/r/aww/s/Mobile123'
       : 'https://www.instagram.com/share/p/Mobile123?igsh=original';
     const source = platform === 'reddit' ? 'https://www.reddit.com/comments/abc123' : 'https://www.instagram.com/p/ABC/';
-    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123?legacy' : 'https://fkinstagram.com/p/ABC/';
+    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123?legacy' : 'https://oginstagram.com/p/ABC/';
     const f = command(share, context), preview = previewChecks(f);
     if (!canSend) f.input.memberPermissions = new PermissionsBitField(0n);
     const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async options => {
@@ -811,7 +812,7 @@ test('manual native YouTube still works without operator providers but honors a 
 
 test('manual Instagram presentation supports translated compact captions and media-first with translation off', async () => {
   const caption: InstagramTranslation = { sourceUrl: 'https://www.instagram.com/reel/ABC/', shortcode: 'ABC', username: 'author',
-    text: 'A readable translated caption. '.repeat(30), languages: ['et'], mediaOnlyUrl: 'https://g.fkinstagram.com/p/ABC/', mediaTypes: ['GraphVideo'] };
+    text: 'A readable translated caption. '.repeat(30), languages: ['et'], mediaOnlyUrl: 'https://g.oginstagram.com/p/ABC/', mediaTypes: ['GraphVideo'] };
   const sizes: number[] = [];
   for (const style of ['standard', 'compact', 'media-first'] as const) {
     const f = command(caption.sourceUrl), preview = previewChecks(f);
@@ -833,7 +834,7 @@ test('manual Instagram presentation supports translated compact captions and med
 
 test('manual translated Instagram images expect a caption-free preview without requiring video', async () => {
   const caption: InstagramTranslation = { sourceUrl: 'https://www.instagram.com/p/ABC/', shortcode: 'ABC', username: 'author',
-    text: 'A readable translated caption.', languages: ['et'], mediaOnlyUrl: 'https://g.fkinstagram.com/p/ABC/', mediaTypes: ['GraphImage'] };
+    text: 'A readable translated caption.', languages: ['et'], mediaOnlyUrl: 'https://g.oginstagram.com/p/ABC/', mediaTypes: ['GraphImage'] };
   const f = command(caption.sourceUrl), preview = previewChecks(f);
   f.state.render = () => [{ url: caption.mediaOnlyUrl, image: { url: 'https://cdn.example/photo.jpg' } }];
   await execute(f.interaction, config, { ...preview.dependencies, translateInstagram: async () => caption });
