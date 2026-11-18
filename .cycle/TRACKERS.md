@@ -281,6 +281,47 @@ The personal choice lives in this clone's `.git/config` (`cycle.worklog.*`, neve
 and is tied to the Jira account that saved it; another account's token sees `ask`. Sessions:
 `.git/cycle-worklog.json`; `worklog status` lists them.
 
+
+### Weekly and pay-period review limits
+
+Personal limits live in `~/.claude/cycle-worklog-policy.json` (shared by the installed
+Claude and Codex tools). Each rule matches both the exact Jira site and the authenticated
+author; other people/sites retain their own settings. A rule uses `version: 1`, a `rules`
+list, and `site`, `author`, `timezone`, `anchor`, `period_days: 14`, `weekly_seconds` and
+`period_seconds`. The anchor is a local calendar date at the start of a pay period;
+seven-day weeks and fourteen-day periods roll from it, including across DST changes.
+
+With a rule, `finish` checks all visible Jira worklogs for that author across all projects,
+including every search/worklog page and recent local posting receipts. It checks both
+the week and pay period before posting. Exactly the threshold is permitted; a candidate
+that would exceed either limit is retained in full for review (exit 3). `--yes` alone
+does not override this. Concurrent posts from updated clones on this machine share a
+lock; incomplete/unavailable totals block posting. Multi-date sessions require date
+review instead of assigning all time to their first day.
+
+On a hold, the clock is paused and the full candidate/segments/reason remain in the
+clone's worklog state; `worklog status` displays the review. Keep that record. Resolve
+the real duration/date/accounting question before posting. `--confirm-budget` is only
+for a person's explicit review of the full, accurate over-limit entry; a general request
+for no overtime does not authorize that flag or a smaller duration. Preserve actual time:
+never clip to remaining capacity, discard excess, move work to a different week, or
+infer missing hours from commit counts. Retrospective daily totals can use the person's
+confirmed actual hours; label estimated task allocations and preserve original values
+when correcting automated estimates.
+
+All automatic Jira time writes, including driver/QA work with no commit, use the shared
+worklog tool and this policy. A direct REST/connector write is not an alternate route
+around a held entry. For an authorized QA run without a commit, use `finish --force`
+only to waive the commit requirement; every time review still applies. When automatic
+posting is held, report the pending actual time for payroll review and keep subsequent
+work measured; the threshold is a review limit, not a definition of time worked.
+
+These totals cover Jira worklogs visible to the account. Manual timekeeping entries,
+approved time off, restricted Jira worklogs and unsynchronized writes from other machines
+need separate reconciliation in the authoritative timekeeping app before payroll submission.
+Source pagination contracts: [Jira issue search](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/)
+and [issue worklogs](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-worklogs/).
+
 ## Jira setup
 
 `.cycle/tracker.json` (committed):
