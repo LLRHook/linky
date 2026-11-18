@@ -24,7 +24,8 @@ LABEL is a tracker id (its `Jira:` key is used), a Jira key (a bundle Task), or 
 Exit codes: 0 done or preview printed; 3 needs the person's confirmation (over 8 hours, or
 overlapping their other Jira worklogs).
 """
-import datetime, json, os, secrets, sys, time
+import contextlib, datetime, json, os, secrets, sys, time
+from zoneinfo import ZoneInfo
 
 import tracker_ops as T
 
@@ -248,7 +249,13 @@ def effective(root):
         return 'ask', 'Jira user not read (%s)' % ex
     if acct != p['account']:
         return 'ask', 'the saved auto belongs to another Jira account'
-    return 'auto', 'preview %s, idle cap %d min' % (p['preview'], p['idle'])
+    try:
+        rule = budget_policy(jira)
+    except (OSError, ValueError, KeyError, *T.NET_ERRORS) as ex:
+        return 'ask', 'personal time review policy unavailable (%s)' % ex
+    limits = ('; review above %.2fh/week or %.2fh/period' % (
+        rule['weekly_seconds'] / 3600, rule['period_seconds'] / 3600)) if rule else ''
+    return 'auto', 'preview %s, idle cap %d min%s' % (p['preview'], p['idle'], limits)
 
 
 def cmd_state(root, o, pos):
@@ -627,7 +634,246 @@ def post(jira, w, marker):
     return r.get('id'), True
 
 
+def budget_policy(jira):
+    """A personal rule applies only to the specified Jira site and authenticated author."""
+    path = os.environ.get('CYCLE_WORKLOG_POLICY') or os.path.join(
+        os.path.expanduser('~'), '.claude', 'cycle-worklog-policy.json')
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding='utf-8') as f:
+        data = json.load(f)
+    if data.get('version') != 1 or not isinstance(data.get('rules'), list):
+        raise ValueError('invalid personal worklog policy')
+    rules = [r for r in data['rules'] if r.get('site', '').rstrip('/') == jira.site.rstrip('/')]
+    if not rules:
+        return None
+    ref, _ = jira.myself()
+    rules = [r for r in rules if r.get('author') == ref]
+    if len(rules) > 1:
+        raise ValueError('duplicate personal worklog policies')
+    if not rules:
+        return None
+    rule = rules[0]
+    if rule.get('period_days') != 14 or any(
+            type(rule.get(k)) is not int or rule[k] <= 0 for k in ('weekly_seconds', 'period_seconds')):
+        raise ValueError('policy needs a 14-day period and positive integer review limits')
+    ZoneInfo(rule['timezone'])
+    datetime.date.fromisoformat(rule['anchor'])
+    return rule
+
+
+def budget_windows(rule, started):
+    """Use local calendar days so a DST change never moves the week or pay-period boundary."""
+    moment = datetime.datetime.fromisoformat(started)
+    if moment.tzinfo is None:
+        raise ValueError('worklog start must include a UTC offset')
+    day = moment.astimezone(ZoneInfo(rule['timezone'])).date()
+    anchor = datetime.date.fromisoformat(rule['anchor'])
+    period = anchor + datetime.timedelta(days=((day - anchor).days // 14) * 14)
+    week = period + datetime.timedelta(days=((day - period).days // 7) * 7)
+    return day, week, period
+
+
+def all_issue_keys(jira, jql):
+    """Read every Cloud search page, with the existing Data Center fallback."""
+    keys, token, offset, seen = set(), None, 0, set()
+    jira._cycle_budget_logs = {}
+    cloud = True
+    while True:
+        body = {'jql': jql, 'fields': ['summary', 'worklog'], 'maxResults': 100}
+        if cloud and token:
+            body['nextPageToken'] = token
+        if not cloud:
+            body['startAt'] = offset
+        try:
+            page = jira.req('POST', '/rest/api/3/search/jql' if cloud else '/rest/api/2/search', body)
+        except T.JiraError as ex:
+            if not cloud or ex.code not in (404, 405, 410):
+                raise
+            cloud = False
+            continue
+        rows = page.get('issues')
+        if not isinstance(rows, list):
+            raise ValueError('issue search returned no issue list')
+        keys.update(x['key'] for x in rows)
+        for issue in rows:
+            logs = (issue.get('fields') or {}).get('worklog') or {}
+            if (isinstance(logs.get('worklogs'), list) and logs.get('startAt', 0) == 0
+                    and logs.get('total') == len(logs['worklogs'])):
+                jira._cycle_budget_logs[issue['key']] = logs['worklogs']
+        if cloud:
+            token = page.get('nextPageToken')
+            if not token:
+                if page.get('isLast') is False:
+                    raise ValueError('incomplete Jira search pagination')
+                return keys
+            if token in seen:
+                raise ValueError('repeated Jira search page token')
+            seen.add(token)
+        else:
+            offset += len(rows)
+            if offset >= page['total']:
+                return keys
+        if not rows:
+            raise ValueError('empty Jira page before pagination completed')
+
+
+def all_worklogs(jira, key):
+    """Never treat the first page of an issue's worklogs as its complete history."""
+    offset, out = 0, []
+    while True:
+        page = jira.req('GET', '/rest/api/2/issue/%s/worklog?maxResults=1000&startAt=%d' % (key, offset))
+        rows = page.get('worklogs')
+        if not isinstance(rows, list) or 'total' not in page:
+            raise ValueError('incomplete Jira worklog response')
+        if page.get('startAt', offset) != offset:
+            raise ValueError('Jira returned a different worklog page than requested')
+        out.extend(rows)
+        offset += len(rows)
+        if offset >= page['total']:
+            return out
+        if not rows:
+            raise ValueError('empty Jira worklog page before pagination completed')
+
+
+def budget_receipts_path():
+    """Keep recently posted issue keys available despite Jira search indexing delay."""
+    return os.environ.get('CYCLE_WORKLOG_RECEIPTS') or os.path.join(
+        os.path.expanduser('~'), '.claude', 'cycle-worklog-receipts.json')
+
+
+def budget_receipts():
+    path = budget_receipts_path()
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding='utf-8') as f:
+        rows = json.load(f)
+    if not isinstance(rows, list):
+        raise ValueError('invalid worklog posting receipts')
+    return rows
+
+
+def check_budget(jira, rule, w, sid):
+    """Compare the entire unchanged candidate with all visible logs for this author/site."""
+    if type(w['seconds']) is not int or w['seconds'] <= 0:
+        raise ValueError('worklog duration must be a positive integer number of seconds')
+    day, week, period = budget_windows(rule, w['started'])
+    tz = ZoneInfo(rule['timezone'])
+    for a, b in w['segs']:
+        if any(datetime.datetime.fromtimestamp(t, tz).date() != day for t in (a, max(a, b - 1))):
+            raise ValueError('session spans multiple local dates; review and split actual time by date')
+    lower = (period - datetime.timedelta(days=1)).isoformat()
+    upper = (period + datetime.timedelta(days=15)).isoformat()
+    keys = all_issue_keys(jira, 'worklogAuthor = currentUser() AND worklogDate >= "%s" '
+                          'AND worklogDate <= "%s"' % (lower, upper))
+    keys.add(w['key'])
+    keys.update(r['key'] for r in budget_receipts()
+                if r.get('site') == jira.site and r.get('author') == rule['author']
+                and r.get('at', 0) >= time.time() - KEEP_POSTED_S)
+    weekly, total, seen = 0, 0, set()
+    for key in sorted(keys):
+        cached = getattr(jira, '_cycle_budget_logs', {})
+        logs = cached[key] if key in cached else all_worklogs(jira, key)
+        for log in logs:
+            identity = (key, str(log['id']))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if not all((log.get('author') or {}).get(k) == v for k, v in rule['author'].items()):
+                continue
+            if ' %s]' % sid in str(log.get('comment') or ''):
+                continue  # retry: this unchanged candidate is counted once below
+            booked = datetime.datetime.fromisoformat(log['started']).astimezone(tz).date()
+            seconds = int(log['timeSpentSeconds'])
+            if seconds < 0:
+                raise ValueError('negative Jira worklog duration')
+            if period <= booked < period + datetime.timedelta(days=14):
+                total += seconds
+            if week <= booked < week + datetime.timedelta(days=7):
+                weekly += seconds
+    projected_week, projected_period = weekly + w['seconds'], total + w['seconds']
+    print('  review limits: week %s %.2fh + %.2fh = %.2fh / %.2fh; period %s %.2fh / %.2fh '
+          '(Jira worklogs; manual timekeeping entries/time off are not included)' % (
+              week, weekly / 3600, w['seconds'] / 3600, projected_week / 3600,
+              rule['weekly_seconds'] / 3600, period, projected_period / 3600,
+              rule['period_seconds'] / 3600))
+    return projected_week > rule['weekly_seconds'] or projected_period > rule['period_seconds']
+
+
+@contextlib.contextmanager
+def budget_lock():
+    """Serialize budget check plus posting across updated clones on this machine."""
+    path = budget_receipts_path() + '.lock'
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise ValueError('another worklog post holds %s; retry after it completes' % path)
+    try:
+        os.close(fd)
+        yield
+    finally:
+        os.remove(path)
+
+
+def keep_for_review(root, st, label, w, now, reason):
+    """Freeze a pending candidate without clipping, deleting, or moving any measured time."""
+    s = st['open'][label]
+    if s['intervals'][-1][1] is None:
+        s['intervals'][-1][1] = now
+    s.setdefault('review', []).append({'at': now, 'reason': reason, 'candidate': w})
+    save(root, st)
+    print('  not posted: %s; full candidate saved in %s for review; clock paused' % (reason, state_path(root)))
+
+
 def cmd_finish(root, o, pos):
+    """A personal weekly/period limit holds the full entry for review; it never caps actual time."""
+    jira, _ = jira_for(root)
+    try:
+        rule = budget_policy(jira) if jira else None
+    except (OSError, ValueError, KeyError, *T.NET_ERRORS) as ex:
+        print('worklog: personal review policy could not be checked; nothing posted: %s' % ex)
+        return NEEDS_CONFIRM
+    if not rule or not pos:
+        return _finish(root, o, pos)
+    st, now = load(root), int(time.time())
+    label = pos[0]
+    s = _open(st, label)
+    w = build(root, label, s, o, now)
+    try:
+        with budget_lock() if o.get('yes') else contextlib.nullcontext():
+            blocked = check_budget(jira, rule, w, s['id'])
+            if blocked and not o.get('confirm-budget'):
+                reason = 'weekly or pay-period review limit exceeded; confirm actual time before any further posting'
+                if o.get('yes'):
+                    keep_for_review(root, st, label, w, now, reason)
+                else:
+                    print('  %s; preview only, no time changed' % reason)
+                return NEEDS_CONFIRM
+            if o.get('yes') and s['intervals'][-1][1] is None:
+                s['intervals'][-1][1] = now  # exclude network/check/approval waiting time
+                save(root, st)
+            if o.get('yes'):
+                # Record the issue key before posting. A failed preflight receipt write
+                # cannot leave an unindexed successful post outside the next check.
+                receipts = budget_receipts()
+                receipts = [r for r in receipts if r.get('at', 0) >= now - KEEP_POSTED_S]
+                receipts.append({'site': jira.site, 'author': rule['author'], 'key': w['key'], 'at': now})
+                path = budget_receipts_path()
+                temp = path + '.%d.tmp' % os.getpid()
+                with open(temp, 'w', encoding='utf-8') as f:
+                    json.dump(receipts, f, indent=2)
+                os.replace(temp, path)
+            return _finish(root, o, pos)
+    except (OSError, ValueError, KeyError, *T.NET_ERRORS) as ex:
+        if o.get('yes') and label in load(root)['open']:
+            keep_for_review(root, st, label, w, now, 'review totals unavailable: %s' % ex)
+        else:
+            print('worklog: review totals unavailable; nothing posted: %s' % ex)
+        return NEEDS_CONFIRM
+
+
+def _finish(root, o, pos):
     if not pos:
         sys.exit('usage: worklog finish LABEL [--yes] [--minutes N] [--comment-file F|-] [--confirm-long]')
     label = pos[0]
@@ -718,6 +964,10 @@ def cmd_status(root, o, pos):
         a, e, _ = measure(s, s['marks'] + [t for t, _, _ in ev], idle, now, spans(ev, now))
         print('open   %-14s %s consent, active %s of %s%s' % (
             label, s['consent'], _hm(a), _hm(e), '' if s['intervals'][-1][1] is None else ' (paused)'))
+        if s.get('review'):
+            last = s['review'][-1]
+            print('review %-14s full candidate %s: %s' % (
+                label, _hm(last['candidate']['seconds']), last['reason']))
     for p in (st.get('posted') or [])[-5:]:
         print('posted %-14s %s #%s %s' % (p['label'], p['key'], p['id'], _hm(p['seconds'])))
     return 0
@@ -735,5 +985,5 @@ def main(argv):
             return cmd_hook(os.environ.get('CLAUDE_PROJECT_DIR') or T.repo_root(), {}, [])
         except Exception:
             return 0
-    o, pos = T.opts(argv[1:], flags=('yes', 'force', 'confirm-long', 'confirm-overlap'))
+    o, pos = T.opts(argv[1:], flags=('yes', 'force', 'confirm-long', 'confirm-overlap', 'confirm-budget'))
     return SUBS[argv[0]](T.repo_root(), o, pos)

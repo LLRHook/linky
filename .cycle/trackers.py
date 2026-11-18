@@ -19,7 +19,7 @@ instead of being duplicated the way `merge=union` duplicates it.
 """
 import os, re, shutil, subprocess, sys, tempfile
 
-BUNDLE_VERSION = '2026.10.28.3'  # bump with every change that projects must re-vendor (bundle_check.py)
+BUNDLE_VERSION = '2026.11.14.1'  # bump with every change that projects must re-vendor (bundle_check.py)
 
 TRK_ID = re.compile(r'^###\s+\[((?:BUG|FEAT)-\d+[a-z]*)\]')
 CL_ID = re.compile(r'^[-*]\s+\[((?:BUG|FEAT)-\d+[a-z]*)\]')
