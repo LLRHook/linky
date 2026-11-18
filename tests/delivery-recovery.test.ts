@@ -535,6 +535,34 @@ test('automatic Instagram recovery verifies OGInstagram on the same replacement 
   assert.deepEqual(replacement.options.allowedMentions, { parse: [], users: [AUTHOR], roles: [], repliedUser: false });
 });
 
+test('an OGInstagram component preview on the alternate authorizes replacement only when its gallery has media', async () => {
+  // Discord answers OGInstagram links with embed type `components`: no video, image or thumbnail field.
+  const card = (items: unknown[]) => [{ type: 'components', url: ALTERNATE_IG, components: [{ type: 17, components: [
+    { type: 9, components: [{ type: 10, content: '**author**' }], accessory: { type: 11, media: { url: 'https://oginstagram.com/offload/DdKVPMEhTXe/avatar',
+      proxy_url: 'https://images-ext-1.discordapp.net/external/a/https/oginstagram.com/offload/DdKVPMEhTXe/avatar', content_type: 'image/jpeg', loading_state: 2 } } },
+    { type: 10, content: 'The requested photo.' }, ...(items.length ? [{ type: 12, items }] : []),
+  ] }] }] as unknown as APIEmbed[];
+  const photo = { media: { url: 'https://oginstagram.com/offload/DdKVPMEhTXe/1', content_type: 'image/jpeg', loading_state: 2,
+    proxy_url: 'https://images-ext-1.discordapp.net/external/b/https/oginstagram.com/offload/DdKVPMEhTXe/1' } };
+  const confirmed = delivery(ORIGINAL_IG);
+  confirmed.state.render = (_round, message) => message.content.includes(ALTERNATE_IG) ? card([photo]) : [];
+  await confirmed.create()(confirmed.source);
+  assert.equal(confirmed.sent.length, 1);
+  assert.deepEqual(confirmed.expectedChecks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
+  assert(confirmed.events.includes('verify:1:failed') && confirmed.events.includes('verify:2:passed'));
+  assert(confirmed.sent[0].message.content.includes(ALTERNATE_IG));
+  assert.equal(confirmed.sent[0].deleted, false);
+  assert.equal(confirmed.state.originalDeleted, true);
+  assert.equal(confirmed.remembered[0].mode, 'replace');
+
+  const empty = delivery(ORIGINAL_IG);
+  empty.state.render = (_round, message) => message.content.includes(ALTERNATE_IG) ? card([]) : [];
+  await empty.create()(empty.source);
+  assert(empty.events.includes('verify:2:failed'));
+  assert.equal(empty.state.originalDeleted, false, 'an author card without gallery media keeps the original');
+  assert(empty.sent[0].deleted);
+});
+
 test('failed Instagram providers preserve the source and leave only an owned retry notice', async () => {
   for (const previews of [[],
     [{ url: 'https://oginstagram.com/p/Unrelated/', image: { url: 'https://media.example/other-photo.jpg' } }],
