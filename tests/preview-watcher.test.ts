@@ -35,6 +35,24 @@ test('Gateway preview received before send resolves is accepted without a REST f
   assert.equal(fetches, 0);
 });
 
+test('a Gateway component preview wakes the verifier only once its gallery video is fetched', async t => {
+  const { client, watcher } = fixture(t, { gatewayWaitMs: 100 });
+  const alternate = fixed.replace('fkinstagram.com', 'oginstagram.com');
+  const card = (media: Record<string, unknown>) => ({ type: 'components', url: alternate, components: [{ type: 17, components: [
+    { type: 10, content: 'Caption' }, { type: 12, items: [{ media }] }] }] }) as unknown as APIEmbed;
+  const video = { url: 'https://oginstagram.com/offload/RealPost/1', content_type: 'video/mp4', loading_state: 2,
+    proxy_url: 'https://images-ext-1.discordapp.net/external/a/https/oginstagram.com/offload/RealPost/1' };
+  const watch = watcher.arm(channel, expectedPreviews(source, alternate));
+  const pending = watch.verify(message([], async () => { assert.fail('No REST after Gateway success'); }));
+  raw(client, [card({ url: video.url, loading_state: 1 })]);
+  raw(client, [card({ ...video, content_type: 'image/jpeg' })]);
+  raw(client, [card(video)]);
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(result.videoMetadata, true);
+  assert.equal(result.attributed?.[0].providerId, 'oginstagram');
+});
+
 test('Gateway update wakes an active verifier and unrelated messages cannot satisfy it', async t => {
   const { client, watcher } = fixture(t, { gatewayWaitMs: 100 });
   const watch = watcher.arm(channel, expected);

@@ -491,3 +491,105 @@ test('confirmation provider labels follow matched embed hosts including canonica
   assert.equal(result.ok, true);
   assert.deepEqual((result as typeof result & { matchedProviders?: string[] }).matchedProviders, ['unattributed']);
 });
+
+// Shape of Discord's component link preview for OGInstagram, observed on 2026-11-18 (signatures removed).
+type GalleryMedia = { url?: string; proxy_url?: string; content_type?: string; loading_state?: number };
+const fetchedMedia = (contentType: string, name = '1'): GalleryMedia => ({
+  url: `https://oginstagram.com/offload/DdFKS1ABmK4/${name}`,
+  proxy_url: `https://images-ext-1.discordapp.net/external/abc/https/oginstagram.com/offload/DdFKS1ABmK4/${name}`,
+  content_type: contentType, loading_state: 2 });
+function componentCard(url: string, gallery: readonly GalleryMedia[], { caption = '', author = true }: { caption?: string; author?: boolean } = {}): APIEmbed {
+  return { type: 'components', url, components: [{ type: 17, id: 1, accent_color: 16711785, components: [
+    ...(author ? [{ type: 9, id: 2, components: [{ type: 10, id: 3, content: '**semot\\_art**\n[@semot_art](https://www.instagram.com/semot_art/)' }],
+      accessory: { type: 11, id: 4, media: fetchedMedia('image/jpeg', 'avatar') } }] : []),
+    ...(caption ? [{ type: 10, id: 5, content: caption }] : []),
+    ...(gallery.length ? [{ type: 12, id: 6, items: gallery.map(media => ({ media, description: null, spoiler: false })) }] : []),
+    { type: 9, id: 7, components: [{ type: 10, id: 8, content: '-# OGInstagram' }],
+      accessory: { type: 2, id: 9, style: 5, label: 'Instagram', url: 'https://www.instagram.com/reel/DdFKS1ABmK4/' } },
+  ] }] } as unknown as APIEmbed;
+}
+
+test('a Discord component preview confirms a Reel only once its gallery holds fetched video', () => {
+  const source = 'https://www.instagram.com/reel/DdFKS1ABmK4/', fixed = 'https://oginstagram.com/reel/DdFKS1ABmK4/';
+  const items = expectedPreviews(source, fixed);
+  assert.deepEqual(items, [{ source, url: fixed, platform: 'instagram', providerId: 'oginstagram' }]);
+  const reel = inspectPreviews([componentCard(fixed, [fetchedMedia('video/mp4')], { caption: 'Based on my real experience!' })], items);
+  assert.equal(reel.ok, true);
+  assert.equal(reel.videoMetadata, true);
+  assert.deepEqual(reel.matchedProviders, ['oginstagram']);
+  assert.deepEqual(reel.attributed, items, 'the provider that served the card receives the health credit');
+  const poster = inspectPreviews([componentCard(fixed, [fetchedMedia('image/jpeg')])], items);
+  assert.equal(poster.ok, false, 'a poster image is not video metadata for a Reel');
+  assert.equal(poster.videoMetadata, false);
+  assert.deepEqual(poster.missing, items);
+  assert.equal(poster.providerError, undefined);
+  // The avatar thumbnail alone, with no gallery, is the card for a post the provider could not load.
+  assert.equal(inspectPreviews([componentCard(fixed, [])], items).ok, false);
+  assert.equal(inspectPreviews([componentCard('https://oginstagram.com/reel/OtherReel/', [fetchedMedia('video/mp4')])], items).ok, false);
+});
+
+test('a component preview confirms an image post with any fetched gallery media and reports video separately', () => {
+  const source = 'https://www.instagram.com/p/DeIfsDPo0zx/', fixed = 'https://oginstagram.com/p/DeIfsDPo0zx/';
+  const items = expectedPreviews(source, fixed);
+  const image = inspectPreviews([componentCard(fixed, [fetchedMedia('image/jpeg')], { caption: 'A caption' })], items);
+  assert.equal(image.ok, true);
+  assert.equal(image.videoMetadata, false);
+  const carousel = inspectPreviews([componentCard(fixed, [fetchedMedia('IMAGE/JPEG'), fetchedMedia('video/mp4', '2')])], items);
+  assert.equal(carousel.ok, true);
+  assert.equal(carousel.videoMetadata, true);
+  const lookupSaysVideo = items.map(item => ({ ...item, requireVideo: true }));
+  assert.equal(inspectPreviews([componentCard(fixed, [fetchedMedia('image/jpeg')])], lookupSaysVideo).ok, false);
+  assert.equal(inspectPreviews([componentCard(fixed, [fetchedMedia('video/mp4')])], lookupSaysVideo).ok, true);
+});
+
+test('component gallery media counts only after Discord fetched it', () => {
+  const fixed = 'https://oginstagram.com/p/DeIfsDPo0zx/';
+  const items = expectedPreviews('https://www.instagram.com/p/DeIfsDPo0zx/', fixed);
+  const ready = fetchedMedia('image/jpeg');
+  for (const [label, media] of [
+    ['still loading', { ...ready, loading_state: 1 }], ['not found', { ...ready, loading_state: 3 }],
+    ['no proxy URL', { url: ready.url, content_type: 'image/jpeg', loading_state: 2 }],
+    ['empty proxy URL', { ...ready, proxy_url: '' }],
+    ['no content type', { url: ready.url, proxy_url: ready.proxy_url, loading_state: 2 }],
+    ['not media', { ...ready, content_type: 'text/html' }],
+  ] as const) assert.equal(inspectPreviews([componentCard(fixed, [media])], items).ok, false, label);
+  const { loading_state: _state, ...unlabelled } = ready;
+  assert.equal(inspectPreviews([componentCard(fixed, [unlabelled])], items).ok, true, 'a fetched item without a loading state still counts');
+});
+
+test('caption-free component previews reject post text but allow the author line', () => {
+  const source = 'https://www.instagram.com/p/DeIfsDPo0zx/', gallery = 'https://g.oginstagram.com/p/DeIfsDPo0zx/';
+  const items = expectedPreviews(source, gallery).map(item => ({ ...item, captionFree: true }));
+  assert.equal(items.length, 1);
+  assert.equal(inspectPreviews([componentCard(gallery, [fetchedMedia('image/jpeg')])], items).ok, true);
+  assert.equal(inspectPreviews([componentCard(gallery, [fetchedMedia('image/jpeg')], { caption: 'Algne eestikeelne pealdis.' })], items).ok, false);
+  assert.equal(inspectPreviews([componentCard(gallery, [fetchedMedia('image/jpeg')], { caption: '   ' })], items).ok, true);
+  const reel = expectedPreviews(source.replace('/p/', '/reel/'), gallery).map(item => ({ ...item, captionFree: true }));
+  assert.equal(inspectPreviews([componentCard(gallery, [fetchedMedia('image/jpeg')])], reel).ok, false);
+  assert.equal(inspectPreviews([componentCard(gallery, [fetchedMedia('video/mp4')])], reel).ok, true);
+});
+
+test('malformed or mislabelled component payloads never confirm a preview', () => {
+  const fixed = 'https://oginstagram.com/p/DeIfsDPo0zx/';
+  const items = expectedPreviews('https://www.instagram.com/p/DeIfsDPo0zx/', fixed);
+  const good = componentCard(fixed, [fetchedMedia('image/jpeg')]) as unknown as { components: [{ type: number; components: unknown[] }] };
+  const gallery = good.components[0].components.find(child => (child as { type: number }).type === 12);
+  for (const [label, embed] of [
+    ['rich type carrying components', { ...good, type: 'rich' }],
+    ['no components', { type: 'components', url: fixed }],
+    ['components not a list', { type: 'components', url: fixed, components: { type: 17 } }],
+    ['two containers', { ...good, components: [good.components[0], good.components[0]] }],
+    ['root is not a Container', { ...good, components: [{ ...good.components[0], type: 1 }] }],
+    ['null root', { ...good, components: [null] }],
+    ['children not a list', { ...good, components: [{ type: 17, components: 'x' }] }],
+    ['gallery nested in a Section', { ...good, components: [{ type: 17, components: [{ type: 9, components: [gallery] }] }] }],
+    ['gallery items not a list', { ...good, components: [{ type: 17, components: [{ type: 12, items: { media: fetchedMedia('image/jpeg') } }] }] }],
+    ['null items and media', { ...good, components: [{ type: 17, components: [null, { type: 12, items: [null, { media: null }, {}] }] }] }],
+    ['no url', { ...good, url: undefined }],
+  ] as const) {
+    const result = inspectPreviews([embed as unknown as APIEmbed], items);
+    assert.equal(result.ok, false, label);
+    assert.equal(result.videoMetadata, false, label);
+  }
+  assert.equal(inspectPreviews([good as unknown as APIEmbed], items).ok, true);
+});

@@ -91,6 +91,38 @@ function providerErrorCard(embed: APIEmbed, expected: ExpectedPreview): boolean 
   return errorTitle.test(title) || errorText.test(description) || scanError;
 }
 
+/**
+ * Discord's component link preview (embed type `components`) has no video, image or thumbnail field.
+ * Its one Container lists display components; a Media Gallery item gains a proxy URL and content type
+ * only once Discord has fetched it. https://docs.discord.com/developers/link-previews/component-embeds
+ */
+function componentPreview(embed: APIEmbed): { image: boolean; video: boolean; text: boolean } | null {
+  const card = embed as { type?: unknown; components?: unknown };
+  if (card.type !== 'components' || !Array.isArray(card.components) || card.components.length !== 1) return null;
+  const container = card.components[0] as { type?: unknown; components?: unknown } | null;
+  if (!container || typeof container !== 'object' || container.type !== 17 || !Array.isArray(container.components)) return null;
+  // Discord allows 40 components and 10 gallery items in one preview.
+  const children = (container.components as unknown[]).slice(0, 40)
+    .filter((child): child is { type?: unknown; items?: unknown; content?: unknown } => Boolean(child && typeof child === 'object'));
+  const fetched = children.filter(child => child.type === 12)
+    .flatMap(gallery => Array.isArray(gallery.items) ? (gallery.items as unknown[]).slice(0, 10) : [])
+    .map(item => (item as { media?: unknown } | null)?.media as { proxy_url?: unknown; content_type?: unknown; loading_state?: unknown } | null | undefined)
+    .flatMap(media => media && typeof media === 'object' && typeof media.proxy_url === 'string' && media.proxy_url &&
+      typeof media.content_type === 'string' && (media.loading_state === undefined || media.loading_state === 2)
+      ? [media.content_type.toLowerCase()] : []);
+  return {
+    image: fetched.some(type => type.startsWith('image/')),
+    video: fetched.some(type => type.startsWith('video/')),
+    // The author line sits in a Section; post text is a Text Display placed directly in the Container.
+    text: children.some(child => child.type === 10 && typeof child.content === 'string' && Boolean(child.content.trim())),
+  };
+}
+
+/** Video metadata from either embed format; this never establishes client playback. */
+function hasVideo(embed: APIEmbed): boolean {
+  return Boolean(embed.video?.url || componentPreview(embed)?.video);
+}
+
 function samePost(embed: APIEmbed, expected: ExpectedPreview): boolean {
   if (!embed.url) return false;
   const observed = previewIdentity(embed.url);
@@ -99,16 +131,17 @@ function samePost(embed: APIEmbed, expected: ExpectedPreview): boolean {
 
 function matches(embed: APIEmbed, expected: ExpectedPreview): boolean {
   if (expected.explicitEmbeds || !samePost(embed, expected)) return false;
-  if (expected.captionFree && embed.description?.trim()) return false;
+  const card = componentPreview(embed);
+  if (expected.captionFree && (card ? card.text : embed.description?.trim())) return false;
   if (providerErrorCard(embed, expected)) return false;
-  const media = Boolean(embed.video?.url || embed.image?.url || embed.thumbnail?.url);
+  const media = hasVideo(embed) || Boolean(embed.image?.url || embed.thumbnail?.url || card?.image);
   const source = parseSocialUrl(expected.source);
   const videoPost = expected.requireVideo || expected.platform === 'youtube' || expected.platform === 'twitch' ||
     expected.platform === 'facebook' ||
     (source?.platform === 'x' && /\/video\/[1-4]\/?$/.test(source.path)) ||
     (source?.platform === 'instagram' && /^\/reels?\//.test(source.path)) ||
     (source?.platform === 'tiktok' && /\/video\//.test(source.path));
-  if (videoPost) return Boolean(embed.video?.url);
+  if (videoPost) return hasVideo(embed);
   return media || (['x', 'bluesky', 'reddit'].includes(expected.platform) &&
     Boolean(embed.description?.trim() && (embed.title?.trim() || embed.author?.name?.trim())));
 }
@@ -181,7 +214,7 @@ export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly 
     ...(missing.length > 0 && missing.every(item =>
       embeds.some(embed => samePost(embed, item) && providerErrorCard(embed, item) &&
         parseProviderUrl(embed.url!)?.providerId === item.providerId)) ? { providerError: true } : {}),
-    videoMetadata: embeds.some(embed => Boolean(embed.video?.url) && expected.some(item => matches(embed, item))),
+    videoMetadata: embeds.some(embed => hasVideo(embed) && expected.some(item => matches(embed, item))),
     attributed: expected.filter(item => embeds.some(embed => embed.type !== 'rich' && matches(embed, item) &&
       (parseProviderUrl(embed.url!)?.providerId === item.providerId || (item.providerId === 'youtube' && parseYouTubeUrl(embed.url!) !== null)))),
   };
