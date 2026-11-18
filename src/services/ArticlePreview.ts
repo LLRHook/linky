@@ -7,7 +7,7 @@ import { mapLinks, visibleLink } from './LinkTokens';
 import { cancelRegionalResponse, connectHttps, isPublicIpv4, regionalAbortable } from './RegionalHttp';
 import { formatLinkedInPost, isLinkedInPostUrl, linkedInVideoName, parseLinkedInPost, type LinkedInPost } from './LinkedIn';
 import { formatPdfSize, isPdf, parsePdf, type PdfDocument } from './PdfPreview';
-import { SOCIAL_PROVIDERS } from './SocialProviders';
+import { RETIRED_PROVIDERS, SOCIAL_PROVIDERS } from './SocialProviders';
 import { formatTruthSocialPost, parseTruthArchiveFeed, parseTruthSocialPage, parseTruthSocialStatus, parseTruthSocialUrl,
   TRUTH_ARCHIVE, TRUTH_SOCIAL_HOST, truthSocialFileName, type TruthSocialFile, type TruthSocialLink, type TruthSocialPost } from './TruthSocial';
 
@@ -69,7 +69,7 @@ const EXCLUDED = new Set([
   'twitch.tv', 'twitchcdn.net', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'ytimg.com',
   'erome.com', 'erome.net', ...DISCORD_HOSTS, ...NATIVE_MEDIA_HOSTS,
   'kkclip.com', 'kkclips.com', 'ddinstagram.com', 'vxtiktok.com', 'fxtiktok.com', 'rxddit.com',
-  ...SOCIAL_PROVIDERS.flatMap(provider => [...provider.hosts]),
+  ...[...SOCIAL_PROVIDERS, ...RETIRED_PROVIDERS].flatMap(provider => [...provider.hosts]),
 ]);
 const LOCAL_SUFFIX = /\.(?:localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$/i;
 const SERVICE_PATH = /^\/(?:api|admin|login|logout|signin|signout|oauth|auth|account|wp-admin|wp-json|\.well-known)(?:\/|$)|^\/xmlrpc\.php$/i;

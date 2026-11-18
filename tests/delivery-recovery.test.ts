@@ -28,7 +28,7 @@ const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '170
 const ORIGINAL_X = 'https://twitter.com/jack/status/20?s=46';
 const PRIMARY_X = 'https://fixupx.com/jack/status/20', ALTERNATE_X = 'https://vxtwitter.com/jack/status/20';
 const ORIGINAL_IG = 'https://www.instagram.com/p/DdKVPMEhTXe/?igsh=tracking';
-const PRIMARY_IG = 'https://fkinstagram.com/p/DdKVPMEhTXe/', ALTERNATE_IG = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+const PRIMARY_IG = 'https://oginstagram.com/p/DdKVPMEhTXe/';
 const YOUTUBE_ID = 'dQw4w9WgXcQ', NATIVE_YOUTUBE = `https://www.youtube.com/watch?v=${YOUTUBE_ID}`;
 const xPreview: APIEmbed = { url: PRIMARY_X, title: 'Jack', description: 'A public post.' };
 const videoPreview: APIEmbed = { url: NATIVE_YOUTUBE, video: { url: `https://www.youtube.com/embed/${YOUTUBE_ID}` } };
@@ -513,31 +513,30 @@ test('health-based provider routing preserves identical URLs inside spoilers, co
   assert.equal(f.state.originalDeleted, true);
 });
 
-test('automatic Instagram recovery verifies OGInstagram on the same replacement before deleting the original', async () => {
+test('automatic Instagram delivery verifies OGInstagram on the first replacement before deleting the original', async () => {
   const f = delivery(ORIGINAL_IG);
-  f.state.render = (_round, message) => message.content.includes(ALTERNATE_IG)
-    ? [{ url: ALTERNATE_IG, image: { url: 'https://media.example/requested-photo.jpg' }, description: 'The requested photo.' }]
+  f.state.render = (_round, message) => message.content.includes(PRIMARY_IG)
+    ? [{ url: PRIMARY_IG, image: { url: 'https://media.example/requested-photo.jpg' }, description: 'The requested photo.' }]
     : [];
   await f.create()(f.source);
-  assert.equal(f.sent.length, 1, 'recovery edits one message instead of sending another replacement');
+  assert.equal(f.sent.length, 1);
   const replacement = f.sent[0];
   assert(replacement.options.content?.includes(PRIMARY_IG));
-  assert(replacement.message.content.includes(ALTERNATE_IG));
-  assert(!replacement.message.content.includes(PRIMARY_IG));
-  assert.equal(replacement.edits.filter(edit => typeof edit.content === 'string').length, 1);
-  assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
+  assert(!/fkinstagram|instagram7/.test(replacement.message.content), 'the retired provider is never posted');
+  assert.equal(replacement.edits.filter(edit => typeof edit.content === 'string').length, 0, 'no provider switch is needed');
+  assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['oginstagram']]);
   assert.equal(replacement.deleted, false);
   assert.equal(f.state.originalDeleted, true);
-  const verified = f.events.indexOf('verify:2:passed'), saved = f.events.indexOf(`remember:${replacement.message.id}`);
+  const verified = f.events.indexOf('verify:1:passed'), saved = f.events.indexOf(`remember:${replacement.message.id}`);
   assert(verified >= 0 && saved > verified && f.events.indexOf('delete:source') > saved);
   assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
     replacementId: replacement.message.id, authorId: AUTHOR, mode: 'replace' }]);
   assert.deepEqual(replacement.options.allowedMentions, { parse: [], users: [AUTHOR], roles: [], repliedUser: false });
 });
 
-test('an OGInstagram component preview on the alternate authorizes replacement only when its gallery has media', async () => {
+test('an OGInstagram component preview authorizes replacement only when its gallery has media', async () => {
   // Discord answers OGInstagram links with embed type `components`: no video, image or thumbnail field.
-  const card = (items: unknown[]) => [{ type: 'components', url: ALTERNATE_IG, components: [{ type: 17, components: [
+  const card = (items: unknown[]) => [{ type: 'components', url: PRIMARY_IG, components: [{ type: 17, components: [
     { type: 9, components: [{ type: 10, content: '**author**' }], accessory: { type: 11, media: { url: 'https://oginstagram.com/offload/DdKVPMEhTXe/avatar',
       proxy_url: 'https://images-ext-1.discordapp.net/external/a/https/oginstagram.com/offload/DdKVPMEhTXe/avatar', content_type: 'image/jpeg', loading_state: 2 } } },
     { type: 10, content: 'The requested photo.' }, ...(items.length ? [{ type: 12, items }] : []),
@@ -545,35 +544,36 @@ test('an OGInstagram component preview on the alternate authorizes replacement o
   const photo = { media: { url: 'https://oginstagram.com/offload/DdKVPMEhTXe/1', content_type: 'image/jpeg', loading_state: 2,
     proxy_url: 'https://images-ext-1.discordapp.net/external/b/https/oginstagram.com/offload/DdKVPMEhTXe/1' } };
   const confirmed = delivery(ORIGINAL_IG);
-  confirmed.state.render = (_round, message) => message.content.includes(ALTERNATE_IG) ? card([photo]) : [];
+  confirmed.state.render = (_round, message) => message.content.includes(PRIMARY_IG) ? card([photo]) : [];
   await confirmed.create()(confirmed.source);
   assert.equal(confirmed.sent.length, 1);
-  assert.deepEqual(confirmed.expectedChecks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
-  assert(confirmed.events.includes('verify:1:failed') && confirmed.events.includes('verify:2:passed'));
-  assert(confirmed.sent[0].message.content.includes(ALTERNATE_IG));
+  assert.deepEqual(confirmed.expectedChecks.map(items => items.map(item => item.providerId)), [['oginstagram']]);
+  assert(confirmed.events.includes('verify:1:passed'));
+  assert(confirmed.sent[0].message.content.includes(PRIMARY_IG));
   assert.equal(confirmed.sent[0].deleted, false);
   assert.equal(confirmed.state.originalDeleted, true);
   assert.equal(confirmed.remembered[0].mode, 'replace');
 
   const empty = delivery(ORIGINAL_IG);
-  empty.state.render = (_round, message) => message.content.includes(ALTERNATE_IG) ? card([]) : [];
+  empty.state.render = (_round, message) => message.content.includes(PRIMARY_IG) ? card([]) : [];
   await empty.create()(empty.source);
-  assert(empty.events.includes('verify:2:failed'));
+  assert.deepEqual(empty.events.filter(event => event.startsWith('verify:')), ['verify:1:started', 'verify:1:failed']);
   assert.equal(empty.state.originalDeleted, false, 'an author card without gallery media keeps the original');
   assert(empty.sent[0].deleted);
 });
 
-test('failed Instagram providers preserve the source and leave only an owned retry notice', async () => {
+test('a failed Instagram preview preserves the source and leaves only an owned retry notice', async () => {
   for (const previews of [[],
     [{ url: 'https://oginstagram.com/p/Unrelated/', image: { url: 'https://media.example/other-photo.jpg' } }],
-    [{ url: ALTERNATE_IG, title: 'Error', description: 'Could not retrieve this post.' }],
+    [{ url: PRIMARY_IG, title: 'Error', description: 'Could not retrieve this post.' }],
   ] as APIEmbed[][]) {
     const f = delivery(ORIGINAL_IG);
     f.state.render = () => previews;
     await f.create()(f.source);
     assert.equal(f.state.originalDeleted, false);
     assert.equal(f.source.content, ORIGINAL_IG);
-    assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
+    assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['oginstagram']],
+      'no second Instagram provider exists, and the retired host is never attempted');
     assert.equal(f.sent.length, 2);
     assert(f.sent[0].deleted);
     assert.equal(f.sent[1].deleted, false);
@@ -585,13 +585,12 @@ test('failed Instagram providers preserve the source and leave only an owned ret
   }
 });
 
-test('matching Instagram reel thumbnails from both providers cannot authorize source deletion', async () => {
+test('a matching Instagram reel thumbnail cannot authorize source deletion', async () => {
   const f = delivery('https://www.instagram.com/reels/DdFKS1ABmK4/');
-  f.state.render = round => [{ url: round === 1 ? 'https://fkinstagram.com/reels/DdFKS1ABmK4/' :
-    'https://oginstagram.com/reels/DdFKS1ABmK4/', thumbnail: { url: 'https://media.example/reel-poster.jpg' } }];
+  f.state.render = () => [{ url: 'https://oginstagram.com/reels/DdFKS1ABmK4/', thumbnail: { url: 'https://media.example/reel-poster.jpg' } }];
   await f.create()(f.source);
-  assert.equal(f.expectedChecks.length, 2);
-  assert(f.events.includes('verify:1:failed') && f.events.includes('verify:2:failed'));
+  assert.equal(f.expectedChecks.length, 1);
+  assert(f.events.includes('verify:1:failed'));
   assert.equal(f.state.originalDeleted, false);
   assert(f.sent[0].deleted);
   assert.equal(f.remembered[0].mode, 'reply');
@@ -840,7 +839,7 @@ test('multiple translated text posts are delivered without requiring intentional
 test('a translated caption beside a reel still requires that reel to produce video metadata', async () => {
   for (const available of [true, false]) {
     const f = delivery(`${ORIGINAL_X} https://instagram.com/reels/ABC/`);
-    f.state.render = () => available ? [{ url: 'https://fkinstagram.com/reel/ABC/', video: { url: 'https://cdn.example/reel.mp4' } }] : [];
+    f.state.render = () => available ? [{ url: 'https://oginstagram.com/reel/ABC/', video: { url: 'https://cdn.example/reel.mp4' } }] : [];
     await f.create({ translateTweet: async () => translatedText })(f.source);
     assert.equal(f.state.originalDeleted, available);
     assert.deepEqual(f.expectedChecks[0].map(item => item.platform), ['instagram']);
@@ -940,11 +939,11 @@ test('a failure notice is cancelled if setup changes during source fetch or owne
 
 const instagramCaption = (shortcode = 'ABC', kind = 'p', mediaTypes = ['GraphImage']): InstagramTranslation => ({
   sourceUrl: `https://www.instagram.com/${kind}/${shortcode}/`, shortcode, username: 'traveller',
-  text: 'This is the full English caption.', languages: ['et'], mediaOnlyUrl: `https://g.fkinstagram.com/p/${shortcode}/`, mediaTypes,
+  text: 'This is the full English caption.', languages: ['et'], mediaOnlyUrl: `https://g.oginstagram.com/p/${shortcode}/`, mediaTypes,
 });
-const instagramImage = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.fkinstagram.com/p/${shortcode}/`,
+const instagramImage = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.oginstagram.com/p/${shortcode}/`,
   image: { url: `https://cdn.example/${shortcode}.jpg` } });
-const instagramVideo = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.fkinstagram.com/p/${shortcode}/`,
+const instagramVideo = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.oginstagram.com/p/${shortcode}/`,
   video: { url: `https://cdn.example/${shortcode}.mp4` } });
 
 test('translated Instagram images and reels retain their native media before replacing the original', async () => {
@@ -963,33 +962,32 @@ test('translated Instagram images and reels retain their native media before rep
     assert.equal(replacement.options.embeds, undefined, 'rich embeds must not suppress native media');
     assert.deepEqual(replacement.message.embeds.map(embed => embed.toJSON()), [preview]);
     assert.deepEqual(f.expectedChecks, [[{ source: caption.sourceUrl, url: caption.mediaOnlyUrl,
-      platform: 'instagram', providerId: 'instagram7', captionFree: true, ...(kind === 'reel' ? { requireVideo: true } : {}) }]]);
+      platform: 'instagram', providerId: 'oginstagram', captionFree: true, ...(kind === 'reel' ? { requireVideo: true } : {}) }]]);
     assert.equal(f.remembered[0].mode, 'replace');
     assert(f.events.indexOf('delete:source') > f.events.indexOf('verify:1:passed'));
     assert.match(JSON.stringify(replacement.message.components), /linky:remove/);
   }
 });
 
-test('translated Instagram recovery retains one English caption on the same replacement until OGInstagram media is verified', async () => {
+test('translated Instagram delivery keeps one English caption on one replacement until OGInstagram media is verified', async () => {
   for (const [kind, mediaType] of [['p', 'GraphImage'], ['p', 'GraphVideo'], ['reel', 'GraphVideo']]) {
     const caption = instagramCaption('DdKVPMEhTXe', kind, [mediaType]), f = delivery(caption.sourceUrl);
-    const alternate = `https://g.oginstagram.com/${kind}/${caption.shortcode}/`;
-    const preview: APIEmbed = { url: alternate, ...(mediaType === 'GraphVideo'
+    const preview: APIEmbed = { url: caption.mediaOnlyUrl, ...(mediaType === 'GraphVideo'
       ? { video: { url: 'https://cdn.example/video.mp4' } } : { image: { url: 'https://cdn.example/photo.jpg' } }) };
     let lookups = 0;
-    f.state.render = round => round === 1 ? [] : [preview];
-    f.state.duringPreview = async () => assert.equal(f.state.originalDeleted, false, 'never delete while either preview is pending');
+    f.state.render = () => [preview];
+    f.state.duringPreview = async () => assert.equal(f.state.originalDeleted, false, 'never delete while the preview is pending');
     await f.create({ translateInstagram: async () => { lookups++; return caption; } })(f.source);
-    assert.equal(lookups, 1, 'switching media providers must not retranslate or append another caption');
+    assert.equal(lookups, 1);
     assert.equal(f.sent.length, 1);
-    const replacement = f.sent[0], contentEdits = replacement.edits.filter(edit => typeof edit.content === 'string');
-    assert.equal(contentEdits.length, 1, 'edit the existing replacement instead of posting another translation');
-    assert.equal(replacement.message.content, String(replacement.options.content).replace(caption.mediaOnlyUrl, alternate));
-    for (const content of [replacement.options.content, contentEdits[0].content, replacement.message.content]) {
+    const replacement = f.sent[0];
+    assert.equal(replacement.edits.filter(edit => typeof edit.content === 'string').length, 0, 'the caption is posted once and never rewritten');
+    for (const content of [replacement.options.content, replacement.message.content]) {
       assert.equal(String(content).split(caption.text).length - 1, 1);
       assert.equal(String(content).split('-# Translated from Estonian').length - 1, 1);
+      assert(String(content).includes(caption.mediaOnlyUrl));
     }
-    assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['instagram7'], ['oginstagram']]);
+    assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['oginstagram']]);
     assert(f.expectedChecks.flat().every(item => item.captionFree));
     if (mediaType === 'GraphVideo') assert(f.expectedChecks.flat().every(item => item.requireVideo));
     assert.deepEqual(replacement.message.embeds.map(embed => embed.toJSON()), [preview]);
@@ -997,21 +995,20 @@ test('translated Instagram recovery retains one English caption on the same repl
     assert.deepEqual(replacement.options.allowedMentions, { parse: [], users: [AUTHOR], roles: [], repliedUser: false });
     assert.equal(replacement.deleted, false);
     assert.equal(f.state.originalDeleted, true);
-    assert(f.events.indexOf(`remember:${replacement.message.id}`) > f.events.indexOf('verify:2:passed'));
+    assert(f.events.indexOf(`remember:${replacement.message.id}`) > f.events.indexOf('verify:1:passed'));
     assert(f.events.indexOf('delete:source') > f.events.indexOf(`remember:${replacement.message.id}`));
     assert.equal(f.remembered[0].replacementId, replacement.message.id);
     assert.equal(f.remembered[0].mode, 'replace');
   }
 });
 
-test('Instagram GraphVideo posts and Reels require video metadata from either gallery, not merely an image', async () => {
+test('Instagram GraphVideo posts and Reels require video metadata from the gallery, not merely an image', async () => {
   for (const kind of ['p', 'reel']) for (const playable of [false, true]) {
     const caption = instagramCaption('ABC', kind, ['GraphVideo']), f = delivery(caption.sourceUrl);
-    f.state.render = round => [{ ...(playable ? instagramVideo() : instagramImage()),
-      url: round === 1 ? caption.mediaOnlyUrl : `https://g.oginstagram.com/${kind}/ABC/` }];
+    f.state.render = () => [playable ? instagramVideo() : instagramImage()];
     await f.create({ translateInstagram: async () => caption })(f.source);
     assert(f.expectedChecks.flat().every(item => item.requireVideo && item.captionFree));
-    assert.deepEqual(f.expectedChecks.map(items => items[0].providerId), playable ? ['instagram7'] : ['instagram7', 'oginstagram']);
+    assert.deepEqual(f.expectedChecks.map(items => items[0].providerId), ['oginstagram']);
     assert.equal(f.state.originalDeleted, playable);
     assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
     assert.equal(f.remembered[0].mode, playable ? 'replace' : 'reply');
@@ -1021,13 +1018,11 @@ test('Instagram GraphVideo posts and Reels require video metadata from either ga
 
 test('a media preview repeating the original Instagram caption is rejected instead of duplicating languages', async () => {
   const caption = instagramCaption(), f = delivery(caption.sourceUrl);
-  f.state.render = round => [{ ...instagramImage(), url: round === 1 ? caption.mediaOnlyUrl : 'https://g.oginstagram.com/p/ABC/',
-    description: 'See on algne eestikeelne pealdis.' }];
+  f.state.render = () => [{ ...instagramImage(), description: 'See on algne eestikeelne pealdis.' }];
   await f.create({ translateInstagram: async () => caption })(f.source);
   assert.equal(f.state.originalDeleted, false);
   assert.equal(f.expectedChecks[0][0].captionFree, true);
-  assert(f.events.includes('verify:1:failed'));
-  assert(f.events.includes('verify:2:failed'));
+  assert.deepEqual(f.events.filter(event => event.startsWith('verify:')), ['verify:1:started', 'verify:1:failed']);
   assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
   assert.equal(f.sent[0].message.embeds.length, 0);
   assert(!f.sent[0].message.content.includes('See on algne'));
@@ -1053,8 +1048,8 @@ test('missing Instagram media keeps one owned English caption, suppresses its ga
     assert(controls.includes(caption.sourceUrl));
     assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
       replacementId: replacement.message.id, authorId: AUTHOR, mode: 'reply' }]);
-    assert.deepEqual(f.expectedChecks.map(items => items[0].url), [caption.mediaOnlyUrl, 'https://g.oginstagram.com/p/ABC/']);
-    assert(f.expectedChecks.flat().every(item => item.captionFree), 'both attempts must omit the original-language caption');
+    assert.deepEqual(f.expectedChecks.map(items => items[0].url), [caption.mediaOnlyUrl]);
+    assert(f.expectedChecks.flat().every(item => item.captionFree), 'the attempt must omit the original-language caption');
     assert.equal(replacement.message.content.split(caption.text).length - 1, 1);
     assert.equal(replacement.message.content.split('-# Translated from Estonian').length - 1, 1);
     assert(replacement.edits.some(edit => Array.isArray(edit.embeds) && edit.embeds.length === 0));
@@ -1159,7 +1154,7 @@ test('automatic mobile links resolve before translation and media verification, 
       if (blocked && options.hostname === 'www.reddit.com') return new Response(null, { status: 403 });
       return new Response(null, { status: 302, headers: { location: canonical + '?tracking=removed' } });
     } });
-    const provider = platform === 'instagram' ? 'https://fkinstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/?legacy';
+    const provider = platform === 'instagram' ? 'https://oginstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/?legacy';
     f.state.render = () => [{ url: provider, image: { url: 'https://cdn.example/post.jpg' } }];
     await f.create({ normalizeMobileLinks })(f.source);
     assert.equal(calls, blocked ? 2 : 1); assert.equal(f.state.originalDeleted, true);

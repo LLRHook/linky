@@ -7,9 +7,21 @@ const source = (code = CODE, kind = 'p') => `https://www.instagram.com/${kind}/$
 // A long mixed-language fixture reproduces the English-introduction regression without retaining a real caption.
 const caption = 'Follow @bustervro for more.\n\n' + 'See on eestikeelne lõik, mis vajab tõlkimist. '.repeat(18) + '\n\n#eesti';
 const translated = { text: 'Follow @bustervro for more.\n\nThis is the complete English caption.\n\n#eesti', languages: ['et'] };
-const payload = (patch: Record<string, unknown> = {}) => ({ Username: 'bustervro', Caption: caption,
-  Medias: [{ TypeName: 'GraphImage' }], ...patch });
-const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+const ORIGIN = 'https://oginstagram.com';
+const html = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/[@#]\w+/g, tag => `<a href="${ORIGIN}/${tag.slice(1)}">${tag}</a>`).replace(/\n/g, '<br>');
+const media = (mediaType = 'image/jpeg') => ({ type: 'Document', mediaType, url: `${ORIGIN}/offload/${CODE}/1` });
+/** OGInstagram's ActivityStreams Note, as served for `Accept: application/activity+json`. */
+const payload = (patch: Record<string, unknown> = {}, code = CODE, kind = 'p') => ({
+  '@context': 'https://www.w3.org/ns/activitystreams', type: 'Note', id: `${ORIGIN}/${kind}/${code}`,
+  attributedTo: `${ORIGIN}/bustervro`, content: `<p><b>❤️ 1,234 💬 56</b></p><p>${html(caption)}</p>`,
+  attachment: [media()], ...patch });
+const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/activity+json' } });
+/** Answer each request with the Note for the post that request names. */
+const serve = (patch: Record<string, unknown> = {}) => async (input: Parameters<typeof fetch>[0]) => {
+  const [, kind, code] = /^https:\/\/oginstagram\.com\/(p|reel)\/([^/]+)\/$/.exec(String(input))!;
+  return json(payload(patch, code, kind));
+};
 const turn = () => new Promise<void>(resolve => setImmediate(resolve));
 
 test('parses exact source hosts and post paths while preserving case-sensitive shortcodes', () => {
@@ -28,7 +40,7 @@ test('rejects fixer links, profiles, unknown paths and authorities without makin
     async () => assert.fail('No metadata request for rejected input'));
   for (const value of [
     source().replace('https:', 'http:'), source().replace('www.', 'g.'), source().replace('instagram.com', 'instagram7.com'),
-    `https://g.fkinstagram.com/p/${CODE}/`, `https://www.instagram.com:443/p/${CODE}/`,
+    `https://g.fkinstagram.com/p/${CODE}/`, `https://oginstagram.com/p/${CODE}/`, `https://www.instagram.com:443/p/${CODE}/`,
     `https://www.instagram.com:444/p/${CODE}/`, `https://user@www.instagram.com/p/${CODE}/`,
     `https://www.instagram.com.evil.test/p/${CODE}/`, `https://www.instagram.com./p/${CODE}/`,
     `https://www.instagram.com\\@evil.test/p/${CODE}/`, `https://evil.test/?next=${source()}`,
@@ -49,40 +61,72 @@ test('DdFwAIqgncQ passes its full mixed-language caption to the translator and r
     requests.push(String(input));
     assert.equal(options?.redirect, 'error'); assert.equal(options?.credentials, 'omit');
     assert(options?.signal instanceof AbortSignal);
-    assert.deepEqual(options.headers, { Accept: 'application/json', 'User-Agent': 'LinkyBot/1.0 (+https://linkybot.dev)' });
+    assert.deepEqual(options.headers, { Accept: 'application/activity+json', 'User-Agent': 'LinkyBot/1.0 (+https://linkybot.dev)' });
     return json(payload());
   });
   const result = await lookup(source() + '?igsh=tracking');
-  assert.deepEqual(requests, [`https://fkinstagram.com/api/${CODE}`]);
+  assert.deepEqual(requests, [`${ORIGIN}/p/${CODE}/`], 'the lookup uses the live provider, never a retired host');
   assert.deepEqual(captions, [caption]); assert(caption.length > 250);
   assert.deepEqual(result, { sourceUrl: source(), shortcode: CODE, username: 'bustervro',
-    text: translated.text, languages: ['et'], mediaOnlyUrl: `https://g.fkinstagram.com/p/${CODE}/`, mediaTypes: ['GraphImage'] });
+    text: translated.text, languages: ['et'], mediaOnlyUrl: `https://g.oginstagram.com/p/${CODE}/`, mediaTypes: ['GraphImage'] });
   assert.equal(Object.hasOwn(result!, 'hasWorkingMedia'), false, 'GraphImage is metadata, not a media-health assertion');
 });
 
-test('Reels use video-oriented lookup but still return the documented canonical gallery path', async () => {
-  for (const kind of ['reel', 'reels', 'tv']) {
+test('Reels use the provider Reel route but still return the canonical gallery path', async () => {
+  // The provider has no /tv/ route, so a legacy IGTV shortcode is requested as a post.
+  for (const [kind, route] of [['reel', 'reel'], ['reels', 'reel'], ['tv', 'p']]) {
     const lookup = createInstagramLookup(async () => translated, async input => {
-      assert.equal(String(input), `https://fkinstagram.com/api/${CODE}?kind=reel`);
-      return json(payload({ Medias: [{ TypeName: 'GraphVideo' }] }));
+      assert.equal(String(input), `${ORIGIN}/${route}/${CODE}/`);
+      return json(payload({ attachment: [media('video/mp4')] }, CODE, route));
     });
     const result = await lookup(source(CODE, kind));
     assert.equal(result?.sourceUrl, source(CODE, kind)); assert.deepEqual(result?.mediaTypes, ['GraphVideo']);
-    assert.equal(result?.mediaOnlyUrl, `https://g.fkinstagram.com/p/${CODE}/`);
+    assert.equal(result?.mediaOnlyUrl, `https://g.oginstagram.com/p/${CODE}/`);
+  }
+});
+
+test('carousel attachments map to image and video hints in order', async () => {
+  const lookup = createInstagramLookup(async () => translated,
+    serve({ attachment: [media(), media('video/mp4'), media('IMAGE/WEBP')] }));
+  assert.deepEqual((await lookup(source()))?.mediaTypes, ['GraphImage', 'GraphVideo', 'GraphImage']);
+});
+
+test('caption text drops provider statistics and markup while escaped characters stay literal', async () => {
+  const cases: [string, string][] = [
+    ['<p><b>❤️ 12 &amp; 💬 3</b></p><p>Tere &amp; tere &lt;b&gt;not bold&lt;/b&gt;<br>teine rida <a href="https://oginstagram.com/explore/tags/eesti">#eesti</a></p>',
+      'Tere & tere <b>not bold</b>\nteine rida #eesti'],
+    ['<p>Esimene</p><p>Teine<br/>rida</p>', 'Esimene\n\nTeine\nrida'],
+    ['<p>&#128512; &#x1F600; &quot;q&quot; &apos;a&apos; &unknown; &#0; &#xD800; &amp;lt;</p>', '😀 😀 "q" \'a\' &unknown; &#0; &#xD800; &lt;'],
+  ];
+  for (const [content, expected] of cases) {
+    const captions: string[] = [];
+    const lookup = createInstagramLookup(async text => { captions.push(text); return translated; }, serve({ content }));
+    assert(await lookup(source()));
+    assert.deepEqual(captions, [expected]);
   }
 });
 
 test('invalid and incomplete provider responses never reach the translator', async () => {
   for (const value of [null, [], {}, { error: 'unavailable' },
-    payload({ Username: '' }), payload({ Username: '  ' }), payload({ Username: '@everyone' }), payload({ Username: 'x'.repeat(31) }),
-    payload({ Caption: '' }), payload({ Caption: '  \n' }), payload({ Caption: 4 }), payload({ Caption: 'é'.repeat(8193) }),
-    payload({ Medias: [] }), payload({ Medias: null }), payload({ Medias: [{}] }), payload({ Medias: [null] }),
-    payload({ Medias: [{ TypeName: 'GraphSidecar' }] }), payload({ Medias: [{ TypeName: 'GraphImage' }, { TypeName: 'unknown' }] }),
-    payload({ Medias: Array.from({ length: 21 }, () => ({ TypeName: 'GraphImage' })) }),
-    { username: 'bustervro', caption, medias: [{ typeName: 'GraphImage' }] },
+    payload({ type: 'Article' }), payload({ type: undefined }),
+    payload({ id: `${ORIGIN}/p/OtherPost` }), payload({ id: `${ORIGIN}/p/${CODE}/` }), payload({ id: `${ORIGIN}/tv/${CODE}` }),
+    payload({ id: `https://evil.test/p/${CODE}` }), payload({ id: 4 }),
+    payload({ attributedTo: '' }), payload({ attributedTo: `${ORIGIN}/` }), payload({ attributedTo: 'https://evil.test/bustervro' }),
+    payload({ attributedTo: `${ORIGIN}/@everyone` }), payload({ attributedTo: `${ORIGIN}/${'x'.repeat(31)}` }),
+    payload({ attributedTo: `${ORIGIN}/a/b` }), payload({ attributedTo: ['bustervro'] }),
+    payload({ content: '' }), payload({ content: '<p><b>❤️ 12</b></p>' }), payload({ content: '<p>  <br></p>' }), payload({ content: 4 }),
+    payload({ content: `<p>${'é'.repeat(8193)}</p>` }),
+    payload({ attachment: [] }), payload({ attachment: null }), payload({ attachment: [{}] }), payload({ attachment: [null] }),
+    payload({ attachment: [media('text/html')] }), payload({ attachment: [media(), media('unknown')] }),
+    payload({ attachment: Array.from({ length: 21 }, () => media()) }),
+    // The retired provider's payload shape is not a Note.
+    { Username: 'bustervro', Caption: caption, Medias: [{ TypeName: 'GraphImage' }] },
   ]) {
-    const lookup = createInstagramLookup(async () => assert.fail('Invalid metadata cannot be translated'), async () => json(value));
-    assert.equal(await lookup(source()), null);
+    // The lookup swallows translator errors, so count calls instead of throwing from the translator.
+    let translations = 0;
+    const lookup = createInstagramLookup(async () => { translations++; return translated; }, async () => json(value));
+    assert.equal(await lookup(source()), null, JSON.stringify(value)?.slice(0, 120));
+    assert.equal(translations, 0, JSON.stringify(value)?.slice(0, 120));
   }
 });
 
@@ -90,15 +134,18 @@ test('the mistyped lowercase-l shortcode cannot reuse the uppercase-I post cache
   const requests: string[] = [];
   const lookup = createInstagramLookup(async () => translated, async input => {
     requests.push(String(input));
-    return json(String(input).endsWith(CODE) ? payload() : payload({ Username: '', Caption: '' }));
+    // A provider answering with another post's Note is rejected by its id.
+    return json(payload());
   });
   assert(await lookup(source()));
   assert.equal(await lookup(source('DdFwAlqgncQ')), null);
-  assert.deepEqual(requests, [`https://fkinstagram.com/api/${CODE}`, 'https://fkinstagram.com/api/DdFwAlqgncQ']);
+  assert.deepEqual(requests, [`${ORIGIN}/p/${CODE}/`, `${ORIGIN}/p/DdFwAlqgncQ/`]);
 });
 
 test('provider errors, redirects, invalid JSON and malformed UTF-8 fail open', async () => {
   for (const response of [new Response('provider error', { status: 500 }), new Response('', { status: 302 }),
+    new Response(JSON.stringify({ type: 'about:blank', title: 'Not Found', status: 404 }),
+      { status: 404, headers: { 'Content-Type': 'application/problem+json' } }),
     new Response('<html>login</html>'), new Response(new Uint8Array([0xff, 0xfe])),
     new Response(null, { status: 204 })]) {
     const lookup = createInstagramLookup(async () => assert.fail('Invalid response cannot be translated'), async () => response);
@@ -161,10 +208,10 @@ test('concurrent equivalent URLs share one lookup and cached results are not ext
 test('source post and Reel metadata retain distinct provider lookup hints', async () => {
   const requests: string[] = [];
   const lookup = createInstagramLookup(async () => translated, async input => {
-    requests.push(String(input)); return json(payload());
+    requests.push(String(input)); return serve()(input);
   });
   await lookup(source()); await lookup(source(CODE, 'reel')); await lookup(source(CODE, 'reels'));
-  assert.deepEqual(requests, [`https://fkinstagram.com/api/${CODE}`, `https://fkinstagram.com/api/${CODE}?kind=reel`]);
+  assert.deepEqual(requests, [`${ORIGIN}/p/${CODE}/`, `${ORIGIN}/reel/${CODE}/`]);
   assert.equal((await lookup(source(CODE, 'reels')))?.sourceUrl, source(CODE, 'reels'));
 });
 
@@ -180,7 +227,7 @@ test('positive cache entries expire after five minutes and failures retry after 
 
 test('cache capacity evicts older results without retaining unbounded caption data', async () => {
   let requests = 0;
-  const lookup = createInstagramLookup(async () => translated, async () => { requests++; return json(payload()); });
+  const lookup = createInstagramLookup(async () => translated, async input => { requests++; return serve()(input); });
   for (let i = 0; i < 101; i++) assert(await lookup(source(`Post_${i}`)));
   assert.equal(requests, 101); assert(await lookup(source('Post_100'))); assert.equal(requests, 101);
   assert(await lookup(source('Post_0'))); assert.equal(requests, 102);
@@ -190,7 +237,7 @@ test('at most eight distinct requests can be pending while duplicates still shar
   let requests = 0, release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const lookup = createInstagramLookup(async () => { await gate; return translated; },
-    async () => { requests++; return json(payload()); });
+    async input => { requests++; return serve()(input); });
   const first = Array.from({ length: 8 }, (_, i) => lookup(source(`Post_${i}`)));
   const duplicate = lookup(source('Post_0'));
   assert.equal(await lookup(source('Post_8')), null); assert.equal(requests, 8);

@@ -350,12 +350,25 @@ test('Linky’s actual text translation cards qualify without a fabricated title
 
 test('diagnostics describe recent observations without claiming a provider outage or playback', () => {
   const health = new PreviewHealth();
-  assert.match(health.describe(source), /no recent/);
+  assert.match(health.describe(source), /^oginstagram: no recent/);
+  // Observations of a retired provider's old preview never describe a current candidate.
   health.record(expected, inspectPreviews([], expected));
+  assert.match(health.describe(source), /^oginstagram: no recent/);
+  const live = fixed.replace('fkinstagram.com', 'oginstagram.com'), current = expectedPreviews(source, live);
+  health.record(current, inspectPreviews([], current));
   assert.match(health.describe(source), /failed; that post may be unavailable/);
-  health.record(expected, inspectPreviews([media], expected));
+  health.record(current, inspectPreviews([{ ...media, url: live }], current));
   assert.match(health.describe(source), /passed/);
+  assert.doesNotMatch(health.describe(source), /instagram7/);
   assert.match(health.describe(source), /does not confirm video playback/);
+});
+
+test('a legacy IGTV link is expected on the provider post route and confirmed by shortcode', () => {
+  const igtv = 'https://www.instagram.com/tv/DdFKS1ABmK4/', rendered = 'https://oginstagram.com/p/DdFKS1ABmK4/';
+  const [item] = expectedPreviews(igtv, rendered);
+  assert.deepEqual(item, { source: igtv, url: rendered, platform: 'instagram', providerId: 'oginstagram' });
+  assert.equal(inspectPreviews([{ url: rendered, video: { url: 'https://cdn.example/video.mp4' } }], [item]).ok, true);
+  assert.equal(inspectPreviews([{ url: 'https://oginstagram.com/p/OtherPost/', video: { url: 'https://cdn.example/video.mp4' } }], [item]).ok, false);
 });
 
 test('recovery ranking cannot add unvetted URLs or revisit an attempted provider', () => {

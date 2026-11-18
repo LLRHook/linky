@@ -713,7 +713,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Docs:** docs/provider-checks.md (component preview rules, dated 2026-11-18 observation, Reddit legacy-switch wording). README.md, docs/delivery-reliability.md and docs/operator-reliability.md checked: no matcher field claims.
 
 ### [BUG-1794961724] Instagram catalog still starts with fkinstagram.com, which no longer resolves
-- [ ] **Severity:** med
+- [x] **Severity:** med
 - **Area:** providers, instagram, translation
 - **File(s):** src/services/SocialProviders.ts; src/services/InstagramTranslation.ts; src/services/InstagramPresentation.ts; docs/provider-checks.md; docs/instagram-translation.md; README.md
 - **Observation:** fkinstagram.com and g.fkinstagram.com return NXDOMAIN from 1.1.1.1, 8.8.8.8 and the bot host on 2026-11-18. The upstream InstaFix Revived README lists it as a third-party deployment that can go offline without notice, and its maintainer states there is no official replacement (issue 3). Every Instagram attempt first posts a dead link and waits the full preview window (preview stage 8.1 to 8.2 s in the production archive) before trying OGInstagram. Caption translation and Media-first media also depend on that host: the caption lookup requests https://fkinstagram.com/api/<shortcode> and builds g.fkinstagram.com media links, so translated Instagram captions cannot be produced.
@@ -722,4 +722,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none
 - **Repro / Notes:** nslookup fkinstagram.com 1.1.1.1 returns Non-existent domain. OGInstagram serves the post caption and media types as ActivityStreams JSON at the post URL with Accept: application/activity+json (HTTP 200 from the bot host on 2026-11-18; 404 problem+json for a missing post). Its gateway caps unverified bots at 50 requests per IP per hour (commit c790ec7), which bounds any server-side lookup.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** OGInstagram is now the only generated Instagram provider (oginstagram.com, caption-free g.oginstagram.com); Instagram7 hosts moved to RETIRED_PROVIDERS and only identify earlier previews. Caption lookup reads OGInstagram's ActivityStreams Note (id, account and attachment validated; statistics paragraph and HTML removed before translation). Legacy /tv/ links use the provider /p/ route. Limits: one Instagram provider, so a failed preview keeps the original with no alternate; no real IGTV post and no client playback were observed.
+- **Docs:** README.md, docs/provider-checks.md, docs/instagram-translation.md, docs/self-hosting.md

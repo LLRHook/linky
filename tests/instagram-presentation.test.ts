@@ -4,8 +4,8 @@ import { addInstagramCaptions, type CaptionPresentation } from '../src/services/
 import type { InstagramTranslation } from '../src/services/InstagramTranslation';
 
 const source = 'https://www.instagram.com/p/DdFwAIqgncQ/';
-const fixed = 'https://fkinstagram.com/p/DdFwAIqgncQ/';
-const gallery = 'https://g.fkinstagram.com/p/DdFwAIqgncQ/';
+const fixed = 'https://oginstagram.com/p/DdFwAIqgncQ/';
+const gallery = 'https://g.oginstagram.com/p/DdFwAIqgncQ/';
 const caption: InstagramTranslation = { sourceUrl: source, shortcode: 'DdFwAIqgncQ', username: 'bustervro',
   text: 'follow @bustervro for more memes\nRYONEX has become a notable name in Japan’s new generation of trap and melodic drill.',
   languages: ['et'], mediaOnlyUrl: gallery, mediaTypes: ['GraphImage'] };
@@ -25,7 +25,7 @@ test('Instagram captions replace provider text with English and a source-languag
 });
 
 test('current and legacy primary links use the reachable gallery for translated and Media-first previews', async () => {
-  for (const host of ['fkinstagram.com', 'www.instagram7.com', 'instagram7.com']) {
+  for (const host of ['oginstagram.com', 'www.instagram7.com', 'instagram7.com']) {
     for (const style of ['standard', 'compact', 'media-first'] as const) {
       const result = await addInstagramCaptions(source, { content: `https://${host}/p/DdFwAIqgncQ/` },
         style === 'media-first' ? async () => assert.fail('Media-first skips caption lookup') : async () => caption,
@@ -103,10 +103,10 @@ test('caption truncation keeps emoji clusters intact', async () => {
 
 test('multiple captions share a tight message budget and all retain their labels and media', async () => {
   const posts = ['One', 'Two', 'Three'].map(shortcode => ({ ...caption, shortcode,
-    sourceUrl: `https://www.instagram.com/p/${shortcode}/`, mediaOnlyUrl: `https://g.fkinstagram.com/p/${shortcode}/`,
+    sourceUrl: `https://www.instagram.com/p/${shortcode}/`, mediaOnlyUrl: `https://g.oginstagram.com/p/${shortcode}/`,
     text: 'A long caption. '.repeat(80) }));
   const original = posts.map(post => post.sourceUrl).join('\n');
-  const content = original.replaceAll('www.instagram.com', 'fkinstagram.com');
+  const content = original.replaceAll('www.instagram.com', 'oginstagram.com');
   const result = await addInstagramCaptions(original, { content }, async url => posts.find(post => post.sourceUrl === url)!, 510);
   assert.ok(result.content.length <= 510);
   assert.deepEqual(result.instagramSources, posts.map(post => post.sourceUrl));
@@ -144,7 +144,7 @@ test('Media-first selects caption-free media without calling translation or addi
 });
 
 test('Media-first preserves other platforms, hidden links and explicit embeds with bounded content', async () => {
-  const unrelated = 'https://fkinstagram.com/p/Unrelated/';
+  const unrelated = 'https://oginstagram.com/p/Unrelated/';
   const result = await addInstagramCaptions(`${source}\nhttps://www.youtube.com/watch?v=u0_UyltqaFI`,
     { content: `${fixed}\n${unrelated}\n<${fixed}>\nhttps://www.youtube.com/watch?v=u0_UyltqaFI` }, undefined, 1900, 'media-first');
   assert.equal(result.content, `${gallery}\n${unrelated}\n<${fixed}>\nhttps://www.youtube.com/watch?v=u0_UyltqaFI`);
@@ -166,8 +166,8 @@ test('Media-first preserves reel and TV video verification requirements without 
     assert.deepEqual(result.instagramVideos, [reel]);
   }
   for (const url of ['https://evil.test/p/DdFwAIqgncQ/', 'https://instagram7.com.evil.test/p/DdFwAIqgncQ/',
-    'https://fkinstagram.com.evil.test/p/DdFwAIqgncQ/', 'https://fkinstagram.com:443/p/DdFwAIqgncQ/',
-    'https://user@fkinstagram.com/p/DdFwAIqgncQ/']) {
+    'https://oginstagram.com.evil.test/p/DdFwAIqgncQ/', 'https://oginstagram.com:443/p/DdFwAIqgncQ/',
+    'https://user@oginstagram.com/p/DdFwAIqgncQ/']) {
     const presentation = { content: url };
     assert.equal(await addInstagramCaptions(source, presentation, undefined, 1900, 'media-first'), presentation);
   }

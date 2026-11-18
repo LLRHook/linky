@@ -14,26 +14,27 @@ test('recognizes X and legacy Twitter posts with one status identity and cleaned
   }
 });
 
-test('preserves X recovery and Instagram/TikTok primaries when adding Instagram recovery', () => {
+test('X keeps two providers while Instagram and TikTok each have one', () => {
   assert.deepEqual(getProviderCandidates('https://twitter.com/jack/status/20?s=46#reply'), [
     { providerId: 'fixupx', platform: 'x', url: 'https://fixupx.com/jack/status/20#reply' },
     { providerId: 'fixvx', platform: 'x', url: 'https://vxtwitter.com/jack/status/20#reply' },
   ]);
   assert.deepEqual(getProviderCandidates('https://m.instagram.com/reels/DdFKS1ABmK4/?igsh=tracking'),
-    [{ providerId: 'instagram7', platform: 'instagram', url: 'https://fkinstagram.com/reels/DdFKS1ABmK4/' },
-      { providerId: 'oginstagram', platform: 'instagram', url: 'https://oginstagram.com/reels/DdFKS1ABmK4/' }]);
+    [{ providerId: 'oginstagram', platform: 'instagram', url: 'https://oginstagram.com/reels/DdFKS1ABmK4/' }]);
   assert.deepEqual(getProviderCandidates('https://www.tiktok.com/@person/video/12345?share=1'),
     [{ providerId: 'tnktok', platform: 'tiktok', url: 'https://tnktok.com/@person/video/12345' }]);
 });
 
-test('Instagram recovery keeps the original path and fragment with Instagram7 first', () => {
+test('Instagram links keep their path and fragment on OGInstagram, the only Instagram provider', () => {
   for (const kind of ['p', 'reel', 'reels', 'tv']) {
     const path = `/${kind}/DdKVPMEhTXe/`;
+    // OGInstagram has no /tv/ route; a legacy IGTV shortcode uses its post route.
     assert.deepEqual(getProviderCandidates(`https://www.instagram.com${path}?stkn=tracking#reply`), [
-      { providerId: 'instagram7', platform: 'instagram', url: `https://fkinstagram.com${path}#reply` },
-      { providerId: 'oginstagram', platform: 'instagram', url: `https://oginstagram.com${path}#reply` },
+      { providerId: 'oginstagram', platform: 'instagram', url: `https://oginstagram.com${path.replace('/tv/', '/p/')}#reply` },
     ]);
   }
+  assert.deepEqual(getProviderCandidates('https://www.instagram.com/p/tv/').map(candidate => candidate.url),
+    ['https://oginstagram.com/p/tv/'], 'only the leading route is mapped, never a shortcode');
   for (const host of ['oginstagram.com', 'www.oginstagram.com']) {
     assert.deepEqual(parseProviderUrl(`https://${host}/p/DdKVPMEhTXe/?share=tracking#reply`), {
       platform: 'instagram', sourceUrl: 'https://www.instagram.com/p/DdKVPMEhTXe/#reply',
@@ -44,7 +45,7 @@ test('Instagram recovery keeps the original path and fragment with Instagram7 fi
   }
 });
 
-test('Instagram7 migration recognizes current and legacy previews without generating the unavailable host', () => {
+test('retired Instagram7 hosts identify previews already posted but are never generated', () => {
   const path = '/p/DeIfsDPo0zx/';
   for (const host of ['fkinstagram.com', 'g.fkinstagram.com', 'www.instagram7.com', 'instagram7.com', 'g.instagram7.com']) {
     const url = `https://${host}${path}?stkn=tracking#reply`;
@@ -58,23 +59,22 @@ test('Instagram7 migration recognizes current and legacy previews without genera
   }
   for (const captionFree of [false, true]) {
     const candidates = getProviderCandidates(`https://www.instagram.com${path}?stkn=tracking`, { captionFree });
-    assert.equal(candidates[0].url, `https://${captionFree ? 'g.' : ''}fkinstagram.com${path}`);
-    assert.equal(candidates.length, 2, 'The old hostname must not become a separate recovery attempt');
+    assert.deepEqual(candidates, [{ providerId: 'oginstagram', platform: 'instagram',
+      url: `https://${captionFree ? 'g.' : ''}oginstagram.com${path}` }], 'A retired hostname must not become a delivery or recovery attempt');
   }
 });
 
-test('caption-free Instagram recovery uses gallery routes without inventing separate providers', () => {
+test('caption-free Instagram delivery uses the gallery route without inventing a separate provider', () => {
   for (const kind of ['p', 'reel', 'reels', 'tv']) {
     const path = `/${kind}/DdKVPMEhTXe/`;
     const source = `https://www.instagram.com${path}?igsh=tracking#reply`;
-    const candidates = getProviderCandidates(source, { captionFree: true });
+    const candidates = getProviderCandidates(source, { captionFree: true }), route = path.replace('/tv/', '/p/');
     assert.deepEqual(candidates, [
-      { providerId: 'instagram7', platform: 'instagram', url: `https://g.fkinstagram.com${path}#reply` },
-      { providerId: 'oginstagram', platform: 'instagram', url: `https://g.oginstagram.com${path}#reply` },
+      { providerId: 'oginstagram', platform: 'instagram', url: `https://g.oginstagram.com${route}#reply` },
     ]);
     for (const candidate of candidates) {
       assert.deepEqual(parseProviderUrl(candidate.url), { platform: 'instagram',
-        sourceUrl: `https://www.instagram.com${path}#reply`, path, fragment: '#reply', providerId: candidate.providerId });
+        sourceUrl: `https://www.instagram.com${route}#reply`, path: route, fragment: '#reply', providerId: candidate.providerId });
       assert.deepEqual(getProviderCandidates(candidate.url, { captionFree: true }), []);
       const host = new URL(candidate.url).hostname;
       for (const invalid of [`https://${host}.evil.test${path}`, `https://user@${host}${path}`, `https://${host}:443${path}`]) {
@@ -82,7 +82,7 @@ test('caption-free Instagram recovery uses gallery routes without inventing sepa
       }
     }
     assert.deepEqual(getProviderCandidates(source).map(candidate => new URL(candidate.url).hostname),
-      ['fkinstagram.com', 'oginstagram.com'], 'ordinary reposts retain their existing caption-bearing providers');
+      ['oginstagram.com'], 'ordinary reposts retain the caption-bearing route');
   }
 });
 

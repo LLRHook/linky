@@ -13,21 +13,26 @@ export interface SocialUrl {
   readonly postId?: string;
 }
 
-// https://fkinstagram.com/ serves InstaFix Revived after instagram7.com stopped resolving.
-// Keep the provider ID and observed legacy aliases for existing previews and health records.
+// https://github.com/seirenkr/OGInstagram — gallery/direct modes share this service.
 export const INSTAGRAM_PROVIDER = {
-  id: 'instagram7', platform: 'instagram', label: 'Instagram7',
-  origin: 'https://fkinstagram.com', captionFreeOrigin: 'https://g.fkinstagram.com',
-  hosts: ['fkinstagram.com', 'g.fkinstagram.com', 'www.instagram7.com', 'instagram7.com', 'g.instagram7.com'],
+  id: 'oginstagram', platform: 'instagram', label: 'OGInstagram',
+  origin: 'https://oginstagram.com', captionFreeOrigin: 'https://g.oginstagram.com',
+  hosts: ['oginstagram.com', 'www.oginstagram.com', 'g.oginstagram.com'],
 } as const;
+
+// instagram7.com and then fkinstagram.com (community InstaFix Revived deployments) stopped resolving;
+// upstream names no replacement. These hosts only identify previews Linky already posted.
+// https://github.com/Bl0ck154/InstaFix-Revived/issues/3
+export const RETIRED_PROVIDERS = [
+  { id: 'instagram7', platform: 'instagram', label: 'Instagram7',
+    hosts: ['fkinstagram.com', 'g.fkinstagram.com', 'www.instagram7.com', 'instagram7.com', 'g.instagram7.com'] },
+] as const;
 
 /** Catalog order is the preferred delivery order, not a claim of current health. */
 export const SOCIAL_PROVIDERS = [
   { id: 'fixupx', platform: 'x', label: 'FxEmbed', origin: 'https://fixupx.com', hosts: ['fixupx.com', 'fxtwitter.com', 'g.fixupx.com', 'g.fxtwitter.com'] },
   { id: 'fixvx', platform: 'x', label: 'vxTwitter', origin: 'https://vxtwitter.com', hosts: ['vxtwitter.com', 'fixvx.com'] },
   INSTAGRAM_PROVIDER,
-  // https://github.com/seirenkr/OGInstagram — gallery/direct modes share this service.
-  { id: 'oginstagram', platform: 'instagram', label: 'OGInstagram', origin: 'https://oginstagram.com', captionFreeOrigin: 'https://g.oginstagram.com', hosts: ['oginstagram.com', 'www.oginstagram.com', 'g.oginstagram.com'] },
   { id: 'tnktok', platform: 'tiktok', label: 'fxTikTok', origin: 'https://tnktok.com', hosts: ['tnktok.com', 'www.tnktok.com'] },
   // URL forms below are documented by their maintainers.
   // https://github.com/Lexedia/VixBluesky and https://docs.fxembed.com/guide/getting-started/
@@ -41,6 +46,7 @@ export const SOCIAL_PROVIDERS = [
   { id: 'facebed', platform: 'facebook', label: 'Facebed', origin: 'https://facebed.com', hosts: ['facebed.com', 'www.facebed.com'] },
 ] as const;
 export type SocialProvider = typeof SOCIAL_PROVIDERS[number];
+type KnownProvider = SocialProvider | typeof RETIRED_PROVIDERS[number];
 export interface ProviderCandidate { providerId: SocialProvider['id']; platform: SocialPlatform; url: string }
 
 const X_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com']);
@@ -111,24 +117,28 @@ export function parseSocialUrl(raw: string): SocialUrl | null {
 /** Build only vetted provider authorities from a freshly validated source URL. */
 export function getProviderCandidates(source: string | SocialUrl, { captionFree = false }: { captionFree?: boolean } = {}): readonly ProviderCandidate[] {
   const parsed = parseSocialUrl(typeof source === 'string' ? source : source.sourceUrl);
-  return parsed ? SOCIAL_PROVIDERS.filter(provider => provider.platform === parsed.platform &&
+  if (!parsed) return [];
+  // OGInstagram has no /tv/ route; it serves any shortcode, including legacy IGTV ones, under /p/.
+  const path = parsed.platform === 'instagram' ? parsed.path.replace(/^\/tv\//, '/p/') : parsed.path;
+  return SOCIAL_PROVIDERS.filter(provider => provider.platform === parsed.platform &&
     (!captionFree || 'captionFreeOrigin' in provider)).map(provider => ({
     providerId: provider.id, platform: parsed.platform,
     url: (captionFree && 'captionFreeOrigin' in provider ? provider.captionFreeOrigin : provider.origin) +
       // vxReddit defaults to component embeds; our Gateway/REST verifier needs conventional embeds.
       // https://github.com/dylanpdx/vxReddit#extras documents the legacy query switch.
-      (parsed.platform === 'twitch' ? '/clip' : '') + parsed.path + (provider.id === 'vxreddit' ? '?legacy' : '') + parsed.fragment,
-  })) : [];
+      (parsed.platform === 'twitch' ? '/clip' : '') + path + (provider.id === 'vxreddit' ? '?legacy' : '') + parsed.fragment,
+  }));
 }
 
 const SOURCE_HOSTS = { x: 'x.com', instagram: 'www.instagram.com', bluesky: 'bsky.app', reddit: 'www.reddit.com',
   facebook: 'www.facebook.com' } as const;
 
-/** Identify a provider's observed embed URL without accepting arbitrary mirrors. */
-export function parseProviderUrl(raw: string): (SocialUrl & { providerId: SocialProvider['id'] }) | null {
+/** Identify a provider's observed embed URL without accepting arbitrary mirrors. Retired hosts identify old previews only. */
+export function parseProviderUrl(raw: string): (SocialUrl & { providerId: KnownProvider['id'] }) | null {
   const authority = /^https:\/\/([^/?#]+)(\/.*)$/i.exec(raw);
   if (!authority) return null;
-  const provider = SOCIAL_PROVIDERS.find(entry => (entry.hosts as readonly string[]).includes(authority[1].toLowerCase()));
+  const provider = ([...SOCIAL_PROVIDERS, ...RETIRED_PROVIDERS] as readonly KnownProvider[])
+    .find(entry => (entry.hosts as readonly string[]).includes(authority[1].toLowerCase()));
   if (!provider) return null;
   let path = authority[2];
   if (provider.platform === 'twitch') {
