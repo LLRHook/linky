@@ -141,7 +141,7 @@ observation in a Discord client.
 - [ ] 3.1 Startup: container logs show `Logged in as ` and `Serving ` within 60 s; `docker inspect --format '{{.RestartCount}}' linky` is `0`.
 - [ ] 3.2 `/setup` in a test channel: private panel; **Enable server** persists across `docker compose restart linky`.
 - [ ] 3.3 `/settings` without options shows the effective configuration; `/settings mode:reply` then `/settings mode:replace` round-trips.
-- [ ] 3.4 X text post (`https://x.com/jack/status/20`): preview appears in under 4 s; Replace mode removes the source and credits the sharer; **Original post** and owner-only **Remove** work.
+- [ ] 3.4 X text post (`https://x.com/jack/status/20`): preview appears in under 4 s; Replace mode removes the source and credits the sharer; **Original post** and owner-only **Remove** work. X post `https://x.com/ArcoCunnivoro/status/2124451245704261749` (an English post quoting a video) appears as one block with the author, text, quoted text and gallery, and no `fixupx.com` card beside it; if the block media is not confirmed within 10 s, the usual card replaces it.
 - [ ] 3.5 TikTok share link (`https://www.tiktok.com/t/ZTU7oFukc/`) and long URL: share resolves to the exact video/photo ID; preview confirmed (no "Discord preview metadata was not confirmed" notice), including a delayed matching Gateway update within the eight-second window. Verify actual playback separately in the client; keep the source when an unrelated preview is returned.
 - [ ] 3.6 Instagram Reel `DdFKS1ABmK4`: preview within 8 s; note separately whether the video plays in the client (metadata is not playback).
 - [ ] 3.7 Bluesky, Reddit `/comments/` video, Twitch clip and Facebook `/share/r/` Reel from `ops/preview-corpus.json`: each previews once.

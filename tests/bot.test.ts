@@ -739,7 +739,8 @@ test('both manual command dispatches use the real tweet translation adapter in s
     assert(events.some(payload => JSON.stringify(payload.components).includes('linky:remove-manual')));
     assert.deepEqual(errors, []);
   }
-  assert.deepEqual(requests, Array(4).fill('https://api.fxtwitter.com/2/status/20?lang=en'));
+  // Every dispatch translated above; translation and the one-post block share one five-minute status cache.
+  assert.deepEqual(requests, ['https://api.fxtwitter.com/2/status/20?lang=en']);
   assert.equal(servers.get('444444444444444444'), undefined);
 });
 

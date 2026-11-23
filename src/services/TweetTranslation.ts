@@ -6,7 +6,10 @@ export interface TweetMedia { type: 'photo' | 'video' | 'gif'; url: string; widt
 
 export interface TweetTranslation {
   text: string;
-  /** Empty posts can carry translated quotes and media without having a source language. */
+  /**
+   * The source language of translated text. Null for an empty post, which can still carry translated quotes and media,
+   * and for a post read as written without translation.
+   */
   language: string | null;
   url?: string;
   quote?: TweetTranslation;
@@ -84,19 +87,22 @@ function statusUrl(status: Record<string, unknown>, fallbackId?: string): string
   return id && /^\d{1,20}$/.test(id) ? `https://x.com/i/status/${id}` : undefined;
 }
 
-/** Parse at most three posts, preserving each quoted post's own text and media. */
-function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTranslation | null {
+/**
+ * Parse at most three posts, preserving each quoted post's own text and media. `translate` requires every non-English
+ * part to carry its English translation; otherwise each part keeps the words it was written in, without a label.
+ */
+function parseStatus(value: unknown, fallbackId?: string, depth = 0, translate = true): TweetTranslation | null {
   if (depth >= 3) return null;
   const status = record(value);
   const mediaPayload = record(status.media);
   const language = languageCode(status.lang)?.split('-')[0];
   const empty = typeof status.text === 'string' && !status.text.trim();
-  if (status.type !== 'status' || (!language && !empty) || status.poll ||
+  if (status.type !== 'status' || (translate && !language && !empty) || status.poll ||
       mediaPayload.broadcast || mediaPayload.external) return null;
 
   const translation = record(status.translation);
-  const prose = empty ? '' : language === 'en' ? status.text : translation.text;
-  if (!empty && language !== 'en' && (
+  const prose = empty ? '' : !translate || language === 'en' ? status.text : translation.text;
+  if (translate && !empty && language !== 'en' && (
     languageCode(translation.source_lang)?.split('-')[0] !== language ||
     languageCode(translation.target_lang)?.split('-')[0] !== 'en'
   )) return null;
@@ -108,7 +114,7 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTrans
   const author = record(status.author);
   const authorUrl = httpsUrl(author.url);
   if (!url || typeof author.name !== 'string' || !author.name.trim() || !authorUrl) return null;
-  const quote = status.quote == null ? undefined : parseStatus(status.quote, undefined, depth + 1);
+  const quote = status.quote == null ? undefined : parseStatus(status.quote, undefined, depth + 1, translate);
   if (quote === null) return null;
 
   const all = mediaPayload.all;
@@ -122,7 +128,7 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTrans
     ? author.screen_name : undefined;
   return {
     text, url,
-    language: !empty && language ? languageNames.of(language) ?? language : null,
+    language: translate && !empty && language ? languageNames.of(language) ?? language : null,
     author: {
       name: author.name.trim().slice(0, 256),
       url: authorUrl,
@@ -141,25 +147,107 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTrans
   };
 }
 
+/** One status as written, and with English translations when they were requested and some part needs one. */
+export interface TweetStatus { post: TweetTranslation | null; translation: TweetTranslation | null }
+
+/** Look up one public status by ID for a one-post block; `translate` asks for English translations as well. */
+export type TweetLookup = (statusId: string, options: { translate: boolean }) => Promise<TweetTranslation | null>;
+
+const NO_STATUS: TweetStatus = { post: null, translation: null };
+
+/**
+ * Fetch one public status. `post` is what a one-post block shows: the translation when one was requested and a part is
+ * not English, otherwise the words as written. Any upstream failure leaves reposting available.
+ */
+export async function fetchTweetStatus(
+  statusId: string,
+  { translate }: { translate: boolean },
+  fetchJson: typeof fetch = fetch
+): Promise<TweetStatus> {
+  if (!/^\d{1,20}$/.test(statusId)) return NO_STATUS;
+  try {
+    const signal = AbortSignal.timeout(5_000);
+    // Only the public status ID is sent; the language parameter is added only when a translation is wanted.
+    const response = await fetchJson(`https://api.fxtwitter.com/2/status/${statusId}${translate ? '?lang=en' : ''}`, {
+      signal, redirect: 'error',
+    });
+    if (!response.ok) { void response.body?.cancel().catch(() => {}); return NO_STATUS; }
+    const json = record(await readBoundedJson(response, 1024 * 1024, signal));
+    if (json.code !== 200) return NO_STATUS;
+    const translated = translate ? parseStatus(json.status, statusId) : null;
+    let foreign = false;
+    for (let post = translated; post && !foreign; post = post.quote ?? null) {
+      foreign = Boolean(post.language && post.language !== 'English');
+    }
+    return foreign ? { post: translated, translation: translated }
+      : { post: parseStatus(json.status, statusId, 0, false), translation: null };
+  } catch {
+    return NO_STATUS;
+  }
+}
+
 /** Fetch only usable English translations; any upstream failure leaves reposting available. */
 export async function fetchTweetTranslation(
   statusId: string,
   fetchJson: typeof fetch = fetch
 ): Promise<TweetTranslation | null> {
-  if (!/^\d{1,20}$/.test(statusId)) return null;
-  try {
-    const signal = AbortSignal.timeout(5_000);
-    const response = await fetchJson(`https://api.fxtwitter.com/2/status/${statusId}?lang=en`, {
-      signal, redirect: 'error',
-    });
-    if (!response.ok) { void response.body?.cancel().catch(() => {}); return null; }
-    const json = record(await readBoundedJson(response, 1024 * 1024, signal));
-    const result = json.code === 200 ? parseStatus(json.status, statusId) : null;
-    for (let post = result; post; post = post.quote ?? null) {
-      if (post.language && post.language !== 'English') return result;
+  return (await fetchTweetStatus(statusId, { translate: true }, fetchJson)).translation;
+}
+
+const LOOKUP_TIMEOUT = 20_000, CACHE_TTL = 5 * 60_000, FAILURE_TTL = 30_000;
+const CACHE_LIMIT = 100, PENDING_LIMIT = 8, CACHED_TEXT_LIMIT = 50_000;
+
+const textLength = (post: TweetTranslation | null): number => post ? post.text.length + textLength(post.quote ?? null) : 0;
+
+/**
+ * Status lookup shared by translation and one-post blocks, with bounded memory and duplicate suppression: one
+ * request per status and mode for five minutes (30 s after a failure), at most 100 entries and eight requests in
+ * flight. A status holding more than 50,000 characters of text is returned but not kept.
+ */
+export function createTweetLookup(fetchJson: typeof fetch = fetch):
+  (statusId: string, options: { translate: boolean }) => Promise<TweetStatus> {
+  const cache = new Map<string, { value: TweetStatus; expiresAt: number }>();
+  const pending = new Map<string, Promise<TweetStatus>>();
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function expire(): void {
+    clearTimeout(expiryTimer);
+    for (const [key, entry] of cache) if (entry.expiresAt <= Date.now()) cache.delete(key);
+    if (cache.size) {
+      expiryTimer = setTimeout(expire, Math.max(1, Math.min(...[...cache.values()].map(entry => entry.expiresAt)) - Date.now()));
+      expiryTimer.unref();
     }
-    return null;
-  } catch {
-    return null;
   }
+
+  return async (statusId, { translate }) => {
+    if (!/^\d{1,20}$/.test(statusId)) return NO_STATUS;
+    expire();
+    const key = `${statusId}:${translate ? 'en' : 'source'}`;
+    const hit = cache.get(key);
+    let result = hit?.value;
+    if (!hit) {
+      let waiting = pending.get(key);
+      if (!waiting) {
+        if (pending.size >= PENDING_LIMIT) return NO_STATUS;
+        waiting = fetchTweetStatus(statusId, { translate }, fetchJson).catch(() => NO_STATUS);
+        pending.set(key, waiting);
+        void waiting.then(value => {
+          pending.delete(key);
+          const size = textLength(value.post) + (value.translation === value.post ? 0 : textLength(value.translation));
+          if (size > CACHED_TEXT_LIMIT) return;
+          cache.set(key, { value, expiresAt: Date.now() + (value.post ? CACHE_TTL : FAILURE_TTL) });
+          while (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+          expire();
+        });
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        result = await Promise.race([waiting, new Promise<TweetStatus>(resolve => {
+          timer = setTimeout(() => resolve(NO_STATUS), LOOKUP_TIMEOUT);
+        })]);
+      } finally { clearTimeout(timer); }
+    }
+    // Each caller receives its own copy; the cached value stays as fetched.
+    return structuredClone(result ?? NO_STATUS);
+  };
 }

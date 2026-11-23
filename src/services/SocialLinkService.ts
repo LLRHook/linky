@@ -9,7 +9,7 @@ import {
 } from 'discord.js';
 import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
-import type { TweetTranslation } from './TweetTranslation';
+import type { TweetLookup, TweetTranslation } from './TweetTranslation';
 import type { InstagramPost } from './InstagramPost';
 import { addInstagramMedia, instagramPanelComponents, type InstagramPanel } from './InstagramPresentation';
 import type { ServerPreferences } from './ServerSettings';
@@ -22,7 +22,7 @@ import { downloadAttachment, MAX_COPY_ATTACHMENT_BYTES } from './RepostAttachmen
 import { evaluateScope } from './ServerScope';
 import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
 import { verifyPublishedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
-import { translateRepost } from './TweetPresentation';
+import { translateRepost, tweetPostPanel } from './TweetPresentation';
 import { panelLead, tweetPanelComponents, panelMediaReady } from './TweetPanel';
 import { watchMessageMedia } from './MediaWatch';
 import { findReplyContext } from './ReplyContext';
@@ -60,6 +60,8 @@ const RECENT_MESSAGE_LIMIT = 1_000;
 export interface LinkRepostOptions {
   platforms?: readonly RewritePlatform[];
   translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
+  /** The lone X post a one-post block shows; needs only the X platform, not tweet translation. */
+  lookupTweet?: TweetLookup;
   lookupInstagram?: (sourceUrl: string) => Promise<InstagramPost | null>;
   serverIds?: readonly string[];
   serverEnabled?: (serverId: string) => boolean | undefined;
@@ -92,7 +94,7 @@ export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateTweet, lookupInstagram, serverIds = [], serverEnabled, serverPreferences,
+  { platforms = REWRITE_PLATFORMS, translateTweet, lookupTweet, lookupInstagram, serverIds = [], serverEnabled, serverPreferences,
     lookupYouTube, lookupYouTubeCommunity, lookupArticle, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
     eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
@@ -307,6 +309,10 @@ export function createLinkRepostHandler(
         log.warn(context, 'Keeping original: source context and every media link exceed the message limit');
         return;
       }
+      // A lone X post is one block in any language; the translation setting decides only which words it shows.
+      const tweetPanel = lookupTweet && activePlatforms.includes('x') && !message.flags.has(MessageFlags.SuppressEmbeds)
+        ? await tweetPostPanel(inputContent, activePlatforms, lookupTweet,
+          Boolean(translateTweet) && preferences.translateTweets !== false) : undefined;
       const translated: NonNullable<typeof tweetPresentation> & {
         instagramSources?: string[]; instagramVideos?: string[]; instagramPanel?: InstagramPanel;
       } =
@@ -381,14 +387,18 @@ export function createLinkRepostHandler(
         !message.flags.has(MessageFlags.SuppressEmbeds) ? uploadedMediaComponents(erome.file.name, content) : null;
       const inlineBlock = inlineVideo ?? inlineErome;
       // A lone post with its media is one block: author and media together, with no card beside it.
-      const tweetPanel = translated.panel, instagramPanel = translated.instagramPanel;
+      const instagramPanel = translated.instagramPanel;
       const panelMedia = tweetPanel?.media ?? instagramPanel?.media ?? [];
       const panelLeadLine = formatLinkRepost(panelLead(inputContent), message.author.id, replyContext).trimEnd();
-      const inlinePost = panelMedia.length && !inlineBlock && !originalMedia && !erome && !attachments.length &&
-        !translationFiles.length && !translated.embeds?.length && !community.length && !articles.length && !youtubeCards.length &&
+      // An X post's translated card or translation file is that post's fallback, not a second preview beside the block.
+      const otherCards = !tweetPanel && (translationFiles.length > 0 || Boolean(translated.embeds?.length));
+      let inlinePost = panelMedia.length && !inlineBlock && !originalMedia && !erome && !attachments.length &&
+        !otherCards && !community.length && !articles.length && !youtubeCards.length &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
         ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, panelLeadLine) : instagramPanelComponents(instagramPanel!, panelLeadLine)
         : null;
+      // An unconfirmed X block is replaced by the card this message has without it; Instagram keeps its Retry notice.
+      const nativeFallback = Boolean(inlinePost && tweetPanel);
       // The block carries its own media; no native card is requested.
       if (inlinePost) expected = [];
       await progress.stop();
@@ -431,7 +441,7 @@ export function createLinkRepostHandler(
         : channel.send({ ...publicationBody, nonce, enforceNonce: true,
           ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) });
       const publishStage = delivery.context.trace?.startStage('publish');
-      const replacement = originalMedia ? await sendEromeMedia(send, async () => {
+      let replacement = originalMedia ? await sendEromeMedia(send, async () => {
         const recent = await channel.messages.fetch({ limit: 25 });
         const matches = recent.filter(candidate => candidate.author.id === message.client.user.id &&
           (reply ? candidate.reference?.messageId === message.id && (candidate.nonce == null || String(candidate.nonce) === nonce)
@@ -445,7 +455,7 @@ export function createLinkRepostHandler(
       // Remember successes even when deletion fails. The nonce also guards REST retries.
       reposted.add(message.id);
       if (reposted.size > RECENT_MESSAGE_LIMIT) reposted.delete(reposted.values().next().value!);
-      const resultContext = { ...context, replacementId: replacement.id };
+      let resultContext = { ...context, replacementId: replacement.id };
       let publication: StatsPublication | null = null;
       const removeReplacement = async () => {
         await publication?.remove();
@@ -484,6 +494,35 @@ export function createLinkRepostHandler(
         : erome ? await verifyErome(replacement, erome.file) : false;
       const postVerified = inlinePost ? await mediaWatcher!.verify(replacement) : false;
       mediaPreviewStage?.finish(eromeVerified || postVerified ? 'ok' : 'unavailable');
+      // Discord cannot turn a Components V2 message back into a card, so an unconfirmed block is deleted and the
+      // card this message has without one is published and checked in its place.
+      if (inlinePost && !postVerified && nativeFallback && enabled() && !delivery.context.signal?.aborted &&
+          sourceVersion(message) === version) {
+        rollback = undefined;
+        await removeReplacement();
+        mediaWatcher?.close();
+        mediaWatcher = undefined;
+        inlinePost = null;
+        expected = expectations();
+        const native = expected.filter(item => !item.explicitEmbeds);
+        previewWatch?.close();
+        previewWatch = native.length ? armPreview?.(channelId, native, delivery.context) : undefined;
+        const fallbackStage = delivery.context.trace?.startStage('publish');
+        replacement = await channel.send({ content, ...(embeds ? { embeds } : {}), files,
+          components: repostControls(inputContent, { remove: false }), allowedMentions,
+          ...(silentFlag ? { flags: silentFlag } : {}),
+          nonce: randomBytes(12).toString('hex'), enforceNonce: true,
+          ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) });
+        fallbackStage?.finish();
+        resultContext = { ...context, replacementId: replacement.id };
+        rollback = removeReplacement;
+        log.info(resultContext, 'Post block media unconfirmed; published the native card instead');
+        if (replacement.attachments.size !== files.length) {
+          log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
+          await removeReplacement();
+          return;
+        }
+      }
       const verify = async (expected: ExpectedPreview[]): Promise<PreviewResult> => {
         if (delivery.context.signal?.aborted) return { ok: false, missing: [...expected], videoMetadata: false };
         // The block was checked above; it carries no embed for the card matcher to read.

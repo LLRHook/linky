@@ -20,11 +20,18 @@ interface ManualMediaBlockDelivery {
   expected: readonly ExpectedPreview[];
   failureText?: () => string;
   observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
+  /** The caller can publish a card in place of a block whose media is not confirmed. */
+  fallback?: boolean;
 }
 
-/** V2 is sticky: every failure removes the gallery and uploads while keeping a V2 notice and original links. */
+/**
+ * V2 is sticky: every failure removes the gallery and uploads while keeping a V2 notice and original links. With
+ * `fallback`, media that is not confirmed while the delivery is still current returns `unconfirmed` instead, leaving
+ * the block for the caller to replace and the attempt unfinished.
+ */
 export async function publishManualMediaBlock({ interaction, attempt, verifyMedia, block, files, buttonRows,
-  preferencesCurrent, sourceCurrent, expected, failureText, observePreview }: ManualMediaBlockDelivery): Promise<void> {
+  preferencesCurrent, sourceCurrent, expected, failureText, observePreview, fallback = false }: ManualMediaBlockDelivery,
+): Promise<'unconfirmed' | undefined> {
   const context = attempt.context;
   let published: Message | undefined, rollbackAttempted = false;
   const current = async () => !context.signal?.aborted && preferencesCurrent() && await sourceCurrent() &&
@@ -40,23 +47,27 @@ export async function publishManualMediaBlock({ interaction, attempt, verifyMedi
     observePreview?.(expected, { ok: false, missing: [...expected], videoMetadata: false });
   };
   try {
-    if (!await current()) { await rollback(); return; }
+    if (!await current()) { await rollback(); return undefined; }
     const stage = context.trace?.startStage('publish');
     published = await interaction.editReply({ flags: MessageFlags.IsComponentsV2, content: null, embeds: [], attachments: [], files,
       components: [...block, ...buttonRows().map(row => row.toJSON())], allowedMentions: { parse: [] } });
     stage?.finish();
-    if (!await current() || !await verifyMedia(published) || !await current()) { await rollback(); return; }
+    if (!await current()) { await rollback(); return undefined; }
+    const verified = await verifyMedia(published);
+    if (!verified && fallback && await current()) return 'unconfirmed';
+    if (!verified || !await current()) { await rollback(); return undefined; }
     const details = await attempt.controls(published.id);
-    if (!await current()) { await rollback(); return; }
+    if (!await current()) { await rollback(); return undefined; }
     published = await interaction.editReply({ components: [...block, ...buttonRows().map(row => row.toJSON()),
       ...details.map(row => row.toJSON())], allowedMentions: { parse: [] } });
-    if (!await current() || !await verifyMedia(published) || !await current()) { await rollback(); return; }
+    if (!await current() || !await verifyMedia(published) || !await current()) { await rollback(); return undefined; }
     observePreview?.(expected, { ok: true, missing: [], videoMetadata: true });
     attempt.finish('confirmed');
   } catch (error) {
     if (rollbackAttempted) throw error;
     await rollback();
   }
+  return undefined;
 }
 
 /** Original-post link buttons (two rows of five at most) followed by the requester's Remove button. */

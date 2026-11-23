@@ -1,5 +1,5 @@
 import { AttachmentBuilder, escapeMarkdown, type APIEmbed } from 'discord.js';
-import type { TweetMedia, TweetTranslation } from './TweetTranslation';
+import type { TweetLookup, TweetMedia, TweetTranslation } from './TweetTranslation';
 import { tweetPanelMedia } from './TweetPanel';
 import type { RewritePlatform } from './LinkConfiguration';
 import { mapLinks, visibleLink } from './LinkTokens';
@@ -80,20 +80,42 @@ function translationAttachment(tweets: TweetTranslation[]): AttachmentBuilder {
   });
 }
 
-/** A single translated video post that can be shown as one block, with its media and source link. */
+/** A single post that can be shown as one block, with its media and fixer link. */
 export interface TweetPanel { tweet: TweetTranslation; media: TweetMedia[]; source: string }
 
 /**
- * Build one compact card, or captions alongside native video/mixed-link previews. A lone video post also offers
- * `panel`, which delivery uses instead of the captions when it can publish one block.
+ * The message's only link as one block: a visible X status whose post and quotes carry 1-10 media items, all on X's
+ * own hosts. `translate` shows English translations for non-English parts; otherwise every part keeps its own words.
+ * Any other message, a failed lookup or a text-only post has no block.
  */
+export async function tweetPostPanel(
+  original: string,
+  platforms: readonly RewritePlatform[],
+  lookup: TweetLookup,
+  translate: boolean,
+): Promise<TweetPanel | undefined> {
+  if (!platforms.includes('x')) return undefined;
+  let linkCount = 0, source: { id: string; fixed: string } | undefined;
+  mapLinks(original, (url, position) => {
+    linkCount++;
+    const id = parseSocialUrl(url)?.statusId;
+    if (id && visibleLink(original, position)) source = { id, fixed: rewriteSocialLinks(url, platforms) };
+    return url;
+  });
+  if (linkCount !== 1 || !source) return undefined;
+  const tweet = await lookup(source.id, { translate }).catch(() => null);
+  const media = tweet && tweetPanelMedia(tweet);
+  return tweet && media ? { tweet, media, source: source.fixed } : undefined;
+}
+
+/** Build one compact card, or captions alongside native video/mixed-link previews. */
 export async function translateRepost(
   original: string,
   platforms: readonly RewritePlatform[],
   fetchTranslation: (statusId: string) => Promise<TweetTranslation | null>,
   contentLimit: number,
 ): Promise<{ content: string; embeds?: APIEmbed[]; translationFiles?: AttachmentBuilder[];
-  textStatusIds?: string[]; videoStatusIds?: string[]; mediaSources?: string; panel?: TweetPanel } | null> {
+  textStatusIds?: string[]; videoStatusIds?: string[]; mediaSources?: string } | null> {
   const content = rewriteSocialLinks(original, platforms);
   const links = new Map<string, string>();
   let linkCount = 0;
@@ -114,10 +136,6 @@ export async function translateRepost(
     const embeds = translationEmbeds(translation, links.get(id)!);
     if (embeds) return { content, embeds };
   }
-  // Native fixer cards cannot show translated text, so a video post's text and media would appear twice.
-  const panelMedia = linkCount === 1 && translations.size === 1 && tweetParts(translation).some((part) => part.hasVideo)
-    ? tweetPanelMedia(translation) : null;
-  const panel = panelMedia ? { tweet: translation, media: panelMedia, source: links.get(id)! } : undefined;
   const galleries = new Set<string>();
   const mediaSources = new Set<string>();
   const textStatusIds: string[] = [];
@@ -146,7 +164,7 @@ export async function translateRepost(
   const captions = tweets.map((tweet) => translationCaption(tweet)).join('\n\n');
   const withMedia = `${rewritten}${galleries.size ? '\n' + [...galleries].join('\n') : ''}`;
   const translated = `${withMedia}\n\n${captions}`;
-  const rendered = { textStatusIds, videoStatusIds, mediaSources: [...mediaSources].join('\n'), ...(panel ? { panel } : {}) };
+  const rendered = { textStatusIds, videoStatusIds, mediaSources: [...mediaSources].join('\n') };
   if (translated.length <= contentLimit) return { content: translated, ...rendered };
   if (withMedia.length > contentLimit) return null;
 
