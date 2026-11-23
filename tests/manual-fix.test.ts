@@ -10,7 +10,7 @@ import { PreviewWatcher } from '../src/services/PreviewWatcher';
 import type { DeliveryOutcome } from '../src/services/DeliveryContext';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import type { ServerPreferences } from '../src/services/ServerSettings';
-import type { InstagramTranslation } from '../src/services/InstagramTranslation';
+import type { InstagramPost } from '../src/services/InstagramPost';
 import type { TweetTranslation } from '../src/services/TweetTranslation';
 import { parseYouTubeCommunityUrl, type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
 import { createArticleLookup, type ArticlePreview } from '../src/services/ArticlePreview';
@@ -92,7 +92,9 @@ function command(content = 'https://twitter.com/jack/status/20?s=46', context = 
   const events: InteractionEvent[] = [];
   const state = {
     render: (body: string, _edit: number, embeds?: APIEmbed[]): APIEmbed[] => embeds?.length ? embeds : (body.match(/https:\/\/\S+/g) ?? []).map(url => ({
-      url, title: 'A public post', description: 'The requested post.', video: { url: 'https://media.example/video.mp4' },
+      // A provider gallery card (g.) shows media without the post text.
+      url, title: 'A public post', ...(new URL(url).hostname.startsWith('g.') ? {} : { description: 'The requested post.' }),
+      video: { url: 'https://media.example/video.mp4' },
     })),
   };
   let edits = 0;
@@ -469,7 +471,7 @@ test('manual mixed translations cover selected links only and confirm delivered 
   });
   assert.deepEqual(lookups, ['20']);
   assert.match(f.response.content, /<https:\/\/fixupx\.com\/jack\/status\/20>/);
-  assert.match(f.response.content, /oginstagram.com\/p\/ABC\//);
+  assert.match(f.response.content, /https:\/\/g\.oginstagram\.com\/p\/ABC\//);
   assert.match(f.response.content, /tnktok\.com\/ABC\//);
   assert.doesNotMatch(f.response.content, /status\/(?:21|22)/);
   assert.deepEqual(preview.checks[0].map(item => item.platform), ['instagram', 'tiktok']);
@@ -557,7 +559,7 @@ test('manual X fallback verifies the alternate on the same response and preserve
 
 test('manual Instagram delivery confirms OGInstagram for slash and context actions on the first response', async () => {
   const original = 'https://www.instagram.com/p/DdKVPMEhTXe/?igsh=tracking';
-  const primary = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+  const primary = 'https://g.oginstagram.com/p/DdKVPMEhTXe/';
   for (const context of [false, true]) {
     const f = command(original, context), preview = previewChecks(f);
     f.state.render = content => content === primary
@@ -610,7 +612,7 @@ test('missing, unrelated and matching error previews exhaust manual X recovery w
 });
 
 test('manual recovery changes only the failed provider and excludes hidden or capped source links', async () => {
-  const instagram = 'https://oginstagram.com/reels/DdFKS1ABmK4/';
+  const instagram = 'https://g.oginstagram.com/p/DdFKS1ABmK4/';
   const f = command('https://x.com/jack/status/20 https://instagram.com/reels/DdFKS1ABmK4/ ' +
     '||https://x.com/jack/status/999|| <https://youtu.be/dQw4w9WgXcQ>', true);
   f.state.render = (_content, edit) => [
@@ -727,7 +729,7 @@ test('manual mobile shares acknowledge before network work and verify the resolv
     const share = platform === 'reddit' ? 'https://www.reddit.com/r/aww/s/Mobile123'
       : 'https://www.instagram.com/share/p/Mobile123?igsh=original';
     const source = platform === 'reddit' ? 'https://www.reddit.com/comments/abc123' : 'https://www.instagram.com/p/ABC/';
-    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123?legacy' : 'https://oginstagram.com/p/ABC/';
+    const fixed = platform === 'reddit' ? 'https://vxreddit.com/comments/abc123?legacy' : 'https://g.oginstagram.com/p/ABC/';
     const f = command(share, context), preview = previewChecks(f);
     if (!canSend) f.input.memberPermissions = new PermissionsBitField(0n);
     const normalizeMobileLinks = createMobileShareLinkNormalizer({ resolve4: async () => ['1.1.1.1'], connect: async options => {
@@ -839,46 +841,37 @@ test('manual native YouTube still works without operator providers but honors a 
   assert.equal(f.events[0].payload.flags, MessageFlags.Ephemeral);
 });
 
-test('manual Instagram presentation supports translated compact captions and media-first with translation off', async () => {
-  const caption: InstagramTranslation = { sourceUrl: 'https://www.instagram.com/reel/ABC/', shortcode: 'ABC', username: 'author',
-    text: 'A readable translated caption. '.repeat(30), languages: ['et'], mediaOnlyUrl: 'https://g.oginstagram.com/p/ABC/', mediaTypes: ['GraphVideo'] };
-  const sizes: number[] = [];
-  for (const style of ['standard', 'compact', 'media-first'] as const) {
-    const f = command(caption.sourceUrl), preview = previewChecks(f);
-    let lookups = 0;
-    f.state.render = () => [{ url: caption.mediaOnlyUrl, video: { url: 'https://cdn.example/video.mp4' } }];
-    await execute(f.interaction, config, { ...preview.dependencies,
-      serverPreferences: () => ({ instagramPresentation: style, translateInstagram: style !== 'media-first' }),
-      translateInstagram: async () => { lookups++; return caption; },
-    });
-    assert.equal(lookups, style === 'media-first' ? 0 : 1);
+test('manual Instagram reels use the caption-free gallery card and require its video', async () => {
+  // A post without provider media addresses has no block; its gallery card shows the media without the caption.
+  const post: InstagramPost = { sourceUrl: 'https://www.instagram.com/reel/ABC/', shortcode: 'ABC', username: 'author',
+    mediaTypes: ['GraphVideo'] };
+  for (const lookupInstagram of [undefined, async () => post]) {
+    const f = command(post.sourceUrl), preview = previewChecks(f);
+    f.state.render = () => [{ url: 'https://g.oginstagram.com/p/ABC/', video: { url: 'https://cdn.example/video.mp4' } }];
+    await execute(f.interaction, config, { ...preview.dependencies, ...(lookupInstagram ? { lookupInstagram } : {}) });
     assert.equal(preview.checks[0][0].captionFree, true);
     assert.equal(preview.checks[0][0].requireVideo, true);
-    assert.equal(f.response.content.includes('Translated from Estonian'), style !== 'media-first');
-    assert.deepEqual(originalControls(f), [caption.sourceUrl]);
-    sizes.push(f.response.content.length);
+    assert.equal(f.response.content, 'https://g.oginstagram.com/p/ABC/');
+    assert.deepEqual(originalControls(f), [post.sourceUrl]);
+    assert(preview.observations[0].result.ok);
   }
-  assert(sizes[1] < sizes[0]); assert(sizes[2] < sizes[1]);
 });
 
-test('manual translated Instagram images expect a caption-free preview without requiring video', async () => {
-  const caption: InstagramTranslation = { sourceUrl: 'https://www.instagram.com/p/ABC/', shortcode: 'ABC', username: 'author',
-    text: 'A readable translated caption.', languages: ['et'], mediaOnlyUrl: 'https://g.oginstagram.com/p/ABC/', mediaTypes: ['GraphImage'] };
-  const f = command(caption.sourceUrl), preview = previewChecks(f);
-  f.state.render = () => [{ url: caption.mediaOnlyUrl, image: { url: 'https://cdn.example/photo.jpg' } }];
-  await execute(f.interaction, config, { ...preview.dependencies, translateInstagram: async () => caption });
+test('manual Instagram images expect a caption-free preview without requiring video', async () => {
+  const post: InstagramPost = { sourceUrl: 'https://www.instagram.com/p/ABC/', shortcode: 'ABC', username: 'author',
+    mediaTypes: ['GraphImage'] };
+  const f = command(post.sourceUrl), preview = previewChecks(f);
+  f.state.render = () => [{ url: 'https://g.oginstagram.com/p/ABC/', image: { url: 'https://cdn.example/photo.jpg' } }];
+  await execute(f.interaction, config, { ...preview.dependencies, lookupInstagram: async () => post });
   assert.equal(preview.checks[0][0].captionFree, true);
   assert.equal(preview.checks[0][0].requireVideo, undefined);
   assert(preview.observations[0].result.ok);
 });
 
-test('manual media-first failures never claim a partial translated caption', async () => {
+test('manual Instagram failures keep the original link without a caption', async () => {
   const f = command('https://www.instagram.com/reel/ABC/'), preview = previewChecks(f);
   f.state.render = () => [];
-  await execute(f.interaction, config, { ...preview.dependencies,
-    serverPreferences: () => ({ instagramPresentation: 'media-first', translateInstagram: false }),
-    translateInstagram: async () => assert.fail('Media-first has no caption lookup'),
-  });
+  await execute(f.interaction, config, { ...preview.dependencies, lookupInstagram: async () => null });
   assert(preview.checks.flat().every(item => item.captionFree && item.requireVideo));
   assert.match(f.response.content, /A useful preview could not be confirmed/);
   assert(!f.response.content.includes('Translated from'));

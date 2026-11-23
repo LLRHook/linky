@@ -15,7 +15,7 @@ import { DeliveryDiagnostics } from '../src/services/DeliveryDiagnostics';
 import type { RepostRecord } from '../src/services/RepostRegistry';
 import type { ServerPreferences } from '../src/services/ServerSettings';
 import type { TweetTranslation } from '../src/services/TweetTranslation';
-import type { InstagramTranslation } from '../src/services/InstagramTranslation';
+import type { InstagramPost } from '../src/services/InstagramPost';
 import { YouTubeStats, YOUTUBE_STATS_TTL } from '../src/services/YouTubeStats';
 import { createMobileShareLinkNormalizer } from '../src/services/MobileShareLinks';
 import { type YouTubeCommunityPost } from '../src/services/YouTubeCommunity';
@@ -28,7 +28,8 @@ const AUTHOR = '1700000000000000003', BOT = '1700000000000000004', SOURCE = '170
 const ORIGINAL_X = 'https://twitter.com/jack/status/20?s=46';
 const PRIMARY_X = 'https://fixupx.com/jack/status/20', ALTERNATE_X = 'https://vxtwitter.com/jack/status/20';
 const ORIGINAL_IG = 'https://www.instagram.com/p/DdKVPMEhTXe/?igsh=tracking';
-const PRIMARY_IG = 'https://oginstagram.com/p/DdKVPMEhTXe/';
+// Linky never shows an Instagram caption, so it posts the provider's caption-free gallery card.
+const PRIMARY_IG = 'https://g.oginstagram.com/p/DdKVPMEhTXe/';
 const YOUTUBE_ID = 'dQw4w9WgXcQ', NATIVE_YOUTUBE = `https://www.youtube.com/watch?v=${YOUTUBE_ID}`;
 const xPreview: APIEmbed = { url: PRIMARY_X, title: 'Jack', description: 'A public post.' };
 const videoPreview: APIEmbed = { url: NATIVE_YOUTUBE, video: { url: `https://www.youtube.com/embed/${YOUTUBE_ID}` } };
@@ -516,7 +517,7 @@ test('health-based provider routing preserves identical URLs inside spoilers, co
 test('automatic Instagram delivery verifies OGInstagram on the first replacement before deleting the original', async () => {
   const f = delivery(ORIGINAL_IG);
   f.state.render = (_round, message) => message.content.includes(PRIMARY_IG)
-    ? [{ url: PRIMARY_IG, image: { url: 'https://media.example/requested-photo.jpg' }, description: 'The requested photo.' }]
+    ? [{ url: PRIMARY_IG, image: { url: 'https://media.example/requested-photo.jpg' } }]
     : [];
   await f.create()(f.source);
   assert.equal(f.sent.length, 1);
@@ -539,7 +540,7 @@ test('an OGInstagram component preview authorizes replacement only when its gall
   const card = (items: unknown[]) => [{ type: 'components', url: PRIMARY_IG, components: [{ type: 17, components: [
     { type: 9, components: [{ type: 10, content: '**author**' }], accessory: { type: 11, media: { url: 'https://oginstagram.com/offload/DdKVPMEhTXe/avatar',
       proxy_url: 'https://images-ext-1.discordapp.net/external/a/https/oginstagram.com/offload/DdKVPMEhTXe/avatar', content_type: 'image/jpeg', loading_state: 2 } } },
-    { type: 10, content: 'The requested photo.' }, ...(items.length ? [{ type: 12, items }] : []),
+    ...(items.length ? [{ type: 12, items }] : []),
   ] }] }] as unknown as APIEmbed[];
   const photo = { media: { url: 'https://oginstagram.com/offload/DdKVPMEhTXe/1', content_type: 'image/jpeg', loading_state: 2,
     proxy_url: 'https://images-ext-1.discordapp.net/external/b/https/oginstagram.com/offload/DdKVPMEhTXe/1' } };
@@ -939,31 +940,32 @@ test('a failure notice is cancelled if setup changes during source fetch or owne
   }
 });
 
-const instagramCaption = (shortcode = 'ABC', kind = 'p', mediaTypes = ['GraphImage']): InstagramTranslation => ({
-  sourceUrl: `https://www.instagram.com/${kind}/${shortcode}/`, shortcode, username: 'traveller',
-  text: 'This is the full English caption.', languages: ['et'], mediaOnlyUrl: `https://g.oginstagram.com/p/${shortcode}/`, mediaTypes,
+// Without provider media addresses there is no block, so these posts exercise the caption-free gallery card.
+const instagramPost = (shortcode = 'ABC', kind = 'p', mediaTypes = ['GraphImage']): InstagramPost => ({
+  sourceUrl: `https://www.instagram.com/${kind}/${shortcode}/`, shortcode, username: 'traveller', mediaTypes,
 });
-const instagramImage = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.oginstagram.com/p/${shortcode}/`,
+const galleryUrl = (shortcode = 'ABC') => `https://g.oginstagram.com/p/${shortcode}/`;
+const instagramImage = (shortcode = 'ABC'): APIEmbed => ({ url: galleryUrl(shortcode),
   image: { url: `https://cdn.example/${shortcode}.jpg` } });
-const instagramVideo = (shortcode = 'ABC'): APIEmbed => ({ url: `https://g.oginstagram.com/p/${shortcode}/`,
+const instagramVideo = (shortcode = 'ABC'): APIEmbed => ({ url: galleryUrl(shortcode),
   video: { url: `https://cdn.example/${shortcode}.mp4` } });
 
-test('translated Instagram images and reels retain their native media before replacing the original', async () => {
+test('Instagram images and reels use the caption-free gallery card and retain its media before replacing the original', async () => {
   for (const kind of ['p', 'reel']) {
-    const caption = instagramCaption('ABC', kind, [kind === 'reel' ? 'GraphVideo' : 'GraphImage']);
-    const f = delivery(caption.sourceUrl), preview = kind === 'reel' ? instagramVideo() : instagramImage();
+    const post = instagramPost('ABC', kind, [kind === 'reel' ? 'GraphVideo' : 'GraphImage']);
+    const f = delivery(post.sourceUrl), preview = kind === 'reel' ? instagramVideo() : instagramImage();
     const lookups: string[] = [];
     f.state.render = () => [preview];
-    await f.create({ translateInstagram: async source => { lookups.push(source); return caption; } })(f.source);
-    assert.deepEqual(lookups, [caption.sourceUrl]); assert.equal(f.sent.length, 1);
+    f.state.duringPreview = async () => assert.equal(f.state.originalDeleted, false, 'never delete while the preview is pending');
+    await f.create({ lookupInstagram: async source => { lookups.push(source); return post; } })(f.source);
+    assert.deepEqual(lookups, [post.sourceUrl]); assert.equal(f.sent.length, 1);
     const replacement = f.sent[0];
     assert.equal(replacement.deleted, false); assert.equal(f.state.originalDeleted, true);
-    assert.match(replacement.message.content, /This is the full English caption\./);
-    assert.match(replacement.message.content, /Translated from Estonian/);
-    assert(replacement.message.content.includes(caption.mediaOnlyUrl));
+    assert.equal(replacement.message.content, `> **Shared by <@${AUTHOR}>**\n${galleryUrl()}`);
+    assert.equal(replacement.edits.filter(edit => typeof edit.content === 'string').length, 0, 'the card is posted once');
     assert.equal(replacement.options.embeds, undefined, 'rich embeds must not suppress native media');
     assert.deepEqual(replacement.message.embeds.map(embed => embed.toJSON()), [preview]);
-    assert.deepEqual(f.expectedChecks, [[{ source: caption.sourceUrl, url: caption.mediaOnlyUrl,
+    assert.deepEqual(f.expectedChecks, [[{ source: post.sourceUrl, url: galleryUrl(),
       platform: 'instagram', providerId: 'oginstagram', captionFree: true, ...(kind === 'reel' ? { requireVideo: true } : {}) }]]);
     assert.equal(f.remembered[0].mode, 'replace');
     assert(f.events.indexOf('delete:source') > f.events.indexOf('verify:1:passed'));
@@ -971,100 +973,46 @@ test('translated Instagram images and reels retain their native media before rep
   }
 });
 
-test('translated Instagram delivery keeps one English caption on one replacement until OGInstagram media is verified', async () => {
-  for (const [kind, mediaType] of [['p', 'GraphImage'], ['p', 'GraphVideo'], ['reel', 'GraphVideo']]) {
-    const caption = instagramCaption('DdKVPMEhTXe', kind, [mediaType]), f = delivery(caption.sourceUrl);
-    const preview: APIEmbed = { url: caption.mediaOnlyUrl, ...(mediaType === 'GraphVideo'
-      ? { video: { url: 'https://cdn.example/video.mp4' } } : { image: { url: 'https://cdn.example/photo.jpg' } }) };
-    let lookups = 0;
-    f.state.render = () => [preview];
-    f.state.duringPreview = async () => assert.equal(f.state.originalDeleted, false, 'never delete while the preview is pending');
-    await f.create({ translateInstagram: async () => { lookups++; return caption; } })(f.source);
-    assert.equal(lookups, 1);
-    assert.equal(f.sent.length, 1);
-    const replacement = f.sent[0];
-    assert.equal(replacement.edits.filter(edit => typeof edit.content === 'string').length, 0, 'the caption is posted once and never rewritten');
-    for (const content of [replacement.options.content, replacement.message.content]) {
-      assert.equal(String(content).split(caption.text).length - 1, 1);
-      assert.equal(String(content).split('-# Translated from Estonian').length - 1, 1);
-      assert(String(content).includes(caption.mediaOnlyUrl));
-    }
-    assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.providerId)), [['oginstagram']]);
-    assert(f.expectedChecks.flat().every(item => item.captionFree));
-    if (mediaType === 'GraphVideo') assert(f.expectedChecks.flat().every(item => item.requireVideo));
-    assert.deepEqual(replacement.message.embeds.map(embed => embed.toJSON()), [preview]);
-    assert.equal(replacement.options.embeds, undefined, 'retain native media instead of a rich caption embed');
-    assert.deepEqual(replacement.options.allowedMentions, { parse: [], users: [AUTHOR], roles: [], repliedUser: false });
-    assert.equal(replacement.deleted, false);
-    assert.equal(f.state.originalDeleted, true);
-    assert(f.events.indexOf(`remember:${replacement.message.id}`) > f.events.indexOf('verify:1:passed'));
-    assert(f.events.indexOf('delete:source') > f.events.indexOf(`remember:${replacement.message.id}`));
-    assert.equal(f.remembered[0].replacementId, replacement.message.id);
-    assert.equal(f.remembered[0].mode, 'replace');
-  }
-});
-
 test('Instagram GraphVideo posts and Reels require video metadata from the gallery, not merely an image', async () => {
   for (const kind of ['p', 'reel']) for (const playable of [false, true]) {
-    const caption = instagramCaption('ABC', kind, ['GraphVideo']), f = delivery(caption.sourceUrl);
+    const post = instagramPost('ABC', kind, ['GraphVideo']), f = delivery(post.sourceUrl);
     f.state.render = () => [playable ? instagramVideo() : instagramImage()];
-    await f.create({ translateInstagram: async () => caption })(f.source);
+    await f.create({ lookupInstagram: async () => post })(f.source);
     assert(f.expectedChecks.flat().every(item => item.requireVideo && item.captionFree));
     assert.deepEqual(f.expectedChecks.map(items => items[0].providerId), ['oginstagram']);
     assert.equal(f.state.originalDeleted, playable);
-    assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
-    assert.equal(f.remembered[0].mode, playable ? 'replace' : 'reply');
-    assert.equal(f.sent[0].message.embeds.length, playable ? 1 : 0);
+    assert.equal(f.sent[0].deleted, !playable, 'a card without its video is removed');
   }
 });
 
-test('a media preview repeating the original Instagram caption is rejected instead of duplicating languages', async () => {
-  const caption = instagramCaption(), f = delivery(caption.sourceUrl);
-  f.state.render = () => [{ ...instagramImage(), description: 'See on algne eestikeelne pealdis.' }];
-  await f.create({ translateInstagram: async () => caption })(f.source);
-  assert.equal(f.state.originalDeleted, false);
-  assert.equal(f.expectedChecks[0][0].captionFree, true);
-  assert.deepEqual(f.events.filter(event => event.startsWith('verify:')), ['verify:1:started', 'verify:1:failed']);
-  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
-  assert.equal(f.sent[0].message.embeds.length, 0);
-  assert(!f.sent[0].message.content.includes('See on algne'));
-  assert.equal(f.sent[0].message.content.match(/This is the full English caption\./g)?.length, 1);
-  assert.equal(f.remembered[0].mode, 'reply');
-});
-
-test('missing Instagram media keeps one owned English caption, suppresses its gallery embed and preserves the source', async () => {
-  for (const mode of ['replace', 'reply'] as const) {
-    const caption = instagramCaption(), f = delivery(caption.sourceUrl);
-    f.state.preferences = { mode }; f.state.render = () => [];
-    await f.create({ translateInstagram: async () => caption })(f.source);
-    assert.equal(f.sent.length, 1, 'keep the useful caption rather than sending another public retry notice');
-    const replacement = f.sent[0];
-    assert.equal(replacement.deleted, false); assert.equal(f.state.originalDeleted, false);
-    assert(replacement.message.content.includes('https://g.oginstagram.com/p/ABC/'));
-    assert(replacement.edits.some(edit => edit.flags === MessageFlags.SuppressEmbeds));
-    assert.match(replacement.message.content, /This is the full English caption\./);
-    assert.match(replacement.message.content, /preview could not be verified; the original post is still here/);
-    assert.deepEqual(replacement.message.embeds, []);
-    const controls = JSON.stringify(replacement.message.components.map(component => component.toJSON()));
-    assert.match(controls, /Original post/); assert.match(controls, /linky:remove/);
-    assert(controls.includes(caption.sourceUrl));
-    assert.deepEqual(f.remembered, [{ guildId: GUILD, channelId: CHANNEL, sourceId: SOURCE,
-      replacementId: replacement.message.id, authorId: AUTHOR, mode: 'reply' }]);
-    assert.deepEqual(f.expectedChecks.map(items => items[0].url), [caption.mediaOnlyUrl]);
-    assert(f.expectedChecks.flat().every(item => item.captionFree), 'the attempt must omit the original-language caption');
-    assert.equal(replacement.message.content.split(caption.text).length - 1, 1);
-    assert.equal(replacement.message.content.split('-# Translated from Estonian').length - 1, 1);
-    assert(replacement.edits.some(edit => Array.isArray(edit.embeds) && edit.embeds.length === 0));
+test('a gallery card showing the caption, or no card at all, keeps the original with a notice and no caption', async () => {
+  for (const render of [[{ ...instagramImage(), description: 'See on algne eestikeelne pealdis.' }], []]) {
+    for (const mode of ['replace', 'reply'] as const) {
+      const post = instagramPost(), f = delivery(post.sourceUrl);
+      f.state.preferences = { mode }; f.state.render = () => render;
+      await f.create({ lookupInstagram: async () => post })(f.source);
+      assert.equal(f.state.originalDeleted, false);
+      assert.equal(f.expectedChecks[0][0].captionFree, true);
+      assert.equal(f.sent[0].deleted, true);
+      const surviving = f.sent.filter(entry => !entry.deleted);
+      assert.equal(surviving.length, 1);
+      assert.match(surviving[0].message.content, /Your original is still here/);
+      assert(!surviving[0].message.content.includes('See on algne'));
+      assert(!surviving[0].message.content.includes('Instagram preview could not be verified'));
+      assert.equal(f.remembered[0].mode, 'reply');
+    }
   }
 });
 
-test('multi-post and mixed-platform Instagram failures use complete-delivery rollback', async () => {
+test('multi-post and mixed-platform Instagram failures use complete-delivery rollback without a lookup', async () => {
   for (const other of ['instagram', 'x']) {
-    const caption = instagramCaption(), second = instagramCaption('DEF');
-    const f = delivery(`${caption.sourceUrl} ${other === 'instagram' ? second.sourceUrl : ORIGINAL_X}`);
+    const post = instagramPost(), second = instagramPost('DEF');
+    const f = delivery(`${post.sourceUrl} ${other === 'instagram' ? second.sourceUrl : ORIGINAL_X}`);
     // One usable preview cannot authorize deleting a source containing another broken post.
     f.state.render = () => other === 'instagram' ? [instagramImage('DEF')] : [xPreview];
-    await f.create({ translateInstagram: async source => source === second.sourceUrl ? second : caption })(f.source);
+    let lookups = 0;
+    await f.create({ lookupInstagram: async () => { lookups++; return post; } })(f.source);
+    assert.equal(lookups, 0, 'only a lone post is looked up');
     assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 2);
     assert.equal(f.sent[0].deleted, true); assert.equal(f.sent[1].deleted, false);
     assert.match(f.sent[1].message.content, /Your original is still here/);
@@ -1072,77 +1020,27 @@ test('multi-post and mixed-platform Instagram failures use complete-delivery rol
     assert.equal(f.remembered[0].mode, 'reply');
     assert.equal(f.expectedChecks[0].length, 2);
     assert(f.expectedChecks.flat().filter(item => item.platform === 'instagram').every(item =>
-      item.captionFree && /^https:\/\/g\.(?:fkinstagram|oginstagram)\.com\/p\//.test(item.url)));
+      item.captionFree && /^https:\/\/g\.oginstagram\.com\/p\//.test(item.url)));
   }
 });
 
-test('source edits and translation preference changes during Instagram lookup or caption fallback cancel stale output', async () => {
-  for (const stage of ['lookup', 'fallback']) for (const change of ['source', 'preference']) {
-    const caption = instagramCaption(), f = delivery(caption.sourceUrl);
-    f.state.render = () => [];
+test('source edits and Instagram preference changes during the post lookup cancel stale output', async () => {
+  for (const change of ['source', 'preference']) {
+    const post = instagramPost(), f = delivery(post.sourceUrl);
+    f.state.render = () => [instagramImage()];
     let changed = false;
     const mutate = () => {
       changed = true;
       if (change === 'source') { f.state.remoteContent = 'The author corrected this message.'; f.state.editedTimestamp = 123; }
-      else f.state.preferences = { ...f.state.preferences, translateInstagram: false };
+      else f.state.preferences = { ...f.state.preferences, platforms: { instagram: false } };
     };
-    if (stage === 'fallback') f.state.duringEdit = async edit => {
-      if (String(edit.content).includes('Instagram preview could not be verified')) mutate();
-    };
-    await f.create({ translateInstagram: async () => { if (stage === 'lookup') mutate(); return caption; } })(f.source);
-    assert.equal(changed, true, `${stage}/${change}`);
-    assert.equal(f.state.originalDeleted, false, `${stage}/${change}`);
-    assert(f.sent.every(entry => entry.deleted), `${stage}/${change}: no stale caption survives`);
-    assert.deepEqual(f.remembered, [], `${stage}/${change}`);
+    await f.create({ lookupInstagram: async () => { mutate(); return post; } })(f.source);
+    assert.equal(changed, true, change);
+    assert.equal(f.state.originalDeleted, false, change);
+    assert(f.sent.every(entry => entry.deleted), `${change}: no stale card survives`);
+    assert.deepEqual(f.remembered, [], change);
     if (change === 'source') assert.equal(f.state.remoteContent, 'The author corrected this message.');
   }
-});
-
-test('Instagram caption fallback is removed if its ownership cannot be persisted', async () => {
-  for (const failure of ['false', 'throw', 'late edit']) {
-    const caption = instagramCaption(), f = delivery(caption.sourceUrl);
-    f.state.render = () => [];
-    f.state.remember = async record => {
-      assert.equal(record.mode, 'reply');
-      if (failure === 'throw') throw new Error('ownership unavailable');
-      if (failure === 'false') return false;
-      f.state.remoteContent = 'An edit while saving the caption.'; f.state.editedTimestamp = 123; return true;
-    };
-    await f.create({ translateInstagram: async () => caption })(f.source);
-    assert.equal(f.state.originalDeleted, false); assert.equal(f.sent.length, 1);
-    assert.equal(f.sent[0].deleted, true);
-  }
-});
-
-test('repeated Instagram links near the content limit use bounded fallback and do not suppress a fresh preview', async () => {
-  const caption = instagramCaption(), content = Array(4).fill(caption.sourceUrl).join(' ');
-  const baseline = delivery(content); baseline.state.render = () => [];
-  await baseline.create({ translateInstagram: async () => caption })(baseline.source);
-  const notice = '\n-# Instagram preview could not be verified; the original post is still here.';
-  // Leave room for the notice, regardless of how many copies of the link were shared.
-  const padding = 1998 - String(baseline.sent[0].options.content).length - notice.length;
-  assert(padding > 0);
-  const long = { ...caption, text: caption.text + 'x'.repeat(padding) };
-  const f = delivery(`${'x'.repeat(padding)} ${content}`);
-  f.state.render = () => [];
-  const handle = f.create({ translateInstagram: async () => long });
-  await handle(f.source);
-  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].deleted, false);
-  for (const content of [f.sent[0].options.content, ...f.sent[0].edits.map(edit => edit.content)]) {
-    if (typeof content === 'string') assert(content.length <= 2000, 'every Discord write must fit the message limit');
-  }
-  assert(f.sent[0].message.content.length <= 2000, 'suppression must not add characters for every repeated URL');
-  assert.equal(f.state.originalDeleted, false); assert.equal(f.remembered[0].mode, 'reply');
-  assert(f.sent[0].edits.some(edit => edit.flags === MessageFlags.SuppressEmbeds));
-  assert(!f.sent[0].message.content.includes(long.text));
-  assert(f.sent[0].message.content.includes('…'));
-  assert(f.sent[0].message.content.includes('Translated from'));
-  f.state.render = () => [instagramImage()];
-  await handle(f.source, { refresh: true, forceReply: true });
-  const refreshed = f.sent[1];
-  assert.equal(refreshed.options.flags, undefined);
-  assert(!refreshed.edits.some(edit => edit.flags === MessageFlags.SuppressEmbeds));
-  assert.deepEqual(refreshed.message.embeds.map(embed => embed.toJSON()), [instagramImage()]);
 });
 
 test('automatic mobile links resolve before translation and media verification, with canonical original-post controls', async () => {
@@ -1156,7 +1054,7 @@ test('automatic mobile links resolve before translation and media verification, 
       if (blocked && options.hostname === 'www.reddit.com') return new Response(null, { status: 403 });
       return new Response(null, { status: 302, headers: { location: canonical + '?tracking=removed' } });
     } });
-    const provider = platform === 'instagram' ? 'https://oginstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/?legacy';
+    const provider = platform === 'instagram' ? 'https://g.oginstagram.com/p/ABC/' : 'https://vxreddit.com/r/aww/comments/abc123/title/?legacy';
     f.state.render = () => [{ url: provider, image: { url: 'https://cdn.example/post.jpg' } }];
     await f.create({ normalizeMobileLinks })(f.source);
     assert.equal(calls, blocked ? 2 : 1); assert.equal(f.state.originalDeleted, true);
@@ -1378,12 +1276,11 @@ test('stored opt-out races cancel previews and edit refreshes, while an explicit
   assert.equal(disabled.sent.length, 0, 'explicit retry never enables a disabled server');
 });
 
-test('Instagram media-first runs without translation and cannot claim a translated-caption fallback', async () => {
+test('Instagram without a post lookup still uses the caption-free gallery and never claims a caption fallback', async () => {
   for (const playable of [true, false]) {
     const f = delivery('https://www.instagram.com/reel/ABC/');
-    f.state.preferences = { instagramPresentation: 'media-first', translateInstagram: false };
     f.state.render = () => playable ? [instagramVideo()] : [];
-    await f.create({ translateInstagram: forbidden.forbid('Media-first must not translate') })(f.source);
+    await f.create()(f.source);
     assert.equal(f.state.originalDeleted, playable);
     assert(f.expectedChecks.flat().every(item => item.captionFree && item.requireVideo));
     assert.equal(f.sent[0].deleted, !playable);
@@ -1392,20 +1289,6 @@ test('Instagram media-first runs without translation and cannot claim a translat
     assert(surviving.every(entry => !entry.message.content.includes('Instagram preview could not be verified')));
     if (!playable) assert.match(surviving[0].message.content, /Your original is still here/);
   }
-});
-
-test('Instagram compact presentation reaches automatic delivery with a shorter real caption', async () => {
-  const caption = { ...instagramCaption(), text: 'A readable caption sentence. '.repeat(30) };
-  const sizes: number[] = [];
-  for (const mode of ['standard', 'compact'] as const) {
-    const f = delivery(caption.sourceUrl); f.state.preferences = { instagramPresentation: mode };
-    f.state.render = () => [instagramImage()];
-    await f.create({ translateInstagram: async () => caption })(f.source);
-    assert.equal(f.state.originalDeleted, true);
-    assert.match(f.sent[0].message.content, /Translated from Estonian/);
-    sizes.push(f.sent[0].message.content.length);
-  }
-  assert(sizes[1] < sizes[0]);
 });
 
 const COMMUNITY_ID = 'UgkxCommunityPublicPost123456789', COMMUNITY_URL = `https://www.youtube.com/post/${COMMUNITY_ID}`;

@@ -349,7 +349,9 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
         replacement.embeds = [];
         mapLinks(options.content ?? '', url => {
           if (parseProviderUrl(url) || parseYouTubeUrl(url)) replacement.embeds.push({
-            toJSON: () => ({ url, title: 'Post preview', description: 'Post text', video: { url: 'https://cdn.example/video.mp4' } }),
+            // A provider gallery card (g.) shows media without the post text.
+            toJSON: () => ({ url, title: 'Post preview', ...(new URL(url).hostname.startsWith('g.') ? {} : { description: 'Post text' }),
+              video: { url: 'https://cdn.example/video.mp4' } }),
           });
           return url;
         });
@@ -367,24 +369,22 @@ function fixture(translateTweet?: (statusId: string) => Promise<TweetTranslation
     run: () => handler(source as unknown as Message) };
 }
 
-test('Instagram automatically translates captions when X translation is disabled', async () => {
+test('Instagram shows the caption-free gallery without any caption when X translation is disabled', async () => {
   const f = fixture();
   f.source.content = 'https://www.instagram.com/p/DdFwAIqgncQ/';
   const requests: string[] = [];
   const options = {
     platforms: ['instagram'] as const,
-    translateInstagram: async (sourceUrl: string) => {
+    // No provider media addresses, so no block: the gallery card is the whole post.
+    lookupInstagram: async (sourceUrl: string) => {
       requests.push(sourceUrl);
-      return { sourceUrl, shortcode: 'DdFwAIqgncQ', username: 'bustervro', text: 'The complete English caption.',
-        languages: ['et'], mediaOnlyUrl: 'https://g.oginstagram.com/p/DdFwAIqgncQ/', mediaTypes: ['GraphImage'] };
+      return { sourceUrl, shortcode: 'DdFwAIqgncQ', username: 'bustervro', mediaTypes: ['GraphImage'] };
     },
     verifyPreview: async () => ({ ok: true, missing: [], videoMetadata: false }),
   };
   await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, options)(f.source as unknown as Message);
   assert.deepEqual(requests, [f.source.content]);
-  assert.match(f.sent[0].content!, /The complete English caption/);
-  assert.match(f.sent[0].content!, /Translated from Estonian/);
-  assert.match(f.sent[0].content!, /https:\/\/g.oginstagram.com\/p\/DdFwAIqgncQ\//);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://g.oginstagram.com/p/DdFwAIqgncQ/`);
   assert.equal(f.sent[0].embeds, undefined);
   assert.deepEqual(f.sent[0].allowedMentions, { parse: [], users: [AUTHOR_ID], roles: [], repliedUser: false });
   assert.ok(f.events.includes('delete original'));
@@ -1042,7 +1042,7 @@ test('YouTube outage does not prevent Instagram replacement in a mixed message',
     lookupYouTube: async () => new Map(), publishYouTube: forbid('No statistics are available'),
   })(f.source as unknown as Message);
   assert.deepEqual(f.events, ['send', 'fetch', 'delete original']);
-  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://oginstagram.com/reel/abc/ https://youtu.be/${YOUTUBE_ID}?si=test`);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\nhttps://g.oginstagram.com/p/abc/ https://youtu.be/${YOUTUBE_ID}?si=test`);
 });
 
 test('hidden, disabled, inaccessible or unconfigured YouTube links make no API request', async () => {
@@ -1349,7 +1349,7 @@ test('a message is left alone when only a disabled platform matches', async () =
   await createLinkRepostHandler(CHANNEL_ID, enabled.log, undefined, { platforms: ['instagram'] })(
     enabled.source as unknown as Message);
   assert.deepEqual(enabled.events, ['send', 'fetch', 'delete original']);
-  assert.equal(enabled.sent[0].content, `${QUOTED_CREDIT}\n> Look\nhttps://oginstagram.com/p/DAbc123`);
+  assert.equal(enabled.sent[0].content, `${QUOTED_CREDIT}\n> Look\nhttps://g.oginstagram.com/p/DAbc123/`);
 });
 
 for (const permission of ['ViewChannel', 'ReadMessageHistory', 'ManageMessages', 'SendMessages', 'EmbedLinks'] as const) {
@@ -1577,7 +1577,7 @@ test('mixed platforms keep native previews and suppress the untranslated text-on
   f.source.content = '**Read https://x.com/u/status/123?s=20#part?detail** https://www.instagram.com/p/abc/?igsh=1. https://vm.tiktok.com/ZN8eQCMCd/?share=1';
   await f.run();
   assert.deepEqual(calls, ['123']);
-  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n**Read <https://fixupx.com/u/status/123#part?detail>** https://oginstagram.com/p/abc/. https://tnktok.com/ZN8eQCMCd/\n\n${JAPANESE.text}\n-# Translated from Japanese`);
+  assert.equal(f.sent[0].content, `${QUOTED_CREDIT}\n**Read <https://fixupx.com/u/status/123#part?detail>** https://g.oginstagram.com/p/abc/. https://tnktok.com/ZN8eQCMCd/\n\n${JAPANESE.text}\n-# Translated from Japanese`);
   assert.equal(f.sent[0].embeds, undefined);
 });
 
@@ -1591,7 +1591,7 @@ test('disabled X or translation never requests a translation', async () => {
     });
     await handler(f.source as unknown as Message);
     assert.equal(f.sent[0].embeds, undefined);
-    assert.match(f.sent[0].content!, /https:\/\/oginstagram.com\/p\/abc\//);
+    assert.match(f.sent[0].content!, /https:\/\/g\.oginstagram\.com\/p\/abc\//);
   }
 });
 

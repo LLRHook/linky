@@ -1,7 +1,7 @@
 import { PermissionFlagsBits } from 'discord.js';
 import type { PreparedArticle } from './ArticlePosts';
 import { parseEromeUrl } from './Erome';
-import { parseInstagramUrl } from './InstagramTranslation';
+import { parseInstagramUrl } from './InstagramPost';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { expectedPreviews, type ExpectedPreview } from './PreviewRecovery';
 import { parseArticleUrl } from './ArticlePreview';

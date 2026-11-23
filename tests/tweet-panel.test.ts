@@ -189,7 +189,7 @@ test('automatic repost of a translated video post sends one confirmed block and 
   const final = f.edits.at(-1)!.components as Component[];
   assert(final.some(component => component.type === ComponentType.Container), 'the controls edit keeps the block');
   assert.match(JSON.stringify(final), /linky:remove/);
-  assert(f.logs.some(entry => entry.includes('Translated post block media confirmed; client playback not checked')));
+  assert(f.logs.some(entry => entry.includes('Post block media confirmed; client playback not checked')));
   assert.equal(f.client.listenerCount(Events.Raw), 0);
 });
 

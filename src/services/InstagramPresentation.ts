@@ -1,148 +1,82 @@
 import { ComponentType, escapeMarkdown, type AttachmentBuilder, type APIEmbed, type APIMessageTopLevelComponent } from 'discord.js';
-import { parseInstagramUrl, type InstagramMedia, type InstagramTranslation } from './InstagramTranslation';
+import { parseInstagramUrl, type InstagramMedia, type InstagramPost } from './InstagramPost';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { INSTAGRAM_PROVIDER, parseProviderUrl } from './SocialProviders';
-import type { ServerPreferences } from './ServerSettings';
 import { MAX_COMPONENT_TEXT, MAX_GALLERY_ITEMS } from './TweetPanel';
 
-export interface CaptionPresentation {
+export interface MediaPresentation {
   content: string;
   embeds?: APIEmbed[];
   translationFiles?: AttachmentBuilder[];
 }
 
-const languages = new Intl.DisplayNames(['en'], { type: 'language' });
-const characters = new Intl.Segmenter('en', { granularity: 'grapheme' });
-const CAPTION_LIMIT = 300, COMPACT_CAPTION_LIMIT = 120;
 // OGInstagram's card colour, which its native preview showed before.
 const ACCENT = 0xff0069;
 
-/** A single translated post whose every item has a provider address, shown as one block instead of captions beside a card. */
-export interface InstagramPanel { post: InstagramTranslation; media: InstagramMedia[]; captionLimit: number }
-
-function label(post: InstagramTranslation): string {
-  return `Translated from ${post.languages.map(code => languages.of(code) ?? code).join(', ')}`;
-}
-
-/** Render caption URLs literally without generating more automatic embeds. */
-function literal(text: string): string {
-  return text.split(/(https?:\/\/[^\s<>`]+)/gi).map((part, index) => index % 2
-    ? `<${part}>` : escapeMarkdown(part)).join('');
-}
-
-/** One short paragraph, without splitting emoji, Markdown escapes or caption URLs. */
-function excerpt(text: string, budget: number, captionLimit = CAPTION_LIMIT): string {
-  const compact = text.replace(/\s+/g, ' ').trim(), limit = Math.min(captionLimit, budget);
-  const full = literal(compact);
-  if (full.length <= limit) return full;
-  const urls = [...compact.matchAll(/https?:\/\/[^\s<>`]+/gi)];
-  const boundaries = [...characters.segment(compact)].map(part => part.index).filter(index => index < limit);
-  for (const end of boundaries.reverse()) {
-    const crossing = urls.find(url => url.index < end && url.index + url[0].length > end);
-    const prefix = literal(compact.slice(0, crossing?.index ?? end).trimEnd());
-    if (prefix.length < limit) return `${prefix}…`;
-  }
-  return '…';
-}
+/** A lone post whose every item has a provider address, shown as one block: its author and media, never its caption. */
+export interface InstagramPanel { post: InstagramPost; media: InstagramMedia[] }
 
 /**
- * One translated post as a single Components V2 block: an optional lead line (the sharer credit), then a container with
- * the author, the English caption excerpt, its language label and a gallery of every item. With `unavailable`, that
- * notice replaces the gallery and the caption stays. Null when the text or the gallery does not fit.
+ * One post as a single Components V2 block: an optional lead line (the sharer credit), then a container with the
+ * author and a gallery of every item. Null when the text or the gallery does not fit.
  */
-export function instagramPanelComponents(panel: InstagramPanel, lead: string,
-  { unavailable }: { unavailable?: string } = {}): APIMessageTopLevelComponent[] | null {
-  const { post } = panel;
-  const heading = `**[@${escapeMarkdown(post.username)}](<https://www.instagram.com/${post.username}/>)**`;
-  const footer = `-# ${label(post)}${unavailable ? `\n-# ${unavailable}` : ''}`;
-  const budget = MAX_COMPONENT_TEXT - lead.length - heading.length - footer.length - 2;
-  if (budget < 1 || !panel.media.length || panel.media.length > MAX_GALLERY_ITEMS) return null;
+export function instagramPanelComponents(panel: InstagramPanel, lead: string): APIMessageTopLevelComponent[] | null {
+  const { username } = panel.post;
+  const heading = `**[@${escapeMarkdown(username)}](<https://www.instagram.com/${username}/>)**`;
+  if (lead.length + heading.length > MAX_COMPONENT_TEXT || !panel.media.length || panel.media.length > MAX_GALLERY_ITEMS) return null;
   return [
     ...(lead ? [{ type: ComponentType.TextDisplay as const, content: lead }] : []),
     { type: ComponentType.Container, accent_color: ACCENT, components: [
-      { type: ComponentType.TextDisplay, content: `${heading}\n${excerpt(post.text, budget, panel.captionLimit)}\n${footer}` },
-      ...(unavailable ? [] : [{ type: ComponentType.MediaGallery as const, items: panel.media.map(item => ({ media: { url: item.url },
-        description: item.type === 'photo' ? 'Photo from the post.' : 'Video from the post.' })) }]),
+      { type: ComponentType.TextDisplay, content: heading },
+      { type: ComponentType.MediaGallery, items: panel.media.map(item => ({ media: { url: item.url },
+        description: item.type === 'photo' ? 'Photo from the post.' : 'Video from the post.' })) },
     ] },
   ];
 }
 
 /**
- * Preserve the native media, replacing its provider caption with English message text. A lone post whose every item
- * has a provider address also offers `instagramPanel`, which delivery uses instead when it can publish one block.
+ * Show Instagram media without its caption. Every visible Instagram link becomes the provider's caption-free gallery
+ * card. A message whose only link is one Instagram post also offers `instagramPanel`, which delivery publishes instead
+ * as one block when it can. Callers must verify the caption-free media before removing the original.
  */
-export async function addInstagramCaptions<T extends CaptionPresentation>(
+export async function addInstagramMedia<T extends MediaPresentation>(
   original: string, presentation: T,
-  lookup: ((sourceUrl: string) => Promise<InstagramTranslation | null>) | undefined, contentLimit: number,
-  style: NonNullable<ServerPreferences['instagramPresentation']> = 'standard',
-): Promise<T & { instagramSources?: string[]; instagramVideos?: string[]; instagramCaptionSources?: string[];
-  instagramPanel?: InstagramPanel }> {
+  lookup: ((sourceUrl: string) => Promise<InstagramPost | null>) | undefined, contentLimit: number,
+): Promise<T & { instagramSources?: string[]; instagramVideos?: string[]; instagramPanel?: InstagramPanel }> {
   // Explicit rich embeds can suppress the native media we need to retain.
   if (presentation.embeds?.length || presentation.content.length > contentLimit) return presentation;
   const sources = new Map<string, string>();
+  let links = 0;
   mapLinks(original, (url, position) => {
+    links++;
     const source = visibleLink(original, position) && parseInstagramUrl(url);
-    if (source && (style === 'media-first' || sources.size < 3)) sources.set(source.shortcode, source.sourceUrl);
+    if (source) sources.set(source.shortcode, source.sourceUrl);
     return url;
   });
-  if (style === 'media-first') {
-    const included = new Map<string, string>();
-    const content = mapLinks(presentation.content, (url, position) => {
-      if (!visibleLink(presentation.content, position)) return url;
-      const provider = parseProviderUrl(url);
-      const source = parseInstagramUrl(provider?.platform === 'instagram' ? provider.sourceUrl : url);
-      const originalSource = source && sources.get(source.shortcode);
-      if (!source || !originalSource) return url;
-      included.set(source.shortcode, originalSource);
-      return `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${source.shortcode}/`;
-    });
-    if (!included.size || content.length > contentLimit) return presentation;
-    const instagramSources = [...included.values()];
-    // Callers must verify caption-free media before removing the original.
-    return { ...presentation, content, instagramSources,
-      instagramVideos: instagramSources.filter(url => /\/(?:reels?|tv)\//.test(url)) };
-  }
-  if (!lookup) return presentation;
-  const posts = new Map<string, InstagramTranslation>();
-  for (const [shortcode, sourceUrl] of sources) {
-    try {
-      const post = await lookup(sourceUrl);
-      if (post && post.shortcode === shortcode && parseInstagramUrl(post.sourceUrl)?.shortcode === shortcode &&
-          post.mediaOnlyUrl === `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${shortcode}/` && post.text.trim() && post.languages.length) {
-        posts.set(shortcode, post);
-      }
-    } catch { /* A failed caption lookup leaves that link's original preview available. */ }
-  }
-  const included = new Map<string, InstagramTranslation>();
-  const media = mapLinks(presentation.content, (url, position) => {
+  const included = new Map<string, string>();
+  const content = mapLinks(presentation.content, (url, position) => {
     if (!visibleLink(presentation.content, position)) return url;
     const provider = parseProviderUrl(url);
     const source = parseInstagramUrl(provider?.platform === 'instagram' ? provider.sourceUrl : url);
-    const post = source && posts.get(source.shortcode);
-    if (!post) return url;
-    included.set(post.shortcode, post);
-    return post.mediaOnlyUrl;
+    const originalSource = source && sources.get(source.shortcode);
+    if (!source || !originalSource) return url;
+    included.set(source.shortcode, originalSource);
+    return `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${source.shortcode}/`;
   });
-  if (!included.size) return presentation;
-  const values = [...included.values()];
-  const frames = values.map(post => ({
-    heading: `**[@${post.username}](<https://www.instagram.com/${post.username}/>)**\n`,
-    footer: `\n-# ${label(post)}`,
-  }));
-  const captionLimit = style === 'compact' ? COMPACT_CAPTION_LIMIT : CAPTION_LIMIT;
-  const budget = Math.floor((contentLimit - media.length - 2 - (values.length - 1) * 2 -
-    frames.reduce((length, frame) => length + frame.heading.length + frame.footer.length, 0)) / values.length);
-  if (budget < 1) return presentation;
-  const captions = values.map((post, index) =>
-    `${frames[index].heading}${excerpt(post.text, budget, captionLimit)}${frames[index].footer}`).join('\n\n');
-  const metadata = { instagramSources: values.map(post => post.sourceUrl),
-    instagramCaptionSources: values.map(post => post.sourceUrl),
-    instagramVideos: values.filter(post => post.mediaTypes.includes('GraphVideo')).map(post => post.sourceUrl) };
-  // The native card cannot show the English caption, so captions beside it would show the post in two places.
-  let links = 0;
-  mapLinks(original, url => { links++; return url; });
-  const [only] = values;
-  const panel = links === 1 && values.length === 1 && only.media?.length && only.media.length <= MAX_GALLERY_ITEMS
-    ? { post: only, media: only.media, captionLimit } : undefined;
-  return { ...presentation, content: `${media}\n\n${captions}`, ...metadata, ...(panel ? { instagramPanel: panel } : {}) };
+  if (!included.size || content.length > contentLimit) return presentation;
+  const instagramSources = [...included.values()];
+  const videos = new Set(instagramSources.filter(url => /\/(?:reels?|tv)\//.test(url)));
+  let instagramPanel: InstagramPanel | undefined;
+  // One lookup per message at most: the provider limits how often its post data can be read.
+  if (lookup && links === 1 && included.size === 1) {
+    const [[shortcode, sourceUrl]] = included;
+    try {
+      const post = await lookup(sourceUrl);
+      if (post && post.shortcode === shortcode && parseInstagramUrl(post.sourceUrl)?.shortcode === shortcode) {
+        if (post.mediaTypes.includes('GraphVideo')) videos.add(sourceUrl);
+        if (post.media?.length && post.media.length <= MAX_GALLERY_ITEMS) instagramPanel = { post, media: post.media };
+      }
+    } catch { /* A failed lookup leaves the gallery card. */ }
+  }
+  return { ...presentation, content, instagramSources, instagramVideos: [...videos], ...(instagramPanel ? { instagramPanel } : {}) };
 }

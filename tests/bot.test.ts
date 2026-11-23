@@ -395,7 +395,7 @@ test('/help accurately shows channel scope, disabled platforms and translation s
   assert.match(replies[0].content!, /disabled in this channel/);
   assert.match(replies[0].content!, /Supported platforms: Instagram\./);
   assert.match(replies[0].content!, /X translation is currently disabled/);
-  assert.match(replies[0].content!, /Instagram caption translation is currently disabled/);
+  assert.match(replies[0].content!, /Instagram posts show their media without the caption/);
 });
 
 test('/help reports when all platforms are disabled', async () => {

@@ -204,8 +204,7 @@ test('queued preference input and returned preferences cannot mutate stored choi
 
 test('invalid persisted preference fields stop startup', () => {
   for (const record of [null, [], 1, { enabled: 1 }, { mode: 'other' }, { mode: null },
-    { translateTweets: 'true' }, { translateInstagram: 'true' }, { translateInstagram: null }, { translateInstagram: 1 },
-    { platforms: [] }, { platforms: null }, { platforms: { instagram: 'false' } },
+    { translateTweets: 'true' }, { platforms: [] }, { platforms: null }, { platforms: { instagram: 'false' } },
     { platforms: { unknown: false } }, { unknown: true }, { preferences: { mode: 'reply' } }]) {
     const path = file();
     writeFileSync(path, JSON.stringify({ [FIRST]: record }));
@@ -329,22 +328,23 @@ test('failed channel reset retains the old restriction and later queued writes w
   assert.equal(servers.get(FIRST), undefined);
 });
 
-test('Instagram translation merges independently with queued setup and existing preferences', async () => {
-  const path = file(), servers = new ServerSettings(path);
-  await servers.update(FIRST, { channelIds: [SECOND], youtubeDisplay: 'counts', translateTweets: false });
-  await Promise.all([
-    servers.update(FIRST, { translateInstagram: true }), servers.set(FIRST, true),
-    servers.update(FIRST, { platforms: { tiktok: false } }),
-    servers.update(SECOND, { translateInstagram: false }),
-  ]);
-  const restarted = new ServerSettings(path);
-  assert.equal(restarted.get(FIRST), true); assert.equal(restarted.get(SECOND), undefined);
-  assert.deepEqual(restarted.getPreferences(FIRST), { channelIds: [SECOND], youtubeDisplay: 'counts', translateTweets: false,
-    translateInstagram: true, platforms: { tiktok: false } });
-  assert.deepEqual(restarted.getPreferences(SECOND), { translateInstagram: false });
-  await restarted.update(FIRST, { translateInstagram: false }); await restarted.resetChannelScope(FIRST);
-  assert.equal(new ServerSettings(path).getPreferences(FIRST).translateInstagram, false);
-  assert.equal(restarted.get(FIRST), true);
+test('retired Instagram caption choices load as nothing, are dropped on the next save and cannot be set', async () => {
+  const path = file();
+  for (const legacy of [{ translateInstagram: true }, { translateInstagram: 'other' }, { instagramPresentation: 'compact' },
+    { instagramPresentation: null }, { translateInstagram: false, instagramPresentation: 'media-first' }]) {
+    writeFileSync(path, JSON.stringify({ [FIRST]: { enabled: true, youtubeDisplay: 'counts', ...legacy }, [SECOND]: legacy }));
+    const servers = new ServerSettings(path);
+    assert.equal(servers.get(FIRST), true);
+    assert.deepEqual(servers.getPreferences(FIRST), { youtubeDisplay: 'counts' });
+    assert.deepEqual(servers.getPreferences(SECOND), {});
+    await servers.update(FIRST, { mode: 'reply' });
+    assert.doesNotMatch(readFileSync(path, 'utf8'), /translateInstagram|instagramPresentation/);
+    assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), { youtubeDisplay: 'counts', mode: 'reply' });
+  }
+  const servers = new ServerSettings(file(), async () => assert.fail('A retired choice wrote settings'));
+  for (const patch of [{ translateInstagram: true }, { instagramPresentation: 'media-first' }]) {
+    await assert.rejects(servers.update(FIRST, patch as ServerPreferences));
+  }
 });
 
 test('Erome channel policy persists per server and survives independent partial preference changes', async () => {
@@ -381,21 +381,3 @@ test('invalid Erome channel policies cannot update state or load from disk', asy
   assert.deepEqual(servers.getPreferences(FIRST), {});
 });
 
-test('Instagram presentation choices survive restart and reject unknown values', async () => {
-  const path = file(), servers = new ServerSettings(path);
-  assert.equal(servers.getPreferences(FIRST).instagramPresentation, undefined);
-  for (const instagramPresentation of ['standard', 'compact', 'media-first'] as const) {
-    await servers.update(FIRST, { instagramPresentation });
-    assert.equal(new ServerSettings(path).getPreferences(FIRST).instagramPresentation, instagramPresentation);
-    assert.equal(servers.get(FIRST), undefined);
-  }
-  await servers.update(FIRST, { translateInstagram: false });
-  assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), { instagramPresentation: 'media-first', translateInstagram: false });
-  for (const instagramPresentation of ['other', '', true, undefined, null]) {
-    await assert.rejects(servers.update(FIRST, { instagramPresentation } as ServerPreferences));
-    if (instagramPresentation !== undefined) {
-      const invalid = file(); writeFileSync(invalid, JSON.stringify({ [FIRST]: { instagramPresentation } }));
-      assert.throws(() => new ServerSettings(invalid), /Invalid server settings/);
-    }
-  }
-});

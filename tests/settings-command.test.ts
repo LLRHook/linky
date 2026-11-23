@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ApplicationIntegrationType, InteractionContextType, MessageFlags, PermissionFlagsBits, PermissionsBitField, type ChatInputCommandInteraction } from 'discord.js';
@@ -33,47 +33,34 @@ function interaction(options: Record<string, string | boolean> = {}, guildId: st
   return { command: command as unknown as ChatInputCommandInteraction, events };
 }
 
-test('settings saves Instagram presentation and explains native captions and independent translation preference', async () => {
-  const path = file(), servers = new ServerSettings(path);
-  const configured = { ...config, translateInstagram: true, captionApiKey: 'test' };
-  assert.equal(effectivePreferences(configured, {}).instagramPresentation, 'standard');
-  for (const style of ['compact', 'media-first', 'standard'] as const) {
-    const f = interaction({ instagram_presentation: style, translate_instagram: true });
-    await execute(f.command, configured, servers);
-    assert.equal(new ServerSettings(path).getPreferences(SERVER).instagramPresentation, style);
-    assert.equal(servers.get(SERVER), undefined);
-    assert.equal(servers.getPreferences(SERVER).translateInstagram, true);
-    assert.match(f.events[1].payload.content, /Native provider captions cannot be shortened/);
-    assert.ok(f.events[1].payload.content.length <= 2000, 'settings response fits Discord');
-    assert.equal(effectivePreferences(configured, servers.getPreferences(SERVER)).translateInstagram, style !== 'media-first');
-    assert.deepEqual(f.events[1].payload.allowedMentions, { parse: [] });
-  }
+test('settings states that Instagram shows media without the caption, with no Instagram caption options', async () => {
+  const servers = new ServerSettings(file());
+  const f = interaction();
+  await execute(f.command, config, servers);
+  assert.match(f.events[1].payload.content, /Instagram posts show their author and media without the caption\./);
+  assert.doesNotMatch(f.events[1].payload.content, /Instagram caption translation|Media-first|Compact/);
+  assert.doesNotMatch(JSON.stringify(data.toJSON()), /translate_instagram|instagram_presentation/);
 });
 
-test('help fits Discord with all platforms, translations, scope and each Instagram presentation', async () => {
+test('help fits Discord with all platforms, translations and scope', async () => {
   const servers = new ServerSettings(file());
   await servers.set(SERVER, true);
-  for (const instagramPresentation of ['standard', 'compact', 'media-first'] as const) {
-    await servers.update(SERVER, { instagramPresentation });
-    const f = interaction();
-    await help(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS, translateInstagram: true, captionApiKey: 'test' }, servers);
-    assert.ok(f.events[0].payload.content.length <= 2000, `${instagramPresentation}: ${f.events[0].payload.content.length} characters`);
-    assert.match(f.events[0].payload.content, /\/autofix enabled:false/);
-    assert.match(f.events[0].payload.content, /Test here/);
-  }
+  const f = interaction();
+  await help(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS }, servers);
+  assert.ok(f.events[0].payload.content.length <= 2000, `${f.events[0].payload.content.length} characters`);
+  assert.match(f.events[0].payload.content, /\/autofix enabled:false/);
+  assert.match(f.events[0].payload.content, /Test here/);
+  assert.match(f.events[0].payload.content, /Instagram posts show their media without the caption/);
 });
 
 test('settings fits Discord with all platforms and explains community support without a video API key', async () => {
   const servers = new ServerSettings(file());
   await servers.set(SERVER, true);
-  for (const instagramPresentation of ['standard', 'compact', 'media-first'] as const) {
-    await servers.update(SERVER, { instagramPresentation });
-    const f = interaction();
-    await execute(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS, translateInstagram: true, captionApiKey: 'test' }, servers);
-    const content = f.events[1].payload.content;
-    assert.ok(content.length <= 2000, `${instagramPresentation}: ${content.length} characters`);
-    assert.match(content, /community posts need no API key/);
-  }
+  const f = interaction();
+  await execute(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS }, servers);
+  const content = f.events[1].payload.content;
+  assert.ok(content.length <= 2000, `${content.length} characters`);
+  assert.match(content, /community posts need no API key/);
 });
 
 test('settings is restricted to server installs and Manage Server with optional choices', () => {
@@ -81,7 +68,7 @@ test('settings is restricted to server installs and Manage Server with optional 
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'facebook', 'articles', 'erome', 'erome_channels', 'translate_tweets', 'translate_instagram', 'instagram_presentation', 'youtube_display']);
+  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'facebook', 'articles', 'erome', 'erome_channels', 'translate_tweets', 'youtube_display']);
   const eromeChannels = command.options?.find(option => option.name === 'erome_channels');
   assert(eromeChannels && 'choices' in eromeChannels);
   assert.deepEqual(eromeChannels.choices?.map(({ name, value }) => ({ name, value })), [{ name: 'Age-restricted channels', value: 'age-restricted' },
@@ -95,7 +82,7 @@ for (const [name, guildId, permissions] of [
 ] as const) {
   test(`settings denies a ${name} privately without reading options or saving`, async () => {
     const servers = new ServerSettings(file(), async () => assert.fail('Unauthorized write'));
-    const { command, events } = interaction({ mode: 'reply', translate_instagram: true, erome_channels: 'all' }, guildId, permissions);
+    const { command, events } = interaction({ mode: 'reply', translate_tweets: true, erome_channels: 'all' }, guildId, permissions);
     command.options.getString = () => assert.fail('Unauthorized option access');
     command.options.getBoolean = () => assert.fail('Unauthorized option access');
     await execute(command, config, servers);
@@ -217,7 +204,7 @@ test('help describes reply mode and effective preferences without promising a pr
   assert.match(content, /reply.*keeping your original message/);
   assert.match(content, /Supported platforms: TikTok, X/);
   assert.match(content, /X translation is currently disabled/);
-  assert.match(content, /Instagram caption translation is currently disabled/);
+  assert.match(content, /Instagram posts show their media without the caption/);
   assert.match(content, /checks for a useful preview/);
   assert.doesNotMatch(content, /working preview/);
   assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
@@ -246,65 +233,20 @@ test('settings reports selected channel exclusion instead of server-wide enablem
   assert.equal(servers.get(SERVER), true);
 });
 
-test('Instagram translation settings survive restart without changing scope, X or YouTube choices', async () => {
-  for (const enabled of [undefined, false]) {
-    const path = file(), servers = new ServerSettings(path);
-    if (enabled !== undefined) await servers.set(SERVER, enabled);
-    const previous = { channelIds: ['222222222222222222'], translateTweets: false, youtubeDisplay: 'counts' as const,
-      mode: 'reply' as const, platforms: { tiktok: false } };
-    await servers.update(SERVER, previous);
-    const { command, events } = interaction({ translate_instagram: true });
-    await execute(command, { ...config, translateInstagram: true, captionApiKey: 'test-caption-key' }, servers);
-    const restarted = new ServerSettings(path);
-    assert.equal(restarted.get(SERVER), enabled);
-    assert.deepEqual(restarted.getPreferences(SERVER), { ...previous, translateInstagram: true });
-    assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
-    assert.deepEqual(events[1].payload.allowedMentions, { parse: [] });
-    assert.match(events[1].payload.content, /English Instagram caption translation: On when translation and media are available/);
-    assert.match(events[1].payload.content, /English tweet translation: Off/);
-    assert.match(events[1].payload.content, /YouTube display: Counts only/);
-    assert(!JSON.stringify(events).includes('test-caption-key'));
-  }
-});
-
-test('effective Instagram translation respects the key, operator, platform and server switches independently', () => {
-  const active: Config = { ...config, translateTweets: false, translateInstagram: true, captionApiKey: 'test-caption-key' };
-  assert.equal(effectivePreferences(active, {}).translateInstagram, true);
-  assert.equal(effectivePreferences(active, {}).translateTweets, false);
-  for (const candidate of [{ ...active, translateInstagram: false }, { ...active, translateInstagram: undefined },
-    { ...active, captionApiKey: undefined }, { ...active, captionApiKey: '  ' },
-    { ...active, rewritePlatforms: ['x'] as const }]) {
-    assert.equal(effectivePreferences(candidate, { translateInstagram: true }).translateInstagram, false);
-  }
-  assert.equal(effectivePreferences(active, { translateInstagram: false }).translateInstagram, false);
-  assert.equal(effectivePreferences(active, { platforms: { instagram: false } }).translateInstagram, false);
-  assert.equal(effectivePreferences({ ...active, translateTweets: true }, { translateInstagram: false }).translateTweets, true);
-});
-
-test('settings explains unavailable Instagram translation and preserves the requested preference', async () => {
-  for (const candidate of [{ ...config, translateInstagram: false, captionApiKey: 'test-caption-key' },
-    { ...config, translateInstagram: true }, { ...config, translateInstagram: true, captionApiKey: '  ' }]) {
-    const servers = new ServerSettings(file()), { command, events } = interaction({ translate_instagram: true });
-    await execute(command, candidate, servers);
-    assert.equal(servers.getPreferences(SERVER).translateInstagram, true);
-    assert.match(events[1].payload.content, /English Instagram caption translation: Off \(unavailable from the bot operator\)/);
-    assert.match(events[1].payload.content, /Instagram: On/);
-  }
-  const servers = new ServerSettings(file()), { command, events } = interaction({ instagram: false, translate_instagram: true });
-  await execute(command, { ...config, translateInstagram: true, captionApiKey: 'test-caption-key' }, servers);
-  assert.match(events[1].payload.content, /English Instagram caption translation: Off \(Instagram link fixing is disabled\)/);
-});
-
-test('help reports Instagram translation independently when X translation is off', async () => {
-  const servers = new ServerSettings(file()), { command, events } = interaction();
-  await help(command, { ...config, translateTweets: false, translateInstagram: true, captionApiKey: 'test-caption-key' }, servers);
-  const content = events[0].payload.content;
-  assert.match(content, /X translation is currently disabled/);
-  assert.match(content, /Non-English Instagram captions are shown in English/);
-  assert.doesNotMatch(content, /English translation is currently disabled/);
-  assert.equal(events[0].payload.flags, MessageFlags.Ephemeral);
-  assert.deepEqual(events[0].payload.allowedMentions, { parse: [] });
-  assert(content.length <= 2000);
+test('a saved retired Instagram choice is ignored and the next save drops it without changing other choices', async () => {
+  const path = file();
+  const previous = { channelIds: ['222222222222222222'], translateTweets: false, youtubeDisplay: 'counts' as const,
+    mode: 'reply' as const, platforms: { tiktok: false } };
+  writeFileSync(path, JSON.stringify({ [SERVER]: { ...previous, enabled: true, translateInstagram: true, instagramPresentation: 'compact' } }));
+  const servers = new ServerSettings(path);
+  assert.deepEqual(servers.getPreferences(SERVER), previous);
+  const { command, events } = interaction({ translate_tweets: true });
+  await execute(command, { ...config, translateTweets: true }, servers);
+  const restarted = new ServerSettings(path);
+  assert.equal(restarted.get(SERVER), true);
+  assert.deepEqual(restarted.getPreferences(SERVER), { ...previous, translateTweets: true });
+  assert.doesNotMatch(readFileSync(path, 'utf8'), /translateInstagram|instagramPresentation/);
+  assert.match(events[1].payload.content, /YouTube display: Counts only/);
 });
 
 test('Erome channel policy defaults to restricted and an admin can change it without enabling any scope or platform', async () => {

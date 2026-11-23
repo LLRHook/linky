@@ -14,7 +14,7 @@ export interface ExpectedPreview {
   providerId: string;
   /** A trusted metadata lookup identified this post as a video. */
   requireVideo?: boolean;
-  /** A translated caption is already displayed; the media embed must not repeat the original. */
+  /** Linky hides this post's caption; the media embed must not show it. */
   captionFree?: boolean;
   /** Exact bot-authored card payloads from a verified public metadata lookup. */
   explicitEmbeds?: readonly APIEmbed[];
