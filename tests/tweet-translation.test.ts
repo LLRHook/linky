@@ -27,7 +27,7 @@ test('fetches English-only text and derives the source language without source_l
     text: 'An English announcement.', language: 'Japanese',
     url: 'https://x.com/i/status/1802857036474167769',
     author: { name: 'Nintendo', url: 'https://x.com/Nintendo', icon_url: 'https://pbs.twimg.com/avatar.jpg' },
-    photos: [], hasMedia: false, hasVideo: false,
+    photos: [], media: [], hasMedia: false, hasVideo: false,
   });
 });
 
@@ -175,9 +175,9 @@ test('translates a Japanese root and Korean quote while retaining the quoted vid
     url: 'https://x.com/root/status/20',
     quote: payload({
       id: '21', url: 'https://x.com/quoted/status/21', lang: 'ko',
-      author: { name: 'Quoted author', url: 'https://x.com/quoted' },
+      author: { name: 'Quoted author', url: 'https://x.com/quoted', screen_name: 'quoted_author' },
       translation: { text: 'The quoted video.', source_lang: 'ko', target_lang: 'en' },
-      media: { all: [{ type: 'video', url: 'https://video.twimg.com/quoted.mp4' }] },
+      media: { all: [{ type: 'video', url: 'https://video.twimg.com/quoted.mp4', width: 1080, height: 1920 }] },
     }).status,
   })));
   assert.equal(result?.text, 'An English announcement.');
@@ -187,9 +187,25 @@ test('translates a Japanese root and Korean quote while retaining the quoted vid
   assert.equal(result?.hasVideo, false);
   assert.deepEqual(result?.quote, {
     text: 'The quoted video.', language: 'Korean', url: 'https://x.com/quoted/status/21',
-    author: { name: 'Quoted author', url: 'https://x.com/quoted' },
-    photos: [], hasMedia: true, hasVideo: true,
+    author: { name: 'Quoted author', url: 'https://x.com/quoted', handle: 'quoted_author' },
+    photos: [], media: [{ type: 'video', url: 'https://video.twimg.com/quoted.mp4', width: 1080, height: 1920 }],
+    hasMedia: true, hasVideo: true,
   });
+});
+
+test('keeps only well-formed handles and plausible media dimensions', async () => {
+  const result = await fetchTweetTranslation('20', jsonFetch(payload({
+    author: { name: 'Nintendo', url: 'https://x.com/Nintendo', screen_name: 'not a handle' },
+    media: { all: [
+      { type: 'photo', url: 'https://pbs.twimg.com/one.jpg', width: 0, height: 10 },
+      { type: 'gif', url: 'https://video.twimg.com/two.mp4', width: 640, height: 360 },
+    ] },
+  })));
+  assert.equal(result?.author.handle, undefined);
+  assert.deepEqual(result?.media, [
+    { type: 'photo', url: 'https://pbs.twimg.com/one.jpg' },
+    { type: 'gif', url: 'https://video.twimg.com/two.mp4', width: 640, height: 360 },
+  ]);
 });
 
 test('retains root video and separately translated quoted text', async () => {

@@ -23,6 +23,8 @@ import { evaluateScope } from './ServerScope';
 import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
 import { verifyPublishedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
 import { translateRepost } from './TweetPresentation';
+import { panelLead, tweetPanelComponents, tweetPanelReady } from './TweetPanel';
+import { watchMessageMedia } from './MediaWatch';
 import { findReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
 import { eromeNotice, findEromeLinks, canPreviewErome, verifyEromeAttachment, type EromePreparer } from './EromeDelivery';
@@ -382,6 +384,15 @@ export function createLinkRepostHandler(
         !translated.embeds?.length && !community.length && !articles.length && !youtubeCards.length && onlyEromeLinks(inputContent) &&
         !message.flags.has(MessageFlags.SuppressEmbeds) ? uploadedMediaComponents(erome.file.name, content) : null;
       const inlineBlock = inlineVideo ?? inlineErome;
+      // A lone translated video post is one block; a native card beside captions would show the post twice.
+      const tweetPanel = translated.panel;
+      const inlineTweet = tweetPanel && !inlineBlock && !originalMedia && !erome && !attachments.length &&
+        !translationFiles.length && !translated.embeds?.length && !community.length && !articles.length && !youtubeCards.length &&
+        !message.flags.has(MessageFlags.SuppressEmbeds)
+        ? tweetPanelComponents(tweetPanel.tweet, formatLinkRepost(panelLead(inputContent), message.author.id, replyContext).trimEnd())
+        : null;
+      // The block carries its own media; no native card is requested.
+      if (inlineTweet) expected = [];
       await progress.stop();
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       if (delivery.context.signal?.aborted) {
@@ -391,7 +402,9 @@ export function createLinkRepostHandler(
       }
       const nativeExpected = expected.filter(item => !item.explicitEmbeds);
       previewWatch = nativeExpected.length ? armPreview?.(channelId, nativeExpected, delivery.context) : undefined;
-      mediaWatcher = originalMedia ? watchEromeMedia(message.client, channelId, originalMedia) : undefined;
+      mediaWatcher = originalMedia ? watchEromeMedia(message.client, channelId, originalMedia)
+        : inlineTweet ? watchMessageMedia(message.client, channelId, value => tweetPanelReady(value, tweetPanel!.media), { timeoutMs: 10_000 })
+          : undefined;
       const preparedMedia = originalMedia;
       const publicationBody = {
         ...(originalMedia ? {
@@ -401,11 +414,14 @@ export function createLinkRepostHandler(
         } : inlineBlock ? {
           flags: MessageFlags.IsComponentsV2 as const, files,
           components: [...inlineBlock, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
+        } : inlineTweet ? {
+          flags: MessageFlags.IsComponentsV2 as const,
+          components: [...inlineTweet, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
         } : { content, ...(embeds ? { embeds } : {}), files,
           components: repostControls(inputContent, { remove: false }) }),
         allowedMentions,
         ...(silentFlag ? {
-          flags: (originalMedia || inlineBlock ? MessageFlags.IsComponentsV2 : 0) | silentFlag,
+          flags: (originalMedia || inlineBlock || inlineTweet ? MessageFlags.IsComponentsV2 : 0) | silentFlag,
         } : {}),
         ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds as const } : {}),
       };
@@ -413,7 +429,7 @@ export function createLinkRepostHandler(
       // A tagged replacement uses a fresh send; its quiet progress message has a separate nonce.
       const reuseProgress = progressMessage && !allowedMentions.users.length;
       const send = () => reuseProgress
-        ? progressMessage!.edit({ ...publicationBody, ...(preparedMedia || inlineBlock ? { content: null, embeds: [], attachments: [] } : {}) })
+        ? progressMessage!.edit({ ...publicationBody, ...(preparedMedia || inlineBlock || inlineTweet ? { content: null, embeds: [], attachments: [] } : {}) })
         : channel.send({ ...publicationBody, nonce, enforceNonce: true,
           ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) });
       const publishStage = delivery.context.trace?.startStage('publish');
@@ -458,21 +474,23 @@ export function createLinkRepostHandler(
       }
       // A card's uploaded video is listed as a message attachment; images the card displays are not.
       // A single-block video must appear inside its block.
-      if (inlineVideo ? !messageHasArticleVideo(replacement.components, articles)
+      if (inlineTweet ? replacement.attachments.size > 0 : inlineVideo ? !messageHasArticleVideo(replacement.components, articles)
         : inlineErome ? !messageHasUploadedMedia(replacement.components, erome!.file.name)
         : replacement.attachments.size !== files.length - articleUploads.filter(file => !isArticleVideo(file.name)).length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         await removeReplacement();
         return;
       }
-      const mediaPreviewStage = erome || originalMedia ? delivery.context.trace?.startStage('preview') : undefined;
+      const mediaPreviewStage = erome || originalMedia || inlineTweet ? delivery.context.trace?.startStage('preview') : undefined;
       const eromeVerified = originalMedia ? await mediaWatcher!.verify(replacement)
         : erome ? await verifyErome(replacement, erome.file) : false;
-      mediaPreviewStage?.finish(eromeVerified ? 'ok' : 'unavailable');
+      const tweetVerified = inlineTweet ? await mediaWatcher!.verify(replacement) : false;
+      mediaPreviewStage?.finish(eromeVerified || tweetVerified ? 'ok' : 'unavailable');
       const verify = async (expected: ExpectedPreview[]): Promise<PreviewResult> => {
         if (delivery.context.signal?.aborted) return { ok: false, missing: [...expected], videoMetadata: false };
         // The block was checked above; it carries no embed for the card matcher to read.
         if (inlineVideo) return { ok: true, missing: [], videoMetadata: true };
+        if (inlineTweet) return { ok: tweetVerified, missing: [], videoMetadata: tweetVerified };
         if (inlineErome) return { ok: eromeVerified, missing: [], videoMetadata: Boolean(eromeVerified && erome?.kind !== 'image') };
         const stage = expected.length ? delivery.context.trace?.startStage('preview') : undefined;
         const result = await verifyPublishedPreviews(replacement, expected, {
@@ -529,6 +547,7 @@ export function createLinkRepostHandler(
         playbackChecked: false, translatedTextPosts: textStatusIds.size },
       captionFallback ? 'Translated Instagram caption delivered; kept original because preview could not be verified' :
         erome || originalMedia ? 'Erome media metadata confirmed; client playback not checked' :
+          inlineTweet ? 'Translated post block media confirmed; client playback not checked' :
           expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
       if (youtubeCards.length) {
         try { publication = await publishYouTube!(replacement, youtubeCards); }
@@ -615,6 +634,7 @@ export function createLinkRepostHandler(
         components: originalMedia ? eromeMediaComponents(originalMedia, content,
           [...repostControls(inputContent), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
           : inlineBlock ? [...inlineBlock, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
+          : inlineTweet ? [...inlineTweet, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
           : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions,
       });
       if ((originalMedia || inlineErome || explicitCards.length) && reply) {

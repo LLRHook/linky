@@ -1,5 +1,6 @@
 import { AttachmentBuilder, escapeMarkdown, type APIEmbed } from 'discord.js';
-import type { TweetTranslation } from './TweetTranslation';
+import type { TweetMedia, TweetTranslation } from './TweetTranslation';
+import { tweetPanelMedia } from './TweetPanel';
 import type { RewritePlatform } from './LinkConfiguration';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { parseSocialUrl, rewriteSocialLinks } from './SocialProviders';
@@ -79,14 +80,20 @@ function translationAttachment(tweets: TweetTranslation[]): AttachmentBuilder {
   });
 }
 
-/** Build one compact card, or captions alongside native video/mixed-link previews. */
+/** A single translated video post that can be shown as one block, with its media and source link. */
+export interface TweetPanel { tweet: TweetTranslation; media: TweetMedia[]; source: string }
+
+/**
+ * Build one compact card, or captions alongside native video/mixed-link previews. A lone video post also offers
+ * `panel`, which delivery uses instead of the captions when it can publish one block.
+ */
 export async function translateRepost(
   original: string,
   platforms: readonly RewritePlatform[],
   fetchTranslation: (statusId: string) => Promise<TweetTranslation | null>,
   contentLimit: number,
 ): Promise<{ content: string; embeds?: APIEmbed[]; translationFiles?: AttachmentBuilder[];
-  textStatusIds?: string[]; videoStatusIds?: string[]; mediaSources?: string } | null> {
+  textStatusIds?: string[]; videoStatusIds?: string[]; mediaSources?: string; panel?: TweetPanel } | null> {
   const content = rewriteSocialLinks(original, platforms);
   const links = new Map<string, string>();
   let linkCount = 0;
@@ -107,6 +114,10 @@ export async function translateRepost(
     const embeds = translationEmbeds(translation, links.get(id)!);
     if (embeds) return { content, embeds };
   }
+  // Native fixer cards cannot show translated text, so a video post's text and media would appear twice.
+  const panelMedia = linkCount === 1 && translations.size === 1 && tweetParts(translation).some((part) => part.hasVideo)
+    ? tweetPanelMedia(translation) : null;
+  const panel = panelMedia ? { tweet: translation, media: panelMedia, source: links.get(id)! } : undefined;
   const galleries = new Set<string>();
   const mediaSources = new Set<string>();
   const textStatusIds: string[] = [];
@@ -135,7 +146,7 @@ export async function translateRepost(
   const captions = tweets.map((tweet) => translationCaption(tweet)).join('\n\n');
   const withMedia = `${rewritten}${galleries.size ? '\n' + [...galleries].join('\n') : ''}`;
   const translated = `${withMedia}\n\n${captions}`;
-  const rendered = { textStatusIds, videoStatusIds, mediaSources: [...mediaSources].join('\n') };
+  const rendered = { textStatusIds, videoStatusIds, mediaSources: [...mediaSources].join('\n'), ...(panel ? { panel } : {}) };
   if (translated.length <= contentLimit) return { content: translated, ...rendered };
   if (withMedia.length > contentLimit) return null;
 
