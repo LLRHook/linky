@@ -28,6 +28,8 @@ import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailabili
 import { hasMobileShareLinks, type MobileShareLinkNormalizer } from '../services/MobileShareLinks';
 import { addInstagramMedia, instagramPanelComponents } from '../services/InstagramPresentation';
 import type { InstagramPost } from '../services/InstagramPost';
+import type { BlueskyLookup } from '../services/BlueskyPost';
+import { blueskyPanelComponents, blueskyPostPanel } from '../services/BlueskyPanel';
 import { translateRepost, tweetPostPanel } from '../services/TweetPresentation';
 import { tweetPanelComponents, panelMediaReady } from '../services/TweetPanel';
 import { watchMessageMedia } from '../services/MediaWatch';
@@ -79,7 +81,7 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
 export async function execute(interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
   config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment,
     prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation, serverPreferences,
-    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateTweet, lookupTweet, lookupInstagram, lookupYouTubeCommunity,
+    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateTweet, lookupTweet, lookupBluesky, lookupInstagram, lookupYouTubeCommunity,
     lookupArticle, signal }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
@@ -97,6 +99,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     normalizeMobileLinks?: MobileShareLinkNormalizer;
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
     lookupTweet?: TweetLookup;
+    lookupBluesky?: BlueskyLookup;
     lookupInstagram?: (sourceUrl: string) => Promise<InstagramPost | null>;
     lookupYouTubeCommunity?: YouTubeCommunityLookup;
     lookupArticle?: ArticleLookup;
@@ -306,6 +309,8 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     // A lone X post is one block in any language; the translation setting decides only which words it shows.
     const tweetPanel = lookupTweet && links.length === 1 && parseSocialUrl(links[0].source)?.platform === 'x'
       ? await tweetPostPanel(links[0].source, activeConfig.rewritePlatforms, lookupTweet, Boolean(tweetTranslator)) : undefined;
+    const blueskyPanel = !tweetPanel && lookupBluesky && links.length === 1 && parseSocialUrl(links[0].source)?.platform === 'bluesky'
+      ? await blueskyPostPanel(links[0].source, activeConfig.rewritePlatforms, lookupBluesky) : undefined;
     const presentation = await addInstagramMedia(original, tweetPresentation ?? { content: rendered }, lookupInstagram, 1800);
     if (context.signal?.aborted || !preferencesCurrent()) {
       attempt.finish(context.signal?.aborted ? 'timeout' : 'disabled');
@@ -333,21 +338,22 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     const nativeExpected = expected.filter(item => !item.explicitEmbeds);
     // A lone post with its media is one block: author and media together, with no card beside it.
     const instagramPanel = presentation.instagramPanel;
-    const panelMedia = tweetPanel?.media ?? instagramPanel?.media ?? [];
+    const panelMedia = tweetPanel?.media ?? blueskyPanel?.media ?? instagramPanel?.media ?? [];
     // An X post's translated card or translation file is that post's fallback, not a second preview beside the block.
     const otherCards = !tweetPanel && Boolean(presentation.embeds?.length || presentation.translationFiles?.length);
     const postBlock = panelMedia.length && links.length === 1 && !erome && !otherCards && !community.length && !articles.length
-      ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, '') : instagramPanelComponents(instagramPanel!, '') : null;
+      ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, '')
+        : blueskyPanel ? blueskyPanelComponents(blueskyPanel, '') : instagramPanelComponents(instagramPanel!, '') : null;
     let blockUnconfirmed = false;
     if (postBlock) {
       context.trace?.setPath('explicit');
       const watcher = watchMessageMedia(interaction.client, interaction.channelId,
         value => panelMediaReady(value, panelMedia), { timeoutMs: 10_000 });
       try {
-        // An unconfirmed X block is replaced by the card below; Instagram keeps the block's notice.
+        // An unconfirmed X or Bluesky block is replaced by the card below; Instagram keeps the block's notice.
         blockUnconfirmed = await publishManualMediaBlock({ interaction, attempt, block: postBlock, files: [], buttonRows,
           verifyMedia: message => watcher.verify(message, () => interaction.fetchReply()),
-          preferencesCurrent, sourceCurrent, expected: [], observePreview, fallback: Boolean(tweetPanel) }) === 'unconfirmed';
+          preferencesCurrent, sourceCurrent, expected: [], observePreview, fallback: Boolean(tweetPanel || blueskyPanel) }) === 'unconfirmed';
       } finally { watcher.close(); }
       if (!blockUnconfirmed) return;
       context.trace?.setPath('native');

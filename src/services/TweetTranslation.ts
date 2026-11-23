@@ -48,8 +48,8 @@ function httpsUrl(value: unknown): string | undefined {
 
 const escapeText = (text: string): string => text.replace(/[\\`*_{}\[\]()<>~|#+\-]/g, '\\$&');
 
-/** Keep translated prose literal and shorten displayed URLs without changing their targets. */
-function formatTranslation(text: string): string {
+/** Keep post prose literal and shorten displayed URLs without changing their targets. */
+export function formatProse(text: string): string {
   let result = '';
   let cursor = 0;
   for (const match of text.matchAll(/https?:\/\/[^\s<>`]+/gi)) {
@@ -107,7 +107,7 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0, translate =
     languageCode(translation.target_lang)?.split('-')[0] !== 'en'
   )) return null;
   if (typeof prose !== 'string' || (!empty && !prose.trim()) || prose.length > 100_000) return null;
-  const text = formatTranslation(prose.trim());
+  const text = formatProse(prose.trim());
   if (text.length > 100_000) return null;
 
   const url = statusUrl(status, fallbackId);

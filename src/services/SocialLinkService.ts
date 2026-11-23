@@ -11,6 +11,8 @@ import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
 import type { TweetLookup, TweetTranslation } from './TweetTranslation';
 import type { InstagramPost } from './InstagramPost';
+import type { BlueskyLookup } from './BlueskyPost';
+import { blueskyPanelComponents, blueskyPostPanel } from './BlueskyPanel';
 import { addInstagramMedia, instagramPanelComponents, type InstagramPanel } from './InstagramPresentation';
 import type { ServerPreferences } from './ServerSettings';
 import type { StatsPublication } from './YouTubeStats';
@@ -63,6 +65,7 @@ export interface LinkRepostOptions {
   /** The lone X post a one-post block shows; needs only the X platform, not tweet translation. */
   lookupTweet?: TweetLookup;
   lookupInstagram?: (sourceUrl: string) => Promise<InstagramPost | null>;
+  lookupBluesky?: BlueskyLookup;
   serverIds?: readonly string[];
   serverEnabled?: (serverId: string) => boolean | undefined;
   serverPreferences?: (serverId: string) => ServerPreferences;
@@ -94,7 +97,7 @@ export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateTweet, lookupTweet, lookupInstagram, serverIds = [], serverEnabled, serverPreferences,
+  { platforms = REWRITE_PLATFORMS, translateTweet, lookupTweet, lookupInstagram, lookupBluesky, serverIds = [], serverEnabled, serverPreferences,
     lookupYouTube, lookupYouTubeCommunity, lookupArticle, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
     eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
@@ -313,6 +316,9 @@ export function createLinkRepostHandler(
       const tweetPanel = lookupTweet && activePlatforms.includes('x') && !message.flags.has(MessageFlags.SuppressEmbeds)
         ? await tweetPostPanel(inputContent, activePlatforms, lookupTweet,
           Boolean(translateTweet) && preferences.translateTweets !== false) : undefined;
+      // A lone Bluesky post with images is one block too, read from the public AppView.
+      const blueskyPanel = !tweetPanel && lookupBluesky && activePlatforms.includes('bluesky') &&
+        !message.flags.has(MessageFlags.SuppressEmbeds) ? await blueskyPostPanel(inputContent, activePlatforms, lookupBluesky) : undefined;
       const translated: NonNullable<typeof tweetPresentation> & {
         instagramSources?: string[]; instagramVideos?: string[]; instagramPanel?: InstagramPanel;
       } =
@@ -388,17 +394,20 @@ export function createLinkRepostHandler(
       const inlineBlock = inlineVideo ?? inlineErome;
       // A lone post with its media is one block: author and media together, with no card beside it.
       const instagramPanel = translated.instagramPanel;
-      const panelMedia = tweetPanel?.media ?? instagramPanel?.media ?? [];
+      const panelMedia = tweetPanel?.media ?? blueskyPanel?.media ?? instagramPanel?.media ?? [];
       const panelLeadLine = formatLinkRepost(panelLead(inputContent), message.author.id, replyContext).trimEnd();
       // An X post's translated card or translation file is that post's fallback, not a second preview beside the block.
       const otherCards = !tweetPanel && (translationFiles.length > 0 || Boolean(translated.embeds?.length));
       let inlinePost = panelMedia.length && !inlineBlock && !originalMedia && !erome && !attachments.length &&
         !otherCards && !community.length && !articles.length && !youtubeCards.length &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
-        ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, panelLeadLine) : instagramPanelComponents(instagramPanel!, panelLeadLine)
+        ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, panelLeadLine)
+          : blueskyPanel ? blueskyPanelComponents(blueskyPanel, panelLeadLine)
+            : instagramPanelComponents(instagramPanel!, panelLeadLine)
         : null;
-      // An unconfirmed X block is replaced by the card this message has without it; Instagram keeps its Retry notice.
-      const nativeFallback = Boolean(inlinePost && tweetPanel);
+      // An unconfirmed X or Bluesky block is replaced by the card this message has without it; Instagram keeps its
+      // Retry notice.
+      const nativeFallback = Boolean(inlinePost && (tweetPanel || blueskyPanel));
       // The block carries its own media; no native card is requested.
       if (inlinePost) expected = [];
       await progress.stop();
