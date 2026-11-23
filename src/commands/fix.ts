@@ -1,6 +1,6 @@
 import { ApplicationCommandType, ApplicationIntegrationType, ContextMenuCommandBuilder, InteractionContextType, MessageFlags,
   PermissionFlagsBits, SlashCommandBuilder,
-  type ButtonInteraction, type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
+  type ButtonInteraction, type ChatInputCommandInteraction, type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../config';
 import { mapLinks, visibleLink } from '../services/LinkTokens';
 import { getProviderCandidates, parseSocialUrl } from '../services/SocialProviders';
@@ -364,11 +364,16 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     publishStage?.finish();
     const attempted = new Set<string>();
     const eromeVerified = erome && !context.signal?.aborted ? await verifyErome(message, erome.file) : false;
+    // A user-installed command can answer in a DM or a server without Linky: no Gateway update arrives there and the
+    // bot cannot read the channel. The interaction's own webhook can always read its reply.
+    const reply = (published: Message) => ({ id: published.id, channelId: published.channelId, author: published.author,
+      embeds: published.embeds, fetch: () => interaction.fetchReply() });
     const verify = async (): Promise<PreviewResult> => {
       if (context.signal?.aborted || eromeSource && !eromeAllowed()) return { ok: false, missing: [...expected], videoMetadata: false };
       const stage = context.trace?.startStage('preview');
-      const result = await verifyPublishedPreviews(message, expected, {
-        verifyNative: native => previewWatch?.verify(message) ?? verifyPreview(message, native),
+      const published = reply(message);
+      const result = await verifyPublishedPreviews(published, expected, {
+        verifyNative: native => previewWatch?.verify(published) ?? verifyPreview(published, native),
         contentVerified: textStatusIds.size > 0 || eromeVerified,
       });
       stage?.finish(context.signal?.aborted ? 'timeout' : result.ok ? 'ok' : 'unavailable');

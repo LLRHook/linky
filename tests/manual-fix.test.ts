@@ -116,6 +116,8 @@ function command(content = 'https://twitter.com/jack/status/20?s=46', context = 
       response.embeds = state.render(response.content, ++edits, payload.embeds).map(embed => ({ toJSON: () => embed }));
       return response as unknown as Message;
     },
+    // The interaction webhook reads the same reply; tests that make the reply unreadable replace response.fetch.
+    fetchReply: () => response.fetch(),
   });
   return { input, events, state, response, interaction: input as unknown as ChatInputCommandInteraction | MessageContextMenuCommandInteraction };
 }
@@ -124,7 +126,7 @@ function previewChecks(fixture: ReturnType<typeof command>) {
   const checks: ExpectedPreview[][] = [], observations: { expected: ExpectedPreview[]; result: PreviewResult }[] = [];
   const dependencies: NonNullable<Parameters<typeof execute>[2]> = {
     verifyPreview: async (message, expected) => {
-      assert.equal(message, fixture.response, 'each check inspects the same interaction response');
+      assert.deepEqual(message.embeds, fixture.response.embeds, 'each check inspects the interaction response');
       checks.push(expected.map(item => ({ ...item })));
       return inspectPreviews(message.embeds.map(embed => embed.toJSON()), expected);
     },
@@ -148,6 +150,30 @@ test('manual unreadable reconciles record metadata-unconfirmed and preserve the 
       armPreview: (channel, expected, context) => watcher.arm(channel, expected, context) });
     assert.deepEqual(outcomes, ['metadata-unconfirmed']);
     assert.match(f.response.content, /useful preview could not be confirmed/i);
+  }
+});
+
+test('a user-installed /fix confirms its card through its own reply where Linky cannot read the channel', async t => {
+  const client = new Client({ intents: [] });
+  Object.defineProperty(client, 'user', { value: { id: BOT } });
+  const watcher = new PreviewWatcher(client, { gatewayWaitMs: 0 });
+  t.after(() => watcher.close());
+  for (const context of [false, true]) {
+    const card: APIEmbed = { url: 'https://fixupx.com/public/status/123', title: 'Public post', description: 'Useful content' };
+    const f = command('https://x.com/public/status/123', context), outcomes: DeliveryOutcome[] = [];
+    // Discord attaches the card after the edit returns, and sends no Gateway update for a channel Linky is not in.
+    f.state.render = () => [];
+    Object.assign(f.response, { channelId: f.input.channelId, author: { id: BOT }, fetch: async () => {
+      throw new DiscordAPIError({ code: 50001, message: 'Missing Access' }, 50001, 403, 'GET', 'https://discord.example/message', {});
+    } });
+    Object.assign(f.input, { fetchReply: async () => ({ ...f.response, embeds: [{ toJSON: () => card }] }) });
+    await execute(f.interaction, config, { diagnostics: diagnosticsStub({ outcomes }),
+      armPreview: (channel, expected, options) => watcher.arm(channel, expected, options) });
+    assert.deepEqual(outcomes, ['confirmed']);
+    const contents = f.events.flatMap(event => typeof event.payload?.content === 'string' ? [event.payload.content] : []);
+    assert(contents.some(content => content.includes('https://fixupx.com/public/status/123')));
+    assert(contents.every(content => !content.includes('vxtwitter.com')), 'a displayed card is not replaced by another provider');
+    assert.doesNotMatch(f.response.content, /could not be confirmed/);
   }
 });
 

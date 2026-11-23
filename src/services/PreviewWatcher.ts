@@ -1,7 +1,7 @@
 import type { APIEmbed, Client, Message } from 'discord.js';
-import { inspectPreviews, type ExpectedPreview, type PreviewResult } from './PreviewRecovery';
+import { inspectPreviews, type ExpectedPreview, type PreviewResult, type PublishedPreview } from './PreviewRecovery';
 
-type PreviewMessage = Pick<Message, 'id' | 'channelId' | 'author' | 'embeds' | 'fetch'>;
+type PreviewMessage = Pick<Message, 'id' | 'channelId' | 'author'> & PublishedPreview;
 export interface PreviewWatch {
   verify(message: PreviewMessage): Promise<PreviewResult>;
   close(): void;
