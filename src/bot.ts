@@ -16,9 +16,7 @@ import { execute as autofix } from './commands/autofix';
 import { createMobileShareLinkNormalizer } from './services/MobileShareLinks';
 import { createLinkRepostHandler } from './services/SocialLinkService';
 import { fetchTweetTranslation } from './services/TweetTranslation';
-import { createCaptionTranslator } from './services/CaptionTranslation';
-import { createInstagramLookup } from './services/InstagramTranslation';
-import { TranslationBudget } from './services/TranslationBudget';
+import { createInstagramLookup } from './services/InstagramPost';
 import { createYouTubeLookup } from './services/YouTube';
 import { createYouTubeCommunityLookup } from './services/YouTubeCommunity';
 import { createArticleLookup } from './services/ArticlePreview';
@@ -82,17 +80,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   const lookupYouTube = settings.youtubeApiKey ? createYouTubeLookup(settings.youtubeApiKey) : undefined;
   const lookupYouTubeCommunity = createYouTubeCommunityLookup();
   const lookupArticle = createArticleLookup(settings.truthSocialRelay ? { truthSocialRelay: settings.truthSocialRelay } : {});
-  let translateInstagram: ReturnType<typeof createInstagramLookup> | undefined;
-  if (settings.translateInstagram && settings.captionApiKey) {
-    try {
-      const budget = new TranslationBudget(join(dirname(settings.settingsPath), 'translation-usage.json'));
-      translateInstagram = createInstagramLookup(createCaptionTranslator(settings.captionApiKey, {
-        reserve: characters => budget.reserve(characters),
-      }));
-    } catch {
-      log.warn('Instagram translation is unavailable because its usage budget could not be loaded');
-    }
-  }
+  const lookupInstagram = createInstagramLookup();
   const health = new PreviewHealth();
   const providerHealth = new ProviderHealth();
   const previews = new PreviewWatcher(client);
@@ -140,7 +128,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   });
   const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums,
     normalizeMobileLinks, translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
-    translateInstagram, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
+    lookupInstagram, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
   const destroy = client.destroy.bind(client);
   client.destroy = () => {
     if (closing) return closing;
@@ -219,7 +207,6 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     serverIds: settings.serverIds,
     platforms: settings.rewritePlatforms,
     translateTweets: settings.translateTweets,
-    translateInstagram: Boolean(translateInstagram),
     truthSocialRelay: Boolean(settings.truthSocialRelay),
   }, 'Social link replacement ready for configured and opted-in servers');
 

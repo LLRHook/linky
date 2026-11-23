@@ -25,8 +25,8 @@ import type { ProviderHealth, ProviderAttempt } from '../services/ProviderHealth
 import type { EromeAlbumSessions } from '../services/EromeAlbumSessions';
 import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailability';
 import { hasMobileShareLinks, type MobileShareLinkNormalizer } from '../services/MobileShareLinks';
-import { addInstagramCaptions, instagramPanelComponents } from '../services/InstagramPresentation';
-import type { InstagramTranslation } from '../services/InstagramTranslation';
+import { addInstagramMedia, instagramPanelComponents } from '../services/InstagramPresentation';
+import type { InstagramPost } from '../services/InstagramPost';
 import { translateRepost } from '../services/TweetPresentation';
 import { tweetPanelComponents, panelMediaReady } from '../services/TweetPanel';
 import { watchMessageMedia } from '../services/MediaWatch';
@@ -78,7 +78,7 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
 export async function execute(interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
   config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment,
     prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation, serverPreferences,
-    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateTweet, translateInstagram, lookupYouTubeCommunity, lookupArticle, signal }: {
+    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateTweet, lookupInstagram, lookupYouTubeCommunity, lookupArticle, signal }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     prepareErome?: EromePreparer;
@@ -94,7 +94,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     albums?: EromeAlbumSessions;
     normalizeMobileLinks?: MobileShareLinkNormalizer;
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
-    translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
+    lookupInstagram?: (sourceUrl: string) => Promise<InstagramPost | null>;
     lookupYouTubeCommunity?: YouTubeCommunityLookup;
     lookupArticle?: ArticleLookup;
     signal?: AbortSignal;
@@ -296,8 +296,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
         tweetBytes + (erome && Buffer.isBuffer(erome.file.attachment) ? erome.file.attachment.length : 0) > eromeBudget)) {
       tweetPresentation = null;
     }
-    const presentation = await addInstagramCaptions(original, tweetPresentation ?? { content: rendered },
-      preferences.translateInstagram !== false ? translateInstagram : undefined, 1800, preferences.instagramPresentation);
+    const presentation = await addInstagramMedia(original, tweetPresentation ?? { content: rendered }, lookupInstagram, 1800);
     if (context.signal?.aborted || !preferencesCurrent()) {
       attempt.finish(context.signal?.aborted ? 'timeout' : 'disabled');
       await reject('Link settings changed or preparation was cancelled. The original post is unchanged; try again.');
@@ -322,7 +321,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       return;
     }
     const nativeExpected = expected.filter(item => !item.explicitEmbeds);
-    // A lone translated post with its media is one block; a native card beside captions would show the post twice.
+    // A lone post with its media is one block: author and media together, with no card beside it.
     const tweetPanel = presentation.panel, instagramPanel = presentation.instagramPanel;
     const panelMedia = tweetPanel?.media ?? instagramPanel?.media ?? [];
     const postBlock = panelMedia.length && links.length === 1 && !erome && !presentation.embeds?.length && !community.length &&

@@ -75,7 +75,7 @@ server is available.
 - [ ] 1.2 Regional worker type-check (CI step "Check regional video workers"): `npm run check:workers` exits 0.
 - [ ] 1.3 Dependency audit (CI job "Dependency audit"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
 - [ ] 1.4 Secrets: CI job "Secret scan" runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966).
-- [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|CaptionTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `TweetPresentation.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding.
+- [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `TweetPresentation.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding.
 - [ ] 1.6 Bounded network I/O: every outbound fetch has a timeout, redirect policy and byte cap (`BoundedJson.ts`, `ArticlePreview.ts`, `MobileShareLinks.ts`, `RegionalHttp.ts`). New fetch sites must reuse those helpers.
 - [ ] 1.7 Performance anti-pattern scan of the message hot path (`src/bot.ts` message handler → `SocialLinkService`): no per-message disk read in the loop, no unbounded regex on message bodies, no await per link before detection completes. Record any finding as a `BUG` (area `perf`).
 - [ ] 1.8 No lint or formatter is wired in this repo (no ESLint/Prettier config); do not invent one here.
@@ -174,7 +174,7 @@ Re-tick the non-negotiable contracts stated in the README and `docs/`:
 - [ ] 5.3 Replace mode removes a source only after a matching preview is confirmed and source/ownership checks pass (`tests/preview-recovery.test.ts`, `tests/social-links.test.ts`).
 - [ ] 5.4 Only the original sharer can **Remove** an automatic preview; Retry does not transfer ownership (`tests/repost-registry.test.ts`, `tests/bot.test.ts`).
 - [ ] 5.5 No cookies, credentials or login bypass on any outbound request; DNS answers must be public (`tests/mobile-share-links.test.ts`, `tests/article-preview.test.ts`).
-- [ ] 5.6 Translation stays within the durable 15,000 characters/day budget (`tests/translation-budget.test.ts`).
+- [ ] 5.6 Instagram posts never show their caption: a lone post is one block with its author and media, otherwise the caption-free gallery card (`tests/instagram-presentation.test.ts`, `tests/instagram-panel.test.ts`). The caption-translation budget this item covered was removed on 2026-11-23 with that feature.
 - [ ] 5.7 Erome is disabled on the hosted bot and requires an age-restricted channel by default on self-hosted instances (`tests/erome-album-policy.test.ts`).
 - [ ] 5.8 Runtime hardening: image runs as `node`, read-only root, `cap_drop: [ALL]`, `no-new-privileges`, no npm/yarn in the runtime (Stage 2.5 module check asserts non-root; `Dockerfile` and `docker-compose.yml` retain the flags).
 - [ ] 5.9 Deploy only ships the exact tested `main` SHA, refuses dirty trees and superseded commits, and rolls back on failed startup or a missing, unreadable or mismatched running-image revision (`bash tests/deploy.test.sh`). Read the latest image label with `docker image inspect linky:latest --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'`; inspect the container's image ID for running-code evidence (see `docs/self-hosting.md`, including the first rollout's empty-label limitation).
@@ -214,7 +214,7 @@ All state is JSON under the data directory (`LINK_SETTINGS_PATH` directory, defa
 docker exec linky ls -la /app/data
 ```
 
-Files: `servers.json` (server settings), `reposts.json` (ownership), `reposts-permission.json` (expendable permission-failure clocks), `youtube-stats.json`, `translation-usage.json`, `delivery-diagnostics.json`, `delivery-logs/` (daily files), `media/` (Erome assets, self-hosted only). Never copy these off the host with user data intact; the archive is the sanitized view.
+Files: `servers.json` (server settings), `reposts.json` (ownership), `reposts-permission.json` (expendable permission-failure clocks), `youtube-stats.json`, `delivery-diagnostics.json`, `delivery-logs/` (daily files), `media/` (Erome assets, self-hosted only). Never copy these off the host with user data intact; the archive is the sanitized view.
 
 ## Appendix B — Reusable command recipes
 
@@ -257,8 +257,7 @@ docker compose restart linky
 Provider order is fixed in `src/services/SocialProviders.ts`; health-based
 reordering is automatic and temporary (`docs/delivery-reliability.md`). Optional
 integrations are env toggles in `.env.example`: `TRANSLATE_TWEETS`,
-`TRANSLATE_INSTAGRAM` + `GOOGLE_TRANSLATE_API_KEY`, `YOUTUBE_API_KEY`,
-`PROMPT_ENABLED`, `EROME_MEDIA_ENABLED` + worker/media variables. Tests inject
+`YOUTUBE_API_KEY`, `PROMPT_ENABLED`, `EROME_MEDIA_ENABLED` + worker/media variables. Tests inject
 fetch and never need a key.
 
 ## Appendix E — Smoke checklist (sub-15-minute version)

@@ -112,29 +112,14 @@ test('public YouTube community previews need no operator key and respect the pla
   assert.deepEqual(JSON.parse(readChannels({ REWRITE_PLATFORMS: 'youtube', YOUTUBE_API_KEY: ' ' }, 'rewritePlatforms').stdout), ['youtube']);
 });
 
-test('Instagram translation requires both an explicit operator flag and a nonempty key', () => {
-  const cases: [NodeJS.ProcessEnv, boolean][] = [
-    [{}, false], [{ TRANSLATE_INSTAGRAM: 'true' }, false],
-    [{ GOOGLE_TRANSLATE_API_KEY: 'test-caption-key' }, false],
-    [{ TRANSLATE_INSTAGRAM: 'false', GOOGLE_TRANSLATE_API_KEY: 'test-caption-key' }, false],
-    [{ TRANSLATE_INSTAGRAM: '1', GOOGLE_TRANSLATE_API_KEY: 'test-caption-key' }, false],
-    [{ TRANSLATE_INSTAGRAM: 'true', GOOGLE_TRANSLATE_API_KEY: '  ' }, false],
-    [{ TRANSLATE_INSTAGRAM: 'TRUE', GOOGLE_TRANSLATE_API_KEY: ' test-caption-key ' }, true],
-  ];
-  for (const [overrides, expected] of cases) {
-    const result = readChannels(overrides, 'translateInstagram');
+test('retired Instagram translation settings are ignored and never remove ordinary Instagram support', () => {
+  const retired = { TRANSLATE_INSTAGRAM: 'true', GOOGLE_TRANSLATE_API_KEY: 'test-caption-key' };
+  for (const field of ['translateInstagram', 'captionApiKey']) {
+    const result = readChannels(retired, field);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout), expected);
+    assert.equal(JSON.parse(result.stdout), null);
   }
-  assert.equal(JSON.parse(readChannels({ GOOGLE_TRANSLATE_API_KEY: ' test-caption-key ' }, 'captionApiKey').stdout), 'test-caption-key');
-});
-
-test('Instagram translation is independent of X translation and never removes ordinary Instagram support', () => {
-  const instagram = { TRANSLATE_INSTAGRAM: 'true', GOOGLE_TRANSLATE_API_KEY: 'test-caption-key', TRANSLATE_TWEETS: 'false' };
-  assert.equal(JSON.parse(readChannels(instagram, 'translateInstagram').stdout), true);
-  assert.equal(JSON.parse(readChannels(instagram, 'translateTweets').stdout), false);
-  assert.equal(JSON.parse(readChannels({ TRANSLATE_TWEETS: 'true' }, 'translateInstagram').stdout), false);
-  assert.deepEqual(JSON.parse(readChannels({ TRANSLATE_INSTAGRAM: 'true' }, 'rewritePlatforms').stdout), ['x', 'instagram', 'tiktok']);
+  assert.deepEqual(JSON.parse(readChannels(retired, 'rewritePlatforms').stdout), ['x', 'instagram', 'tiktok']);
 });
 
 test('server settings use a local data file unless explicitly configured', () => {

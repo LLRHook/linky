@@ -527,3 +527,27 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Bump:** minor
 - **Status:** shipped-pending-migration
 - **Implementation:** Confirmed six image-card families already use embed image fields on b803f79; no working image layout was rebuilt. docs/media-blocks.md records file:line evidence, named tests and rerun commands. Five image-field mutation runs cover all six families. The video-window regression uses a deterministic mocked clock so proof does not depend on wall-clock scheduling. No loose image-card path was found beyond the documented I4 compatibility cases.
+
+### [FEAT-1795456232] Show Instagram posts as one caption-free block
+- [x] **Priority:** high
+- **Area:** previews, media, commands, settings, tests, docs
+- **File(s):** src/services/InstagramPost.ts, src/services/InstagramPresentation.ts, src/services/SocialLinkService.ts, src/commands/fix.ts, src/commands/settings.ts, src/services/ServerSettings.ts, src/config.ts, src/bot.ts
+- **Req:** unknown
+- **Depends on:** unknown
+- **UI:** unknown
+- **Why:** Victor, 2026-11-23: Instagram captions are useless gibberish almost every time; load each post in one box.
+- **Approach:** Remove caption parsing, translation and the translation budget. A lone Instagram post becomes one Components V2 block (sharer credit, @author heading, gallery of up to ten OGInstagram offload items); every other case uses the caption-free g.oginstagram.com gallery card. An unconfirmed automatic block is removed and the source kept with the Retry notice. Retire translate_instagram and instagram_presentation settings (saved values ignored on load) and the TRANSLATE_INSTAGRAM / GOOGLE_TRANSLATE_API_KEY env vars.
+- **Library / dependency notes:** Reuse discord.js Components V2 and the existing bounded OGInstagram lookup; no new dependencies. Google Cloud Translation is no longer called.
+- **Acceptance criteria:**
+  - [x] No Instagram response, automatic or manual, contains caption text; a card whose embed or container shows post text does not count as a caption-free success.
+  - [x] A message whose only link is one Instagram post with 1-10 offload items shows one block: credit, @author linked to the profile, gallery; Original post and Remove stay.
+  - [x] Several links, failed or refused lookups, missing offload addresses and more than ten items use the g.oginstagram.com gallery card.
+  - [x] An automatic block whose media Discord does not confirm within 10 s is deleted and the original kept with the Retry preview notice.
+  - [x] Saved settings holding translateInstagram or instagramPresentation still load; /settings no longer offers them; an update naming them is rejected.
+  - [x] Named offline tests and mutation checks cover the new critical assertions; docs match the result.
+- **Test plan:** Synthetic OGInstagram Notes and Discord message payloads in tests/instagram-post, instagram-presentation, instagram-panel, delivery-recovery, social-links, manual-fix, settings-command, server-settings and config tests; mutation: restore a caption line in the block and confirm a named test fails.
+- **Out of scope:** One-box blocks for other platforms (separate tickets), live Discord playback claims, a second Instagram provider.
+- **Bump:** minor
+- **Status:** shipped-pending-migration
+- **Implementation:** Removed Instagram caption parsing, Google caption translation and its daily budget (CaptionTranslation.ts, TranslationBudget.ts deleted; InstagramTranslation.ts renamed InstagramPost.ts, author and media only). A lone post is one Components V2 block: sharer credit, @author heading linked to the profile, gallery of up to ten signed OGInstagram offload items; every other case rewrites to the caption-free g.oginstagram.com gallery card, and a card showing post text never counts as success. An automatic block Discord does not confirm within 10 s is deleted and the original kept with Retry preview; /fix keeps Original post. Retired translate_instagram and instagram_presentation (saved values ignored on load and dropped on next save; updates naming them rejected) and the TRANSLATE_INSTAGRAM / GOOGLE_TRANSLATE_API_KEY env vars. Mutations: caption-free check off (1 test fails), captioned provider host (22 fail), caption line in block (4 fail).
+- **Docs:** README.md, CONTRIBUTING.md, VERIFICATION.md, .env.example, package.json, docs/instagram-media.md (renamed from instagram-translation.md), docs/media-blocks.md, docs/provider-checks.md, docs/product-roadmap.md, docs/self-hosting.md

@@ -10,8 +10,8 @@ import {
 import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
 import type { TweetTranslation } from './TweetTranslation';
-import { parseInstagramUrl, type InstagramTranslation } from './InstagramTranslation';
-import { addInstagramCaptions, instagramPanelComponents, type InstagramPanel } from './InstagramPresentation';
+import type { InstagramPost } from './InstagramPost';
+import { addInstagramMedia, instagramPanelComponents, type InstagramPanel } from './InstagramPresentation';
 import type { ServerPreferences } from './ServerSettings';
 import type { StatsPublication } from './YouTubeStats';
 import { findYouTubeLinks, formatYouTubeStatistics, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
@@ -55,14 +55,12 @@ export { formatLinkRepost } from './RepostPresentation';
 export { bypassLinky } from './RepostEligibility';
 
 const MAX_CONTENT_LENGTH = 2_000;
-const INSTAGRAM_UNVERIFIED = 'Instagram preview could not be verified; the original post is still here.';
-const INSTAGRAM_PREVIEW_NOTICE = `\n-# ${INSTAGRAM_UNVERIFIED}`;
 const RECENT_MESSAGE_LIMIT = 1_000;
 
 export interface LinkRepostOptions {
   platforms?: readonly RewritePlatform[];
   translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
-  translateInstagram?: (sourceUrl: string) => Promise<InstagramTranslation | null>;
+  lookupInstagram?: (sourceUrl: string) => Promise<InstagramPost | null>;
   serverIds?: readonly string[];
   serverEnabled?: (serverId: string) => boolean | undefined;
   serverPreferences?: (serverId: string) => ServerPreferences;
@@ -94,7 +92,7 @@ export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateTweet, translateInstagram, serverIds = [], serverEnabled, serverPreferences,
+  { platforms = REWRITE_PLATFORMS, translateTweet, lookupInstagram, serverIds = [], serverEnabled, serverPreferences,
     lookupYouTube, lookupYouTubeCommunity, lookupArticle, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
     eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
@@ -310,14 +308,12 @@ export function createLinkRepostHandler(
         return;
       }
       const translated: NonNullable<typeof tweetPresentation> & {
-        instagramSources?: string[]; instagramVideos?: string[]; instagramCaptionSources?: string[]; instagramPanel?: InstagramPanel;
+        instagramSources?: string[]; instagramVideos?: string[]; instagramPanel?: InstagramPanel;
       } =
         activePlatforms.includes('instagram') &&
           !message.flags.has(MessageFlags.SuppressEmbeds)
-          ? await addInstagramCaptions(inputContent, tweetPresentation,
-            preferences.translateInstagram !== false ? translateInstagram : undefined,
-            MAX_CONTENT_LENGTH - INSTAGRAM_PREVIEW_NOTICE.length - (body.length - rewritten.length),
-            preferences.instagramPresentation) : tweetPresentation;
+          ? await addInstagramMedia(inputContent, tweetPresentation, lookupInstagram,
+            MAX_CONTENT_LENGTH - (body.length - rewritten.length)) : tweetPresentation;
       const canonical = canonicalRepostLinks(translated.content,
         { articles, community, eromeMedia: Boolean(erome || originalMedia), youtubeIds: youtube });
       const formatted = formatLinkRepost(canonical, message.author.id, replyContext);
@@ -358,7 +354,6 @@ export function createLinkRepostHandler(
       const videoStatusIds = new Set(translated.videoStatusIds);
       const instagramIds = instagramShortcodes(usedFormatted ? translated.instagramSources : []);
       const instagramVideos = instagramShortcodes(translated.instagramVideos);
-      const instagramCaptionIds = instagramShortcodes(usedFormatted ? translated.instagramCaptionSources : []);
       const expectations = () => repostExpectations(`${inputContent}\n${translated.mediaSources ?? ''}`, content, community, articles,
         { textStatusIds, videoStatusIds, captionFreeInstagram: instagramIds, videoInstagram: instagramVideos });
       if (providerHealth) {
@@ -385,11 +380,11 @@ export function createLinkRepostHandler(
         !translated.embeds?.length && !community.length && !articles.length && !youtubeCards.length && onlyEromeLinks(inputContent) &&
         !message.flags.has(MessageFlags.SuppressEmbeds) ? uploadedMediaComponents(erome.file.name, content) : null;
       const inlineBlock = inlineVideo ?? inlineErome;
-      // A lone translated post with its media is one block; a native card beside captions would show the post twice.
+      // A lone post with its media is one block: author and media together, with no card beside it.
       const tweetPanel = translated.panel, instagramPanel = translated.instagramPanel;
       const panelMedia = tweetPanel?.media ?? instagramPanel?.media ?? [];
       const panelLeadLine = formatLinkRepost(panelLead(inputContent), message.author.id, replyContext).trimEnd();
-      let inlinePost = panelMedia.length && !inlineBlock && !originalMedia && !erome && !attachments.length &&
+      const inlinePost = panelMedia.length && !inlineBlock && !originalMedia && !erome && !attachments.length &&
         !translationFiles.length && !translated.embeds?.length && !community.length && !articles.length && !youtubeCards.length &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
         ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, panelLeadLine) : instagramPanelComponents(instagramPanel!, panelLeadLine)
@@ -512,9 +507,7 @@ export function createLinkRepostHandler(
         const recovered = nextProviderContent(content, preview.missing, attempted,
           providerHealth ? (candidates, item) => providerHealth.order(candidates, item) : undefined);
         // An alternate hostname can be longer, including once per repeated link.
-        // Preserve room for the retained-caption notice if neither provider works.
-        const recoveryLimit = MAX_CONTENT_LENGTH - (instagramIds.size ? INSTAGRAM_PREVIEW_NOTICE.length : 0);
-        if (recovered === content || recovered.length > recoveryLimit) break;
+        if (recovered === content || recovered.length > MAX_CONTENT_LENGTH) break;
         content = recovered;
         expected = expectations();
         previewWatch?.close();
@@ -526,29 +519,7 @@ export function createLinkRepostHandler(
         observePreview?.(expected, preview);
       }
       if (await stopExpired()) return;
-      // An Instagram block whose media never loaded keeps its English caption, without the gallery.
-      const captionBlock = inlinePost && instagramPanel && !preview.ok
-        ? instagramPanelComponents(instagramPanel, panelLeadLine, { unavailable: INSTAGRAM_UNVERIFIED }) : null;
-      const captionFallback = Boolean(captionBlock) || !erome && !originalMedia && !preview.ok && expected.length === 1 &&
-        preview.missing.length === 1 && preview.missing.every(item => {
-          const id = parseInstagramUrl(item.source)?.shortcode;
-          return id && instagramCaptionIds.has(id);
-        });
-      if (captionFallback) {
-        // An English caption is still useful when Instagram's image is unavailable.
-        // Keep the source and register reply ownership so edits/removal remain safe.
-        reply = true;
-        if (captionBlock) {
-          inlinePost = captionBlock;
-          await replacement.edit({ components: [...captionBlock, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
-            allowedMentions });
-        } else {
-          content += INSTAGRAM_PREVIEW_NOTICE;
-          await replacement.edit({ content, embeds: [], flags: MessageFlags.SuppressEmbeds | silentFlag,
-            allowedMentions });
-        }
-      }
-      if (!preview.ok && !captionFallback) {
+      if (!preview.ok) {
         await removeReplacement();
         log.warn({ ...resultContext, providers: providerAttempts.flatMap(attempt => attempt.expected.map(item => item.providerId)) },
           'Keeping original: no useful preview appeared');
@@ -558,9 +529,8 @@ export function createLinkRepostHandler(
       }
       log.info({ ...resultContext, providers: preview.matchedProviders ?? ['unattributed'], videoMetadata: preview.videoMetadata,
         playbackChecked: false, translatedTextPosts: textStatusIds.size },
-      captionFallback ? 'Translated Instagram caption delivered; kept original because preview could not be verified' :
-        erome || originalMedia ? 'Erome media metadata confirmed; client playback not checked' :
-          inlinePost ? 'Translated post block media confirmed; client playback not checked' :
+      erome || originalMedia ? 'Erome media metadata confirmed; client playback not checked' :
+          inlinePost ? 'Post block media confirmed; client playback not checked' :
           expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
       if (youtubeCards.length) {
         try { publication = await publishYouTube!(replacement, youtubeCards); }
@@ -663,7 +633,7 @@ export function createLinkRepostHandler(
         rollback = undefined;
       }
       // Once deletion has been sent, keep the potentially sole copy even if a final edit runs late.
-      delivery.finish(delivery.context.signal?.aborted ? 'timeout' : restricted ? 'permission' : captionFallback ? 'partial' : 'confirmed');
+      delivery.finish(delivery.context.signal?.aborted ? 'timeout' : restricted ? 'permission' : 'confirmed');
     } catch (err) {
       cleanupDelivery?.finish(cleanupDelivery.context.signal?.aborted ? 'timeout' : 'discord-failure');
       if (rollback) await rollback().catch(() => log.warn(context, 'Could not remove incomplete preview'));
