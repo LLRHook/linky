@@ -25,10 +25,10 @@ import type { ProviderHealth, ProviderAttempt } from '../services/ProviderHealth
 import type { EromeAlbumSessions } from '../services/EromeAlbumSessions';
 import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailability';
 import { hasMobileShareLinks, type MobileShareLinkNormalizer } from '../services/MobileShareLinks';
-import { addInstagramCaptions } from '../services/InstagramPresentation';
+import { addInstagramCaptions, instagramPanelComponents } from '../services/InstagramPresentation';
 import type { InstagramTranslation } from '../services/InstagramTranslation';
 import { translateRepost } from '../services/TweetPresentation';
-import { tweetPanelComponents, tweetPanelReady } from '../services/TweetPanel';
+import { tweetPanelComponents, panelMediaReady } from '../services/TweetPanel';
 import { watchMessageMedia } from '../services/MediaWatch';
 import type { TweetTranslation } from '../services/TweetTranslation';
 import { instagramShortcodes, repostExpectations } from '../services/RepostDelivery';
@@ -322,16 +322,18 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       return;
     }
     const nativeExpected = expected.filter(item => !item.explicitEmbeds);
-    // A lone translated video post is one block; a native card beside captions would show the post twice.
-    const tweetPanel = presentation.panel;
-    const tweetBlock = tweetPanel && links.length === 1 && !erome && !presentation.embeds?.length && !community.length &&
-      !articles.length && !presentation.translationFiles?.length ? tweetPanelComponents(tweetPanel.tweet, '') : null;
-    if (tweetBlock) {
+    // A lone translated post with its media is one block; a native card beside captions would show the post twice.
+    const tweetPanel = presentation.panel, instagramPanel = presentation.instagramPanel;
+    const panelMedia = tweetPanel?.media ?? instagramPanel?.media ?? [];
+    const postBlock = panelMedia.length && links.length === 1 && !erome && !presentation.embeds?.length && !community.length &&
+      !articles.length && !presentation.translationFiles?.length
+      ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, '') : instagramPanelComponents(instagramPanel!, '') : null;
+    if (postBlock) {
       context.trace?.setPath('explicit');
       const watcher = watchMessageMedia(interaction.client, interaction.channelId,
-        value => tweetPanelReady(value, tweetPanel!.media), { timeoutMs: 10_000 });
+        value => panelMediaReady(value, panelMedia), { timeoutMs: 10_000 });
       try {
-        await publishManualMediaBlock({ interaction, attempt, block: tweetBlock, files: [], buttonRows,
+        await publishManualMediaBlock({ interaction, attempt, block: postBlock, files: [], buttonRows,
           verifyMedia: message => watcher.verify(message, () => interaction.fetchReply()),
           preferencesCurrent, sourceCurrent, expected: [], observePreview });
       } finally { watcher.close(); }

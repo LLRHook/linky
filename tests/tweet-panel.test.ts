@@ -6,7 +6,7 @@ import { Client, ComponentType, Events, MessageFlags, PermissionFlagsBits, Permi
 import { execute } from '../src/commands/fix';
 import type { Config } from '../src/config';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
-import { panelLead, tweetPanelComponents, tweetPanelMedia, tweetPanelReady } from '../src/services/TweetPanel';
+import { panelLead, tweetPanelComponents, tweetPanelMedia, panelMediaReady } from '../src/services/TweetPanel';
 import { translateRepost } from '../src/services/TweetPresentation';
 import type { TweetMedia, TweetTranslation } from '../src/services/TweetTranslation';
 import { botMessage, commandInteraction, createForbidden, repostSource, sendableChannel, type InteractionEvent } from './support/discord';
@@ -100,16 +100,16 @@ test('panel media uses only X media hosts, every media-bearing part and at most 
 test('panel readiness requires every item fetched as its kind, in a container or at the top level', () => {
   const block = tweetPanelComponents(TWEET, '')!;
   const media = tweetPanelMedia(TWEET)!;
-  assert.equal(tweetPanelReady({ components: block }, media), false, 'unfetched items carry no proxy address');
-  assert.equal(tweetPanelReady({ components: loaded(block) }, media), true);
-  assert.equal(tweetPanelReady({ components: loaded(block, 'text/html') }, media), false);
-  assert.equal(tweetPanelReady({ components: loaded(block, 'image/jpeg') }, media), false, 'a video must load as video');
+  assert.equal(panelMediaReady({ components: block }, media), false, 'unfetched items carry no proxy address');
+  assert.equal(panelMediaReady({ components: loaded(block) }, media), true);
+  assert.equal(panelMediaReady({ components: loaded(block, 'text/html') }, media), false);
+  assert.equal(panelMediaReady({ components: loaded(block, 'image/jpeg') }, media), false, 'a video must load as video');
   const loading = JSON.parse(JSON.stringify(loaded(block)).replace('"loading_state":2', '"loading_state":1'));
-  assert.equal(tweetPanelReady({ components: loading }, media), false);
+  assert.equal(panelMediaReady({ components: loading }, media), false);
   const gallery = (loaded(block) as Component[])[0].components!.at(-1)!;
-  assert.equal(tweetPanelReady({ components: [gallery] }, media), true);
-  assert.equal(tweetPanelReady({ components: [{ ...gallery, items: gallery.items!.slice(1) }] }, media), false, 'every item is required');
-  assert.equal(tweetPanelReady({ components: loaded(block) }, []), false);
+  assert.equal(panelMediaReady({ components: [gallery] }, media), true);
+  assert.equal(panelMediaReady({ components: [{ ...gallery, items: gallery.items!.slice(1) }] }, media), false, 'every item is required');
+  assert.equal(panelMediaReady({ components: loaded(block) }, []), false);
 });
 
 test('the lead keeps the sharer words without the post link', () => {

@@ -10,7 +10,8 @@ const translated = { text: 'Follow @bustervro for more.\n\nThis is the complete 
 const ORIGIN = 'https://oginstagram.com';
 const html = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/[@#]\w+/g, tag => `<a href="${ORIGIN}/${tag.slice(1)}">${tag}</a>`).replace(/\n/g, '<br>');
-const media = (mediaType = 'image/jpeg') => ({ type: 'Document', mediaType, url: `${ORIGIN}/offload/${CODE}/1` });
+const OFFLOAD = `${ORIGIN}/offload/${CODE}/1?v=2&kid=k1&exp=1798041600&sig=abc_-1`;
+const media = (mediaType = 'image/jpeg', url = OFFLOAD) => ({ type: 'Document', mediaType, url, width: 720, height: 1280 });
 /** OGInstagram's ActivityStreams Note, as served for `Accept: application/activity+json`. */
 const payload = (patch: Record<string, unknown> = {}, code = CODE, kind = 'p') => ({
   '@context': 'https://www.w3.org/ns/activitystreams', type: 'Note', id: `${ORIGIN}/${kind}/${code}`,
@@ -68,7 +69,8 @@ test('DdFwAIqgncQ passes its full mixed-language caption to the translator and r
   assert.deepEqual(requests, [`${ORIGIN}/p/${CODE}/`], 'the lookup uses the live provider, never a retired host');
   assert.deepEqual(captions, [caption]); assert(caption.length > 250);
   assert.deepEqual(result, { sourceUrl: source(), shortcode: CODE, username: 'bustervro',
-    text: translated.text, languages: ['et'], mediaOnlyUrl: `https://g.oginstagram.com/p/${CODE}/`, mediaTypes: ['GraphImage'] });
+    text: translated.text, languages: ['et'], mediaOnlyUrl: `https://g.oginstagram.com/p/${CODE}/`, mediaTypes: ['GraphImage'],
+    media: [{ type: 'photo', url: OFFLOAD, width: 720, height: 1280 }] });
   assert.equal(Object.hasOwn(result!, 'hasWorkingMedia'), false, 'GraphImage is metadata, not a media-health assertion');
 });
 
@@ -89,6 +91,24 @@ test('carousel attachments map to image and video hints in order', async () => {
   const lookup = createInstagramLookup(async () => translated,
     serve({ attachment: [media(), media('video/mp4'), media('IMAGE/WEBP')] }));
   assert.deepEqual((await lookup(source()))?.mediaTypes, ['GraphImage', 'GraphVideo', 'GraphImage']);
+});
+
+test('media keeps each provider offload address in order and is omitted when any item lacks one', async () => {
+  const video = `https://g.oginstagram.com/offload/${CODE}/2?sig=x`;
+  const ordered = createInstagramLookup(async () => translated,
+    serve({ attachment: [media(), media('video/mp4', video), { ...media(), width: 0 }] }));
+  assert.deepEqual((await ordered(source()))?.media, [
+    { type: 'photo', url: OFFLOAD, width: 720, height: 1280 }, { type: 'video', url: video, width: 720, height: 1280 },
+    { type: 'photo', url: OFFLOAD }]);
+  for (const url of [undefined, 4, `http://oginstagram.com/offload/${CODE}/1`, `https://evil.test/offload/${CODE}/1`,
+    `https://oginstagram.com.evil.test/offload/${CODE}/1`, `https://oginstagram.com:8443/offload/${CODE}/1`,
+    `https://user@oginstagram.com/offload/${CODE}/1`, `https://oginstagram.com/offload/OtherPost/1`,
+    `https://oginstagram.com/p/${CODE}/`, `https://scontent.cdninstagram.com/v/${CODE}.mp4`, `${OFFLOAD}&${'x'.repeat(2048)}`]) {
+    const lookup = createInstagramLookup(async () => translated, serve({ attachment: [media(), { ...media(), url }] }));
+    const result = await lookup(source());
+    assert(result, 'the caption stays available without media addresses');
+    assert.equal(Object.hasOwn(result, 'media'), false, String(url).slice(0, 80));
+  }
 });
 
 test('caption text drops provider statistics and markup while escaped characters stay literal', async () => {
@@ -201,7 +221,9 @@ test('concurrent equivalent URLs share one lookup and cached results are not ext
   await turn(); assert.equal(requests, 1); assert.equal(translations, 1); release();
   const [one, two] = await Promise.all([first, second]); assert(one); assert(two);
   one.languages.push('de'); one.mediaTypes.push('GraphVideo'); one.text = 'Mutated';
+  one.media![0].url = 'https://evil.test/'; one.media!.push({ type: 'video', url: 'https://evil.test/' });
   assert.deepEqual(two.languages, ['et']); assert.deepEqual(two.mediaTypes, ['GraphImage']);
+  assert.deepEqual(two.media, [{ type: 'photo', url: OFFLOAD, width: 720, height: 1280 }]);
   assert.equal((await lookup(source()))?.text, translated.text); assert.equal(requests, 1);
 });
 

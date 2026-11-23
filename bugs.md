@@ -743,3 +743,18 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Docs:** README.md, docs/media-blocks.md
 - **Log:**
   - 2026-11-23 Sighting: After e059952 deployed, the reported /fix landed on the vxTwitter fallback: one link, but the translated captions above a native card that repeats the post text and shows the untranslated quote. Victor (2026-11-23): the post must be one block, not shown twice. Native fixer cards cannot carry translated text, so translated video posts need a Linky-authored block.
+
+### [BUG-1795453217] Translated Instagram post shows its caption outside the native card and repeats the author
+- [x] **Severity:** med
+- **Area:** previews, translation
+- **File(s):** src/services/InstagramPresentation.ts, src/services/InstagramTranslation.ts, src/services/SocialLinkService.ts, src/commands/fix.ts
+- **Observation:** On 2026-11-23 an automatic repost of https://www.instagram.com/p/DgFdAX5zFPq/ (Japanese caption, one video) published the g.oginstagram.com link, then the @clip.fun0007 heading, translated caption and 'Translated from Japanese' as message text, then Discord's native gallery card with the author, avatar and video. The post was split across two boxes and the author appeared twice.
+- **Expected:** A single translated Instagram post publishes as one block: sharer credit, then one container with the author, translated caption, language label and every photo and video, with Original post, Remove and Details; no fixer link or native card. When the media cannot be confirmed, the existing fallbacks keep the source and a tracked English caption (automatic) or the manual rollback notice.
+- **Req:** unknown
+- **Depends on:** unknown
+- **Repro / Notes:** OGInstagram's Note for DgFdAX5zFPq lists one attachment {mediaType video/mp4, url https://oginstagram.com/offload/DgFdAX5zFPq/1?...&sig=..., width 720, height 1280}. With a Discordbot user agent the offload URL answers 302 to scontent.cdninstagram.com; with curl's default agent Cloudflare answers 403 (challenge). The X equivalent was fixed in BUG-1795443760.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** A single translated Instagram post now publishes as one Components V2 block: sharer credit, then one container with the author, English caption excerpt (Standard 300 / Compact 120), source-language label and a gallery of every item from OGInstagram's signed /offload/{shortcode}/ addresses (at most ten), with Original post, Remove and Details; no g.oginstagram.com link or native card. The Note's attachment URLs and dimensions are parsed and validated. Delivery confirms every gallery item has a Discord proxy address and matching media type within 10 s; otherwise the automatic source stays and the block keeps the English caption with a notice instead of the gallery (reply ownership), and /fix shows its V2 rollback notice. Several links, Media-first, Notes missing an offload address and more than ten items keep the caption path. The panel readiness check is shared with X (panelMediaReady).
+- **Docs:** README.md, docs/instagram-translation.md, docs/media-blocks.md
