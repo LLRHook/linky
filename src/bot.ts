@@ -135,7 +135,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     normalizeMobileLinks,
     translateTweet: settings.translateTweets ? async (id: string) => (await tweets(id, { translate: true })).translation : undefined,
     lookupTweet: async (id: string, options: { translate: boolean }) => (await tweets(id, options)).post,
-    lookupInstagram, lookupBluesky, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
+    lookupInstagram, lookupBluesky, lookupYouTubeCommunity, lookupArticle, probeMedia: fetch, signal: shutdown.signal };
   const destroy = client.destroy.bind(client);
   client.destroy = () => {
     if (closing) return closing;

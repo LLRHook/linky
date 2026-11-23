@@ -785,3 +785,18 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Found while adding BlueskyPost/BlueskyPanel (FEAT-1795457637), which added `Bluesky` to the exclusion list for its own AppView and profile URLs. Decide per hit whether it is a catalogued host (exclude the module) or a real finding; do not change the code to satisfy the grep.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1795462081] One-post blocks rarely confirm: Discord marks gallery media loaded long after the 10 s check
+- [x] **Severity:** high
+- **Area:** previews, media, commands, tests, docs
+- **File(s):** src/services/TweetPanel.ts, src/services/MediaWatch.ts, src/services/SocialLinkService.ts, src/commands/fix.ts
+- **Observation:** Live render check on production ffff679 (2026-11-23, test channel 1491242185331576884, real blocks built by the deployed code and posted by the bot): Discord set loading_state 2 with a content type within 20 s for 1 of 7 blocks (a NASA image Discord had already cached, 1.3 s). With 90 s polling the other items reached loading_state 2 after 69-107 s (4 X photos 107 s, X video 102 s, Bluesky image 77 s, Instagram Reel 69 s); later fresh posts took 10.6 s and 26.8 s, and 4 fresh X photos were still loading after 40 s. Over the same period, a HEAD request to each item's proxy_url on images-ext-1.discordapp.net returned 200 with the matching type (image/jpeg, image/webp, video/mp4) in 23-235 ms, for 8 of 8 items.
+- **Expected:** A block whose media Discord's media proxy already serves is confirmed within the 10 s window. Consequence today: X and Bluesky blocks are deleted and replaced by the native card after 10 s; a lone Instagram post's block is deleted and the original kept with Retry preview.
+- **Req:** unknown
+- **Depends on:** unknown
+- **Repro / Notes:** Scripts and output: scratchpad live/render.cjs, render90.out, probe.out (session 2026-11-23). n=7 blocks, 13 items; timings are single samples per item polled at about 1 s. Fix: when Discord has not yet marked an item loaded, probe its proxy_url (HEAD, Discord media-proxy hosts only, 5 s timeout, no redirects) and accept 2xx with the item's kind of content type; loading_state 3 still fails; the existing 10 s Gateway wait remains the fallback.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** When Discord has not yet marked a block's gallery item loaded, Linky sends one HEAD request (5 s, no redirects) to the item's Discord media-proxy address, only on images-ext-N.discordapp.net or media.discordapp.net over HTTPS without port or credentials, and accepts a 2xx response with the item's kind of content type; loading state 3, a missing item or another host fails without a request. watchMessageMedia checks the published message and one fresh read before the remaining Gateway wait, and remembers served media for that message so the manual controls-edit check passes at once. Wired for automatic reposts and /fix through probeMedia (fetch in bot.ts; tests inject a fake). Tests: tests/tweet-panel.test.ts (4 new; 12 of 12 mutants killed).
+- **Docs:** docs/media-blocks.md, docs/instagram-media.md, docs/self-hosting.md, README.md

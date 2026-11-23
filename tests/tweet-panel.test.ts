@@ -6,7 +6,7 @@ import { Client, ComponentType, Events, MessageFlags, PermissionFlagsBits, Permi
 import { execute } from '../src/commands/fix';
 import type { Config } from '../src/config';
 import { createLinkRepostHandler } from '../src/services/SocialLinkService';
-import { panelLead, tweetPanelComponents, tweetPanelMedia, panelMediaReady } from '../src/services/TweetPanel';
+import { panelLead, tweetPanelComponents, tweetPanelMedia, panelMediaReady, panelMediaServed, MEDIA_PROBE_TIMEOUT } from '../src/services/TweetPanel';
 import type { ExpectedPreview, PreviewResult } from '../src/services/PreviewRecovery';
 import { tweetPostPanel } from '../src/services/TweetPresentation';
 import type { TweetLookup, TweetMedia, TweetTranslation } from '../src/services/TweetTranslation';
@@ -44,6 +44,28 @@ function loaded(components: readonly unknown[], kind?: string): unknown[] {
       loading_state: 2, content_type: kind ?? (String(item.media.url).startsWith('https://video.') ? 'video/mp4' : 'image/jpeg') } })) }
     : component.type === ComponentType.Container ? { ...component, components: component.components!.map(fill) } : component;
   return (components as Component[]).map(fill);
+}
+
+/** Gallery items as Discord reports them before it marks them loaded: a proxy address, loading state 1, no type yet. */
+function proxying(components: readonly unknown[], change: (media: Record<string, unknown>) => Record<string, unknown> = media => media): unknown[] {
+  const fill = (component: Component): Component => component.type === ComponentType.MediaGallery
+    ? { ...component, items: component.items!.map(item => ({ ...item, media: change({ ...item.media, loading_state: 1,
+      proxy_url: `https://images-ext-1.discordapp.net/external/k/https/${String(item.media.url).replace(/^https:\/\//, '')}` }) })) }
+    : component.type === ComponentType.Container ? { ...component, components: component.components!.map(fill) } : component;
+  return (components as Component[]).map(fill);
+}
+
+type Probe = { url: string; method?: string; redirect?: string; signal: boolean };
+/** A media proxy that serves each item as its kind, recording every request; `answer` overrides the response. */
+function mediaProxy(answer?: (url: string) => Response | Promise<Response>) {
+  const requests: Probe[] = [];
+  const probe = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    requests.push({ url, method: init?.method, redirect: init?.redirect, signal: init?.signal instanceof AbortSignal });
+    return answer ? answer(url) : new Response(null, { status: 200,
+      headers: { 'content-type': url.includes('/video.twimg.com/') ? 'video/mp4' : 'image/jpeg' } });
+  }) as typeof fetch;
+  return { probe, requests };
 }
 
 const texts = (components: readonly unknown[]): string[] => (components as Component[]).flatMap(component =>
@@ -117,6 +139,52 @@ test('panel readiness requires every item fetched as its kind, in a container or
   assert.equal(panelMediaReady({ components: loaded(block) }, []), false);
 });
 
+test('a proxy probe confirms items Discord has not marked loaded, only on Discord proxy hosts and as each kind', async () => {
+  const block = tweetPanelComponents(TWEET, '')!;
+  const media = tweetPanelMedia(TWEET)!;
+  const proxy = mediaProxy();
+  assert.equal(await panelMediaServed({ components: proxying(block) }, media, proxy.probe), true);
+  assert.deepEqual(proxy.requests.map(request => request.url), [
+    'https://images-ext-1.discordapp.net/external/k/https/video.twimg.com/amplify_video/2124369/vid/avc1/720x1280/clip.mp4?tag=14',
+    'https://images-ext-1.discordapp.net/external/k/https/pbs.twimg.com/media/GxPhoto.jpg']);
+  assert(proxy.requests.every(request => request.method === 'HEAD' && request.redirect === 'error' && request.signal));
+  assert.equal(MEDIA_PROBE_TIMEOUT, 5_000);
+
+  const loadedOnly = mediaProxy();
+  assert.equal(await panelMediaServed({ components: loaded(block) }, media, loadedOnly.probe), true);
+  assert.deepEqual(loadedOnly.requests, [], 'items Discord already marked loaded need no request');
+
+  const untouched = async (components: unknown[], why: string) => {
+    const check = mediaProxy();
+    assert.equal(await panelMediaServed({ components }, media, check.probe), false, why);
+    assert.deepEqual(check.requests, [], `${why}: no request`);
+  };
+  await untouched(block, 'no proxy address yet');
+  await untouched(proxying(block, item => ({ ...item, loading_state: 3 })), 'Discord marked an item not found');
+  for (const address of ['https://proxy.example/external/k', 'http://images-ext-1.discordapp.net/external/k',
+    'https://images-ext-1.discordapp.net:8443/external/k', 'https://user:pass@media.discordapp.net/external/k',
+    'https://images-ext-1.discordapp.net.example/external/k', 'https://cdn.discordapp.com/external/k', 'not a URL'])
+    await untouched(proxying(block, item => ({ ...item, proxy_url: address })), address);
+  const gallery = (proxying(block) as Component[])[0].components!.at(-1)!;
+  await untouched([{ ...gallery, items: gallery.items!.slice(1) }], 'a missing item');
+  assert.equal(await panelMediaServed({ components: proxying(block) }, [], mediaProxy().probe), false);
+
+  const media2 = mediaProxy(() => new Response(null, { status: 200, headers: { 'content-type': 'image/jpeg' } }));
+  assert.equal(await panelMediaServed({ components: proxying(block) }, media, media2.probe), false, 'a video must be served as video');
+  for (const [why, answer] of [
+    ['not found', (url: string) => new Response(null, { status: 404,
+      headers: { 'content-type': url.includes('/video.twimg.com/') ? 'video/mp4' : 'image/jpeg' } })],
+    ['a page', () => new Response(null, { status: 200, headers: { 'content-type': 'text/html' } })],
+    ['no type', () => new Response(null, { status: 200 })],
+    ['a network failure', () => Promise.reject(new TypeError('fetch failed'))],
+  ] as const) assert.equal(await panelMediaServed({ components: proxying(block) }, media, mediaProxy(answer).probe), false, why);
+
+  const mixed = mediaProxy();
+  const partly = proxying(loaded(block), item => String(item.url).startsWith('https://video.') ? { ...item, content_type: undefined } : { ...item, loading_state: 2 });
+  assert.equal(await panelMediaServed({ components: partly }, media, mixed.probe), true);
+  assert.equal(mixed.requests.length, 1, 'only the unconfirmed item is requested');
+});
+
 test('the lead keeps the sharer words without the post link', () => {
   assert.equal(panelLead(SOURCE), '');
   assert.equal(panelLead(`Look ${SOURCE}`), 'Look');
@@ -160,6 +228,7 @@ test('a lone X post with X-hosted media offers a block in any language; other me
 });
 
 function automatic({ ready = true, translate = true, mode = 'replace' as 'replace' | 'reply', lookup = async () => TWEET as TweetTranslation | null,
+  proxied = false, probeMedia = undefined as typeof fetch | undefined,
   verifyPreview = forbidden.forbid('A block carries its own media; no native card is checked') as
     (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult> } = {}) {
   const client = new Client({ intents: [] }); Object.assign(client, { user: { id: BOT } });
@@ -169,7 +238,11 @@ function automatic({ ready = true, translate = true, mode = 'replace' as 'replac
   const replacement = botMessage({
     id: '123456789012345680', channelId: CHANNEL, author: { id: BOT },
     get components() { return components.map(component => ({ toJSON: () => component })); },
-    fetch: async () => replacement,
+    // A fresh read carries Discord's proxy addresses when `proxied`; the publish response never does here.
+    fetch: async () => {
+      if (proxied) { events.push('refetch block'); components = proxying(components) as APIMessageTopLevelComponent[]; }
+      return replacement;
+    },
     edit: async (payload: { components: APIMessageTopLevelComponent[] }) => {
       events.push('controls'); edits.push(payload); components = payload.components; return replacement;
     },
@@ -207,6 +280,7 @@ function automatic({ ready = true, translate = true, mode = 'replace' as 'replac
       lookupTweet: async (id, options) => { lookups.push({ id, ...options }); return lookup(); },
       rememberRepost: async () => { events.push('ownership'); return true; }, verifyPreview,
       ...(mode === 'reply' ? { serverPreferences: () => ({ mode }) } : {}),
+      ...(probeMedia ? { probeMedia } : {}),
     });
     try { await handler(source as unknown as Message); } finally { await client.destroy(); }
   };
@@ -312,6 +386,32 @@ test('an unconfirmed automatic block is replaced by the native card, which is ch
   assert.equal(f.client.listenerCount(Events.Raw), 0);
 });
 
+test('a block whose media Discord has not marked loaded is confirmed by its proxy and kept without waiting', async () => {
+  const proxy = mediaProxy();
+  const f = automatic({ ready: false, proxied: true, translate: false, lookup: async () => PHOTO_POST, probeMedia: proxy.probe });
+  const started = performance.now();
+  await f.run();
+  assert(performance.now() - started < 2_000, 'no Gateway wait');
+  assert.deepEqual(f.events, ['send block', 'unconfirmed', 'refetch block', 'ownership', 'delete original', 'controls']);
+  assert.deepEqual(proxy.requests.map(request => request.url), ['https://images-ext-1.discordapp.net/external/k/https/pbs.twimg.com/media/GxPhoto.jpg']);
+  assert.equal(f.sends.length, 1, 'no native card');
+  assert(f.logs.some(entry => entry.includes('Post block media confirmed; client playback not checked')));
+  assert.equal(f.client.listenerCount(Events.Raw), 0);
+});
+
+test('a block whose proxy does not serve its media still waits, then gives way to the native card', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const proxy = mediaProxy(() => new Response(null, { status: 404 }));
+  const f = automatic({ ready: false, proxied: true, translate: false, lookup: async () => PHOTO_POST, probeMedia: proxy.probe,
+    verifyPreview: async (_message, expected) => ({ ok: true, missing: [], videoMetadata: false, attributed: [...expected] }) });
+  await expireBlockWait(t, f.events, f.run());
+  assert.equal(proxy.requests.length, 1);
+  assert.deepEqual(f.events.slice(0, 5), ['send block', 'unconfirmed', 'refetch block', 'refetch block', 'delete block'],
+    'one fresh read before the wait, one after it');
+  assert(f.events.includes('send card'));
+  assert(f.logs.some(entry => entry.includes('Post block media unconfirmed; published the native card instead')));
+});
+
 test('in Reply mode an unconfirmed block is replaced by a native reply card and the original stays', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = automatic({ ready: false, translate: false, mode: 'reply', lookup: async () => PHOTO_POST,
@@ -346,7 +446,7 @@ const config: Config = { discordToken: '', channelIds: [], serverIds: [], rewrit
 type Payload = { flags?: number; content?: string | null; components?: APIMessageTopLevelComponent[]; embeds?: unknown[]; message?: string };
 const FOLLOW_UP = '444444444444444444';
 
-function manual({ ready = true, send = true } = {}) {
+function manual({ ready = true, send = true, proxied = false } = {}) {
   const events: InteractionEvent<Payload>[] = [];
   const client = Object.assign(new EventEmitter(), { user: { id: BOT } });
   const response = { id: '333333333333333333', channelId: 'channel', author: { id: BOT },
@@ -362,7 +462,8 @@ function manual({ ready = true, send = true } = {}) {
       events.push({ name: 'edit', payload });
       if (payload.message === FOLLOW_UP) return followUp as unknown as Message;
       if (payload.components) {
-        response.components = payload.components.map(component => ({ toJSON: () => component }));
+        const shown = proxied && payload.flags === MessageFlags.IsComponentsV2 ? proxying(payload.components) : payload.components;
+        response.components = shown.map(component => ({ toJSON: () => component }));
         if (ready && payload.flags === MessageFlags.IsComponentsV2) client.emit(Events.Raw, { t: 'MESSAGE_UPDATE',
           d: { id: response.id, channel_id: 'channel', author: { id: BOT }, components: loaded(payload.components) } });
       }
@@ -437,6 +538,16 @@ for (const send of [true, false]) {
     assert.equal(f.client.listenerCount(Events.Raw), 0);
   });
 }
+
+test('/fix keeps a block its proxy serves without waiting for Discord to mark it loaded', async () => {
+  const f = manual({ ready: false, proxied: true }), proxy = mediaProxy();
+  await execute(f.interaction, config, { lookupTweet: async () => PHOTO_POST, probeMedia: proxy.probe,
+    verifyPreview: forbidden.forbid('A confirmed block needs no native card') });
+  assert.equal(proxy.requests.length, 1, 'the controls edit is checked again without another request');
+  assert(!f.events.some(event => event.name === 'follow-up' || event.name === 'delete'), 'no card replaces the block');
+  assert.match(JSON.stringify(f.events.filter(event => event.name === 'edit').at(-1)), /"type":17/);
+  assert.equal(f.client.listenerCount(Events.Raw), 0);
+});
 
 test('/fix keeps the block notice when the block is unconfirmed and settings change before the card', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
