@@ -25,7 +25,7 @@ import { evaluateScope } from './ServerScope';
 import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
 import { verifyPublishedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
 import { translateRepost, tweetPostPanel } from './TweetPresentation';
-import { panelLead, tweetPanelComponents, panelMediaReady } from './TweetPanel';
+import { panelLead, tweetPanelComponents, panelMediaReady, panelMediaServed } from './TweetPanel';
 import { watchMessageMedia } from './MediaWatch';
 import { findReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
@@ -66,6 +66,8 @@ export interface LinkRepostOptions {
   lookupTweet?: TweetLookup;
   lookupInstagram?: (sourceUrl: string) => Promise<InstagramPost | null>;
   lookupBluesky?: BlueskyLookup;
+  /** Requests a block's Discord media-proxy addresses to confirm media Discord has not yet marked loaded. */
+  probeMedia?: typeof fetch;
   serverIds?: readonly string[];
   serverEnabled?: (serverId: string) => boolean | undefined;
   serverPreferences?: (serverId: string) => ServerPreferences;
@@ -97,7 +99,7 @@ export function createLinkRepostHandler(
   channelIds: readonly string[] | string | undefined,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
   copyAttachment: (attachment: Attachment) => Promise<AttachmentBuilder> = downloadAttachment,
-  { platforms = REWRITE_PLATFORMS, translateTweet, lookupTweet, lookupInstagram, lookupBluesky, serverIds = [], serverEnabled, serverPreferences,
+  { platforms = REWRITE_PLATFORMS, translateTweet, lookupTweet, lookupInstagram, lookupBluesky, probeMedia, serverIds = [], serverEnabled, serverPreferences,
     lookupYouTube, lookupYouTubeCommunity, lookupArticle, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
     eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
@@ -420,7 +422,8 @@ export function createLinkRepostHandler(
       const nativeExpected = expected.filter(item => !item.explicitEmbeds);
       previewWatch = nativeExpected.length ? armPreview?.(channelId, nativeExpected, delivery.context) : undefined;
       mediaWatcher = originalMedia ? watchEromeMedia(message.client, channelId, originalMedia)
-        : inlinePost ? watchMessageMedia(message.client, channelId, value => panelMediaReady(value, panelMedia), { timeoutMs: 10_000 })
+        : inlinePost ? watchMessageMedia(message.client, channelId, value => panelMediaReady(value, panelMedia), { timeoutMs: 10_000,
+          ...(probeMedia ? { served: value => panelMediaServed(value, panelMedia, probeMedia) } : {}) })
           : undefined;
       const preparedMedia = originalMedia;
       const publicationBody = {

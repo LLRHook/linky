@@ -97,14 +97,58 @@ export function tweetPanelComponents(tweet: TweetTranslation, lead: string,
   ];
 }
 
+type PanelItem = Pick<TweetMedia, 'type' | 'url'>;
+const contentKind = (item: PanelItem): string => item.type === 'photo' ? 'image/' : 'video/';
+
+function itemReady(shown: Record<string, unknown>, expected: PanelItem): boolean {
+  if (shown.url !== expected.url || typeof shown.proxy_url !== 'string' || !shown.proxy_url) return false;
+  if (shown.loading_state !== undefined && shown.loading_state !== 2) return false;
+  const type = typeof shown.content_type === 'string' ? shown.content_type.toLowerCase() : '';
+  return type.startsWith(contentKind(expected));
+}
+
 /** Discord has fetched every gallery item of a post block: each has a proxy address and the expected kind of content. */
-export function panelMediaReady(value: MediaMessage, media: readonly Pick<TweetMedia, 'type' | 'url'>[]): boolean {
+export function panelMediaReady(value: MediaMessage, media: readonly PanelItem[]): boolean {
   const items = galleryItems(value.components);
-  return media.length > 0 && media.every(expected => items.some(item => {
-    const shown = item?.media;
-    if (!shown || shown.url !== expected.url || typeof shown.proxy_url !== 'string' || !shown.proxy_url) return false;
-    if (shown.loading_state !== undefined && shown.loading_state !== 2) return false;
-    const type = typeof shown.content_type === 'string' ? shown.content_type.toLowerCase() : '';
-    return type.startsWith(expected.type === 'photo' ? 'image/' : 'video/');
-  }));
+  return media.length > 0 && media.every(expected => items.some(item => item?.media && itemReady(item.media, expected)));
+}
+
+// Discord's media proxy hosts. A gallery item's proxy address is requested only on these.
+const MEDIA_PROXY_HOST = /^(?:images-ext-\d{1,2}|media)\.discordapp\.net$/;
+export const MEDIA_PROBE_TIMEOUT = 5_000;
+
+function proxyAddress(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && MEDIA_PROXY_HOST.test(url.hostname) && !url.port && !url.username && !url.password
+      ? url.href : null;
+  } catch { return null; }
+}
+
+/**
+ * Discord's media proxy serves every gallery item of a post block as its kind of content. Discord can take minutes to
+ * mark an external item loaded, while its proxy serves the item within a second (BUG-1795462081), so an item not yet
+ * marked is checked with one HEAD request to its Discord proxy address (5 s, no redirects). An item Discord marked not
+ * found (loading state 3), a missing item and an address on any other host fail without a request.
+ */
+export async function panelMediaServed(value: MediaMessage, media: readonly PanelItem[],
+  probe: typeof fetch): Promise<boolean> {
+  if (!media.length) return false;
+  const items = galleryItems(value.components);
+  const checks: Promise<boolean>[] = [];
+  for (const expected of media) {
+    const shown = items.find(item => item?.media?.url === expected.url)?.media;
+    if (!shown || shown.loading_state === 3) return false;
+    if (itemReady(shown, expected)) continue;
+    const address = proxyAddress(shown.proxy_url);
+    if (!address) return false;
+    checks.push(probe(address, { method: 'HEAD', redirect: 'error', signal: AbortSignal.timeout(MEDIA_PROBE_TIMEOUT) })
+      .then(response => {
+        void response.body?.cancel().catch(() => {});
+        return response.ok && (response.headers.get('content-type') ?? '').toLowerCase().startsWith(contentKind(expected));
+      })
+      .catch(() => false));
+  }
+  return (await Promise.all(checks)).every(Boolean);
 }

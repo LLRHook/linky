@@ -31,7 +31,7 @@ import type { InstagramPost } from '../services/InstagramPost';
 import type { BlueskyLookup } from '../services/BlueskyPost';
 import { blueskyPanelComponents, blueskyPostPanel } from '../services/BlueskyPanel';
 import { translateRepost, tweetPostPanel } from '../services/TweetPresentation';
-import { tweetPanelComponents, panelMediaReady } from '../services/TweetPanel';
+import { tweetPanelComponents, panelMediaReady, panelMediaServed } from '../services/TweetPanel';
 import { watchMessageMedia } from '../services/MediaWatch';
 import type { TweetLookup, TweetTranslation } from '../services/TweetTranslation';
 import { instagramShortcodes, repostExpectations } from '../services/RepostDelivery';
@@ -82,7 +82,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
   config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment,
     prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation, serverPreferences,
     diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateTweet, lookupTweet, lookupBluesky, lookupInstagram, lookupYouTubeCommunity,
-    lookupArticle, signal }: {
+    lookupArticle, probeMedia, signal }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     prepareErome?: EromePreparer;
@@ -103,6 +103,8 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     lookupInstagram?: (sourceUrl: string) => Promise<InstagramPost | null>;
     lookupYouTubeCommunity?: YouTubeCommunityLookup;
     lookupArticle?: ArticleLookup;
+    /** Requests a block's Discord media-proxy addresses to confirm media Discord has not yet marked loaded. */
+    probeMedia?: typeof fetch;
     signal?: AbortSignal;
   } = {}): Promise<void> {
   let content = interaction.isChatInputCommand() ? interaction.options.getString('link', true) : interaction.targetMessage.content;
@@ -348,7 +350,8 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (postBlock) {
       context.trace?.setPath('explicit');
       const watcher = watchMessageMedia(interaction.client, interaction.channelId,
-        value => panelMediaReady(value, panelMedia), { timeoutMs: 10_000 });
+        value => panelMediaReady(value, panelMedia), { timeoutMs: 10_000,
+          ...(probeMedia ? { served: value => panelMediaServed(value, panelMedia, probeMedia) } : {}) });
       try {
         // An unconfirmed X or Bluesky block is replaced by the card below; Instagram keeps the block's notice.
         blockUnconfirmed = await publishManualMediaBlock({ interaction, attempt, block: postBlock, files: [], buttonRows,

@@ -7,9 +7,11 @@ export type MediaMessage = { id?: unknown; channel_id?: unknown; author?: { id?:
  * Discord fills an external gallery item's proxy address, type and size only after fetching it.
  * Subscribe before publishing, using the bot's existing connection; only the returned message ID can pass.
  * `refetch` reads the published message again when no matching update arrived in time.
+ * `served`, when given, is asked first with the published message (and once more with a fresh read): an active check
+ * that confirms media Discord has not yet marked loaded. The Gateway wait covers whatever time remains.
  */
 export function watchMessageMedia(client: Client, channelId: string, matches: (value: MediaMessage) => boolean,
-  { timeoutMs = 6000 }: { timeoutMs?: number } = {}) {
+  { timeoutMs = 6000, served }: { timeoutMs?: number; served?: (value: MediaMessage) => Promise<boolean> } = {}) {
   const ready = new Set<string>();
   let closed = false;
   let target: string | undefined, resolve: ((value: boolean) => void) | undefined;
@@ -18,23 +20,38 @@ export function watchMessageMedia(client: Client, channelId: string, matches: (v
     if (!['MESSAGE_CREATE', 'MESSAGE_UPDATE'].includes(packet.t ?? '') || !value ||
       value.channel_id !== channelId || typeof value.id !== 'string' ||
       value.author?.id && value.author.id !== client.user?.id || !matches(value)) return;
-    ready.add(value.id);
-    if (ready.size > 16) ready.delete(ready.values().next().value!);
+    remember(value.id);
     if (target === value.id) resolve?.(true);
+  };
+  const remember = (id: string) => {
+    ready.add(id);
+    if (ready.size > 16) ready.delete(ready.values().next().value!);
   };
   client.on(Events.Raw, listener);
   const identity = (message: Message) => message.channelId === channelId && message.author.id === client.user?.id;
-  const inspect = (message: Message) => !closed && message.id === target && identity(message) &&
-    matches({ components: message.components.map(component => component.toJSON()) });
+  const raw = (message: Message): MediaMessage => ({ components: message.components.map(component => component.toJSON()) });
+  const inspect = (message: Message) => !closed && message.id === target && identity(message) && matches(raw(message));
+  const isServed = async (message: Message) => Boolean(served) && !closed && message.id === target && identity(message) &&
+    await served!(raw(message)).catch(() => false) && !closed;
   return {
     async verify(message: Message, refetch: () => Promise<Message> = () => message.fetch(true)): Promise<boolean> {
       if (closed || !identity(message)) return false;
       target = message.id;
+      const deadline = Date.now() + timeoutMs;
       if (ready.has(target) || inspect(message)) return true;
+      if (served) {
+        // The publish response can precede Discord's proxy addresses; one fresh read is checked too. Served media
+        // counts as ready for this message, as a matching Gateway update would, so a later check of it passes at once.
+        let confirmed = await isServed(message);
+        if (!confirmed) try { confirmed = await isServed(await refetch()); } catch { /* the Gateway wait below still applies */ }
+        if (closed) return false;
+        if (confirmed) remember(target);
+        if (ready.has(target)) return true;
+      }
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const observed = await new Promise<boolean>(done => {
-          resolve = done; timer = setTimeout(() => done(false), timeoutMs);
+          resolve = done; timer = setTimeout(() => done(false), Math.max(0, deadline - Date.now()));
           if (ready.has(message.id)) done(true);
         });
         if (closed) return false;
