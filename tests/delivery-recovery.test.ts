@@ -877,7 +877,7 @@ test('a translated video preserves hidden URLs and verifies only its visible gal
   assert(!JSON.stringify(f.sent[0].options.components).includes('/status/25'));
 });
 
-test('quoted media still needs a preview when its parent is delivered as translated text', async () => {
+test('quoted media still needs a preview on its parent card when the parent has no media of its own', async () => {
   const f = delivery(`${ORIGINAL_X} https://x.com/author/status/21`);
   f.state.render = () => [];
   await f.create({ translateTweet: async id => ({ ...translatedText, ...(id === '20' ? {
@@ -885,17 +885,19 @@ test('quoted media still needs a preview when its parent is delivered as transla
   } : {}) }) })(f.source);
   assert.equal(f.state.originalDeleted, false);
   assert.equal(f.sent[0].deleted, true);
-  assert.equal(f.expectedChecks[0][0].source, 'https://x.com/quoted/status/22');
+  assert.deepEqual(f.expectedChecks[0].map(item => ({ source: item.source, url: item.url, requireVideo: item.requireVideo })),
+    [{ source: 'https://x.com/jack/status/20', url: 'https://g.fixupx.com/jack/status/20', requireVideo: true }]);
 });
 
 for (const quoted of [false, true]) {
   test(`a translated ${quoted ? 'quoted' : 'parent'} video cannot pass as a thumbnail-only preview`, async () => {
     const f = delivery(quoted ? `${ORIGINAL_X} https://x.com/author/status/21` : ORIGINAL_X);
-    const url = quoted ? 'https://x.com/quoted/status/22' : 'https://x.com/jack/status/20';
+    // A quoted video under a parent without media is shown, and checked, on the parent's card.
+    const url = 'https://x.com/jack/status/20';
     f.state.render = () => [{ url, title: 'A video post', description: 'Its caption.', thumbnail: { url: 'https://cdn.example/poster.jpg' } }];
     await f.create({ translateTweet: async id => quoted ? {
       ...translatedText, ...(id === '20' ? {
-        quote: { ...translatedText, url, hasVideo: true, hasMedia: true },
+        quote: { ...translatedText, url: 'https://x.com/quoted/status/22', hasVideo: true, hasMedia: true },
       } : {}),
     } : { ...translatedText, hasVideo: true, hasMedia: true } })(f.source);
     assert.equal(f.state.originalDeleted, false, quoted ? 'quoted video' : 'parent video');
@@ -903,10 +905,10 @@ for (const quoted of [false, true]) {
   });
 }
 
-test('quoted video fallback retains translated captions and verifies the recovered quoted post', async () => {
+test('quoted video fallback retains translated captions and verifies the recovered parent card', async () => {
   const f = delivery(`${ORIGINAL_X} https://x.com/author/status/21`);
   f.state.render = round => round === 1 ? [] : [{
-    url: 'https://vxtwitter.com/quoted/status/22', video: { url: 'https://cdn.example/quoted-video.mp4' },
+    url: 'https://vxtwitter.com/jack/status/20', video: { url: 'https://cdn.example/quoted-video.mp4' },
   }];
   await f.create({ translateTweet: async id => ({ ...translatedText, ...(id === '20' ? {
     quote: { ...translatedText, text: 'The translated quoted video.', url: 'https://x.com/quoted/status/22', hasVideo: true, hasMedia: true },
@@ -915,9 +917,9 @@ test('quoted video fallback retains translated captions and verifies the recover
   assert.equal(f.sent.length, 1);
   assert.equal(f.sent[0].deleted, false);
   assert.deepEqual(f.expectedChecks.map(items => items.map(item => item.url)), [
-    ['https://g.fixupx.com/quoted/status/22'], ['https://vxtwitter.com/quoted/status/22'],
+    ['https://g.fixupx.com/jack/status/20'], ['https://vxtwitter.com/jack/status/20'],
   ]);
-  assert.match(f.sent[0].message.content, /<https:\/\/fixupx\.com\/jack\/status\/20>/);
+  assert.doesNotMatch(f.sent[0].message.content, /<https:\/\/fixupx\.com\/jack\/status\/20>|quoted\/status\/22/);
   assert.match(f.sent[0].message.content, /The translated quoted video\./);
   assert.equal(f.sent[0].message.content.match(/The translated post\./g)?.length, 2);
 });
