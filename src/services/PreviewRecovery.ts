@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import type { APIEmbed, Message } from 'discord.js';
+import type { APIEmbed } from 'discord.js';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { getProviderCandidates, parseSocialUrl, parseProviderUrl, type SocialPlatform, type ProviderCandidate } from './SocialProviders';
 import { parseYouTubeUrl } from './YouTube';
@@ -220,8 +220,14 @@ export function inspectPreviews(embeds: readonly APIEmbed[], expected: readonly 
   };
 }
 
+/** What a preview check reads: the published embeds, and a fresh read of the same message. */
+export interface PublishedPreview {
+  embeds: readonly { toJSON(): APIEmbed }[];
+  fetch(force?: boolean): Promise<{ readonly embeds: readonly { toJSON(): APIEmbed }[] }>;
+}
+
 /** Combine native media evidence with exact authored cards for both delivery entry points. */
-export async function verifyPublishedPreviews(message: Message, expected: readonly ExpectedPreview[], {
+export async function verifyPublishedPreviews(message: PublishedPreview, expected: readonly ExpectedPreview[], {
   verifyNative, contentVerified = false,
 }: { verifyNative: (expected: readonly ExpectedPreview[]) => Promise<PreviewResult>; contentVerified?: boolean }): Promise<PreviewResult> {
   const native = expected.filter(item => !item.explicitEmbeds), explicit = expected.filter(item => item.explicitEmbeds);
@@ -236,11 +242,11 @@ export async function verifyPublishedPreviews(message: Message, expected: readon
 }
 
 /** A bounded wait for Discord's asynchronously generated embeds, never a playback claim. */
-export async function waitForPreviews(message: Pick<Message, 'embeds' | 'fetch'>, expected: readonly ExpectedPreview[],
+export async function waitForPreviews(message: PublishedPreview, expected: readonly ExpectedPreview[],
   { intervals = [1_000, 2_000, 3_000], sleep = delay }: {
     intervals?: readonly number[]; sleep?: (ms: number) => Promise<unknown>;
   } = {}): Promise<PreviewResult> {
-  let current = message;
+  let current: { readonly embeds: PublishedPreview['embeds'] } = message;
   let result = inspectPreviews(current.embeds.map(embed => embed.toJSON()), expected);
   for (const ms of intervals) {
     if (result.ok || result.providerError) break;

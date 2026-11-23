@@ -758,3 +758,18 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** A single translated Instagram post now publishes as one Components V2 block: sharer credit, then one container with the author, English caption excerpt (Standard 300 / Compact 120), source-language label and a gallery of every item from OGInstagram's signed /offload/{shortcode}/ addresses (at most ten), with Original post, Remove and Details; no g.oginstagram.com link or native card. The Note's attachment URLs and dimensions are parsed and validated. Delivery confirms every gallery item has a Discord proxy address and matching media type within 10 s; otherwise the automatic source stays and the block keeps the English caption with a notice instead of the gallery (reply ownership), and /fix shows its V2 rollback notice. Several links, Media-first, Notes missing an offload address and more than ten items keep the caption path. The panel readiness check is shared with X (panelMediaReady).
 - **Docs:** README.md, docs/instagram-translation.md, docs/media-blocks.md
+
+### [BUG-1795454591] /fix cycles through every X provider although the first card already shows the post
+- [x] **Severity:** high
+- **Area:** previews, manual-fix
+- **File(s):** src/commands/fix.ts, src/services/PreviewRecovery.ts, tests/manual-fix.test.ts
+- **Observation:** Reported by Victor on 2026-11-23: /fix of an X post shows the tweet's card correctly, then the response switches to the next provider and the next ('cycles all the way') before ending. Code reading: manual verification waits for a Gateway MESSAGE_UPDATE and then reconciles with message.fetch(), a channel REST read. When /fix runs as a user install (DMs, group DMs or a server without the Linky bot), the bot receives no Gateway event for that channel and cannot read it, so a displayed card is never observed; the response is edited to vxTwitter and finally marked 'A useful preview could not be confirmed'.
+- **Expected:** A manual response confirms the card Discord attached to it wherever the command ran, by reading the reply through the interaction's own webhook, and only tries another provider when that card is missing or an error card.
+- **Req:** unknown
+- **Depends on:** unknown
+- **Repro / Notes:** src/commands/fix.ts verify() passes the editReply Message to PreviewWatcher.verify / waitForPreviews / verifyPublishedPreviews, each of which refetches with message.fetch(true). The Instagram/X media blocks already refetch with interaction.fetchReply(). No production log was read: the bot host is not reachable from this workstation.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Manual preview checks now reread the response with interaction.fetchReply() (the interaction webhook) instead of message.fetch() (channel REST). A user-installed /fix in a DM or a server without Linky gets no Gateway update and cannot read the channel, so the displayed card was never seen and the response was switched to vxTwitter and marked unconfirmed. The preview checks take a narrow PublishedPreview (embeds + fetch) so both entry points share them.
+- **Docs:** README.md, docs/delivery-reliability.md
