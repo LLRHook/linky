@@ -1,6 +1,7 @@
 import { ApplicationCommandType, ApplicationIntegrationType, ContextMenuCommandBuilder, InteractionContextType, MessageFlags,
   PermissionFlagsBits, SlashCommandBuilder,
-  type ButtonInteraction, type ChatInputCommandInteraction, type Message, type MessageContextMenuCommandInteraction } from 'discord.js';
+  type ButtonInteraction, type ChatInputCommandInteraction, type InteractionEditReplyOptions, type Message,
+  type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../config';
 import { mapLinks, visibleLink } from '../services/LinkTokens';
 import { getProviderCandidates, parseSocialUrl } from '../services/SocialProviders';
@@ -27,10 +28,12 @@ import { EROME_UNAVAILABLE, isEromeAvailable } from '../services/EromeAvailabili
 import { hasMobileShareLinks, type MobileShareLinkNormalizer } from '../services/MobileShareLinks';
 import { addInstagramMedia, instagramPanelComponents } from '../services/InstagramPresentation';
 import type { InstagramPost } from '../services/InstagramPost';
-import { translateRepost } from '../services/TweetPresentation';
+import type { BlueskyLookup } from '../services/BlueskyPost';
+import { blueskyPanelComponents, blueskyPostPanel } from '../services/BlueskyPanel';
+import { translateRepost, tweetPostPanel } from '../services/TweetPresentation';
 import { tweetPanelComponents, panelMediaReady } from '../services/TweetPanel';
 import { watchMessageMedia } from '../services/MediaWatch';
-import type { TweetTranslation } from '../services/TweetTranslation';
+import type { TweetLookup, TweetTranslation } from '../services/TweetTranslation';
 import { instagramShortcodes, repostExpectations } from '../services/RepostDelivery';
 import { messageHasUploadedMedia, uploadedMediaComponents } from '../services/UploadedMedia';
 import { manualButtons, publishHostedErome, publishManualMediaBlock } from './fixMedia';
@@ -78,7 +81,8 @@ export function manualLinks(content: string, config: Pick<Config, 'rewritePlatfo
 export async function execute(interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
   config: Config, { verifyPreview = waitForPreviews, observePreview, prepareErome, verifyErome = verifyEromeAttachment,
     prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation, serverPreferences,
-    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateTweet, lookupInstagram, lookupYouTubeCommunity, lookupArticle, signal }: {
+    diagnostics, armPreview, providerHealth, albums, normalizeMobileLinks, translateTweet, lookupTweet, lookupBluesky, lookupInstagram, lookupYouTubeCommunity,
+    lookupArticle, signal }: {
     verifyPreview?: typeof waitForPreviews;
     observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
     prepareErome?: EromePreparer;
@@ -94,6 +98,8 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     albums?: EromeAlbumSessions;
     normalizeMobileLinks?: MobileShareLinkNormalizer;
     translateTweet?: (statusId: string) => Promise<TweetTranslation | null>;
+    lookupTweet?: TweetLookup;
+    lookupBluesky?: BlueskyLookup;
     lookupInstagram?: (sourceUrl: string) => Promise<InstagramPost | null>;
     lookupYouTubeCommunity?: YouTubeCommunityLookup;
     lookupArticle?: ArticleLookup;
@@ -194,12 +200,16 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
   let media: EromeMedia | null = null;
   try {
     const { buttons, rows: buttonRows } = manualButtons(links);
+    // After an unconfirmed post block the card is a follow-up message; later edits go to it.
+    let cardReply: string | undefined;
+    const respond = (payload: InteractionEditReplyOptions) =>
+      interaction.editReply(cardReply ? { ...payload, message: cardReply } : payload);
     const stopChangedPreferences = async () => {
       if (preferencesCurrent()) return false;
       attempt.finish('disabled');
       const eromeRevoked = eromeSource && (!eromeAllowed() ||
         interaction.guildId && serverPreferences?.(interaction.guildId)?.platforms?.erome === false);
-      await interaction.editReply({ content: eromeRevoked
+      await respond({ content: eromeRevoked
         ? 'Erome previews are no longer allowed here. The album is unchanged and available below.'
         : 'Link settings changed while the preview was being prepared. The original post is unchanged and available below.',
         embeds: [], attachments: [], flags: MessageFlags.SuppressEmbeds, components: buttonRows(), allowedMentions: { parse: [] } });
@@ -247,7 +257,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       if (!checkSource || await sourceCurrent()) return false;
       if (await stopChangedPreferences()) return true;
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
-      await interaction.editReply({ content: `The source changed or became unavailable. The ${previewName} preview was removed; the original is unchanged.`,
+      await respond({ content: `The source changed or became unavailable. The ${previewName} preview was removed; the original is unchanged.`,
         embeds: [], attachments: [], components: buttonRows(), allowedMentions: { parse: [] } });
       return true;
     };
@@ -296,6 +306,11 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
         tweetBytes + (erome && Buffer.isBuffer(erome.file.attachment) ? erome.file.attachment.length : 0) > eromeBudget)) {
       tweetPresentation = null;
     }
+    // A lone X post is one block in any language; the translation setting decides only which words it shows.
+    const tweetPanel = lookupTweet && links.length === 1 && parseSocialUrl(links[0].source)?.platform === 'x'
+      ? await tweetPostPanel(links[0].source, activeConfig.rewritePlatforms, lookupTweet, Boolean(tweetTranslator)) : undefined;
+    const blueskyPanel = !tweetPanel && lookupBluesky && links.length === 1 && parseSocialUrl(links[0].source)?.platform === 'bluesky'
+      ? await blueskyPostPanel(links[0].source, activeConfig.rewritePlatforms, lookupBluesky) : undefined;
     const presentation = await addInstagramMedia(original, tweetPresentation ?? { content: rendered }, lookupInstagram, 1800);
     if (context.signal?.aborted || !preferencesCurrent()) {
       attempt.finish(context.signal?.aborted ? 'timeout' : 'disabled');
@@ -322,21 +337,26 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     }
     const nativeExpected = expected.filter(item => !item.explicitEmbeds);
     // A lone post with its media is one block: author and media together, with no card beside it.
-    const tweetPanel = presentation.panel, instagramPanel = presentation.instagramPanel;
-    const panelMedia = tweetPanel?.media ?? instagramPanel?.media ?? [];
-    const postBlock = panelMedia.length && links.length === 1 && !erome && !presentation.embeds?.length && !community.length &&
-      !articles.length && !presentation.translationFiles?.length
-      ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, '') : instagramPanelComponents(instagramPanel!, '') : null;
+    const instagramPanel = presentation.instagramPanel;
+    const panelMedia = tweetPanel?.media ?? blueskyPanel?.media ?? instagramPanel?.media ?? [];
+    // An X post's translated card or translation file is that post's fallback, not a second preview beside the block.
+    const otherCards = !tweetPanel && Boolean(presentation.embeds?.length || presentation.translationFiles?.length);
+    const postBlock = panelMedia.length && links.length === 1 && !erome && !otherCards && !community.length && !articles.length
+      ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, '')
+        : blueskyPanel ? blueskyPanelComponents(blueskyPanel, '') : instagramPanelComponents(instagramPanel!, '') : null;
+    let blockUnconfirmed = false;
     if (postBlock) {
       context.trace?.setPath('explicit');
       const watcher = watchMessageMedia(interaction.client, interaction.channelId,
         value => panelMediaReady(value, panelMedia), { timeoutMs: 10_000 });
       try {
-        await publishManualMediaBlock({ interaction, attempt, block: postBlock, files: [], buttonRows,
+        // An unconfirmed X or Bluesky block is replaced by the card below; Instagram keeps the block's notice.
+        blockUnconfirmed = await publishManualMediaBlock({ interaction, attempt, block: postBlock, files: [], buttonRows,
           verifyMedia: message => watcher.verify(message, () => interaction.fetchReply()),
-          preferencesCurrent, sourceCurrent, expected: [], observePreview });
+          preferencesCurrent, sourceCurrent, expected: [], observePreview, fallback: Boolean(tweetPanel || blueskyPanel) }) === 'unconfirmed';
       } finally { watcher.close(); }
-      return;
+      if (!blockUnconfirmed) return;
+      context.trace?.setPath('native');
     }
     const inlineVideo = !erome && !presentation.embeds?.length && !community.length && !presentation.translationFiles?.length
       ? articleVideoComponents(articles, rendered) : null;
@@ -355,18 +375,26 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     }
     previewWatch = nativeExpected.length ? armPreview?.(interaction.channelId, nativeExpected, context) : undefined;
     const publishStage = context.trace?.startStage('publish');
-    if (await stopChangedPreferences()) return;
-    let message = await interaction.editReply({ content: rendered,
-      ...(embeds.length ? { embeds } : {}),
-      ...(files.length ? { files } : {}),
-      components: buttonRows(), allowedMentions: { parse: [] } });
+    const card = { content: rendered, ...(embeds.length ? { embeds } : {}), ...(files.length ? { files } : {}),
+      components: buttonRows(), allowedMentions: { parse: [] as never[] } };
+    if (!blockUnconfirmed && await stopChangedPreferences()) return;
+    // A Components V2 reply cannot become a card. The card is sent first, then the block is deleted, so the
+    // requester is never left without a response.
+    let message = blockUnconfirmed
+      ? await interaction.followUp({ ...card, ...(privateResponse ? { flags: MessageFlags.Ephemeral as const } : {}) })
+      : await interaction.editReply(card);
+    if (blockUnconfirmed) {
+      cardReply = message.id;
+      await interaction.deleteReply();
+      if (await stopChangedPreferences()) return;
+    }
     publishStage?.finish();
     const attempted = new Set<string>();
     const eromeVerified = erome && !context.signal?.aborted ? await verifyErome(message, erome.file) : false;
     // A user-installed command can answer in a DM or a server without Linky: no Gateway update arrives there and the
     // bot cannot read the channel. The interaction's own webhook can always read its reply.
     const reply = (published: Message) => ({ id: published.id, channelId: published.channelId, author: published.author,
-      embeds: published.embeds, fetch: () => interaction.fetchReply() });
+      embeds: published.embeds, fetch: () => cardReply ? interaction.fetchReply(cardReply) : interaction.fetchReply() });
     const verify = async (): Promise<PreviewResult> => {
       if (context.signal?.aborted || eromeSource && !eromeAllowed()) return { ok: false, missing: [...expected], videoMetadata: false };
       const stage = context.trace?.startStage('preview');
@@ -392,7 +420,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       previewWatch?.close();
       const native = expected.filter(item => !item.explicitEmbeds);
       previewWatch = native.length ? armPreview?.(interaction.channelId, native, context) : undefined;
-      message = await interaction.editReply({ content: rendered, embeds, allowedMentions: { parse: [] } });
+      message = await respond({ content: rendered, embeds, allowedMentions: { parse: [] } });
       preview = await verify();
       if (await stopChangedPreferences()) return;
       providerAttempts.push({ expected, result: preview });
@@ -401,18 +429,18 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     if (checkSource && !await sourceCurrent()) {
       if (await stopChangedPreferences()) return;
       attempt.finish(context.signal?.aborted ? 'cancelled' : 'unavailable');
-      await interaction.editReply({ content: `The source changed or became unavailable. The ${previewName} preview was removed; the original is unchanged.`,
+      await respond({ content: `The source changed or became unavailable. The ${previewName} preview was removed; the original is unchanged.`,
         embeds: [], attachments: [], components: buttonRows(), allowedMentions: { parse: [] } });
       return;
     }
     if (eromeSource && !eromeAllowed()) {
       attempt.finish('disabled');
-      await interaction.editReply({ content: 'Erome previews are no longer allowed here. The album is unchanged.',
+      await respond({ content: 'Erome previews are no longer allowed here. The album is unchanged.',
         attachments: [], embeds: [], allowedMentions: { parse: [] } });
       return;
     }
     if (await stopChangedPreferences()) return;
-    if (!preview.ok || context.signal?.aborted) await interaction.editReply({ content: rendered + (context.signal?.aborted
+    if (!preview.ok || context.signal?.aborted) await respond({ content: rendered + (context.signal?.aborted
       ? '\n-# This preview reached its time limit. The original post link is available below; try again later.'
       : '\n-# A useful preview could not be confirmed. The original post link is available below.'),
       // Removing a card would show its uploads as loose attachments; keep only the message's own files, not a card's video.
@@ -422,7 +450,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     const details = await attempt.controls(message.id);
     if (await stopChangedPreferences()) return;
     if (await stopChangedSource()) return;
-    if (details.length) await interaction.editReply({ components: [...buttonRows(), ...details] });
+    if (details.length) await respond({ components: [...buttonRows(), ...details] });
     if (await stopChangedPreferences()) return;
     if (await stopChangedSource()) return;
     attempt.finish(context.signal?.aborted ? 'timeout' : preview.ok ? 'confirmed' : 'metadata-unconfirmed');

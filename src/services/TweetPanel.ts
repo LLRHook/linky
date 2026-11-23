@@ -19,16 +19,19 @@ function onHost(url: string, host: string): boolean {
   } catch { return false; }
 }
 
+/** A gallery plays a video or GIF only from a file Discord can fetch; an HLS playlist is not one. */
+const playable = (item: TweetMedia): boolean => item.type === 'photo' || /\.mp4$/i.test(new URL(item.url).pathname);
+
 /**
  * Every photo and video of a post and its quotes, when all of it can be shown from X's own media hosts in one gallery.
- * Null when any media-bearing part lacks its media list, uses another host, or the set does not fit.
+ * Null when any media-bearing part lacks its media list, uses another host or a non-MP4 video, or the set does not fit.
  */
 export function tweetPanelMedia(tweet: TweetTranslation): TweetMedia[] | null {
   const media: TweetMedia[] = [];
   for (const part of parts(tweet)) {
     if (part.hasMedia && !part.media?.length) return null;
     for (const item of part.media ?? []) {
-      if (!onHost(item.url, MEDIA_HOSTS[item.type])) return null;
+      if (!onHost(item.url, MEDIA_HOSTS[item.type]) || !playable(item)) return null;
       if (!media.some(existing => existing.url === item.url)) media.push(item);
     }
   }
@@ -67,8 +70,8 @@ function partText(part: TweetTranslation, quoted: boolean): string {
 }
 
 /**
- * One translated post as a single Components V2 block: an optional lead line (the sharer credit), then a container
- * holding the author, the post text, each quoted post's translated text and every photo or video. Null when the
+ * One post as a single Components V2 block: an optional lead line (the sharer credit), then a container holding the
+ * author, the post text, each quoted post's text (translated parts labelled) and every photo or video. Null when the
  * media cannot be shown from X's hosts or the text does not fit.
  */
 export function tweetPanelComponents(tweet: TweetTranslation, lead: string,

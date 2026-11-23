@@ -15,8 +15,9 @@ import { PersonalPreferences } from './services/PersonalPreferences';
 import { execute as autofix } from './commands/autofix';
 import { createMobileShareLinkNormalizer } from './services/MobileShareLinks';
 import { createLinkRepostHandler } from './services/SocialLinkService';
-import { fetchTweetTranslation } from './services/TweetTranslation';
+import { createTweetLookup } from './services/TweetTranslation';
 import { createInstagramLookup } from './services/InstagramPost';
+import { createBlueskyLookup } from './services/BlueskyPost';
 import { createYouTubeLookup } from './services/YouTube';
 import { createYouTubeCommunityLookup } from './services/YouTubeCommunity';
 import { createArticleLookup } from './services/ArticlePreview';
@@ -81,6 +82,10 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   const lookupYouTubeCommunity = createYouTubeCommunityLookup();
   const lookupArticle = createArticleLookup(settings.truthSocialRelay ? { truthSocialRelay: settings.truthSocialRelay } : {});
   const lookupInstagram = createInstagramLookup();
+  // Lone Bluesky image posts are read from the public AppView; only the post's actor and record key are sent.
+  const lookupBluesky = createBlueskyLookup();
+  // One status cache serves translation and one-post blocks, so a post is fetched once per mode.
+  const tweets = createTweetLookup();
   const health = new PreviewHealth();
   const providerHealth = new ProviderHealth();
   const previews = new PreviewWatcher(client);
@@ -127,8 +132,10 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
   });
   const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums,
-    normalizeMobileLinks, translateTweet: settings.translateTweets ? fetchTweetTranslation : undefined,
-    lookupInstagram, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
+    normalizeMobileLinks,
+    translateTweet: settings.translateTweets ? async (id: string) => (await tweets(id, { translate: true })).translation : undefined,
+    lookupTweet: async (id: string, options: { translate: boolean }) => (await tweets(id, options)).post,
+    lookupInstagram, lookupBluesky, lookupYouTubeCommunity, lookupArticle, signal: shutdown.signal };
   const destroy = client.destroy.bind(client);
   client.destroy = () => {
     if (closing) return closing;

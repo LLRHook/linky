@@ -773,3 +773,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** Manual preview checks now reread the response with interaction.fetchReply() (the interaction webhook) instead of message.fetch() (channel REST). A user-installed /fix in a DM or a server without Linky gets no Gateway update and cannot read the channel, so the displayed card was never seen and the response was switched to vxTwitter and marked unconfirmed. The preview checks take a narrow PublishedPreview (embeds + fetch) so both entry points share them.
 - **Docs:** README.md, docs/delivery-reliability.md
+
+### [BUG-1795460094] VERIFICATION 1.5 host grep reports accepted provider hosts as findings
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** VERIFICATION.md
+- **Observation:** On main bd86577 the Stage 1.5 command `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger"` prints hits the step does not list as accepted: LinkedIn.ts (canonical permalinks built from LINKEDIN_HOST), TruthSocial.ts (canonical URLs from TRUTH_SOCIAL_HOST and a relay-URL error message), PreviewRecovery.ts (a documentation link in a comment) and TweetPresentation.ts:158 (the g.fixupx.com rewrite, which the step names). The step says any other hit is a finding, so every run reports these as findings.
+- **Expected:** Stage 1.5 lists every accepted host module or hit, so a run reports only a newly hard-coded provider host outside the catalogue.
+- **Req:** unknown
+- **Depends on:** unknown
+- **Repro / Notes:** Found while adding BlueskyPost/BlueskyPanel (FEAT-1795457637), which added `Bluesky` to the exclusion list for its own AppView and profile URLs. Decide per hit whether it is a catalogued host (exclude the module) or a real finding; do not change the code to satisfy the grep.
+- **Bump:** patch
+- **Status:** open

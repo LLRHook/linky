@@ -59,7 +59,7 @@ export const FACEBOOK_HOSTS: ReadonlySet<string> = new Set(['facebook.com', 'www
 
 // AT Protocol handle/record-key syntax; only handle and the supported DID forms are accepted.
 const HANDLE = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
-function blueskyActor(value: string): string | null {
+export function blueskyActor(value: string): string | null {
   if (value.length <= 253 && HANDLE.test(value)) return value.toLowerCase();
   if (/^did:plc:[a-z2-7]{24}$/.test(value)) return value;
   const webDomain = value.startsWith('did:web:') ? value.slice(8) : '';

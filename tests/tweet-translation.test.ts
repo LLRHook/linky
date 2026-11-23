@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fetchTweetTranslation } from '../src/services/TweetTranslation';
+import { createTweetLookup, fetchTweetStatus, fetchTweetTranslation } from '../src/services/TweetTranslation';
 
 function payload(status: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -332,4 +332,124 @@ test('rejects excessively large translations without truncating accepted text', 
       translation: { text, source_lang: 'ja', target_lang: 'en' },
     }))), null);
   }
+});
+
+test('a one-post block reads the status as written, in any language, without asking for a translation', async () => {
+  const requests: string[] = [];
+  const photo = { all: [{ type: 'photo', url: 'https://pbs.twimg.com/media/a.jpg' }] };
+  const status = await fetchTweetStatus('20', { translate: false }, async (url, options) => {
+    requests.push(String(url));
+    assert.equal(options?.redirect, 'error');
+    assert.ok(options?.signal instanceof AbortSignal);
+    return new Response(JSON.stringify(payload({ translation: undefined, media: photo })));
+  });
+  assert.deepEqual(requests, ['https://api.fxtwitter.com/2/status/20'], 'only the status ID is sent');
+  assert.equal(status.translation, null);
+  assert.equal(status.post?.text, 'Original Japanese text');
+  assert.equal(status.post?.language, null, 'words as written carry no Translated from label');
+  assert.deepEqual(status.post?.media, [{ type: 'photo', url: 'https://pbs.twimg.com/media/a.jpg' }]);
+  for (const lang of ['und', null, undefined]) {
+    assert.equal((await fetchTweetStatus('20', { translate: false }, jsonFetch(payload({ lang })))).post?.text,
+      'Original Japanese text', `language ${String(lang)} is still shown as written`);
+  }
+  for (const extra of [{ poll: { choices: [] } }, { media: { broadcast: {} } }, { media: { external: {} } }]) {
+    for (const translate of [false, true]) {
+      assert.deepEqual(await fetchTweetStatus('20', { translate }, jsonFetch(payload(extra))), { post: null, translation: null },
+        'polls, broadcasts and external media keep the native card');
+    }
+  }
+  assert.deepEqual(await fetchTweetStatus('../20', { translate: false }, async () => assert.fail('must not fetch')), { post: null, translation: null });
+});
+
+test('with translation requested, English posts keep their words and other languages show the translation', async () => {
+  const english = await fetchTweetStatus('20', { translate: true }, async url => {
+    assert.equal(String(url), 'https://api.fxtwitter.com/2/status/20?lang=en');
+    return new Response(JSON.stringify(payload({ lang: 'en', text: 'Plain English.', translation: undefined })));
+  });
+  assert.equal(english.translation, null, 'an English post is no translation');
+  assert.equal(english.post?.text, 'Plain English.', 'an English post still has a block');
+  assert.equal(english.post?.language, null);
+  const foreign = await fetchTweetStatus('20', { translate: true }, jsonFetch(payload()));
+  assert.equal(foreign.post?.text, 'An English announcement.');
+  assert.equal(foreign.post?.language, 'Japanese');
+  assert.equal(foreign.translation, foreign.post);
+  const untranslated = await fetchTweetStatus('20', { translate: true }, jsonFetch(payload({ translation: null })));
+  assert.equal(untranslated.translation, null);
+  assert.equal(untranslated.post?.text, 'Original Japanese text', 'a post FxTwitter did not translate is shown as written');
+  assert.equal(untranslated.post?.language, null);
+});
+
+test('the shared status lookup sends one request per status and mode for five minutes, 30 s after a failure', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const requests: string[] = [];
+  let failing = false;
+  const lookup = createTweetLookup(async url => {
+    requests.push(String(url));
+    return failing ? new Response('{}', { status: 503 }) : new Response(JSON.stringify(payload()));
+  });
+  const [first, second] = await Promise.all([lookup('20', { translate: true }), lookup('20', { translate: true })]);
+  assert.deepEqual(requests, ['https://api.fxtwitter.com/2/status/20?lang=en'], 'concurrent callers share one request');
+  assert.equal(first.translation?.text, 'An English announcement.');
+  first.post!.text = 'changed by a caller';
+  assert.equal(second.post?.text, 'An English announcement.');
+  assert.equal((await lookup('20', { translate: true })).post?.text, 'An English announcement.', 'each caller gets its own copy');
+  assert.equal((await lookup('20', { translate: false })).post?.text, 'Original Japanese text');
+  assert.deepEqual(requests, ['https://api.fxtwitter.com/2/status/20?lang=en', 'https://api.fxtwitter.com/2/status/20']);
+  t.mock.timers.tick(5 * 60_000 - 1);
+  await lookup('20', { translate: true });
+  assert.equal(requests.length, 2, 'a result is kept for five minutes');
+  t.mock.timers.tick(1);
+  await lookup('20', { translate: true });
+  assert.equal(requests.length, 3);
+  failing = true;
+  assert.deepEqual(await lookup('21', { translate: true }), { post: null, translation: null });
+  t.mock.timers.tick(29_999);
+  await lookup('21', { translate: true });
+  assert.equal(requests.length, 4, 'a failure is kept for 30 s');
+  t.mock.timers.tick(1);
+  await lookup('21', { translate: true });
+  assert.equal(requests.length, 5);
+});
+
+test('the status lookup refuses a ninth concurrent request and does not keep very long posts', async () => {
+  const gates: (() => void)[] = [];
+  let requests = 0;
+  const lookup = createTweetLookup(async () => {
+    requests++;
+    await new Promise<void>(resolve => gates.push(resolve));
+    return new Response(JSON.stringify(payload()));
+  });
+  const waiting = Array.from({ length: 8 }, (_, index) => lookup(String(100 + index), { translate: true }));
+  assert.deepEqual(await lookup('200', { translate: true }), { post: null, translation: null });
+  assert.equal(requests, 8, 'at most eight lookups are in flight');
+  gates.forEach(open => open());
+  assert((await Promise.all(waiting)).every(status => status.post?.text === 'An English announcement.'));
+  let longRequests = 0;
+  const long = createTweetLookup(async () => {
+    longRequests++;
+    return new Response(JSON.stringify(payload({ translation: { text: 'a'.repeat(50_001), source_lang: 'ja', target_lang: 'en' } })));
+  });
+  assert.equal((await long('20', { translate: true })).post?.text.length, 50_001, 'a long post is still returned');
+  await long('20', { translate: true });
+  assert.equal(longRequests, 2, 'a status above 50,000 characters is not cached');
+});
+
+test('the status lookup reads at most 1 MiB of a response and keeps at most 100 statuses', async () => {
+  const sized = (bytes: number) => {
+    const base = JSON.stringify({ ...payload(), padding: '' });
+    return async () => new Response(JSON.stringify({ ...payload(), padding: 'x'.repeat(bytes - base.length) }));
+  };
+  assert.equal((await fetchTweetStatus('20', { translate: true }, sized(1024 * 1024))).post?.text, 'An English announcement.',
+    'a 1 MiB body is read');
+  assert.deepEqual(await fetchTweetStatus('20', { translate: true }, sized(1024 * 1024 + 1)), { post: null, translation: null },
+    'one byte more keeps the native card');
+  const requested: string[] = [];
+  const lookup = createTweetLookup(async url => { requested.push(String(url)); return new Response(JSON.stringify(payload())); });
+  for (let id = 1; id <= 101; id++) await lookup(String(id), { translate: true });
+  assert.equal(requested.length, 101);
+  await lookup('101', { translate: true });
+  await lookup('2', { translate: true });
+  assert.equal(requested.length, 101, 'the newest 100 statuses stay cached');
+  await lookup('1', { translate: true });
+  assert.equal(requested.length, 102, 'the oldest status was dropped to keep 100');
 });
