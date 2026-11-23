@@ -1,4 +1,5 @@
-import { Events, ComponentType, type APIMessageTopLevelComponent, type Client, type Message } from 'discord.js';
+import { ComponentType, type APIMessageTopLevelComponent, type Client, type Message } from 'discord.js';
+import { watchMessageMedia, type MediaMessage } from './MediaWatch';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { parseEromeUrl } from './Erome';
 import type { MediaAsset } from './MediaAssetStore';
@@ -55,7 +56,6 @@ export function eromeMediaComponents(media: EromeMedia, content: string,
     ...controls];
 }
 
-type MediaMessage = { id?: unknown; channel_id?: unknown; author?: { id?: unknown }; components?: unknown };
 // Discord can round a displayed dimension by one pixel (for example, 480×852 to 479×852).
 function matchesDimension(actual: unknown, expected: number): boolean {
   return typeof actual === 'number' && Number.isSafeInteger(actual) && actual >= 2 && Math.abs(actual - expected) <= 1;
@@ -76,38 +76,5 @@ function matchesMedia(value: MediaMessage, media: EromeMedia): boolean {
 
 /** Subscribe before publishing, using the bot's existing connection; only the returned message ID can pass. */
 export function watchEromeMedia(client: Client, channelId: string, media: EromeMedia) {
-  const ready = new Set<string>();
-  let closed = false;
-  let target: string | undefined, resolve: ((value: boolean) => void) | undefined;
-  const listener = (packet: { t?: string; d?: MediaMessage }) => {
-    const value = packet.d;
-    if (!['MESSAGE_CREATE', 'MESSAGE_UPDATE'].includes(packet.t ?? '') || !value ||
-      value.channel_id !== channelId || typeof value.id !== 'string' ||
-      value.author?.id && value.author.id !== client.user?.id || !matchesMedia(value, media)) return;
-    ready.add(value.id);
-    if (ready.size > 16) ready.delete(ready.values().next().value!);
-    if (target === value.id) resolve?.(true);
-  };
-  client.on(Events.Raw, listener);
-  const identity = (message: Message) => message.channelId === channelId && message.author.id === client.user?.id;
-  const inspect = (message: Message) => !closed && message.id === target && identity(message) &&
-    matchesMedia({ components: message.components.map(component => component.toJSON()) }, media);
-  return {
-    async verify(message: Message): Promise<boolean> {
-      if (closed || !identity(message)) return false;
-      target = message.id;
-      if (ready.has(target) || inspect(message)) return true;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const observed = await new Promise<boolean>(done => {
-          resolve = done; timer = setTimeout(() => done(false), 6000);
-          if (ready.has(message.id)) done(true);
-        });
-        if (closed) return false;
-        if (observed) return true;
-        try { return inspect(await message.fetch(true)); } catch { return false; }
-      } finally { clearTimeout(timer); resolve = undefined; }
-    },
-    close() { closed = true; client.off(Events.Raw, listener); resolve?.(false); resolve = undefined; ready.clear(); },
-  };
+  return watchMessageMedia(client, channelId, value => matchesMedia(value, media));
 }

@@ -1,17 +1,25 @@
 import { parseSocialUrl } from './SocialProviders';
 import { readBoundedJson } from './BoundedJson';
 
+/** One validated photo, video or GIF address with the dimensions the provider reported. */
+export interface TweetMedia { type: 'photo' | 'video' | 'gif'; url: string; width?: number; height?: number }
+
 export interface TweetTranslation {
   text: string;
   /** Empty posts can carry translated quotes and media without having a source language. */
   language: string | null;
   url?: string;
   quote?: TweetTranslation;
-  author: { name: string; url: string; icon_url?: string };
+  author: { name: string; url: string; icon_url?: string; handle?: string };
   photos: string[];
+  /** Every photo, video and GIF in source order; absent from hand-built values. */
+  media?: TweetMedia[];
   hasMedia: boolean;
   hasVideo: boolean;
 }
+
+const dimension = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 16_384 ? value : undefined;
 
 const languageNames = new Intl.DisplayNames(['en'], { type: 'language' });
 const record = (value: unknown): Record<string, unknown> =>
@@ -110,6 +118,8 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTrans
   const photos = [...new Set(media.filter((item) => item.type === 'photo')
     .map((item) => httpsUrl(item.url)!))].slice(0, 4);
   const icon = httpsUrl(author.avatar_url);
+  const handle = typeof author.screen_name === 'string' && /^[A-Za-z0-9_]{1,15}$/.test(author.screen_name)
+    ? author.screen_name : undefined;
   return {
     text, url,
     language: !empty && language ? languageNames.of(language) ?? language : null,
@@ -117,8 +127,14 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0): TweetTrans
       name: author.name.trim().slice(0, 256),
       url: authorUrl,
       ...(icon ? { icon_url: icon } : {}),
+      ...(handle ? { handle } : {}),
     },
     photos,
+    media: media.slice(0, 10).map((item) => {
+      const width = dimension(item.width), height = dimension(item.height);
+      return { type: item.type as TweetMedia['type'], url: httpsUrl(item.url)!,
+        ...(width && height ? { width, height } : {}) };
+    }),
     hasMedia: media.length > 0,
     hasVideo: media.some((item) => item.type === 'video' || item.type === 'gif'),
     ...(quote ? { quote } : {}),

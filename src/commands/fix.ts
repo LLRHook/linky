@@ -28,6 +28,8 @@ import { hasMobileShareLinks, type MobileShareLinkNormalizer } from '../services
 import { addInstagramCaptions } from '../services/InstagramPresentation';
 import type { InstagramTranslation } from '../services/InstagramTranslation';
 import { translateRepost } from '../services/TweetPresentation';
+import { tweetPanelComponents, tweetPanelReady } from '../services/TweetPanel';
+import { watchMessageMedia } from '../services/MediaWatch';
 import type { TweetTranslation } from '../services/TweetTranslation';
 import { instagramShortcodes, repostExpectations } from '../services/RepostDelivery';
 import { messageHasUploadedMedia, uploadedMediaComponents } from '../services/UploadedMedia';
@@ -320,6 +322,21 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       return;
     }
     const nativeExpected = expected.filter(item => !item.explicitEmbeds);
+    // A lone translated video post is one block; a native card beside captions would show the post twice.
+    const tweetPanel = presentation.panel;
+    const tweetBlock = tweetPanel && links.length === 1 && !erome && !presentation.embeds?.length && !community.length &&
+      !articles.length && !presentation.translationFiles?.length ? tweetPanelComponents(tweetPanel.tweet, '') : null;
+    if (tweetBlock) {
+      context.trace?.setPath('explicit');
+      const watcher = watchMessageMedia(interaction.client, interaction.channelId,
+        value => tweetPanelReady(value, tweetPanel!.media), { timeoutMs: 10_000 });
+      try {
+        await publishManualMediaBlock({ interaction, attempt, block: tweetBlock, files: [], buttonRows,
+          verifyMedia: message => watcher.verify(message, () => interaction.fetchReply()),
+          preferencesCurrent, sourceCurrent, expected: [], observePreview });
+      } finally { watcher.close(); }
+      return;
+    }
     const inlineVideo = !erome && !presentation.embeds?.length && !community.length && !presentation.translationFiles?.length
       ? articleVideoComponents(articles, rendered) : null;
     const inlineErome = erome && !presentation.embeds?.length && !community.length && !articles.length &&
