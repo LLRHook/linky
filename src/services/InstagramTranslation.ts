@@ -1,5 +1,8 @@
 import { INSTAGRAM_PROVIDER } from './SocialProviders';
 
+/** One item of the post on the provider's signed offload route, with the dimensions it reported. */
+export interface InstagramMedia { type: 'photo' | 'video'; url: string; width?: number; height?: number }
+
 export interface InstagramTranslation {
   sourceUrl: string;
   shortcode: string;
@@ -9,6 +12,8 @@ export interface InstagramTranslation {
   mediaOnlyUrl: string;
   /** Provider hints only (`GraphImage` or `GraphVideo` per listed item); they do not establish working media. */
   mediaTypes: string[];
+  /** Every item in post order; absent when any item lacks a provider offload address for this post. */
+  media?: InstagramMedia[];
 }
 
 type Translate = (text: string) => Promise<{ text: string; languages: string[] } | null>;
@@ -27,6 +32,19 @@ export function parseInstagramUrl(value: string): { sourceUrl: string; shortcode
     const post = /^\/(p|reel|reels|tv)\/([A-Za-z0-9_-]{1,64})\/?$/.exec(url.pathname);
     return post ? { sourceUrl: `https://www.instagram.com/${post[1]}/${post[2]}/`, shortcode: post[2] } : null;
   } catch { return null; }
+}
+
+const dimension = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 16_384 ? value : undefined;
+
+/** The provider's own HTTPS offload address for an item of this post, without credentials or a port. */
+function offloadUrl(value: unknown, shortcode: string): string | undefined {
+  if (typeof value !== 'string' || value.length > 2048) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && (INSTAGRAM_PROVIDER.hosts as readonly string[]).includes(url.hostname) &&
+      !url.port && !url.username && !url.password && url.pathname.startsWith(`/offload/${shortcode}/`) ? url.href : undefined;
+  } catch { return undefined; }
 }
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
@@ -110,11 +128,17 @@ export function createInstagramLookup(translate: Translate, fetchJson: typeof fe
           !Array.isArray(data.attachment) || !data.attachment.length || data.attachment.length > 20) return null;
       const caption = captionText(data.content).trim();
       if (!caption || Buffer.byteLength(caption) > MAX_TEXT_BYTES) return null;
-      const mediaTypes: string[] = [];
-      for (const media of data.attachment as unknown[]) {
-        const type = media && typeof media === 'object' ? (media as { mediaType?: unknown }).mediaType : undefined;
+      const mediaTypes: string[] = [], media: InstagramMedia[] = [];
+      let addressed = true;
+      for (const item of data.attachment as unknown[]) {
+        const fields = (item && typeof item === 'object' ? item : {}) as { mediaType?: unknown; url?: unknown; width?: unknown; height?: unknown };
+        const type = fields.mediaType;
         if (typeof type !== 'string' || !/^(?:image|video)\/[a-z0-9.+-]{1,40}$/i.test(type)) return null;
-        mediaTypes.push(/^video\//i.test(type) ? 'GraphVideo' : 'GraphImage');
+        const video = /^video\//i.test(type);
+        mediaTypes.push(video ? 'GraphVideo' : 'GraphImage');
+        const url = offloadUrl(fields.url, shortcode), width = dimension(fields.width), height = dimension(fields.height);
+        if (url) media.push({ type: video ? 'video' : 'photo', url, ...(width && height ? { width, height } : {}) });
+        else addressed = false;
       }
       // Send the full caption, including English introductions and later non-English paragraphs.
       const translated = await translate(caption);
@@ -125,7 +149,7 @@ export function createInstagramLookup(translate: Translate, fetchJson: typeof fe
         .filter(language => !['en', 'und', 'zxx', 'mul'].includes(language.split('-')[0]));
       if (!languages.length || languages.length > 8) return null;
       return { shortcode, username, text: translated.text.trim(), languages,
-        mediaOnlyUrl: `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${shortcode}/`, mediaTypes };
+        mediaOnlyUrl: `${INSTAGRAM_PROVIDER.captionFreeOrigin}/p/${shortcode}/`, mediaTypes, ...(addressed ? { media } : {}) };
     } catch { return null; }
   }
 
@@ -157,6 +181,7 @@ export function createInstagramLookup(translate: Translate, fetchJson: typeof fe
         })]);
       } finally { clearTimeout(timer); }
     }
-    return result ? { ...result, sourceUrl: parsed.sourceUrl, languages: [...result.languages], mediaTypes: [...result.mediaTypes] } : null;
+    return result ? { ...result, sourceUrl: parsed.sourceUrl, languages: [...result.languages], mediaTypes: [...result.mediaTypes],
+      ...(result.media ? { media: result.media.map(item => ({ ...item })) } : {}) } : null;
   };
 }

@@ -11,7 +11,7 @@ import type { Logger } from 'pino';
 import type { APIEmbed } from 'discord.js';
 import type { TweetTranslation } from './TweetTranslation';
 import { parseInstagramUrl, type InstagramTranslation } from './InstagramTranslation';
-import { addInstagramCaptions } from './InstagramPresentation';
+import { addInstagramCaptions, instagramPanelComponents, type InstagramPanel } from './InstagramPresentation';
 import type { ServerPreferences } from './ServerSettings';
 import type { StatsPublication } from './YouTubeStats';
 import { findYouTubeLinks, formatYouTubeStatistics, type YouTubeStatistics, type YouTubeDisplay } from './YouTube';
@@ -23,7 +23,7 @@ import { evaluateScope } from './ServerScope';
 import type { RepostRecord, RepostRefreshResult } from './RepostRegistry';
 import { verifyPublishedPreviews, nextProviderContent, waitForPreviews, type PreviewResult, type ExpectedPreview } from './PreviewRecovery';
 import { translateRepost } from './TweetPresentation';
-import { panelLead, tweetPanelComponents, tweetPanelReady } from './TweetPanel';
+import { panelLead, tweetPanelComponents, panelMediaReady } from './TweetPanel';
 import { watchMessageMedia } from './MediaWatch';
 import { findReplyContext } from './ReplyContext';
 import { parseEromeUrl } from './Erome';
@@ -55,7 +55,8 @@ export { formatLinkRepost } from './RepostPresentation';
 export { bypassLinky } from './RepostEligibility';
 
 const MAX_CONTENT_LENGTH = 2_000;
-const INSTAGRAM_PREVIEW_NOTICE = '\n-# Instagram preview could not be verified; the original post is still here.';
+const INSTAGRAM_UNVERIFIED = 'Instagram preview could not be verified; the original post is still here.';
+const INSTAGRAM_PREVIEW_NOTICE = `\n-# ${INSTAGRAM_UNVERIFIED}`;
 const RECENT_MESSAGE_LIMIT = 1_000;
 
 export interface LinkRepostOptions {
@@ -309,7 +310,7 @@ export function createLinkRepostHandler(
         return;
       }
       const translated: NonNullable<typeof tweetPresentation> & {
-        instagramSources?: string[]; instagramVideos?: string[]; instagramCaptionSources?: string[];
+        instagramSources?: string[]; instagramVideos?: string[]; instagramCaptionSources?: string[]; instagramPanel?: InstagramPanel;
       } =
         activePlatforms.includes('instagram') &&
           !message.flags.has(MessageFlags.SuppressEmbeds)
@@ -384,15 +385,17 @@ export function createLinkRepostHandler(
         !translated.embeds?.length && !community.length && !articles.length && !youtubeCards.length && onlyEromeLinks(inputContent) &&
         !message.flags.has(MessageFlags.SuppressEmbeds) ? uploadedMediaComponents(erome.file.name, content) : null;
       const inlineBlock = inlineVideo ?? inlineErome;
-      // A lone translated video post is one block; a native card beside captions would show the post twice.
-      const tweetPanel = translated.panel;
-      const inlineTweet = tweetPanel && !inlineBlock && !originalMedia && !erome && !attachments.length &&
+      // A lone translated post with its media is one block; a native card beside captions would show the post twice.
+      const tweetPanel = translated.panel, instagramPanel = translated.instagramPanel;
+      const panelMedia = tweetPanel?.media ?? instagramPanel?.media ?? [];
+      const panelLeadLine = formatLinkRepost(panelLead(inputContent), message.author.id, replyContext).trimEnd();
+      let inlinePost = panelMedia.length && !inlineBlock && !originalMedia && !erome && !attachments.length &&
         !translationFiles.length && !translated.embeds?.length && !community.length && !articles.length && !youtubeCards.length &&
         !message.flags.has(MessageFlags.SuppressEmbeds)
-        ? tweetPanelComponents(tweetPanel.tweet, formatLinkRepost(panelLead(inputContent), message.author.id, replyContext).trimEnd())
+        ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, panelLeadLine) : instagramPanelComponents(instagramPanel!, panelLeadLine)
         : null;
       // The block carries its own media; no native card is requested.
-      if (inlineTweet) expected = [];
+      if (inlinePost) expected = [];
       await progress.stop();
       if (!enabled() || sourceVersion(message) !== version) return refresh ? 'retry' : undefined;
       if (delivery.context.signal?.aborted) {
@@ -403,7 +406,7 @@ export function createLinkRepostHandler(
       const nativeExpected = expected.filter(item => !item.explicitEmbeds);
       previewWatch = nativeExpected.length ? armPreview?.(channelId, nativeExpected, delivery.context) : undefined;
       mediaWatcher = originalMedia ? watchEromeMedia(message.client, channelId, originalMedia)
-        : inlineTweet ? watchMessageMedia(message.client, channelId, value => tweetPanelReady(value, tweetPanel!.media), { timeoutMs: 10_000 })
+        : inlinePost ? watchMessageMedia(message.client, channelId, value => panelMediaReady(value, panelMedia), { timeoutMs: 10_000 })
           : undefined;
       const preparedMedia = originalMedia;
       const publicationBody = {
@@ -414,14 +417,14 @@ export function createLinkRepostHandler(
         } : inlineBlock ? {
           flags: MessageFlags.IsComponentsV2 as const, files,
           components: [...inlineBlock, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
-        } : inlineTweet ? {
+        } : inlinePost ? {
           flags: MessageFlags.IsComponentsV2 as const,
-          components: [...inlineTweet, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
+          components: [...inlinePost, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
         } : { content, ...(embeds ? { embeds } : {}), files,
           components: repostControls(inputContent, { remove: false }) }),
         allowedMentions,
         ...(silentFlag ? {
-          flags: (originalMedia || inlineBlock || inlineTweet ? MessageFlags.IsComponentsV2 : 0) | silentFlag,
+          flags: (originalMedia || inlineBlock || inlinePost ? MessageFlags.IsComponentsV2 : 0) | silentFlag,
         } : {}),
         ...(message.flags.has(MessageFlags.SuppressEmbeds) ? { flags: MessageFlags.SuppressEmbeds as const } : {}),
       };
@@ -429,7 +432,7 @@ export function createLinkRepostHandler(
       // A tagged replacement uses a fresh send; its quiet progress message has a separate nonce.
       const reuseProgress = progressMessage && !allowedMentions.users.length;
       const send = () => reuseProgress
-        ? progressMessage!.edit({ ...publicationBody, ...(preparedMedia || inlineBlock || inlineTweet ? { content: null, embeds: [], attachments: [] } : {}) })
+        ? progressMessage!.edit({ ...publicationBody, ...(preparedMedia || inlineBlock || inlinePost ? { content: null, embeds: [], attachments: [] } : {}) })
         : channel.send({ ...publicationBody, nonce, enforceNonce: true,
           ...(reply ? { reply: { messageReference: message.id, failIfNotExists: true } } : {}) });
       const publishStage = delivery.context.trace?.startStage('publish');
@@ -474,23 +477,23 @@ export function createLinkRepostHandler(
       }
       // A card's uploaded video is listed as a message attachment; images the card displays are not.
       // A single-block video must appear inside its block.
-      if (inlineTweet ? replacement.attachments.size > 0 : inlineVideo ? !messageHasArticleVideo(replacement.components, articles)
+      if (inlinePost ? replacement.attachments.size > 0 : inlineVideo ? !messageHasArticleVideo(replacement.components, articles)
         : inlineErome ? !messageHasUploadedMedia(replacement.components, erome!.file.name)
         : replacement.attachments.size !== files.length - articleUploads.filter(file => !isArticleVideo(file.name)).length) {
         log.warn(resultContext, 'Keeping original: repost did not contain every attachment');
         await removeReplacement();
         return;
       }
-      const mediaPreviewStage = erome || originalMedia || inlineTweet ? delivery.context.trace?.startStage('preview') : undefined;
+      const mediaPreviewStage = erome || originalMedia || inlinePost ? delivery.context.trace?.startStage('preview') : undefined;
       const eromeVerified = originalMedia ? await mediaWatcher!.verify(replacement)
         : erome ? await verifyErome(replacement, erome.file) : false;
-      const tweetVerified = inlineTweet ? await mediaWatcher!.verify(replacement) : false;
-      mediaPreviewStage?.finish(eromeVerified || tweetVerified ? 'ok' : 'unavailable');
+      const postVerified = inlinePost ? await mediaWatcher!.verify(replacement) : false;
+      mediaPreviewStage?.finish(eromeVerified || postVerified ? 'ok' : 'unavailable');
       const verify = async (expected: ExpectedPreview[]): Promise<PreviewResult> => {
         if (delivery.context.signal?.aborted) return { ok: false, missing: [...expected], videoMetadata: false };
         // The block was checked above; it carries no embed for the card matcher to read.
         if (inlineVideo) return { ok: true, missing: [], videoMetadata: true };
-        if (inlineTweet) return { ok: tweetVerified, missing: [], videoMetadata: tweetVerified };
+        if (inlinePost) return { ok: postVerified, missing: [], videoMetadata: postVerified };
         if (inlineErome) return { ok: eromeVerified, missing: [], videoMetadata: Boolean(eromeVerified && erome?.kind !== 'image') };
         const stage = expected.length ? delivery.context.trace?.startStage('preview') : undefined;
         const result = await verifyPublishedPreviews(replacement, expected, {
@@ -523,17 +526,27 @@ export function createLinkRepostHandler(
         observePreview?.(expected, preview);
       }
       if (await stopExpired()) return;
-      const captionFallback = !erome && !originalMedia && !preview.ok && expected.length === 1 && preview.missing.length === 1 && preview.missing.every(item => {
-        const id = parseInstagramUrl(item.source)?.shortcode;
-        return id && instagramCaptionIds.has(id);
-      });
+      // An Instagram block whose media never loaded keeps its English caption, without the gallery.
+      const captionBlock = inlinePost && instagramPanel && !preview.ok
+        ? instagramPanelComponents(instagramPanel, panelLeadLine, { unavailable: INSTAGRAM_UNVERIFIED }) : null;
+      const captionFallback = Boolean(captionBlock) || !erome && !originalMedia && !preview.ok && expected.length === 1 &&
+        preview.missing.length === 1 && preview.missing.every(item => {
+          const id = parseInstagramUrl(item.source)?.shortcode;
+          return id && instagramCaptionIds.has(id);
+        });
       if (captionFallback) {
         // An English caption is still useful when Instagram's image is unavailable.
         // Keep the source and register reply ownership so edits/removal remain safe.
         reply = true;
-        content += INSTAGRAM_PREVIEW_NOTICE;
-        await replacement.edit({ content, embeds: [], flags: MessageFlags.SuppressEmbeds | silentFlag,
-          allowedMentions });
+        if (captionBlock) {
+          inlinePost = captionBlock;
+          await replacement.edit({ components: [...captionBlock, ...repostControls(inputContent, { remove: false }).map(row => row.toJSON())],
+            allowedMentions });
+        } else {
+          content += INSTAGRAM_PREVIEW_NOTICE;
+          await replacement.edit({ content, embeds: [], flags: MessageFlags.SuppressEmbeds | silentFlag,
+            allowedMentions });
+        }
       }
       if (!preview.ok && !captionFallback) {
         await removeReplacement();
@@ -547,7 +560,7 @@ export function createLinkRepostHandler(
         playbackChecked: false, translatedTextPosts: textStatusIds.size },
       captionFallback ? 'Translated Instagram caption delivered; kept original because preview could not be verified' :
         erome || originalMedia ? 'Erome media metadata confirmed; client playback not checked' :
-          inlineTweet ? 'Translated post block media confirmed; client playback not checked' :
+          inlinePost ? 'Translated post block media confirmed; client playback not checked' :
           expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
       if (youtubeCards.length) {
         try { publication = await publishYouTube!(replacement, youtubeCards); }
@@ -634,7 +647,7 @@ export function createLinkRepostHandler(
         components: originalMedia ? eromeMediaComponents(originalMedia, content,
           [...repostControls(inputContent), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
           : inlineBlock ? [...inlineBlock, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
-          : inlineTweet ? [...inlineTweet, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
+          : inlinePost ? [...inlinePost, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
           : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions,
       });
       if ((originalMedia || inlineErome || explicitCards.length) && reply) {

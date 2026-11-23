@@ -4,8 +4,8 @@ import { mapLinks } from './LinkTokens';
 import type { TweetMedia, TweetTranslation } from './TweetTranslation';
 
 // Discord's limit for all text displays in one Components V2 message, and for one gallery.
-const MAX_COMPONENT_TEXT = 4000;
-const MAX_GALLERY_ITEMS = 10;
+export const MAX_COMPONENT_TEXT = 4000;
+export const MAX_GALLERY_ITEMS = 10;
 const MEDIA_HOSTS: Record<TweetMedia['type'], string> = { photo: 'pbs.twimg.com', video: 'video.twimg.com', gif: 'video.twimg.com' };
 
 function parts(tweet: TweetTranslation): TweetTranslation[] {
@@ -94,8 +94,8 @@ export function tweetPanelComponents(tweet: TweetTranslation, lead: string,
   ];
 }
 
-/** Discord has fetched every gallery item: each has a proxy address and the expected kind of content. */
-export function tweetPanelReady(value: MediaMessage, media: readonly TweetMedia[]): boolean {
+/** Discord has fetched every gallery item of a post block: each has a proxy address and the expected kind of content. */
+export function panelMediaReady(value: MediaMessage, media: readonly Pick<TweetMedia, 'type' | 'url'>[]): boolean {
   const items = galleryItems(value.components);
   return media.length > 0 && media.every(expected => items.some(item => {
     const shown = item?.media;
