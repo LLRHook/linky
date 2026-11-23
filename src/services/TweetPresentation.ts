@@ -117,17 +117,19 @@ export async function translateRepost(
     const id = parseSocialUrl(url)?.statusId;
     const translation = id && translations.get(id);
     if (!translation) return rewritten;
-    if (!translation.hasMedia) textStatusIds.push(id!);
-    if (translation.hasVideo) videoStatusIds.push(id!);
+    // FxEmbed and vxTwitter render a direct quote's media for a post without its own, so one card carries both.
+    const carried = !translation.hasMedia && translation.quote?.hasMedia ? translation.quote : undefined;
+    if (!translation.hasMedia && !carried) textStatusIds.push(id!);
+    if (translation.hasVideo || carried?.hasVideo) videoStatusIds.push(id!);
     for (const quote of tweetParts(translation).slice(1)) {
-      if (quote.hasMedia && quote.url) {
+      if (quote !== carried && quote.hasMedia && quote.url) {
         mediaSources.add(quote.url);
         const quoteId = parseSocialUrl(quote.url)?.statusId;
         if (quote.hasVideo && quoteId) videoStatusIds.push(quoteId);
         galleries.add(quote.url.replace(/^https:\/\/(?:x|twitter)\.com\//, 'https://g.fixupx.com/'));
       }
     }
-    return translation.hasMedia ? rewritten.replace('https://fixupx.com/', 'https://g.fixupx.com/') : `<${rewritten}>`;
+    return translation.hasMedia || carried ? rewritten.replace('https://fixupx.com/', 'https://g.fixupx.com/') : `<${rewritten}>`;
   });
   const tweets = [...translations.values()];
   const captions = tweets.map((tweet) => translationCaption(tweet)).join('\n\n');

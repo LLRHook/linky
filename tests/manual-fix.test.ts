@@ -410,8 +410,10 @@ test('manual translation preserves textless outer photos and videos while transl
 test('manual translated videos and quoted videos require video metadata and retain captions through recovery', async () => {
   for (const quoted of [false, true]) {
     const f = command(undefined, true), preview = previewChecks(f);
-    const source = quoted ? 'https://x.com/quoted/status/21' : JAPANESE_TWEET.url!;
-    const video = { ...JAPANESE_TWEET, url: source, text: 'The translated video.', hasMedia: true, hasVideo: true };
+    // A parent without its own media shows its quoted video in its own card, so both cases check the parent.
+    const source = JAPANESE_TWEET.url!;
+    const video = { ...JAPANESE_TWEET, url: quoted ? 'https://x.com/quoted/status/21' : source,
+      text: 'The translated video.', hasMedia: true, hasVideo: true };
     const tweet = quoted ? { ...JAPANESE_TWEET, quote: video } : video;
     f.state.render = body => [{ url: source.replace('https://x.com/', body.includes('vxtwitter.com') ? 'https://vxtwitter.com/' : 'https://g.fixupx.com/'),
       title: 'A video', image: { url: 'https://media.example/thumbnail.jpg' },
@@ -427,6 +429,7 @@ test('manual translated videos and quoted videos require video metadata and reta
     if (quoted) {
       assert.match(f.response.content, /Quoted post by An author/);
       assert.match(f.response.content, /The English translation\./);
+      assert.doesNotMatch(f.response.content, /quoted\/status\/21/);
     }
     assert(f.events.filter(event => event.name === 'edit').every(event => event.payload.content.includes('The translated video.')));
   }

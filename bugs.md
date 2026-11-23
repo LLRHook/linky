@@ -726,3 +726,18 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** OGInstagram is now the only generated Instagram provider (oginstagram.com, caption-free g.oginstagram.com); Instagram7 hosts moved to RETIRED_PROVIDERS and only identify earlier previews. Caption lookup reads OGInstagram's ActivityStreams Note (id, account and attachment validated; statistics paragraph and HTML removed before translation). Legacy /tv/ links use the provider /p/ route. Limits: one Instagram provider, so a failed preview keeps the original with no alternate; no real IGTV post and no client playback were observed.
 - **Docs:** README.md, docs/provider-checks.md, docs/instagram-translation.md, docs/self-hosting.md
+
+### [BUG-1795443760] Translated quote tweets post a second gallery link and split the quoted video from its post
+- [x] **Severity:** med
+- **Area:** previews, translation
+- **File(s):** src/services/TweetPresentation.ts, tests/social-links.test.ts, tests/delivery-recovery.test.ts, README.md
+- **Observation:** On 2026-11-23 a manual /fix of https://x.com/ArcoCunnivoro/status/2124451245704261749 (English text, no media) quoting https://x.com/pokgaii/status/2124369266476790267 (Chinese text with a video) posted two links: the outer post as a suppressed fixupx.com link and a separate g.fixupx.com gallery for the quoted post, then the captions. The only card was titled with the quoted author, so the shared post itself had no preview of its own.
+- **Expected:** A translated post whose own post has no media but whose directly quoted post does is delivered with one gallery link for the shared post; its card carries the quoted media, the captions keep both texts, and preview verification requires the quoted video on that card.
+- **Req:** unknown
+- **Depends on:** unknown
+- **Repro / Notes:** api.fxtwitter.com/2/status/2124451245704261749 reports the outer post with no media and its quote with a video and a photo. Live Discordbot fetches on 2026-11-23: g.fixupx.com/ArcoCunnivoro/status/2124451245704261749 returns og:video of the quoted video under og:title 'Arco (@ArcoCunnivoro)'; vxtwitter.com for the same status returns the same quoted video. FxEmbed src/embed/status.ts falls back to status.quote.media when the post has no media and clears the gallery flag for such posts. Nested quotes beyond the direct quote and outer posts with their own media keep separate gallery links.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** A translated post without its own media now renders as one gallery link whose card carries its direct quote's photos or video (FxEmbed and vxTwitter both fall back to the quote's media; verified live for the reported post), instead of a suppressed parent link plus a separate quote gallery. Preview verification now requires that media, including video, on the parent card. Outer posts with their own media and deeper quotes keep separate galleries. Regression tests in social-links, delivery-recovery and manual-fix fail without the fix; npm run validate passed (1,444 TypeScript tests, 77 script tests with 8 environment skips, deploy safeguards, audit).
+- **Docs:** README.md

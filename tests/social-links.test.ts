@@ -1642,7 +1642,7 @@ test('repeated status IDs share one translation lookup and caption', async () =>
   assert.equal(f.sent[0].content!.split('Translated from').length - 1, 1);
 });
 
-test('a quoted video keeps both translations and embeds the quoted media only', async () => {
+test('a quoted video under a post without media plays in the shared post card with one link', async () => {
   const f = fixture(async () => ({ ...JAPANESE,
     url: 'https://x.com/u/status/1',
     quote: { ...JAPANESE, text: 'The quoted English translation.', language: 'Korean',
@@ -1650,10 +1650,32 @@ test('a quoted video keeps both translations and embeds the quoted media only', 
   }));
   await f.run();
   assert.equal(f.sent[0].embeds, undefined);
-  assert.match(f.sent[0].content!, /<https:\/\/fixupx.com\/user\/status\/1#part>/);
-  assert.match(f.sent[0].content!, /https:\/\/g.fixupx.com\/quoted\/status\/2/);
-  assert.match(f.sent[0].content!, /The quoted English translation/);
-  assert.match(f.sent[0].content!, /Translated from Korean/);
+  const content = f.sent[0].content!;
+  assert.equal(content.match(/https:\/\//g)?.length, 1, content);
+  assert.match(content, /https:\/\/g.fixupx.com\/user\/status\/1#part/);
+  assert.doesNotMatch(content, /<https:\/\/fixupx.com\/user\/status\/1#part>|quoted\/status\/2/);
+  assert.match(content, /The English translation\.\n-# Translated from Japanese\n\n\*\*Quoted post by Nintendo/);
+  assert.match(content, /The quoted English translation/);
+  assert.match(content, /Translated from Korean/);
+});
+
+test('a post with its own media and a deeper quote keep separate galleries for media its card cannot show', async () => {
+  const deeper = { ...JAPANESE, text: 'The deeper quote.', url: 'https://x.com/deeper/status/3', hasMedia: true, hasVideo: true };
+  const cases: [string, TweetTranslation, string, string][] = [
+    ['own media', { ...JAPANESE, hasMedia: true, hasVideo: true,
+      quote: { ...JAPANESE, url: 'https://x.com/quoted/status/2', hasMedia: true, hasVideo: true } },
+    'https://g.fixupx.com/user/status/1#part', 'https://g.fixupx.com/quoted/status/2'],
+    // The direct quote has no media, so the parent card has nothing to show and stays suppressed.
+    ['deeper quote', { ...JAPANESE, quote: { ...JAPANESE, url: 'https://x.com/quoted/status/2', quote: deeper } },
+      '<https://fixupx.com/user/status/1#part>', 'https://g.fixupx.com/deeper/status/3'],
+  ];
+  for (const [name, translation, parent, gallery] of cases) {
+    const f = fixture(async () => translation);
+    await f.run();
+    const content = f.sent[0].content!;
+    assert.ok(content.includes(`${parent} `) && content.includes(`\n${gallery}\n\n`), `${name}: ${content}`);
+    assert.equal(content.match(/https:\/\//g)?.length, 2, `${name}: ${content}`);
+  }
 });
 
 test('long translations span cards without exceeding Discord limits or losing text', async () => {
