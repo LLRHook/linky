@@ -7,6 +7,8 @@ export interface ServerPreferences {
   mode?: 'replace' | 'reply';
   platforms?: Partial<Record<RewritePlatform, boolean>>;
   translateTweets?: boolean;
+  /** Absent means replies are off. */
+  replies?: boolean;
   /** Additional channel restriction; absent inherits scope, empty disables every channel. */
   channelIds?: string[];
   youtubeDisplay?: 'preview' | 'counts' | 'counts-and-comment';
@@ -25,12 +27,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const RETIRED_FIELDS = ['translateInstagram', 'instagramPresentation'];
 
 function parseRecord(value: unknown, allowEnabled: boolean): ServerRecord {
-  const fields = ['mode', 'platforms', 'translateTweets', 'channelIds', 'youtubeDisplay', 'eromeChannels',
+  const fields = ['mode', 'platforms', 'translateTweets', 'replies', 'channelIds', 'youtubeDisplay', 'eromeChannels',
     ...(allowEnabled ? ['enabled', ...RETIRED_FIELDS] : [])];
   if (!isRecord(value) || Reflect.ownKeys(value).some(key => typeof key !== 'string' || !fields.includes(key))) {
     throw new Error('Unknown server preference fields.');
   }
   const result: ServerRecord = {};
+  if (Object.hasOwn(value, 'replies')) {
+    if (typeof value.replies !== 'boolean') throw new Error('Replies must be a boolean.');
+    result.replies = value.replies;
+  }
   if (Object.hasOwn(value, 'enabled')) {
     if (typeof value.enabled !== 'boolean') throw new Error('Server enablement must be a boolean.');
     result.enabled = value.enabled;
