@@ -1,5 +1,7 @@
 # Linky — End-to-End Verification & Validation Protocol
 
+Last verified: none — see `CHANGELOG.md / Verified`
+
 This document is the canonical checklist for taking Linky from "compiles" to
 "ship-ready". Run it before any release, after any large refactor, and any
 time you suspect a regression. It is **executable from a cold start** — every
@@ -19,11 +21,19 @@ See also: [`bugs.md`](./bugs.md), [`features.md`](./features.md),
 
 ## How to use this file
 
-1. Work top-to-bottom. Do not skip stages.
-2. Tick each step locally as you go.
+1. Run in this order: 0.1–0.7, the 0.8 inventory, backup and teardown, 0.10 memory,
+   Stage 1, Stage 2 rows without the stack, the 0.8 fresh build and 0.9 restore, Stage 2
+   rows with the stack, Stages 3–5. Stages 0, 1, 3, 4 and 5 run locally. A Stage 2 row may
+   instead be carried from the prior release run (nothing it tests changed) or green in CI
+   at this exact SHA (`local-gate`); no step triggers or waits on CI.
+2. A stage that cannot run here is BLOCKED with the exact reason. Two paths end GREEN ON
+   APPROVAL instead: the Discord walkthrough (Stage 3) and Stage 2 rows deferred for host
+   memory. A short dev machine never fails a run.
 3. Every failed step files a `BUG-NNN` entry in `bugs.md`.
 4. Every gap that is a missing feature, not a defect, files a `FEAT-NNN` in `features.md`.
 5. Record results in `.vv/last-run.md` (§ 6.3); only an entirely green run permits migration and a Verified entry.
+6. `(CI: <step>)` names the CI step or job a gate copies verbatim; `(local-only)` marks a gate
+   CI does not run.
 
 Time estimate: 15–25 minutes automated (Stages 0–2 and the container checks),
 plus 20–40 minutes for the manual Discord walkthrough in Stage 3 when a test
@@ -43,14 +53,15 @@ server is available.
 
 - [ ] 0.1 Record the commit under test: `git rev-parse --short HEAD`. Every result and the final Verified entry bind to it.
 - [ ] 0.2 Clean tree on `main`: `git status --short` prints nothing except untracked scratch files.
-- [ ] 0.3 Toolchain: `node --version` is 22, 24 or 26 (CI matrix); if the host runs another major, run Stages 1–2 inside `node:22`, `node:24` and `node:26` containers with the repo copied in (no host `node_modules`), which also matches CI's Linux runner; `npm --version` prints a version; `docker version --format '{{.Server.Version}}'` prints a version (needed for Stage 2.5).
+- [ ] 0.3 Toolchain: `node --version` is 22, 24 or 26 (CI matrix; `.nvmrc` pins 26); the other matrix versions are CI's `Build (Node 22|24|26)` jobs; `npm --version` prints a version; `docker version --format '{{.Server.Version}}'` prints a version (needed for Stage 2.5).
 - [ ] 0.4 Dependencies: `npm ci` exits 0.
 - [ ] 0.5 No `.env` is required for Stages 1–2; `git check-ignore -q .env && echo ignored` prints `ignored`.
 - [ ] 0.6 Production profile: Stage 2.5 runs the built image (`NODE_ENV=production`, non-root `node` user, read-only root, all capabilities dropped), not `npm run dev`.
-- [ ] 0.7 Determinism posture: unit tests use fake timers and injected fetch/clock; no test opens the network or logs in to Discord (`CONTRIBUTING.md`). Stage 2c runs the suite twice.
+- [ ] 0.7 Determinism posture: unit tests use fake timers and injected fetch/clock; no test opens the network or logs in to Discord (`CONTRIBUTING.md`).
 
 - [ ] 0.8 Fresh stack: inventory Linky containers and data only; back up any existing state to `.vv/backups/`; obtain confirmation before deleting existing volumes. Build this SHA using the production Dockerfile, start a new isolated stack with a distinct test-bot token, and record image ID plus compiled-file hashes. Never run two instances with the same token.
-- [ ] 0.9 Restore the Verification data rows through the documented Discord/API flows, then run each probe. Missing access or a failed restore blocks this run before Stage 1.
+- [ ] 0.9 Restore the Verification data rows through the documented Discord/API flows, then run each probe. Missing access or a failed restore blocks the run.
+- [ ] 0.10 Memory (after the 0.8 teardown, before Stage 1): `local-gate`'s `scripts/mem_check.py --project linky` → record the `memory:` line; `raise-limit` → tell the user the setting.
 
 ### Verification data
 
@@ -61,8 +72,8 @@ server is available.
 | D3 | Prior production JSON state snapshot | Stage 4.7 compatibility | Copy the operator's backed-up prior data directory into an isolated volume; do not alter historical JSON fields | Operator access to prior data; private backup under `.vv/` | Current image loads the copied state without errors or lost settings |
 
 > **Protocol vs CI.** CI is the continuous gate on every push. This protocol is
-> the deeper release-readiness gate at a chosen SHA: it runs CI's exact commands
-> locally, proves that newly shipped tickets have a test that demonstrates them,
+> the deeper release-readiness gate at a chosen SHA: it accepts CI's result at that
+> exact SHA for the layers CI runs (or runs CI's exact commands locally), proves that newly shipped tickets have a test that demonstrates them,
 > walks the user-facing flows, and re-ticks the hard constraints before `/release`.
 
 **Command fidelity.** Stages 1–2 run the **exact** invocations from
@@ -70,31 +81,35 @@ server is available.
 
 ## Stage 1 — Static / spec compliance review
 
-- [ ] 1.0 Tracker integrity: `python .cycle/trackers.py lint` reports 0 errors. A `UNION`, `NODRIVER` or `ADOPT` warning means the clone or trackers need `/cycle-init upgrade`.
-- [ ] 1.1 Strict production build (CI step "TypeScript build (strict)"): `npm run build` exits 0. `tsconfig.json` has `strict`, `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noFallthroughCasesInSwitch`.
-- [ ] 1.2 Regional worker type-check (CI step "Check regional video workers"): `npm run check:workers` exits 0.
-- [ ] 1.3 Dependency audit (CI job "Dependency audit"): `npm audit --audit-level=low` prints `found 0 vulnerabilities`.
-- [ ] 1.4 Secrets: CI job "Secret scan" runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966).
-- [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|Bluesky|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `TweetPresentation.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding.
-- [ ] 1.6 Bounded network I/O: every outbound fetch has a timeout, redirect policy and byte cap (`BoundedJson.ts`, `ArticlePreview.ts`, `MobileShareLinks.ts`, `RegionalHttp.ts`). New fetch sites must reuse those helpers.
-- [ ] 1.7 Performance anti-pattern scan of the message hot path (`src/bot.ts` message handler → `SocialLinkService`): no per-message disk read in the loop, no unbounded regex on message bodies, no await per link before detection completes. Record any finding as a `BUG` (area `perf`).
+- [ ] 1.0 Tracker integrity: `python .cycle/trackers.py lint` reports 0 errors. A `UNION`, `NODRIVER` or `ADOPT` warning means the clone or trackers need `/cycle-init upgrade` (local-only).
+- [ ] 1.1 Strict production build: `npm run build` exits 0 (CI: build). `tsconfig.json` has `strict`, `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noFallthroughCasesInSwitch`.
+- [ ] 1.2 Regional worker type-check: `npm run check:workers` exits 0 (CI: Check regional video workers).
+- [ ] 1.3 Dependency audit: `npm audit --audit-level=low` prints `found 0 vulnerabilities` (CI: Dependency audit).
+- [ ] 1.4 Secrets: CI job "Secret scan" runs Gitleaks 8.30.1 over all history with a pinned checksum. Locally, confirm no new `.env`, token or key file is tracked: `git ls-files | grep -iE '\.env$|token|secret|\.pem$' | grep -vE '^(src|tests)/.*\.(ts|mjs)$'` prints nothing (BUG-1790322966) (local-only).
+- [ ] 1.5 Provider abstraction intact: `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|Bluesky|logger" ` shows no new hard-coded provider host outside the catalogue modules. Known accepted hits: `SetupPreviewTest.ts` corpus source URLs and the `g.fixupx.com` gallery host in `TweetPresentation.ts` (catalogued in `SocialProviders.ts`). Any other hit is a finding (local-only).
+- [ ] 1.6 Bounded network I/O: every outbound fetch has a timeout, redirect policy and byte cap (`BoundedJson.ts`, `ArticlePreview.ts`, `MobileShareLinks.ts`, `RegionalHttp.ts`). New fetch sites must reuse those helpers (local-only).
+- [ ] 1.7 Performance anti-pattern scan of the message hot path (`src/bot.ts` message handler → `SocialLinkService`): no per-message disk read in the loop, no unbounded regex on message bodies, no await per link before detection completes. Record any finding as a `BUG` (area `perf`) (local-only).
 - [ ] 1.8 No lint or formatter is wired in this repo (no ESLint/Prettier config); do not invent one here.
 
 A failure in 1.0–1.3 is a hard block.
 
 ## Stage 2 — Automated builds & tests
 
-Baseline (2026-09-24, SHA d4d6e32, Node 24.15.0 on the host):
+Run `local-gate` as the run kind says (`/protocol-v-and-v` §3.0a). Each suite runs once;
+counts come from that run. Baseline (2026-09-24, SHA d4d6e32, Node 24.15.0 on the host;
+rows overwritten by each run with fresh counts):
 
-| Layer | Command | Files | Tests | Result |
-|-------|---------|-------|-------|--------|
-| TypeScript unit/integration (tsx runner) | part of `npm test` | 65 `tests/*.test.ts` | 1,190 | 1,190 pass |
-| Node ESM ops/runtime tests | part of `npm test` | 7 `tests/*.test.mjs` | 62 | 54 pass, 8 skipped on the host (need the Linux image; run in 2.5) |
-| Deployment safeguards | `bash tests/deploy.test.sh` | 1 script | 24 checks | all `PASS:` |
-| Container: modules and settings storage | CI step, see 2.5 | 1 | 1 | pass |
-| Container: delivery archive runtime | `tests/delivery-archive-runtime.test.mjs` in the image | 1 | 1 | pass |
-| Container: FFmpeg video runtime | `tests/video-runtime.test.mjs` in the image | 1 | 7 | pass |
-| Performance / benchmark | `benchmarks/erome-scheduling.mjs` (manual, Docker + FFmpeg) | 1 | exploratory, not asserted | see Stage 4 |
+| Layer | Tier | Runner | Count | Command | CI job | Needs stack | Mem (low-mem) |
+|-------|------|--------|-------|---------|--------|-------------|---------------|
+| TypeScript unit/integration | bot | tsx test runner | 1,190 | `npm test` | Test link fixing and bot startup | no | — |
+| Node ESM ops/runtime | ops | node --test | 62 (8 skipped off Linux) | `npm test` | Test link fixing and bot startup | no | — |
+| Deployment safeguards | deploy | bash | 24 checks | `bash tests/deploy.test.sh` | Test deployment safeguards | no | — |
+| Container: modules and settings storage | container | docker run | 1 | `docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --volume /app/data linky:ci node -e` | Production container | no | — |
+| Container: delivery archive runtime | container | node --test in the image | 1 | `linky:ci node --test /tmp/delivery-archive-runtime.test.mjs` | Production container | no | — |
+| Container: FFmpeg video runtime | container | node --test in the image | 7 | `linky:ci node --test /tmp/video-runtime.test.mjs` | Production container | no | — |
+| Container: fixable vulnerabilities | container | Trivy 0.74.0 | — | `$RUNNER_TEMP/trivy image --scanners vuln --timeout 5m --no-progress --ignore-unfixed --exit-code 1 linky:ci` | Production container | no | — |
+
+The exploratory benchmark (`benchmarks/erome-scheduling.mjs`) is Stage 4.8, not a Stage 2 row.
 
 Node's test runner has no list-only mode; the count is the `ℹ tests` line each
 runner prints. A changed count means tests appeared or vanished — investigate before ticking.
@@ -102,9 +117,8 @@ runner prints. A changed count means tests appeared or vanished — investigate 
 - [ ] 2.1 Test suite (CI step "Test link fixing and bot startup"): `npm test` exits 0. The tsx run prints `ℹ tests 1190` / `ℹ fail 0`; the node run prints `ℹ tests 62` / `ℹ fail 0` with 8 skipped on a non-Linux host.
 - [ ] 2.2 Deployment safeguards (CI step "Test deployment safeguards"): `bash tests/deploy.test.sh` exits 0 and every line starts with `PASS:`.
 - [ ] Recognised provider-error regression: run `npx tsx --test tests/preview-watcher.test.ts tests/preview-recovery.test.ts tests/delivery-recovery.test.ts tests/manual-fix.test.ts`. Captured sanitised cards from the attempted provider end waits early without confirmation, stale prior-provider/canonical cards and partial or unknown evidence abstain, and automatic/manual failures retain the source. Fake timers measure the early-exit path; they do not establish live Discord latency.
-- [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passes; start from the PR's Acceptance evidence section and re-run, do not copy, its claims. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in `.vv/last-run.md` (§ 6.4).
-- [ ] 2.4 **2b — Coverage of the change.** No coverage tool is wired (`c8`/`nyc` absent). Fall back to the 2a mapping and, for each changed `src/` file since the last Verified SHA, name the test file that exercises it (`git diff --stat <sha>..HEAD -- src`). Uncovered changed files block.
-- [ ] 2.5 Production container (CI job "Production container"), run from the repo root with Docker available:
+- [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passed in this run's Stage 2 (executed, `ci-green` or carried); start from the PR's Acceptance evidence section, and do not tick from its claims alone. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in `.vv/last-run.md` (§ 6.4).
+- [ ] 2.5 Production container rows (CI job "Production container"): `ci-green` when that job passed at this exact SHA. Otherwise run from the repo root with Docker available:
   ```bash
   LINKY_SOURCE_REVISION=$(git rev-parse HEAD)
   docker build --build-arg LINKY_SOURCE_REVISION="$LINKY_SOURCE_REVISION" --tag linky:ci .
@@ -124,9 +138,7 @@ runner prints. A changed count means tests appeared or vanished — investigate 
   ```bash
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 --env LINKY_VIDEO_RUNTIME_TEST=true --mount type=bind,src="$PWD/tests/video-runtime.test.mjs",dst=/tmp/video-runtime.test.mjs,readonly linky:ci node --test /tmp/video-runtime.test.mjs
   ```
-  Expected: both builds and label assertions exit 0; the image without a revision loads its production module; the module check exits 0; the archive run prints `ℹ tests 1` / `ℹ fail 0`; the video run prints `ℹ tests 7` / `ℹ fail 0`. On Git Bash set `MSYS_NO_PATHCONV=1` and use `$(pwd -W)` for `src=`. Run the pinned local Trivy recipe in Appendix F; both scans must exit 0. CI results do not establish a local pass.
-- [ ] 2.6 **2c — Flake check.** Run `npm test` a second time and diff the sorted `✔`/`✖`/`﹣` lines of both runs; any difference quarantines that test as a `BUG` (area `tests`) and the run is not green.
-- [ ] 2.7 Local matrix: repeat the exact Stage 1–2 commands in clean `node:22`, `node:24` and `node:26` checkouts when dependencies or the toolchain changed since the prior baseline. Record versions, executed/skipped counts and exits in `.vv/last-run.md`; CI results do not establish a pass.
+  Expected: both builds and label assertions exit 0; the image without a revision loads its production module; the module check exits 0; the archive run prints `ℹ tests 1` / `ℹ fail 0`; the video run prints `ℹ tests 7` / `ℹ fail 0`. On Git Bash set `MSYS_NO_PATHCONV=1` and use `$(pwd -W)` for `src=`. When run locally, also run the pinned Trivy recipe in Appendix F; both scans must exit 0.
 
 A failure in any Stage 2 step is a hard block.
 
@@ -184,7 +196,7 @@ Re-tick the non-negotiable contracts stated in the README and `docs/`:
 - [ ] 6.1 every failed step has a `BUG-NNN`
 - [ ] 6.2 every gap has a `FEAT-NNN`
 - [ ] 6.3 write the summary table to `.vv/last-run.md` (overwrite; do not append run history here)
-- [ ] 6.4 record run metadata, ticket/test mapping, coverage, flake results and data restore probes in `.vv/last-run.md`
+- [ ] 6.4 record run metadata, ticket/test mapping, evidence source per Stage 2 row and data restore probes in `.vv/last-run.md`
 - [ ] 6.5 if all green, append `Verified` entry to `CHANGELOG.md / Unreleased`
 
 Summary table template:
@@ -202,8 +214,7 @@ Summary table template:
 ```
 
 A build is **release-ready** only if all six stages tick. A failed step in
-Stages 1, 2, or 5 is a hard block, including 2a (no proving test), 2b
-(uncovered changed code) and 2c (flaky green). In Stage 4, a crit/high
+Stages 1, 2, or 5 is a hard block, including 2a (no proving test). In Stage 4, a crit/high
 performance failure and a failed load of the prior volume (4.7) also block.
 
 ## Appendix A — Inspecting persistent state
@@ -263,11 +274,11 @@ fetch and never need a key.
 ## Appendix E — Smoke checklist (sub-15-minute version)
 
 1. `npm ci && npm run build && npm run check:workers`
-2. `npm test` prints `ℹ fail 0` twice
+2. `npm test` prints `ℹ fail 0`
 3. `bash tests/deploy.test.sh` all `PASS:`
 4. `npm audit --audit-level=low` prints 0 vulnerabilities
 5. `docker build --tag linky:ci .` and the Stage 2.5 module check exit 0
-6. The local Node matrix and pinned Trivy scan pass for HEAD
+6. CI's `Production container` job is green at HEAD, or the pinned Trivy scan passes locally
 7. One X post and one TikTok share link preview in a test channel
 8. `docker inspect --format '{{.RestartCount}}' linky` is `0` after deploy
 
