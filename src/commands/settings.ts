@@ -12,6 +12,7 @@ export function effectivePreferences(config: Config, preferences: ServerPreferen
   const platforms = config.rewritePlatforms.filter(platform => preferences.platforms?.[platform] !== false &&
     (platform !== 'erome' || isEromeAvailable(config, guildId)));
   return {
+    replies: preferences.replies === true,
     mode: preferences.mode ?? 'replace',
     platforms,
     translateTweets: config.translateTweets && preferences.translateTweets !== false && platforms.includes('x'),
@@ -40,6 +41,7 @@ export const data = new SlashCommandBuilder()
   .addBooleanOption(option => option.setName('erome').setDescription('Preview Erome albums when available from the bot operator.'))
   .addStringOption(option => option.setName('erome_channels').setDescription('Choose where this server permits Erome previews.')
     .addChoices({ name: 'Age-restricted channels', value: 'age-restricted' }, { name: 'All enabled channels', value: 'all' }))
+  .addBooleanOption(option => option.setName('replies').setDescription('Show a Replies button on eligible X posts (off by default).'))
   .addBooleanOption(option => option.setName('translate_tweets').setDescription('Translate non-English tweets when enabled by the bot operator.'))
   .addStringOption(option => option.setName('youtube_display').setDescription('Choose the extra details shown with YouTube previews.')
     .addChoices({ name: 'Preview only', value: 'preview' }, { name: 'Counts only', value: 'counts' },
@@ -61,6 +63,8 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     const enabled = interaction.options.getBoolean(platform);
     if (enabled !== null && (platform !== 'erome' || eromeAvailable || enabled === false)) (patch.platforms ??= {})[platform] = enabled;
   }
+  const replies = interaction.options.getBoolean('replies');
+  if (replies != null) patch.replies = replies;
   const translateTweets = interaction.options.getBoolean('translate_tweets');
   if (translateTweets !== null) patch.translateTweets = translateTweets;
   const youtubeDisplay = interaction.options.getString('youtube_display');
@@ -97,6 +101,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
       `English tweet translation: ${effective.translateTweets ? 'On when translation is available' :
         !config.translateTweets ? 'Off (disabled by the bot operator)' :
           !effective.platforms.includes('x') ? 'Off (X link fixing is disabled)' : 'Off'}.`,
+      `Replies: ${effective.replies ? 'On (eligible X posts)' : 'Off'}.`,
       'Instagram posts show their author and media without the caption.',
       `YouTube display: ${effective.youtubeDisplay === 'preview' ? 'Preview only' :
         effective.youtubeDisplay === 'counts' ? 'Counts only' : 'Counts and top comment'}${effective.platforms.includes('youtube') ? '.' : ' (YouTube is currently off).'}`,

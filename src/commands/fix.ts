@@ -1,6 +1,7 @@
-import { ApplicationCommandType, ApplicationIntegrationType, ContextMenuCommandBuilder, InteractionContextType, MessageFlags,
+import { xRepliesButton, type ReplyCleanupTarget } from '../services/ReplyThreads';
+import { ActionRowBuilder, ApplicationCommandType, ApplicationIntegrationType, ContextMenuCommandBuilder, InteractionContextType, MessageFlags,
   PermissionFlagsBits, SlashCommandBuilder,
-  type ButtonInteraction, type ChatInputCommandInteraction, type InteractionEditReplyOptions, type Message,
+  type ButtonBuilder, type ButtonInteraction, type ChatInputCommandInteraction, type InteractionEditReplyOptions, type Message,
   type MessageContextMenuCommandInteraction } from 'discord.js';
 import type { Config } from '../config';
 import { mapLinks, visibleLink } from '../services/LinkTokens';
@@ -309,8 +310,9 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
       tweetPresentation = null;
     }
     // A lone X post is one block in any language; the translation setting decides only which words it shows.
+    let repliesTweet: TweetTranslation | undefined;
     const tweetPanel = lookupTweet && links.length === 1 && parseSocialUrl(links[0].source)?.platform === 'x'
-      ? await tweetPostPanel(links[0].source, activeConfig.rewritePlatforms, lookupTweet, Boolean(tweetTranslator)) : undefined;
+      ? await tweetPostPanel(links[0].source, activeConfig.rewritePlatforms, async (id, options) => { const tweet = await lookupTweet(id, options); repliesTweet = tweet ?? undefined; return tweet; }, Boolean(tweetTranslator)) : undefined;
     const blueskyPanel = !tweetPanel && lookupBluesky && links.length === 1 && parseSocialUrl(links[0].source)?.platform === 'bluesky'
       ? await blueskyPostPanel(links[0].source, activeConfig.rewritePlatforms, lookupBluesky) : undefined;
     const presentation = await addInstagramMedia(original, tweetPresentation ?? { content: rendered }, lookupInstagram, 1800);
@@ -346,6 +348,15 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     const postBlock = panelMedia.length && links.length === 1 && !erome && !otherCards && !community.length && !articles.length
       ? tweetPanel ? tweetPanelComponents(tweetPanel.tweet, '')
         : blueskyPanel ? blueskyPanelComponents(blueskyPanel, '') : instagramPanelComponents(instagramPanel!, '') : null;
+    const repliesButton = () => preferences.replies === true && !privateResponse &&
+      interaction.authorizingIntegrationOwners?.[ApplicationIntegrationType.GuildInstall] === interaction.guildId && interaction.guild?.members.me
+      ? xRepliesButton(repliesTweet, interaction.channel?.type, true) : undefined;
+    const confirmedButtonRows = () => {
+      const replyButton = repliesButton();
+      const controls = [...buttons, ...(replyButton ? [replyButton] : [])];
+      return [0, 5].filter(start => controls.length > start)
+        .map(start => new ActionRowBuilder<ButtonBuilder>().addComponents(controls.slice(start, start + 5)));
+    };
     let blockUnconfirmed = false;
     if (postBlock) {
       context.trace?.setPath('explicit');
@@ -356,7 +367,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
         // An unconfirmed X or Bluesky block is replaced by the card below; Instagram keeps the block's notice.
         blockUnconfirmed = await publishManualMediaBlock({ interaction, attempt, block: postBlock, files: [], buttonRows,
           verifyMedia: message => watcher.verify(message, () => interaction.fetchReply()),
-          preferencesCurrent, sourceCurrent, expected: [], observePreview, fallback: Boolean(tweetPanel || blueskyPanel) }) === 'unconfirmed';
+          preferencesCurrent, sourceCurrent, confirmedButtonRows, expected: [], observePreview, fallback: Boolean(tweetPanel || blueskyPanel) }) === 'unconfirmed';
       } finally { watcher.close(); }
       if (!blockUnconfirmed) return;
       context.trace?.setPath('native');
@@ -453,7 +464,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     const details = await attempt.controls(message.id);
     if (await stopChangedPreferences()) return;
     if (await stopChangedSource()) return;
-    if (details.length) await respond({ components: [...buttonRows(), ...details] });
+    if (details.length || preview.ok && repliesButton()) await respond({ components: [...(preview.ok ? confirmedButtonRows() : buttonRows()), ...details] });
     if (await stopChangedPreferences()) return;
     if (await stopChangedSource()) return;
     attempt.finish(context.signal?.aborted ? 'timeout' : preview.ok ? 'confirmed' : 'metadata-unconfirmed');
@@ -469,7 +480,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
   }
 }
 
-export async function removeManual(interaction: ButtonInteraction, releaseEromeMedia?: (messageId: string) => Promise<void>): Promise<boolean> {
+export async function removeManual(interaction: ButtonInteraction, releaseEromeMedia?: (messageId: string) => Promise<void>, cleanupReplies?: (target: ReplyCleanupTarget) => Promise<void>, reserveReplies?: (target: ReplyCleanupTarget) => Promise<void>, releaseReplies?: (threadId: string) => Promise<void>): Promise<boolean> {
   if (interaction.customId !== 'linky:remove-manual') return false;
   const message = interaction.message;
   // Discord supplies this metadata; a custom ID or display name is never authority.
@@ -481,7 +492,15 @@ export async function removeManual(interaction: ButtonInteraction, releaseEromeM
     return true;
   }
   await interaction.deferUpdate();
-  await interaction.deleteReply();
-  await releaseEromeMedia?.(message.id);
+  try {
+    if (interaction.guildId) await reserveReplies?.({ guildId: interaction.guildId, channelId: interaction.channelId, threadId: message.id });
+    try { await interaction.deleteReply(); }
+    finally { if (interaction.guildId) await releaseReplies?.(message.id); }
+    if (interaction.guildId) await cleanupReplies?.({ guildId: interaction.guildId, channelId: interaction.channelId, threadId: message.id });
+    await releaseEromeMedia?.(message.id);
+  } catch {
+    await interaction.followUp({ content: 'Could not remove this preview. Try again.',
+      flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+  }
   return true;
 }

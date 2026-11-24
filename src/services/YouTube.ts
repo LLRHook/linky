@@ -1,3 +1,4 @@
+import { sanitizeReplyText as commentText } from './ReplyText';
 import { readBoundedJson } from './BoundedJson';
 import { mapLinks, visibleLink } from './LinkTokens';
 import type { APIEmbed, APIEmbedField } from 'discord.js';
@@ -187,13 +188,6 @@ export function createYouTubeLookup(apiKey: string, options: LookupOptions = {})
   };
 }
 
-function commentText(value: string, limit: number): string {
-  const clean = value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f]/g, ' ')
-    .replace(/(?:https?:\/\/|www\.|\bdiscord\.gg\/|\bdiscord(?:app)?\.com\/invite\/)\S+/gi, '[link]')
-    .replace(/\s+/g, ' ').trim();
-  const shortened = clean.length > limit ? clean.slice(0, limit - 1).trimEnd() + '…' : clean;
-  return shortened.replace(/[\\`*_{}\[\]()<>~|#+\-]/g, '\\$&').replace(/@/g, '@\u200b');
-}
 
 export function formatYouTubeStatistics(stats: YouTubeStatistics, videoUrl: string, display: YouTubeDisplay = 'counts-and-comment'): APIEmbed | null {
   if (display === 'preview') return null;

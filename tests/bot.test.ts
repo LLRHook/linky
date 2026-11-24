@@ -1,3 +1,5 @@
+import { ReplyThreads } from '../src/services/ReplyThreads';
+import { ReplyCleanupJournal } from '../src/services/ReplyCleanupJournal';
 import assert from 'node:assert/strict';
 import { after, afterEach, test, type TestContext } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -254,6 +256,7 @@ test('configured media startup failure retains cleanup until a successful bot re
     const f = fixture(overrides, new ServerSettings(settingsPath), startMedia);
     Object.assign(f.client, { user: { id: botId } });
     t.mock.method(f.client.channels, 'fetch', async (id: string) => {
+      if (id === record.replacementId) throw Object.assign(new Error('Unknown thread'), { code: 10003 });
       assert.equal(id, channelId);
       return channel as unknown as Awaited<ReturnType<typeof f.client.channels.fetch>>;
     });
@@ -1116,4 +1119,69 @@ test('source edits are synchronized while running and ignored once shutdown star
   await closing;
   assert.equal(updates.mock.callCount(), 1);
   clients.splice(clients.indexOf(client), 1);
+});
+
+
+test('gateway single and bulk manual-parent deletion queue reply cleanup without registry records', async t => {
+  const path = join(directory, 'F2-gateway-on.json'), servers = new ServerSettings(path);
+  await servers.update('111111111111111111', { replies: true });
+  const f = fixture({ settingsPath: path }, servers); const queued: unknown[] = [];
+  Object.assign(f.client, { user: { id: 'bot' }, application: { id: 'app' } });
+  t.mock.method(ReplyCleanupJournal.prototype, 'enqueue', async (entry: Parameters<ReplyCleanupJournal['enqueue']>[0]) => { queued.push(entry); });
+  const parent = { id: '333333333333333333', guildId: '111111111111111111', channelId: '222222222222222222',
+    author: { id: 'bot' }, webhookId: 'app', interactionMetadata: { user: { id: 'owner' } }, channel: { type: 0 }, partial: false };
+  Reflect.apply(f.client.emit, f.client, [Events.MessageDelete, parent]);
+  const second = { ...parent, id: '444444444444444444' };
+  Reflect.apply(f.client.emit, f.client, [Events.MessageBulkDelete, new Collection([[second.id, second]]), {}]);
+  assert.deepEqual(queued, [parent, second].map(message => ({ guildId: message.guildId, channelId: message.channelId, threadId: message.id })));
+});
+
+
+test('manual reply clicks cannot bypass a pending cleanup reservation', async t => {
+  const path = join(directory, 'F2-reserved-settings.json'), servers = new ServerSettings(path);
+  const guildId = '111111111111111111'; await servers.update(guildId, { replies: true });
+  const f = fixture({ settingsPath: path }, servers); Object.assign(f.client, { user: { id: 'bot' }, application: { id: 'app' } });
+  t.mock.method(ReplyCleanupJournal.prototype, 'has', () => true);
+  const replies: string[] = [];
+  await dispatch(f.client, { isButton: () => true, customId: 'linky:replies:x:20:NASA', guildId,
+    user: { id: 'owner' }, message: { id: '333333333333333333', guildId, channelId: '222222222222222222',
+      author: { id: 'bot' }, webhookId: 'app', interactionMetadata: { user: { id: 'owner' } }, flags: new MessageFlagsBitField(),
+      channel: { type: 0 } },
+    reply: async (payload: { content: string }) => { replies.push(payload.content); } });
+  assert.deepEqual(replies, ['Replies are unavailable for this post']);
+});
+
+
+for (const parentExists of [false, true]) test(`rejected manual deletion reconciles ${parentExists ? 'existing' : 'already gone'} parent on the same-process sweep without gateway events`, async t => {
+  const caseDirectory = mkdtempSync(join(directory, 'F2-settled-removal-'));
+  const settingsPath = join(caseDirectory, 'servers.json'), servers = new ServerSettings(settingsPath);
+  const guildId = '111111111111111111', channelId = '222222222222222222', threadId = '333333333333333333';
+  await servers.update(guildId, { replies: true });
+  const f = fixture({ settingsPath }, servers);
+  Object.assign(f.client, { user: { id: 'bot' }, application: { id: 'app' } });
+  let journal: ReplyCleanupJournal | undefined, parentDeleted = 0, cleaned = 0;
+  const reserve = ReplyCleanupJournal.prototype.reserve;
+  t.mock.method(ReplyCleanupJournal.prototype, 'reserve', async function (this: ReplyCleanupJournal, entry: Parameters<ReplyCleanupJournal['reserve']>[0]) {
+    journal = this; await reserve.call(this, entry);
+  });
+  const parent = { id: threadId, guildId, channelId, author: { id: 'bot' }, webhookId: 'app', interactionMetadata: { user: { id: 'owner' } },
+    flags: new MessageFlagsBitField(), channel: { type: 0 }, delete: async () => { parentDeleted++; } };
+  t.mock.method(f.client.channels, 'fetch', async () => ({ messages: { fetch: async () => {
+    if (!parentExists) throw Object.assign(new Error('Unknown message'), { code: 10008 });
+    return parent;
+  } } }) as never);
+  t.mock.method(ReplyThreads.prototype, 'cleanup', async () => { cleaned++; });
+  await dispatch(f.client, { isButton: () => true, customId: 'linky:remove-manual', guildId, channelId,
+    applicationId: 'app', client: f.client, user: { id: 'owner' }, message: parent,
+    deferUpdate: async () => {}, deleteReply: async () => { throw Error('Deletion request failed ambiguously'); } });
+  assert.ok(journal); assert.equal(journal.has(threadId), true);
+  const replies: string[] = [];
+  const click = () => dispatch(f.client, { isButton: () => true, customId: 'linky:replies:x:20:NASA', guildId,
+    user: { id: 'owner' }, message: parent, reply: async (payload: { content: string }) => { replies.push(payload.content); } });
+  await click(); assert.equal(replies.at(-1), 'Replies are unavailable for this post');
+  await journal.sweep();
+  assert.equal(parentDeleted, parentExists ? 1 : 0); assert.equal(cleaned, 1);
+  assert.equal(journal.has(threadId), false);
+  assert.deepEqual(JSON.parse(readFileSync(join(caseDirectory, 'reply-cleanup.json'), 'utf8')), []);
+  await click(); assert.match(replies.at(-1)!, /Missing permission:/);
 });

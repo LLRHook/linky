@@ -1,7 +1,13 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Collection, MessageType } from 'discord.js';
+import { RepostRegistry } from '../src/services/RepostRegistry';
+import { ReplyThreads, REPLY_PAGE_MARKER } from '../src/services/ReplyThreads';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { afterEach, test, type TestContext } from 'node:test';
-import { Client, ComponentType, Events, MessageFlags, PermissionFlagsBits, PermissionsBitField,
+import { Client, ChannelType, ComponentType, Events, MessageFlags, PermissionFlagsBits, PermissionsBitField,
   type APIMessageTopLevelComponent, type ChatInputCommandInteraction, type Message, type MessageCreateOptions } from 'discord.js';
 import { execute } from '../src/commands/fix';
 import type { Config } from '../src/config';
@@ -227,8 +233,9 @@ test('a lone X post with X-hosted media offers a block in any language; other me
   assert.deepEqual(calls, [], 'several links, a hidden link or a disabled platform send no lookup');
 });
 
-function automatic({ ready = true, translate = true, mode = 'replace' as 'replace' | 'reply', lookup = async () => TWEET as TweetTranslation | null,
+function automatic({ replies = undefined as boolean | undefined, ready = true, translate = true, mode = 'replace' as 'replace' | 'reply', lookup = async () => TWEET as TweetTranslation | null,
   proxied = false, probeMedia = undefined as typeof fetch | undefined,
+  wiring = {} as Parameters<typeof createLinkRepostHandler>[3],
   verifyPreview = forbidden.forbid('A block carries its own media; no native card is checked') as
     (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult> } = {}) {
   const client = new Client({ intents: [] }); Object.assign(client, { user: { id: BOT } });
@@ -279,8 +286,8 @@ function automatic({ ready = true, translate = true, mode = 'replace' as 'replac
       platforms: ['x'], ...(translate ? { translateTweet: async () => TWEET } : {}),
       lookupTweet: async (id, options) => { lookups.push({ id, ...options }); return lookup(); },
       rememberRepost: async () => { events.push('ownership'); return true; }, verifyPreview,
-      ...(mode === 'reply' ? { serverPreferences: () => ({ mode }) } : {}),
-      ...(probeMedia ? { probeMedia } : {}),
+      serverPreferences: () => ({ mode, ...(replies !== undefined ? { replies } : {}) }),
+      ...(probeMedia ? { probeMedia } : {}), ...wiring,
     });
     try { await handler(source as unknown as Message); } finally { await client.destroy(); }
   };
@@ -565,4 +572,108 @@ test('/fix keeps the block notice when the block is unconfirmed and settings cha
   assert(!f.events.some(event => event.name === 'follow-up'), 'no card is published once X is turned off');
   const last = f.events.filter(event => event.name === 'edit').at(-1)!.payload!;
   assert.match(String(last.components?.[0] && 'content' in last.components[0] ? last.components[0].content : ''), /could not be confirmed/);
+});
+
+
+test('automatic replies control appears only after ownership and final confirmation', async () => {
+  const f = automatic({ replies: true, lookup: async () => ({ ...PHOTO_POST, replies: 47 }) });
+  Object.assign(f.source.channel, { type: ChannelType.GuildText });
+  await f.run();
+  assert.doesNotMatch(JSON.stringify(f.sends), /linky:replies:/);
+  assert.match(JSON.stringify(f.edits.at(-1)), /Replies \(47\)/);
+  assert(f.events.indexOf('ownership') < f.events.lastIndexOf('controls'));
+});
+
+
+test('public guild /fix adds replies only in confirmed final controls and keeps webhook ownership', async () => {
+  const f = manual();
+  Object.assign(f.interaction, { authorizingIntegrationOwners: { 0: 'guild' }, guild: { members: { me: { id: BOT } } } });
+  Object.assign(f.interaction.channel!, { type: ChannelType.GuildText });
+  await execute(f.interaction, config, { serverPreferences: () => ({ replies: true }), lookupTweet: async () => ({ ...PHOTO_POST, replies: 47 }) });
+  const edits = f.events.filter(event => event.name === 'edit').map(event => event.payload!);
+  assert.doesNotMatch(JSON.stringify(edits.find(edit => edit.flags === MessageFlags.IsComponentsV2)), /linky:replies:/);
+  assert.match(JSON.stringify(edits.at(-1)), /Replies \(47\)/);
+  assert.match(JSON.stringify(edits.at(-1)), /linky:remove-manual/);
+});
+
+
+test('automatic publication has no replies control when the setting is absent despite positive counts', async () => {
+  const f = automatic({ lookup: async () => ({ ...PHOTO_POST, replies: 47 }) });
+  Object.assign(f.source.channel, { type: ChannelType.GuildText });
+  await f.run(); assert.doesNotMatch(JSON.stringify([...f.sends, ...f.edits]), /linky:replies:/);
+});
+
+
+for (const variant of ['user-installed', 'private'] as const) test(`${variant} /fix never gains a Replies button`, async () => {
+  const f = manual({ send: variant !== 'private' });
+  Object.assign(f.interaction, { authorizingIntegrationOwners: variant === 'private' ? { 0: 'guild' } : { 1: SHARER }, guild: { members: { me: { id: BOT } } } });
+  Object.assign(f.interaction.channel!, { type: ChannelType.GuildText });
+  await execute(f.interaction, config, { serverPreferences: () => ({ replies: true }), lookupTweet: async () => ({ ...PHOTO_POST, replies: 47 }) });
+  assert.doesNotMatch(JSON.stringify(f.events), /linky:replies:/);
+});
+
+
+test('a later manual card failure notice never inherits Replies from confirmed controls', async t => {
+  const f = manual(); let enabled = true;
+  Object.assign(f.interaction, { authorizingIntegrationOwners: { 0: 'guild' }, guild: { members: { me: { id: BOT } } } });
+  Object.assign(f.interaction.channel!, { type: ChannelType.GuildText });
+  const edit = f.interaction.editReply.bind(f.interaction);
+  t.mock.method(f.interaction, 'editReply', async (...args: Parameters<typeof edit>) => {
+    const result = await edit(...args); if (JSON.stringify(args).includes('linky:replies:')) enabled = false; return result;
+  });
+  await execute(f.interaction, config, { serverPreferences: () => ({ replies: enabled }),
+    lookupTweet: async () => ({ ...PHOTO_POST, replies: 47, media: [], photos: [], hasMedia: false }),
+    verifyPreview: async () => ({ ok: true, missing: [], videoMetadata: false }) });
+  assert.ok(f.events.some(event => JSON.stringify(event.payload).includes('linky:replies:')));
+  const last = f.events.filter(event => event.name === 'edit').at(-1)!;
+  assert.match(JSON.stringify(last), /settings changed/); assert.doesNotMatch(JSON.stringify(last), /linky:replies:/);
+});
+
+test('guild-installed public /fix defaults replies off despite positive counts', async () => {
+  const f = manual();
+  Object.assign(f.interaction, { authorizingIntegrationOwners: { 0: 'guild' }, guild: { members: { me: { id: BOT } } } });
+  Object.assign(f.interaction.channel!, { type: ChannelType.GuildText });
+  await execute(f.interaction, config, { lookupTweet: async () => ({ ...PHOTO_POST, replies: 47 }), serverPreferences: () => ({}) });
+  assert.doesNotMatch(JSON.stringify(f.events), /linky:replies:/);
+});
+test('automatic card publication keeps Replies out of first publish until ownership and confirmation', async () => {
+  const f = automatic({ replies: true, translate: false, lookup: async () => ({ ...PHOTO_POST, replies: 47, media: [], photos: [], hasMedia: false }),
+    verifyPreview: async () => ({ ok: true, missing: [], videoMetadata: false }) });
+  Object.assign(f.source.channel, { type: ChannelType.GuildText });
+  await f.run(); assert.ok(f.events.includes('send card'));
+  assert.doesNotMatch(JSON.stringify(f.sends), /linky:replies:/); assert.match(JSON.stringify(f.edits.at(-1)), /linky:replies:/);
+  assert.ok(f.events.indexOf('ownership') < f.events.lastIndexOf('card edit'));
+});
+
+for (const scenario of ['block fallback', 'timeout'] as const) test(`ME owned ${scenario} reaches real registry queueRemoval and thread cleanup`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const directory = mkdtempSync(join(tmpdir(), 'F2-E75-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const controller = new AbortController();
+  const wiring: NonNullable<Parameters<typeof createLinkRepostHandler>[3]> = { signal: controller.signal };
+  const f = automatic({ ready: false, translate: false, lookup: async () => PHOTO_POST, wiring,
+    verifyPreview: async () => ({ ok: true, missing: [], videoMetadata: false }) });
+  const guildId = f.source.guildId!; Object.assign(f.replacement, { guildId });
+  const pages = new Collection([['page', { id: 'page', type: MessageType.Default, author: { id: BOT }, createdTimestamp: Date.now(),
+    components: [{ type: ComponentType.Container, id: REPLY_PAGE_MARKER }], delete: async () => { pages.delete('page'); } }]]);
+  const thread = { guildId, parentId: CHANNEL, ownerId: BOT, name: 'Replies', archived: false, locked: false,
+    messages: { fetch: async () => new Collection(pages) }, permissionsFor: () => ({ has: () => false }),
+    setName: async (name: string) => { thread.name = name; }, setArchived: async (archived: boolean) => { thread.archived = archived; } };
+  let cleanups = 0, queued = 0;
+  const replies = new ReplyThreads({ botUserId: () => BOT, enabled: () => true, tracked: () => true, lookup: async () => null,
+    fetchThread: async () => { cleanups++; return thread as never; } });
+  const registry = new RepostRegistry({ path: join(directory, 'reposts.json'), botUserId: BOT, canRetry: async () => true,
+    now: () => Number(BigInt(f.replacement.id) >> 22n) + 1420070400000,
+    fetchMessage: async (_channel, id) => id === f.replacement.id ? f.replacement as never : null,
+    afterReplacementRemoved: record => replies.cleanup({ guildId, channelId: CHANNEL, threadId: record.replacementId }) });
+  assert.equal(await registry.remember({ guildId, channelId: CHANNEL, sourceId: f.source.id, replacementId: f.replacement.id, authorId: SHARER, mode: 'replace' }), true);
+  wiring.findRepost = id => registry.findByReplacement(id);
+  wiring.removeRepost = async record => { queued++; return registry.queueRemoval(record); };
+  const pending = f.run();
+  for (let turn = 0; turn < 100 && !f.events.includes('unconfirmed'); turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.ok(f.events.includes('unconfirmed'));
+  if (scenario === 'timeout') controller.abort();
+  await expireBlockWait(t, f.events, pending);
+  assert.equal(queued, 1); assert.equal(cleanups, 1); assert.equal(pages.size, 0);
+  assert.equal(thread.name, 'Replies removed'); assert.equal(thread.archived, true);
+  assert.equal(registry.findByReplacement(f.replacement.id), undefined);
 });

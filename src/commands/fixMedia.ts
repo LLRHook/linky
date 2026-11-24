@@ -22,6 +22,7 @@ interface ManualMediaBlockDelivery {
   observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
   /** The caller can publish a card in place of a block whose media is not confirmed. */
   fallback?: boolean;
+  confirmedButtonRows?: () => ActionRowBuilder<ButtonBuilder>[];
 }
 
 /**
@@ -30,7 +31,7 @@ interface ManualMediaBlockDelivery {
  * the block for the caller to replace and the attempt unfinished.
  */
 export async function publishManualMediaBlock({ interaction, attempt, verifyMedia, block, files, buttonRows,
-  preferencesCurrent, sourceCurrent, expected, failureText, observePreview, fallback = false }: ManualMediaBlockDelivery,
+  preferencesCurrent, sourceCurrent, expected, failureText, observePreview, fallback = false, confirmedButtonRows }: ManualMediaBlockDelivery,
 ): Promise<'unconfirmed' | undefined> {
   const context = attempt.context;
   let published: Message | undefined, rollbackAttempted = false;
@@ -43,7 +44,7 @@ export async function publishManualMediaBlock({ interaction, attempt, verifyMedi
     await interaction.editReply({ flags: MessageFlags.IsComponentsV2, content: null, embeds: [], attachments: [],
       components: [{ type: ComponentType.TextDisplay,
         content: failureText?.() ?? 'The media preview could not be confirmed or its source or settings changed. The original post is unchanged and available below.' },
-      ...buttonRows().map(row => row.toJSON()), ...details.map(row => row.toJSON())], allowedMentions: { parse: [] } });
+      ...buttonRows().map(row => row.toJSON()).map(row => ({ ...row, components: row.components.filter(button => !('custom_id' in button) || !button.custom_id.startsWith('linky:replies:')) })), ...details.map(row => row.toJSON())], allowedMentions: { parse: [] } });
     observePreview?.(expected, { ok: false, missing: [...expected], videoMetadata: false });
   };
   try {
@@ -61,6 +62,11 @@ export async function publishManualMediaBlock({ interaction, attempt, verifyMedi
     published = await interaction.editReply({ components: [...block, ...buttonRows().map(row => row.toJSON()),
       ...details.map(row => row.toJSON())], allowedMentions: { parse: [] } });
     if (!await current() || !await verifyMedia(published) || !await current()) { await rollback(); return undefined; }
+    const confirmed = confirmedButtonRows?.();
+    if (confirmed?.some(row => row.components.some(button => 'custom_id' in button.data && button.data.custom_id?.startsWith('linky:replies:')))) {
+      await interaction.editReply({ components: [...block, ...confirmed.map(row => row.toJSON()),
+        ...details.map(row => row.toJSON())], allowedMentions: { parse: [] } });
+    }
     observePreview?.(expected, { ok: true, missing: [], videoMetadata: true });
     attempt.finish('confirmed');
   } catch (error) {

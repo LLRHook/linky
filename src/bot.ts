@@ -1,3 +1,7 @@
+import type { PartialMessage } from 'discord.js';
+import { ReplyThreads, repliesChannel } from './services/ReplyThreads';
+import { ReplyCleanupJournal } from './services/ReplyCleanupJournal';
+import { createXReplies } from './services/XReplies';
 import { Client, Events, GatewayIntentBits, MessageFlags, Partials, PermissionFlagsBits, type Interaction, type Message } from 'discord.js';
 import { dirname, join } from 'node:path';
 import type { Config } from './config';
@@ -131,6 +135,37 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     details: async (id, messageId) => (await bindDeliveryDetails(diagnostics, id, messageId)).map(row => row.toJSON()),
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
   });
+  const replyThreads = new ReplyThreads({
+    botUserId: () => client.user?.id ?? '',
+    enabled: guildId => servers.getPreferences(guildId).replies === true,
+    tracked: message => !replyCleanup.has(message.id) && Boolean(registry?.isActive(message.id) ||
+      message.interactionMetadata?.user.id && message.webhookId === client.application?.id && !message.flags.has(MessageFlags.Ephemeral)),
+    lookup: createXReplies(),
+    fetchThread: async id => {
+      const channel = await client.channels.fetch(id, { force: true });
+      return channel?.isThread() ? channel : null;
+    },
+  });
+  const replyCleanup = new ReplyCleanupJournal(join(dirname(settings.settingsPath), 'reply-cleanup.json'),
+    async target => {
+      try {
+        const parent = await fetchMessage(target.channelId, target.threadId);
+        if (parent) {
+          const record = registry?.findByReplacement(target.threadId);
+          const registered = record && record.guildId === target.guildId && record.channelId === target.channelId;
+          if (parent.id !== target.threadId || parent.guildId !== target.guildId || parent.channelId !== target.channelId ||
+              parent.author.id !== client.user?.id || !registered && (parent.webhookId !== client.application?.id || !parent.interactionMetadata)) {
+            throw new Error('Manual cleanup parent ownership mismatch');
+          }
+          await parent.delete();
+        }
+      } catch (error) {
+        const code = (error as { code?: number }).code;
+        if ([10003, 50001, 50013].includes(code ?? 0)) return;
+        if (code !== 10008) throw error;
+      }
+      await replyThreads.cleanup(target);
+    }, reason => log.warn(reason ?? 'Replies cleanup will be retried'));
   const deliveryOptions = { diagnostics, armPreview: previews.arm.bind(previews), providerHealth, albums,
     normalizeMobileLinks,
     translateTweet: settings.translateTweets ? async (id: string) => (await tweets(id, { translate: true })).translation : undefined,
@@ -141,7 +176,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     if (closing) return closing;
     accepting = false;
     const stoppedAt = Date.now();
-    registry?.stop(); youtubeStats?.stop();
+    registry?.stop(); youtubeStats?.stop(); replyCleanup.stop();
     closing = (async () => {
       try {
         const saved = checkpoint.stop(stoppedAt);
@@ -173,6 +208,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     observePreview: (expected, result) => health.record(expected, result),
     rememberRepost: record => registry?.remember(record) ?? Promise.resolve(false),
     findRepost: id => registry?.findByReplacement(id),
+    removeRepost: record => registry?.queueRemoval(record) ?? Promise.resolve(false),
     publishYouTube: (message, embeds) => youtubeStats?.publish(message, embeds) ?? Promise.resolve(null),
   });
   client.on(Events.MessageCreate, message => {
@@ -192,13 +228,36 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
   client.on(Events.GuildDelete, guild => {
     void personal.removeGuild(guild.id).catch(() => log.warn('Could not remove departed server personal preferences'));
   });
+  const cachedReplyThread = (message: Message | PartialMessage) =>
+    message.channel && 'threads' in message.channel ? message.channel.threads?.cache.get(message.id) : undefined;
+  const knownReplyThread = (message: Message | PartialMessage) => {
+    const thread = cachedReplyThread(message);
+    const botId = client.user?.id, applicationId = client.application?.id;
+    const authoredByLinky = Boolean(botId && message.author?.id === botId) || Boolean(applicationId &&
+      (message.webhookId === applicationId || message.applicationId === applicationId) && message.interactionMetadata);
+    return Boolean(authoredByLinky && message.hasThread && (!thread || thread.ownerId === botId) || botId && thread?.ownerId === botId);
+  };
+  const cleanupDeletedManual = (message: Message | PartialMessage) => {
+    if (!message.guildId || registry?.findByReplacement(message.id)) return;
+    const cachedThread = cachedReplyThread(message);
+    if (cachedThread && cachedThread.name === 'Replies removed' && cachedThread.archived) return;
+    const manual = message.author?.id === client.user?.id && message.webhookId === client.application?.id && message.interactionMetadata;
+    const speculative = servers.getPreferences(message.guildId).replies === true &&
+      repliesChannel(message.channel?.type) && !message.flags?.has(MessageFlags.Ephemeral) && manual;
+    // Settings gate speculation, while local evidence always permits cleanup of existing threads.
+    if (!knownReplyThread(message) && !speculative) return;
+    void replyCleanup.enqueue({ guildId: message.guildId, channelId: message.channelId, threadId: message.id })
+      .catch(() => log.warn('Deleted preview replies cleanup could not be queued'));
+  };
   client.on(Events.MessageDelete, message => {
+    cleanupDeletedManual(message);
     void releaseEromeMedia(message.id).catch(() => log.warn('Video storage cleanup failed'));
     void registry?.handleSourceDelete(message).catch(() => log.warn('Source deletion cleanup will be retried'));
     void registry?.handleReplacementDelete(message).catch(() => log.warn('Preview deletion cleanup will be retried'));
   });
   client.on(Events.MessageBulkDelete, messages => {
     for (const message of messages.values()) {
+      cleanupDeletedManual(message);
       void releaseEromeMedia(message.id).catch(() => log.warn('Video storage cleanup failed'));
       void registry?.handleSourceDelete(message).catch(() => log.warn('Bulk source deletion cleanup will be retried'));
       void registry?.handleReplacementDelete(message).catch(() => log.warn('Bulk preview deletion cleanup will be retried'));
@@ -239,6 +298,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
           serverPreferences: id => servers.getPreferences(id), observePreview: (expected, result) => health.record(expected, result) });
       } else if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
         if (interaction.isButton() && await handleDeliveryDetails(interaction, diagnostics)) return;
+        if (interaction.isButton() && await replyThreads.handle(interaction)) return;
         if (interaction.isButton() && await albums?.handle(interaction)) return;
         if (interaction.isButton() && await promptStatus(interaction, prompts)) return;
         if (interaction.isButton() && await replyToYouTubeControl(interaction, {
@@ -256,7 +316,13 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         })) return;
         if (await handleSetupComponent(interaction, settings, servers, testSetupHere)) return;
         if (!interaction.isButton()) return;
-        if (await removeManual(interaction, releaseEromeMedia) || await registry?.handleRemove(interaction)) return;
+        // Only a replies-off parent without a thread flag or local creation can bypass cleanup.
+        const cleanupManualReplies = Boolean(interaction.guildId && (replyCleanup.has(interaction.message.id) ||
+          replyThreads.needsCleanup(interaction.guildId, interaction.message.id, interaction.message)));
+        if (await removeManual(interaction, releaseEromeMedia,
+          cleanupManualReplies ? target => replyCleanup.enqueue(target) : undefined,
+          cleanupManualReplies ? target => replyCleanup.reserve(target) : undefined,
+          cleanupManualReplies ? id => replyCleanup.release(id) : undefined) || await registry?.handleRemove(interaction)) return;
         if (interaction.customId !== 'linky:retry' || !registry) return;
         const record = await registry.authorize(interaction);
         if (!record) return;
@@ -313,7 +379,17 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
       registry = new RepostRegistry({
         path: join(dirname(settings.settingsPath), 'reposts.json'), botUserId: readyClient.user.id, fetchMessage,
         removeRelated: record => youtubeStats!.removeForMessage(record.replacementId),
-        afterReplacementRemoved: record => releaseEromeMedia(record.replacementId),
+        afterReplacementRemoved: async (record, parent) => {
+          await releaseEromeMedia(record.replacementId);
+          if (replyThreads.needsCleanup(record.guildId, record.replacementId, parent)) {
+            try { await replyThreads.cleanup({ guildId: record.guildId, channelId: record.channelId, threadId: record.replacementId }); }
+            catch {
+              // Parent is already deleted. Transfer only failed cleanup; registry intent remains if this write fails.
+              await replyCleanup.defer({ guildId: record.guildId, channelId: record.channelId, threadId: record.replacementId });
+              log.warn('Repost replies cleanup deferred');
+            }
+          }
+        },
         regenerate: source => repost(source as Message, { refresh: true, forceReply: true }),
         canRetry: async (record, userId) => {
           const guild = await client.guilds.fetch(record.guildId);
@@ -328,6 +404,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         onError: error => logCleanupFailure(log, error),
       });
       registry.start();
+      replyCleanup.start();
       await checkpoint.start();
       // Only a clean stop is reported; after a crash the time it stopped is unknown.
       if (previous?.stoppedAt !== undefined) {

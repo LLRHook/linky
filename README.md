@@ -13,7 +13,7 @@ See the [product roadmap](docs/product-roadmap.md) for planned improvements and 
 
 ## Add to Discord
 
-**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=277025516544&integration_type=0&scope=bot+applications.commands)**
+**[Add Linky to your server](https://discord.com/oauth2/authorize?client_id=1491240385031311470&permissions=311385254912&integration_type=0&scope=bot+applications.commands)**
 
 **[Add Linky to your account](https://discord.com/oauth2/authorize?client_id=1491240385031311470&integration_type=1&scope=applications.commands)** to use `/fix link:` and a message's **Apps → Fix with Linky** action in servers or DMs. Each request handles up to three supported links, or five YouTube community posts together within Discord's shared card limits. Share community posts separately from other supported links and YouTube videos. It keeps the source message; YouTube videos use native previews without API statistics. Personal installation does not watch your DMs or enable automatic fixing in servers.
 
@@ -128,3 +128,11 @@ python3 .cycle/trackers.py install
 python .cycle\trackers.py install
 ```
 <!-- cycle:tracker-setup end -->
+
+### Replies to X posts
+
+Replies are off by default. Server admins can enable `/settings replies:true` (or disable with `replies:false`). Eligible single X posts, including public server `/fix` previews, show **Replies (N)** after publication is confirmed. The button opens a public thread under Linky's post with up to ten direct, non-sensitive replies, most liked first. Existing threads are linked again; no refresh or paging is offered.
+
+The click sends the public post ID to `https://api.fxtwitter.com/2/conversation/{id}`. Linky fetches one page without cookies or credentials, with a five-second timeout and a 256 KiB limit; parsed results stay in memory for five minutes (failures for 30 seconds). The header distinguishes the source count, returned entries, hidden entries and shown replies. Copied text escapes Markdown and mentions and replaces embedded links with `[link]`; Open reply opens X. Remove deletes Linky's own copied replies and renames/archives the thread as **Replies removed**; members' messages and other Linky previews stay. Retry and source changes also clean up the old thread.
+
+The invite includes **Create Public Threads** and **Send Messages in Threads**. Existing installs may need a server admin to grant Create Public Threads in the bot role and channel overrides. `/diagnose` reports both permissions when replies are enabled. This feature applies to server text and announcement channels; multi-link posts, threads, forum/media posts, voice/stage chat, DMs and personal installation contexts have no Replies button.

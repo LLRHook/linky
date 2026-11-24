@@ -741,3 +741,24 @@ test('repost retirement leaves expired YouTube cleanup on its own seven-day life
   assert.deepEqual(f.deleted, []);
   assert(f.messages.has(f.source.id));
 });
+
+
+test('intermediate cleanup deletes immediately and disables reply creation', async t => {
+  const f = await fixture(t), registry = f.manager();
+  assert.equal(await registry.remember(f.record), true);
+  assert.equal(registry.isActive(f.replacement.id), true);
+  assert.equal(await registry.queueRemoval(f.record), true);
+  assert.deepEqual(f.deleted, [f.replacement.id]);
+  assert.equal(registry.isActive(f.replacement.id), false);
+  await registry.sweep();
+  assert.deepEqual(f.related, [f.replacement.id]);
+  assert.deepEqual(f.deleted, [f.replacement.id]);
+});
+
+test('MI queued removal remains inactive while its durable record is retained', async t => {
+  const f = await fixture(t), registry = f.manager(); await registry.remember(f.record);
+  assert.equal(registry.isActive(f.replacement.id), true); f.failRelated(true);
+  assert.equal(await registry.remove(f.record), false);
+  assert.ok(registry.findByReplacement(f.replacement.id)); assert.ok((await f.saved()).remove.includes(f.replacement.id));
+  assert.equal(registry.isActive(f.replacement.id), false);
+});
