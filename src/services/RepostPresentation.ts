@@ -13,7 +13,7 @@ export function originalPostUrl(source: string): string {
   return url.href;
 }
 
-export function repostControls(original: string, { retry = false, remove = true } = {}) {
+export function repostControls(original: string, { retry = false, remove = true, replies }: { retry?: boolean; remove?: boolean; replies?: ButtonBuilder } = {}) {
   const urls = new Set<string>();
   mapLinks(original, (url, position) => {
     if (visibleLink(original, position)) {
@@ -24,6 +24,7 @@ export function repostControls(original: string, { retry = false, remove = true 
   });
   const buttons = [...urls].slice(0, retry ? 3 : 4).map((url, index) => new ButtonBuilder()
     .setStyle(ButtonStyle.Link).setLabel(index ? `Original post ${index + 1}` : 'Original post').setURL(url));
+  if (replies && buttons.length < 3) buttons.push(replies);
   if (retry) buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Retry preview').setCustomId('linky:retry'));
   if (remove) buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Remove').setCustomId('linky:remove'));
   return buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)] : [];

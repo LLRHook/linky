@@ -320,11 +320,12 @@ test('manual removal releases only after an authorized successful deletion', asy
       customId: scenario === 'unrelated' ? 'another-button' : 'linky:remove-manual',
       user: { id: scenario === 'unauthorized' ? '222222222222222222' : OWNER }, client: { user: { id: BOT } }, applicationId: BOT,
       message: { id: MESSAGE, author: { id: BOT }, webhookId: BOT, interactionMetadata: { user: { id: OWNER } } },
+      followUp: async (payload: { content: string; flags: number }) => { assert.match(payload.content, /Could not remove/); assert.equal(payload.flags, 64); events.push('notice'); },
       reply: async () => { events.push('deny'); }, deferUpdate: async () => { events.push('defer'); },
       deleteReply: async () => { events.push('delete'); if (scenario === 'delete-failure') throw new Error('not deleted'); },
     };
     const result = removeManual(input as unknown as ButtonInteraction, async id => { assert.equal(id, MESSAGE); events.push('release'); });
-    if (scenario === 'delete-failure') { await assert.rejects(result, /not deleted/); assert.deepEqual(events, ['defer', 'delete']); }
+    if (scenario === 'delete-failure') { assert.equal(await result, true); assert.deepEqual(events, ['defer', 'delete', 'notice']); }
     else if (scenario === 'unauthorized') { assert.equal(await result, true); assert.deepEqual(events, ['deny']); }
     else if (scenario === 'unrelated') { assert.equal(await result, false); assert.deepEqual(events, []); }
     else { assert.equal(await result, true); assert.deepEqual(events, ['defer', 'delete', 'release']); }

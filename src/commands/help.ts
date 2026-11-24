@@ -30,17 +30,18 @@ export async function execute(interaction: ChatInputCommandInteraction, settings
       preferences.mode === 'reply'
         ? 'Post a supported link and I will reply with a cleaned link or available preview, keeping your original message.'
         : 'Post a supported link and I will repost it with a cleaned link or available preview and credit you. The original is removed only after the replacement succeeds.',
-      'Automatic fixing checks for a useful preview before removing an original. Video playback can still depend on Discord and the provider.',
+      'Automatic fixing checks for a useful preview before removing originals. Playback depends on Discord and the provider.',
       isEromeAvailable(settings, interaction.guildId)
         ? 'Automatic Erome previews follow Replace or Reply. Original post opens the album; eligible members can use hosted Load next item. Failures, manual fixes and retries keep the source. Age-restricted channels are the default; admins can use /settings erome_channels:all. No DMs. Limits: 64 MiB and five minutes. Slow jobs show progress.' : EROME_UNAVAILABLE,
       'Retry preview requires channel access, send permission and no timeout. Details opens a private report. Only the original sharer or manual requester can use Remove.',
       preferences.translateTweets ? 'Non-English tweets are shown in English with a small source-language label when translation is available.' : 'X translation is currently disabled.',
+      `Replies: ${preferences.replies ? 'On: eligible X: up to 10 public-thread replies.' : 'Off. Admins: /settings replies:true.'}`,
       'Instagram posts show their media without the caption. A single X, Bluesky or Instagram post with media appears in one block: author, media and, for X and Bluesky, the text. Original post opens the source.',
-      'I stay silent when joining a server.',
+      'I join silently.',
       'Use !nolinky anywhere in a message to skip it. Links inside <angle brackets>, code or spoilers are left alone.',
       '/autofix enabled:false privately skips your messages in this server. /autofix enabled:true restores it. Manual commands still work.',
       'Use /fix link: or a message’s Apps → Fix with Linky action for an explicit preview. Personal installation only runs commands you invoke; it never monitors DMs.',
-      'Admins with Manage Server can open /setup for channels, mode and platforms. Its Test here button posts a sample only when clicked. /diagnose checks privately. /settings controls platforms, tweet translation and YouTube details.',
+      'Admins with Manage Server can open /setup for channels, mode and platforms. Its Test here button posts a sample only when clicked. /diagnose checks privately. /settings controls replies, platforms and details.',
     ].join('\n\n'),
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },

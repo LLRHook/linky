@@ -1,3 +1,4 @@
+import { xRepliesButton } from './ReplyThreads';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { randomBytes } from 'node:crypto';
 import {
@@ -84,6 +85,7 @@ export interface LinkRepostOptions {
   verifyErome?: typeof verifyEromeAttachment;
   verifyPreview?: (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult>;
   observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
+  removeRepost?: (record: RepostRecord) => Promise<boolean>;
   rememberRepost?: (record: RepostRecord) => Promise<boolean>;
   findRepost?: (replacementId: string) => RepostRecord | undefined;
   diagnostics?: DeliveryDiagnostics;
@@ -103,7 +105,7 @@ export function createLinkRepostHandler(
     lookupYouTube, lookupYouTubeCommunity, lookupArticle, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
     eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
-    verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost, diagnostics, armPreview, providerHealth, albums,
+    verifyPreview = waitForPreviews, observePreview, rememberRepost, removeRepost, findRepost, diagnostics, armPreview, providerHealth, albums,
     normalizeMobileLinks, isOptedOut, signal }: LinkRepostOptions = {}
 ): (message: Message, options?: { refresh?: boolean; forceReply?: boolean; manualRetry?: boolean }) => Promise<RepostRefreshResult> {
   const allowedChannelIds = typeof channelIds === 'string' ? [channelIds] : channelIds;
@@ -315,8 +317,9 @@ export function createLinkRepostHandler(
         return;
       }
       // A lone X post is one block in any language; the translation setting decides only which words it shows.
+      let repliesTweet: TweetTranslation | undefined;
       const tweetPanel = lookupTweet && activePlatforms.includes('x') && !message.flags.has(MessageFlags.SuppressEmbeds)
-        ? await tweetPostPanel(inputContent, activePlatforms, lookupTweet,
+        ? await tweetPostPanel(inputContent, activePlatforms, async (id, options) => { const tweet = await lookupTweet(id, options); repliesTweet = tweet ?? undefined; return tweet; },
           Boolean(translateTweet) && preferences.translateTweets !== false) : undefined;
       // A lone Bluesky post with images is one block too, read from the public AppView.
       const blueskyPanel = !tweetPanel && lookupBluesky && activePlatforms.includes('bluesky') &&
@@ -471,7 +474,10 @@ export function createLinkRepostHandler(
       let publication: StatsPublication | null = null;
       const removeReplacement = async () => {
         await publication?.remove();
-        await replacement.delete();
+        const owned = findRepost?.(replacement.id);
+        if (owned && removeRepost) {
+          if (!await removeRepost(owned)) throw new Error('Repost cleanup is pending');
+        } else await replacement.delete();
         if (originalMedia) await releaseEromeMedia?.(replacement.id);
       };
       // Until the source is deleted, an expired attempt can safely discard its copy.
@@ -664,12 +670,14 @@ export function createLinkRepostHandler(
       const albumControl = originalMedia && eromeSource && rememberRepost ? albums?.register({ media: originalMedia,
         source: eromeSource, requesterId: message.author.id, guildId: message.guildId, channelId,
         messageId: replacement.id, ...(reply ? { sourceMessageId: message.id } : {}), mode: 'automatic' }) : undefined;
+      const replyButton = xRepliesButton(repliesTweet, message.channel.type, preferences.replies === true);
+      const finalControls = () => repostControls(inputContent, { replies: replyButton });
       if (rememberRepost) await replacement.edit({
         components: originalMedia ? eromeMediaComponents(originalMedia, content,
-          [...repostControls(inputContent), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
-          : inlineBlock ? [...inlineBlock, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
-          : inlinePost ? [...inlinePost, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
-          : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions,
+          [...finalControls(), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
+          : inlineBlock ? [...inlineBlock, ...[...finalControls(), ...details].map(row => row.toJSON())]
+          : inlinePost ? [...inlinePost, ...[...finalControls(), ...details].map(row => row.toJSON())]
+          : [...finalControls(), ...publication?.controls ?? [], ...details], allowedMentions,
       });
       if ((originalMedia || inlineErome || explicitCards.length) && reply) {
         if (await stopExpired()) return;
