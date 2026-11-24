@@ -800,3 +800,31 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** fixed-pending-migration
 - **Fix:** When Discord has not yet marked a block's gallery item loaded, Linky sends one HEAD request (5 s, no redirects) to the item's Discord media-proxy address, only on images-ext-N.discordapp.net or media.discordapp.net over HTTPS without port or credentials, and accepts a 2xx response with the item's kind of content type; loading state 3, a missing item or another host fails without a request. watchMessageMedia checks the published message and one fresh read before the remaining Gateway wait, and remembers served media for that message so the manual controls-edit check passes at once. Wired for automatic reposts and /fix through probeMedia (fetch in bot.ts; tests inject a fake). Tests: tests/tweet-panel.test.ts (4 new; 12 of 12 mutants killed).
 - **Docs:** docs/media-blocks.md, docs/instagram-media.md, docs/self-hosting.md, README.md
+
+### [BUG-1795540133] tests/bot.test.ts sometimes aborts partway through a full npm test run
+- [ ] **Severity:** high
+- **Area:** tests
+- **File(s):** tests/bot.test.ts
+- **Observation:** In the V&V run on b5f281f (Windows 11, Node 24.15.0), the first `npm test` straight after `npm ci` reported `ℹ tests 1429` / `ℹ fail 1`. The failure was the file itself: `✖ tests\bot.test.ts (3705ms)`, 'test failed' at tests/bot.test.ts:1:1, with no failing test named and no error output. The file stopped after 25 of its 47 tests. The last test reported was 'failed startup registration disconnects without reporting readiness'. The next test, 'startup restores repost ownership and fetches reply excerpts across bot restarts' (timeout 5000 ms), never reported. The npm test chain then stopped before the ESM suite. The same SHA then passed 7 more times: bot.test.ts alone (47/47), the TypeScript suite 3 times (1451/1451), and `npm test` 4 times, 2 of them after a fresh `npm ci` (1451 TS and 85 ESM, 8 skipped).
+- **Expected:** Every test file reports the same result on every run at one SHA. A file that stops early prints the error that stopped it.
+- **Req:** none (found by the V&V protocol run, 2026-11-24)
+- **Depends on:** none
+- **Repro / Notes:** Seen 1 time in 8 runs of `npm test` / `npx tsx --test tests/*.test.ts` on the host; CI (Linux) passed at b5f281f. The logs are local: .vv/logs/2.1-npm-test.log (failing run) and 2.1-*repro*/afterci-*.log (passing runs). The file stopped at about 3.7 s, before the 5 s per-test timeout, and printed nothing on stderr, so this looks like the child process exiting rather than a timeout. Leads: an exception or rejection after a test finished (for example a fixture's `assert.fail` in a callback that is not awaited), or a Windows file-lock error while the repost registry writes under the temp directory. Loop the file (`for i in $(seq 50); do npx tsx --test tests/*.test.ts || break; done`) with `--test-reporter=tap` to keep the child's output.
+- **Bump:** patch
+- **Status:** open
+- **Log:**
+  - 2026-11-24 protocol: Found by: protocol (Stage 2.1, release run on b5f281f). Class: flaky test (local-gate counts flaky as RED).
+
+### [BUG-1795540134] VERIFICATION.md 1.5 host grep does not exclude the LinkedIn and Truth Social post modules
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** VERIFICATION.md
+- **Observation:** Stage 1.5's `git grep -nE "https://" src/services | grep -vE ...` exclusion list predates the LinkedIn (FEAT-1794395496) and Truth Social (FEAT-1793013312) post modules. At b5f281f it reports src/services/LinkedIn.ts (www.linkedin.com permalinks) and src/services/TruthSocial.ts (truthsocial.com), which hold their own host constants the same way the excluded Instagram and Bluesky modules do. It also reports a Discord developer-docs link in a src/services/PreviewRecovery.ts comment. The accepted-hit list names neither.
+- **Expected:** The 1.5 command reports only new hard-coded provider hosts: add LinkedIn and TruthSocial to the exclusion and name the PreviewRecovery.ts docs comment as an accepted hit, or move the check into a CI guard script.
+- **Req:** none (found by the V&V protocol run, 2026-11-24)
+- **Depends on:** none
+- **Repro / Notes:** Run the 1.5 command at b5f281f. Truth Social's network reads go through ArticlePreview.ts's bounded helpers (statusJson and fetchText). LinkedIn.ts makes no fetch itself.
+- **Bump:** patch
+- **Status:** open
+- **Log:**
+  - 2026-11-24 protocol: Found by: protocol (Stage 1.5). Class: stale verification step, not a product defect.
