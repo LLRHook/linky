@@ -1,5 +1,6 @@
+import { createBlueskyReplies } from './services/BlueskyReplies';
 import type { PartialMessage } from 'discord.js';
-import { ReplyThreads, repliesChannel } from './services/ReplyThreads';
+import { ReplyThreads, repliesChannel, type ReplyPage } from './services/ReplyThreads';
 import { ReplyCleanupJournal } from './services/ReplyCleanupJournal';
 import { createXReplies } from './services/XReplies';
 import { Client, Events, GatewayIntentBits, MessageFlags, Partials, PermissionFlagsBits, type Interaction, type Message } from 'discord.js';
@@ -49,6 +50,12 @@ import type { EromeMediaPreparer } from './services/EromeMedia';
 import { bindDeliveryDetails } from './services/DeliveryAttempt';
 import { InFlightWork } from './services/InFlightWork';
 import { catchUp, ServiceCheckpoint } from './services/ServiceCheckpoint';
+
+/** Route only the selected platform's optional reply lookup. */
+export function createReplyLookup(xReplies: (id: string) => Promise<ReplyPage | null>,
+  blueskyReplies: (id: string) => Promise<ReplyPage | null>) {
+  return (id: string, platform?: 'x' | 'bsky') => platform === 'bsky' ? blueskyReplies(id) : xReplies(id);
+}
 
 /** Running deliveries get this long to finish when the bot stops; Compose `stop_grace_period` must exceed it. */
 export const SHUTDOWN_DRAIN_MS = 20_000;
@@ -135,12 +142,13 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     details: async (id, messageId) => (await bindDeliveryDetails(diagnostics, id, messageId)).map(row => row.toJSON()),
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
   });
+  const xReplies = createXReplies(), blueskyReplies = createBlueskyReplies();
   const replyThreads = new ReplyThreads({
     botUserId: () => client.user?.id ?? '',
     enabled: guildId => servers.getPreferences(guildId).replies === true,
     tracked: message => !replyCleanup.has(message.id) && Boolean(registry?.isActive(message.id) ||
       message.interactionMetadata?.user.id && message.webhookId === client.application?.id && !message.flags.has(MessageFlags.Ephemeral)),
-    lookup: createXReplies(),
+    lookup: createReplyLookup(xReplies, blueskyReplies),
     fetchThread: async id => {
       const channel = await client.channels.fetch(id, { force: true });
       return channel?.isThread() ? channel : null;

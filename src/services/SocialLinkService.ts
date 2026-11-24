@@ -1,4 +1,5 @@
-import { xRepliesButton } from './ReplyThreads';
+import type { BlueskyPost } from './BlueskyPost';
+import { blueskyRepliesButton, xRepliesButton } from './ReplyThreads';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { randomBytes } from 'node:crypto';
 import {
@@ -318,12 +319,13 @@ export function createLinkRepostHandler(
       }
       // A lone X post is one block in any language; the translation setting decides only which words it shows.
       let repliesTweet: TweetTranslation | undefined;
+      let repliesBluesky: BlueskyPost | undefined;
       const tweetPanel = lookupTweet && activePlatforms.includes('x') && !message.flags.has(MessageFlags.SuppressEmbeds)
         ? await tweetPostPanel(inputContent, activePlatforms, async (id, options) => { const tweet = await lookupTweet(id, options); repliesTweet = tweet ?? undefined; return tweet; },
           Boolean(translateTweet) && preferences.translateTweets !== false) : undefined;
       // A lone Bluesky post with images is one block too, read from the public AppView.
       const blueskyPanel = !tweetPanel && lookupBluesky && activePlatforms.includes('bluesky') &&
-        !message.flags.has(MessageFlags.SuppressEmbeds) ? await blueskyPostPanel(inputContent, activePlatforms, lookupBluesky) : undefined;
+        !message.flags.has(MessageFlags.SuppressEmbeds) ? await blueskyPostPanel(inputContent, activePlatforms, async id => { const post = await lookupBluesky(id); repliesBluesky = post ?? undefined; return post; }) : undefined;
       const translated: NonNullable<typeof tweetPresentation> & {
         instagramSources?: string[]; instagramVideos?: string[]; instagramPanel?: InstagramPanel;
       } =
@@ -670,7 +672,7 @@ export function createLinkRepostHandler(
       const albumControl = originalMedia && eromeSource && rememberRepost ? albums?.register({ media: originalMedia,
         source: eromeSource, requesterId: message.author.id, guildId: message.guildId, channelId,
         messageId: replacement.id, ...(reply ? { sourceMessageId: message.id } : {}), mode: 'automatic' }) : undefined;
-      const replyButton = xRepliesButton(repliesTweet, message.channel.type, preferences.replies === true);
+      const replyButton = xRepliesButton(repliesTweet, message.channel.type, preferences.replies === true) ?? blueskyRepliesButton(repliesBluesky, message.channel.type, preferences.replies === true);
       const finalControls = () => repostControls(inputContent, { replies: replyButton });
       if (rememberRepost) await replacement.edit({
         components: originalMedia ? eromeMediaComponents(originalMedia, content,

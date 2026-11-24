@@ -1,0 +1,141 @@
+{
+  "thread": {
+    "$type": "app.bsky.feed.defs#threadViewPost",
+    "post": {
+      "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost",
+      "author": {
+        "did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+        "handle": "anchor.example.test",
+        "displayName": "Example Anchor",
+        "labels": []
+      },
+      "record": {
+        "$type": "app.bsky.feed.post",
+        "text": "Synthetic anchor.",
+        "createdAt": "2026-01-01T00:00:00Z"
+      },
+      "replyCount": 116,
+      "labels": [],
+      "embed": {
+        "$type": "app.bsky.embed.images#view"
+      },
+      "threadgate": {
+        "record": {
+          "hiddenReplies": [
+            "at://did:plc:ffffffffffffffffffffffff/app.bsky.feed.post/hidden-example"
+          ]
+        }
+      }
+    },
+    "replies": [
+      {
+        "$type": "app.bsky.feed.defs#threadViewPost",
+        "post": {
+          "uri": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/reply0",
+          "author": {
+            "did": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+            "handle": "reply0.example.test",
+            "displayName": "Example Reply 0",
+            "labels": []
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "text": "Synthetic reply 0.",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "reply": {
+              "parent": {
+                "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost"
+              },
+              "root": {
+                "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost"
+              }
+            }
+          },
+          "likeCount": 10,
+          "labels": []
+        }
+      },
+      {
+        "$type": "app.bsky.feed.defs#threadViewPost",
+        "post": {
+          "uri": "at://did:plc:cccccccccccccccccccccccc/app.bsky.feed.post/reply1",
+          "author": {
+            "did": "did:plc:cccccccccccccccccccccccc",
+            "handle": "reply1.example.test",
+            "displayName": "Example Reply 1",
+            "labels": []
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "text": "Synthetic reply 1.",
+            "createdAt": "2026-01-02T00:00:00Z",
+            "reply": {
+              "parent": {
+                "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost"
+              },
+              "root": {
+                "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost"
+              }
+            }
+          },
+          "likeCount": 11,
+          "labels": []
+        }
+      },
+      {
+        "$type": "app.bsky.feed.defs#threadViewPost",
+        "post": {
+          "uri": "at://did:plc:dddddddddddddddddddddddd/app.bsky.feed.post/reply2",
+          "author": {
+            "did": "did:plc:dddddddddddddddddddddddd",
+            "handle": "reply2.example.test",
+            "displayName": "Example Reply 2",
+            "labels": []
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "text": "Synthetic reply 2.",
+            "createdAt": "2026-01-03T00:00:00Z",
+            "reply": {
+              "parent": {
+                "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost"
+              },
+              "root": {
+                "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost"
+              }
+            }
+          },
+          "likeCount": 12,
+          "labels": []
+        }
+      },
+      {
+        "$type": "app.bsky.feed.defs#threadViewPost",
+        "post": {
+          "uri": "at://did:plc:eeeeeeeeeeeeeeeeeeeeeeee/app.bsky.feed.post/reply3",
+          "author": {
+            "did": "did:plc:eeeeeeeeeeeeeeeeeeeeeeee",
+            "handle": "reply3.example.test",
+            "displayName": "Example Reply 3",
+            "labels": []
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "text": "Synthetic reply 3.",
+            "createdAt": "2026-01-04T00:00:00Z",
+            "reply": {
+              "parent": {
+                "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost"
+              },
+              "root": {
+                "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3syntheticpost"
+              }
+            }
+          },
+          "likeCount": 13,
+          "labels": []
+        }
+      }
+    ]
+  }
+}

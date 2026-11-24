@@ -153,3 +153,6 @@ If reply-cleanup.json cannot be read or validated (other than a missing file), s
 Live acceptance must verify rename and archive using only the documented invite permissions, without Manage Threads, on both active and auto-archived public threads. In particular, confirm whether Discord permits the bot owner to rename and archive, and that a 50013 denial still leaves copied pages deleted and parent removal complete. The bot treats rename/archive permission denial as terminal, so names or archive state may remain unchanged; Manage Threads is not requested.
 
 A manual card can briefly publish Replies before a late source/settings recheck rewrites it into a notice. A thread opened in that window may retain copied pages until Remove or another supported cleanup path. This notice-rewrite gap is not reconciled automatically: the durable manual journal also deletes its parent and cannot safely be reused for a notice that must remain. No new journal schema or reconciler is added here.
+
+For Bluesky public reply threads, including the `depth=1` / `parentHeight=0` AppView request,
+limits, filtering and cleanup, see [Replies to X and Bluesky posts](../README.md#replies-to-x-and-bluesky-posts).

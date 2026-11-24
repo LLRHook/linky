@@ -129,10 +129,23 @@ python .cycle\trackers.py install
 ```
 <!-- cycle:tracker-setup end -->
 
-### Replies to X posts
+### Replies to X and Bluesky posts
 
 Replies are off by default. Server admins can enable `/settings replies:true` (or disable with `replies:false`). Eligible single X posts, including public server `/fix` previews, show **Replies (N)** after publication is confirmed. The button opens a public thread under Linky's post with up to ten direct, non-sensitive replies, most liked first. Existing threads are linked again; no refresh or paging is offered.
 
 The click sends the public post ID to `https://api.fxtwitter.com/2/conversation/{id}`. Linky fetches one page without cookies or credentials, with a five-second timeout and a 256 KiB limit; parsed results stay in memory for five minutes (failures for 30 seconds). The header distinguishes the source count, returned entries, hidden entries and shown replies. Copied text escapes Markdown and mentions and replaces embedded links with `[link]`; Open reply opens X. Remove deletes Linky's own copied replies and renames/archives the thread as **Replies removed**; members' messages and other Linky previews stay. Retry and source changes also clean up the old thread.
 
 The invite includes **Create Public Threads** and **Send Messages in Threads**. Existing installs may need a server admin to grant Create Public Threads in the bot role and channel overrides. `/diagnose` reports both permissions when replies are enabled. This feature applies to server text and announcement channels; multi-link posts, threads, forum/media posts, voice/stage chat, DMs and personal installation contexts have no Replies button.
+
+Bluesky replies use the same off-by-default `/settings replies:true` opt-in and public thread controls.
+A single eligible unlabelled post (image block or bskx.app card) with a positive AppView replyCount shows **Replies (N)**.
+Opening it sends only the post identity to `https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread`
+with `depth=1` and `parentHeight=0`: no credentials, no redirects, a five-second timeout and a 1 MiB response cap.
+An oversized response gives a private too-many-replies notice. Successful parsed pages stay in memory five minutes;
+failures stay 30 seconds, with at most 100 entries and eight requests in flight. Linky shows up to 25 direct
+replies sorted by likes then newest, skipping author-hidden, blocked, unavailable and labelled replies (including
+labels on authors). The header reports the fresh source count, returned, hidden and shown entries separately.
+Reply links use DID identities; text, packing, quiet flags, permissions, cooldowns and cleanup follow the shared
+X replies behaviour. Nested replies, reply images, authenticated access and the unstable V2 endpoint are excluded.
+
+Bluesky reply dates use the earlier of the author creation time and AppView indexing time for both newest-first ties and the displayed time.

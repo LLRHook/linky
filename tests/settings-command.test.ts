@@ -297,7 +297,7 @@ test('replies default off, persist independently per server and fit help when en
   assert.equal(effectivePreferences(config, servers.getPreferences(SERVER)).replies, false);
   const enabled = interaction({ replies: true });
   await execute(enabled.command, config, servers);
-  assert.match(enabled.events[1].payload.content, /Replies: On \(eligible X posts\)/);
+  assert.match(enabled.events[1].payload.content, /Replies: On \(eligible X and Bluesky posts\)/);
   assert.equal(new ServerSettings(path).getPreferences(SERVER).replies, true);
   assert.equal(new ServerSettings(path).getPreferences('222222222222222222').replies, undefined);
   const f = interaction(); await help(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS }, servers);
@@ -315,5 +315,5 @@ test('E75 help worst case enables server and every long option within Discord li
   assert.match(text, /throughout this server/); assert.match(text, /Automatic Erome previews/); assert.match(text, /Non-English tweets/);
   assert.ok(text.length <= 1990, `${text.length} characters exceeds 1990 headroom target`);
   assert.ok(text.length <= 2000);
-  assert.match(text, /Replies: On: eligible X: up to 10 public-thread replies/);
+  assert.match(text, /Replies: On: X 10 \/ Bluesky 25 public-thread replies/);
 });

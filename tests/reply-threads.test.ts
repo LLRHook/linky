@@ -1,3 +1,4 @@
+import { createBlueskyReplies } from '../src/services/BlueskyReplies';
 import { sanitizeReplyText } from '../src/services/ReplyText';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -6,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChannelType, Collection, MessageFlags, MessageType, type ButtonInteraction, type ThreadChannel } from 'discord.js';
 import { createXReplies, parseXReplies } from '../src/services/XReplies';
-import { ReplyThreads, replyThreadPayloads, xRepliesButton } from '../src/services/ReplyThreads';
+import { ReplyLookupError, ReplyThreads, replyThreadPayloads, xRepliesButton } from '../src/services/ReplyThreads';
 import { ReplyCleanupJournal } from '../src/services/ReplyCleanupJournal';
 import { removeManual } from '../src/commands/fix';
 import { RepostRegistry } from '../src/services/RepostRegistry';
@@ -16,7 +17,7 @@ import fixture from './fixtures/x-conversation.json';
 const ID = fixture.status.id;
 const page = () => parseXReplies(fixture, ID, 1795500000000)!;
 const failure = (code: number) => Object.assign(new Error('Discord failure'), { code });
-function harness(lookup?: () => Promise<ReturnType<typeof page> | null>) {
+function harness(lookup?: () => Promise<ReturnType<typeof page> | null>, expectedName = 'Replies to @NASA') {
   let tracked = true, enabled = true, permission = true, createCode = 0, fetchCode = 0, calls = 0, creates = 0;
   const sent: ReturnType<typeof replyThreadPayloads>[number][] = [], answers: string[] = [], deleted: string[] = [];
   const own = { type: MessageType.Default, components: replyThreadPayloads(page())[0].components, id: '31', author: { id: 'bot' }, createdTimestamp: Date.now(), delete: async () => { deleted.push('31'); } };
@@ -29,7 +30,7 @@ function harness(lookup?: () => Promise<ReturnType<typeof page> | null>) {
   const message = { id: '100', guildId: 'guild', channelId: 'channel', author: { id: 'bot' }, hasThread: false,
     channel: { type: ChannelType.GuildText, permissionsFor: () => ({ has: () => permission }) },
     fetch: async () => message, startThread: async (options: { name: string; autoArchiveDuration: number }) => {
-      creates++; assert.equal(options.autoArchiveDuration, 1440); assert.equal(options.name, 'Replies to @NASA');
+      creates++; assert.equal(options.autoArchiveDuration, 1440); assert.equal(options.name, expectedName);
       if (createCode) throw failure(createCode); message.hasThread = true; return thread;
     } };
   const manager = new ReplyThreads({ botUserId: () => 'bot', enabled: () => enabled, tracked: () => tracked,
@@ -354,4 +355,26 @@ test('MG turning replies off during lookup creates no thread', async () => {
   const h = harness(async () => { began(); return pending; });
   const click = h.click(); await started; h.enabled = false; release(page()); await click;
   assert.equal(h.calls, 1); assert.equal(h.creates, 0); assert.equal(h.sent.length, 0); assert.match(h.answers[0], /removed/);
+});
+
+test('oversize optional provider response gives the private too-many-replies message', async () => {
+  const h = harness(async () => { throw new ReplyLookupError('This post has too many replies for Linky to load'); });
+  await h.click(); assert.equal(h.creates, 0); assert.equal(h.answers[0], 'This post has too many replies for Linky to load');
+});
+
+test('thread name keeps exactly 100 characters and truncates 101 to 99 plus ellipsis', async () => {
+  for (const length of [88, 89]) {
+    const value = page(); value.threadHandle = 'a'.repeat(length);
+    const expected = length === 88 ? 'Replies to @' + 'a'.repeat(88) : 'Replies to @' + 'a'.repeat(87) + '\u2026';
+    assert.equal(expected.length, 100);
+    const h = harness(async () => value, expected); await h.click();
+    assert.equal(h.creates, 1); assert.ok(h.sent.length, JSON.stringify(h.answers));
+  }
+});
+
+test('oversize Content-Length from Bluesky reaches the private too-many-replies response', async () => {
+  const lookup = createBlueskyReplies(async () => new Response('{}', { headers: { 'content-length': '1048577' } }));
+  const h = harness(async () => lookup('anchor.example.test/r'));
+  await h.click(); assert.equal(h.creates, 0);
+  assert.equal(h.answers[0], 'This post has too many replies for Linky to load');
 });
