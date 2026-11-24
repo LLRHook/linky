@@ -811,9 +811,13 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Depends on:** none
 - **Repro / Notes:** Seen 1 time in 8 runs of `npm test` / `npx tsx --test tests/*.test.ts` on the host; CI (Linux) passed at b5f281f. The logs are local: .vv/logs/2.1-npm-test.log (failing run) and 2.1-*repro*/afterci-*.log (passing runs). The file stopped at about 3.7 s, before the 5 s per-test timeout, and printed nothing on stderr, so this looks like the child process exiting rather than a timeout. Leads: an exception or rejection after a test finished (for example a fixture's `assert.fail` in a callback that is not awaited), or a Windows file-lock error while the repost registry writes under the temp directory. Loop the file (`for i in $(seq 50); do npx tsx --test tests/*.test.ts || break; done`) with `--test-reporter=tap` to keep the child's output.
 - **Bump:** patch
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** in-progress
 - **Log:**
   - 2026-11-24 protocol: Found by: protocol (Stage 2.1, release run on b5f281f). Class: flaky test (local-gate counts flaky as RED).
+  - 2026-11-24 Investigation: B1 investigation on Windows 11 / Node 24.15.0: 100 isolated TAP runs passed (50 with four CPU busy workers; 50 through tsx CLI with fatal-error/exit preload), eight consecutive full npm test runs and baseline validate passed. Original silent file abort did not reproduce; no root cause or corrective change established. Evidence: .git/agent-handoffs/driver-replies-build/evidence/B1/B1.md. Keep in-progress; blocked per implementation brief rather than guessing a fix.
+  - 2026-11-24 Investigation: B1 round 2 on b0fa652: Node 24.15.0 embedded runner/harness source and deliberate tsx child exits show the silent file-only failure fits abrupt nonzero termination; late throw/rejection emits an async diagnostic and timeout increments cancelled. Targeted timing probes contain delayed startup cleanup, final-edit rejection, forced sweep assertion after stop and forced EPERM rollback assertion; none reproduces the original silent abort. Root cause remains unproved. Evidence: .git/agent-handoffs/driver-replies-build/evidence/B1/round2 and B1.md.
+  - 2026-11-24 Diagnostics: Round 2 established abrupt nonzero test-child termination; its cause and exit code/signal are unrecoverable from the old spec log. This PR adds a parallel TAP file while preserving spec stdout, failed-test CI artifacts, and shutdown-before-error assertions. Root cause is not found and Status stays in-progress. On the next occurrence, read exitCode and signal from .vv/npm-test.tap before retrying.
 
 ### [BUG-1795540134] VERIFICATION.md 1.5 host grep does not exclude the LinkedIn and Truth Social post modules
 - [ ] **Severity:** low

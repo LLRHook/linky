@@ -83,7 +83,18 @@ jobs:
         run: npm run check:workers
 
       - name: Test link fixing and bot startup
+        id: tests
         run: npm test
+
+      - name: Retain failed test child diagnostics
+        if: failure() && steps.tests.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-tap-node-${{ matrix.node }}
+          path: .vv/npm-test.tap
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn
 
       - name: Test deployment safeguards
         run: bash tests/deploy.test.sh

@@ -29,7 +29,8 @@
     "validate": "node ops/validate.mjs",
     "report:deliveries": "node ops/delivery-archive-report.mjs",
     "check:providers": "node ops/provider-metadata-check.mjs",
-    "test": "npm run build && tsc --project tsconfig.test.json && tsx --test tests/*.test.ts && node --test tests/*.test.mjs",
+    "pretest": "node -e \"require('node:fs').mkdirSync('.vv', { recursive: true })\"",
+    "test": "npm run build && tsc --project tsconfig.test.json && tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=.vv/npm-test.tap tests/*.test.ts && node --test tests/*.test.mjs",
     "start": "node dist/index.js",
     "register-commands": "tsx src/commands/register.ts"
   },

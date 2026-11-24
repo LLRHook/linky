@@ -209,6 +209,7 @@ test('failed optional media startup leaves normal bot commands available', async
     publicBaseUrl: 'https://media.example.test', directory, port: 8092 } }, undefined,
   async () => { throw Error('Storage unavailable'); });
   const replies = await command(client, 'help');
+  await client.destroy();
   assert.equal(replies.length, 1); assert.deepEqual(errors, []);
 });
 
@@ -449,6 +450,7 @@ test('expired command replies are logged without sending another reply', async (
     reply: async () => { attempts++; throw new Error('Unknown interaction'); },
   } as unknown as Interaction);
   await new Promise<void>(resolve => setImmediate(resolve));
+  await client.destroy();
   assert.equal(attempts, 1);
   assert.equal(errors.length, 1);
 });
@@ -488,6 +490,7 @@ test('startup installs all commands before reporting readiness', async () => {
   assert.equal(logs.some(entry => JSON.stringify(entry).includes('Logged in as')), false);
   release();
   await startup;
+  await client.destroy();
   assert.deepEqual(calls, [commandDefinitions], 'The complete command set is installed exactly once');
   assert.deepEqual(errors, []);
   assert.ok(logs.some(entry => JSON.stringify(entry).includes('Logged in as Linky')));
@@ -503,6 +506,7 @@ test('failed startup registration disconnects without reporting readiness', asyn
   } as unknown as Client<true>);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(destroyed, true);
+  await client.destroy();
   assert.equal(errors.length, 1);
   assert.equal(logs.some(entry => /Logged in as|Serving /.test(JSON.stringify(entry))), false);
 });
@@ -568,6 +572,8 @@ test('startup restores repost ownership and fetches reply excerpts across bot re
     };
     client.emit(Events.MessageCreate, source as unknown as Message<true>);
     await completed;
+    // The final edit signals publication before the handler settles; include late errors.
+    await client.destroy();
     assert.deepEqual(errors, [], `restart ${restart}`);
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].content!.split('\n').slice(0, 2), [
@@ -579,7 +585,6 @@ test('startup restores repost ownership and fetches reply excerpts across bot re
     assert(!sent[0].content!.includes('Older quoted context'));
     assert.deepEqual(sent[0].allowedMentions, { parse: [], users: [sharerId], roles: [], repliedUser: false });
     assert.equal(sourceDeleted, true);
-    await client.destroy();
   }
 });
 
