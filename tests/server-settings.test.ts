@@ -60,6 +60,56 @@ test('malformed settings stop startup instead of silently losing server choices'
   }
 });
 
+test('old-shape settings load with replies absent and do not opt in on save', async () => {
+  const path = file();
+  writeFileSync(path, JSON.stringify({ [FIRST]: true, [SECOND]: { mode: 'reply' } }));
+  const servers = new ServerSettings(path);
+  assert.equal(servers.get(FIRST), true);
+  assert.equal(servers.getPreferences(FIRST).replies ?? false, false);
+  assert.equal(servers.getPreferences(SECOND).replies ?? false, false);
+  await servers.update(SECOND, { translateTweets: true });
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
+    [FIRST]: true, [SECOND]: { mode: 'reply', translateTweets: true },
+  });
+});
+
+for (const replies of [true, false]) {
+  test(`stored replies=${replies} loads and round-trips through partial updates`, async () => {
+    const path = file();
+    writeFileSync(path, JSON.stringify({ [FIRST]: { enabled: true, replies } }));
+    const servers = new ServerSettings(path);
+    assert.equal(servers.getPreferences(FIRST).replies, replies);
+    await servers.update(FIRST, { translateTweets: true });
+    assert.equal(new ServerSettings(path).getPreferences(FIRST).replies, replies);
+    await servers.update(FIRST, { replies: !replies });
+    assert.deepEqual(new ServerSettings(path).getPreferences(FIRST), { replies: !replies, translateTweets: true });
+    await servers.update(FIRST, { replies });
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
+      [FIRST]: { enabled: true, replies, translateTweets: true },
+    });
+  });
+}
+
+for (const replies of ['true', 1, null]) {
+  test(`stored non-boolean replies=${JSON.stringify(replies)} refuses startup`, () => {
+    const path = file();
+    writeFileSync(path, JSON.stringify({ [FIRST]: { replies } }));
+    assert.throws(() => new ServerSettings(path), /Invalid server settings/);
+  });
+
+  test(`non-boolean replies=${JSON.stringify(replies)} patch preserves disk and memory`, async () => {
+    const path = file();
+    writeFileSync(path, JSON.stringify({ [FIRST]: { enabled: true, replies: false } }));
+    const servers = new ServerSettings(path);
+    const before = readFileSync(path, 'utf8');
+    await assert.rejects(servers.update(FIRST, { replies } as unknown as ServerPreferences), /Replies must be a boolean/);
+    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.deepEqual(servers.getPreferences(FIRST), { replies: false });
+    await servers.update(FIRST, { replies: true });
+    assert.equal(new ServerSettings(path).getPreferences(FIRST).replies, true);
+  });
+}
+
 test('concurrent changes retain both servers and apply later changes in order', async () => {
   const path = file();
   const servers = new ServerSettings(path);
