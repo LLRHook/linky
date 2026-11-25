@@ -158,6 +158,8 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
       preferences, operatorChannelIds: settings.channelIds, operatorServerIds: settings.serverIds }, settings.rewritePlatforms.includes('youtube'));
   };
   const replyThreads = new ReplyThreads({
+    historyPath: join(dirname(settings.settingsPath), 'reply-creation-history.json'),
+    onHistoryWarning: reason => log.warn(reason),
     botUserId: () => client.user?.id ?? '',
     enabled: guildId => servers.getPreferences(guildId).replies === true,
     tracked: message => !replyCleanup.has(message.id) && Boolean(registry?.isActive(message.id) ||

@@ -225,7 +225,7 @@ All state is JSON under the data directory (`LINK_SETTINGS_PATH` directory, defa
 docker exec linky ls -la /app/data
 ```
 
-Files: `servers.json` (server settings), `reposts.json` (ownership), `reposts-permission.json` (expendable permission-failure clocks), `youtube-stats.json`, `delivery-diagnostics.json`, `delivery-logs/` (daily files), `media/` (Erome assets, self-hosted only). Never copy these off the host with user data intact; the archive is the sanitized view.
+Files: `reply-creation-history.json` (bounded replies/comments creation IDs; see docs/self-hosting.md), `servers.json` (server settings), `reposts.json` (ownership), `reposts-permission.json` (expendable permission-failure clocks), `youtube-stats.json`, `delivery-diagnostics.json`, `delivery-logs/` (daily files), `media/` (Erome assets, self-hosted only). Never copy these off the host with user data intact; the archive is the sanitized view.
 
 ## Appendix B — Reusable command recipes
 

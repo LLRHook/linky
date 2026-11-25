@@ -1,11 +1,13 @@
+import { ReplyCreationHistory } from '../src/services/ReplyCreationHistory';
+import { atomicWrite } from '../src/services/AtomicWrite';
 import { createBlueskyReplies } from '../src/services/BlueskyReplies';
 import { sanitizeReplyText } from '../src/services/ReplyText';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChannelType, Collection, MessageFlags, MessageType, type ButtonInteraction, type ThreadChannel } from 'discord.js';
+import { ChannelType, Collection, DiscordAPIError, MessageFlags, MessageType, type ButtonInteraction, type ThreadChannel } from 'discord.js';
 import { createXReplies, parseXReplies } from '../src/services/XReplies';
 import { ReplyLookupError, ReplyThreads, replyThreadPayloads, xRepliesButton } from '../src/services/ReplyThreads';
 import { ReplyCleanupJournal } from '../src/services/ReplyCleanupJournal';
@@ -17,7 +19,8 @@ import fixture from './fixtures/x-conversation.json';
 const ID = fixture.status.id;
 const page = () => parseXReplies(fixture, ID, 1795500000000)!;
 const failure = (code: number) => Object.assign(new Error('Discord failure'), { code });
-function harness(lookup?: () => Promise<ReturnType<typeof page> | null>, expectedName = 'Replies to @NASA') {
+function harness(lookup?: () => Promise<ReturnType<typeof page> | null>, expectedName = 'Replies to @NASA', historyPath?: string, onHistoryWarning?: (reason: string) => void, history?: ReplyCreationHistory) {
+  let createError: Error | undefined;
   let tracked = true, enabled = true, permission = true, createCode = 0, fetchCode = 0, calls = 0, creates = 0;
   const sent: ReturnType<typeof replyThreadPayloads>[number][] = [], answers: string[] = [], deleted: string[] = [];
   const own = { type: MessageType.Default, components: replyThreadPayloads(page())[0].components, id: '31', author: { id: 'bot' }, createdTimestamp: Date.now(), delete: async () => { deleted.push('31'); } };
@@ -27,14 +30,16 @@ function harness(lookup?: () => Promise<ReturnType<typeof page> | null>, expecte
     messages: { fetch: async () => new Collection([['31', own], ['32', member]]) },
     permissionsFor: () => ({ has: () => false }), bulkDelete: async () => {},
     setName: async (name: string) => { thread.name = name; }, setArchived: async (value: boolean) => { thread.archived = value; } };
-  const message = { id: '100', guildId: 'guild', channelId: 'channel', author: { id: 'bot' }, hasThread: false,
+  const message = { id: historyPath ? '333333333333333333' : '100', guildId: 'guild', channelId: 'channel', author: { id: 'bot' }, hasThread: false,
     channel: { type: ChannelType.GuildText, permissionsFor: () => ({ has: () => permission }) },
     fetch: async () => message, startThread: async (options: { name: string; autoArchiveDuration: number }) => {
       creates++; assert.equal(options.autoArchiveDuration, 1440); assert.equal(options.name, expectedName);
+      if (createError) throw createError;
       if (createCode) throw failure(createCode); message.hasThread = true; return thread;
     } };
-  const manager = new ReplyThreads({ botUserId: () => 'bot', enabled: () => enabled, tracked: () => tracked,
-    lookup: async () => { calls++; return lookup ? lookup() : page(); }, fetchThread: async () => { if (fetchCode) throw failure(fetchCode); return thread as unknown as ThreadChannel; } });
+  const managerOptions = { history, historyPath, onHistoryWarning, botUserId: () => 'bot', enabled: () => enabled, tracked: () => tracked,
+    lookup: async () => { calls++; return lookup ? lookup() : page(); }, fetchThread: async () => { if (fetchCode) throw failure(fetchCode); return thread as unknown as ThreadChannel; } };
+  const manager = new ReplyThreads(managerOptions);
   const click = (userId = 'user') => {
     const interaction = { customId: `linky:replies:x:${ID}:NASA`, message, guildId: 'guild', user: { id: userId },
       guild: { members: { me: {} } }, deferred: false,
@@ -45,6 +50,7 @@ function harness(lookup?: () => Promise<ReturnType<typeof page> | null>, expecte
   };
   return { manager, message, thread, sent, answers, deleted, click,
     get calls() { return calls; }, get creates() { return creates; },
+    set createError(value: Error | undefined) { createError = value; },
     set enabled(value: boolean) { enabled = value; }, set tracked(value: boolean) { tracked = value; },
     set permission(value: boolean) { permission = value; }, set createCode(value: number) { createCode = value; }, set fetchCode(value: number) { fetchCode = value; } };
 }
@@ -377,4 +383,199 @@ test('oversize Content-Length from Bluesky reaches the private too-many-replies 
   const h = harness(async () => lookup('anchor.example.test/r'));
   await h.click(); assert.equal(h.creates, 0);
   assert.equal(h.answers[0], 'This post has too many replies for Linky to load');
+});
+
+const historyId = '333333333333333333';
+test('F6 cleared HasThread after moderator deletion never recreates or looks up replies', async () => {
+  const h = harness(); await h.click();
+  h.message.hasThread = false; h.fetchCode = 10003;
+  await h.click('another');
+  assert.equal(h.creates, 1); assert.equal(h.calls, 1);
+  assert.equal(h.answers.at(-1), 'The replies thread for this post was removed');
+});
+test('F6 durable history prevents recreation after restart with cleared HasThread', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-history-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json');
+  const first = harness(undefined, undefined, path); first.message.id = historyId;
+  await first.click(); assert.equal(first.creates, 1);
+  const restarted = harness(undefined, undefined, path); restarted.message.id = historyId; restarted.fetchCode = 10003;
+  await restarted.click(); assert.equal(restarted.creates, 0); assert.equal(restarted.calls, 0);
+  assert.equal(restarted.answers.at(-1), 'The replies thread for this post was removed');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), [historyId]);
+});
+test('F6 never-created parent creates and archived remembered thread links without lookup', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-archived-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json');
+  const h = harness(undefined, undefined, path); h.message.id = historyId;
+  await h.click(); assert.equal(h.creates, 1);
+  const restarted = harness(undefined, undefined, path); restarted.message.id = historyId;
+  restarted.thread.archived = true; // No HasThread flag; durable identity still links it.
+  await restarted.click(); assert.equal(restarted.creates, 0); assert.equal(restarted.calls, 0);
+  assert.equal(restarted.answers[0], restarted.thread.url);
+});
+test('F6 capacity evicts oldest snowflake rather than insertion order and keeps file bounded', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-capacity-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json');
+  const oldest = 100000000000000000n;
+  const ids = Array.from({ length: 100000 }, (_, index) => String(oldest + BigInt(99999 - index)));
+  await writeFile(path, JSON.stringify(ids));
+  const h = harness(undefined, undefined, path); h.message.id = historyId;
+  await h.click(); assert.equal(h.creates, 1);
+  const saved = await readFile(path, 'utf8'); const entries = JSON.parse(saved) as string[];
+  assert.equal(entries.length, 100000); assert.ok(Buffer.byteLength(saved) <= 2400002);
+  assert.ok(!entries.includes(String(oldest))); assert.ok(entries.includes(ids[0])); assert.ok(entries.includes(historyId));
+});
+test('F6 corrupt history quarantines with operator warning then persists restart protection', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-corrupt-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); await writeFile(path, '{broken'); const warnings: string[] = [];
+  const h = harness(undefined, undefined, path, reason => warnings.push(reason)); h.message.id = historyId;
+  await h.click(); assert.equal(h.creates, 1); assert.equal(warnings.length, 1); assert.match(warnings[0], /quarantined/);
+  assert.ok((await readdir(dir)).some(name => name.startsWith('history.json.corrupt-')));
+  const restarted = harness(undefined, undefined, path); restarted.message.id = historyId; restarted.fetchCode = 10003;
+  await restarted.click(); assert.equal(restarted.creates, 0);
+});
+
+test('F6 definitive API failure clears intent; write failure refuses Discord creation', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-failures-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); const h = harness(undefined, undefined, path);
+  h.message.id = '333333333333333333'; h.createError = refusal(50013, 403); await h.click();
+  assert.equal(h.creates, 1); assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), []);
+  const restarted = harness(undefined, undefined, path); restarted.message.id = h.message.id;
+  await restarted.click(); assert.equal(restarted.creates, 1); assert.equal(restarted.answers[0], restarted.thread.url);
+  const unwritable = join(dir, 'blocked'); const warnings: string[] = [];
+  const blocked = harness(undefined, undefined, unwritable, reason => warnings.push(reason));
+  await mkdir(unwritable); await blocked.click(); assert.equal(blocked.creates, 0); assert.equal(warnings.length, 1);
+});
+test('F6 concurrent parent reservations survive restart without lost IDs', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-concurrent-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); let began!: () => void, release!: () => void, writes = 0;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const history = new ReplyCreationHistory(path, () => {}, { write: async (file, data) => {
+    if (++writes === 1) { began(); await pending; } await atomicWrite(file, data);
+  } });
+  const first = history.reserve('333333333333333333'); await started;
+  const second = history.reserve('444444444444444444'); release(); await Promise.all([first, second]);
+  const restarted = new ReplyCreationHistory(path);
+  assert.ok(restarted.has('333333333333333333')); assert.ok(restarted.has('444444444444444444')); assert.equal(writes, 2);
+});
+
+const refusal = (code: number, status = 403) => new DiscordAPIError({ message: 'Discord refusal', code }, code, status,
+  'POST', 'https://discord.com/api/v10/channels/333333333333333333/threads', {});
+for (const code of [50013, 160006]) test(`F6 definitive ${code} refusal clears persisted intent and restart can create`, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-refusal-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); const h = harness(undefined, undefined, path); h.createError = refusal(code);
+  await h.click(); assert.equal(h.creates, 1); assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), []);
+  const restarted = harness(undefined, undefined, path); await restarted.click();
+  assert.equal(restarted.creates, 1); assert.equal(restarted.answers[0], restarted.thread.url);
+});
+for (const kind of ['timeout', '5xx']) test(`F6 ambiguous ${kind} retains persisted intent and refuses recreation`, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-ambiguous-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); const h = harness(undefined, undefined, path);
+  h.createError = kind === 'timeout' ? Error('Timeout') : refusal(0, 503); await h.click();
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), [h.message.id]);
+  const restarted = harness(undefined, undefined, path); restarted.fetchCode = 10003; await restarted.click();
+  assert.equal(restarted.creates, 0); assert.equal(restarted.calls, 0); assert.match(restarted.answers[0], /removed/);
+});
+test('F6 failed definitive-refusal clear drops memory intent and retries after backoff', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-clear-fail-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); const warnings: string[] = []; let writes = 0, now = 0;
+  const history = new ReplyCreationHistory(path, reason => warnings.push(reason), { now: () => now, write: async (file, data) => {
+    if (++writes === 2) throw Error('disk unavailable'); await atomicWrite(file, data);
+  } });
+  const h = harness(undefined, undefined, path, undefined, history); h.createError = refusal(50013); await h.click();
+  assert.equal(h.creates, 1); assert.equal(warnings.length, 1); assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), [h.message.id]);
+  assert.equal(history.has(h.message.id), false);
+  const restarted = harness(undefined, undefined, path); restarted.fetchCode = 10003; await restarted.click(); assert.equal(restarted.creates, 0);
+  now = 60000; h.createError = undefined; await h.click('other');
+  assert.equal(h.creates, 2); assert.equal(h.answers.at(-1), h.thread.url);
+});
+test('F6 invalid histories quarantine for size, capacity and schema; invalid saved ID is refused', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-invalid-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const bodies = [' '.repeat(2400003) + '[]', JSON.stringify(Array(100001).fill('333333333333333333')), '["bad"]'];
+  for (const [index, body] of bodies.entries()) {
+    const path = join(dir, `history-${index}.json`); await writeFile(path, body); const warnings: string[] = [];
+    const history = new ReplyCreationHistory(path, reason => warnings.push(reason));
+    assert.equal(warnings.length, 1); assert.match(warnings[0], /quarantined/); assert.ok(history.canCreate());
+    await assert.rejects(history.reserve('bad'), /Invalid reply parent ID/);
+    await history.reserve('333333333333333333'); assert.ok(new ReplyCreationHistory(path).has('333333333333333333'));
+  }
+});
+test('F6 failed quarantine blocks new lookup but existing thread links and restart recovers', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-quarantine-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); await writeFile(path, '{broken'); const warnings: string[] = [];
+  const history = new ReplyCreationHistory(path, reason => warnings.push(reason), { rename: () => { throw Error('locked'); } });
+  const h = harness(undefined, undefined, path, undefined, history); await h.click();
+  assert.equal(h.creates, 0); assert.equal(h.calls, 0); assert.equal(warnings.length, 1); assert.match(warnings[0], /process run/);
+  await assert.rejects(history.reserve(h.message.id), /unavailable/);
+  h.message.hasThread = true; h.thread.messageCount = 1; await h.click(); assert.equal(h.answers[1], h.thread.url);
+  const restarted = harness(undefined, undefined, path); await restarted.click(); assert.equal(restarted.creates, 1);
+});
+test('F6 existing thread write failure links and backs off repeated writes and warnings', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-backoff-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const warnings: string[] = []; let writes = 0, now = 0;
+  const history = new ReplyCreationHistory(join(dir, 'history.json'), reason => warnings.push(reason), {
+    write: async () => { writes++; throw Error('disk unavailable'); }, now: () => now,
+  });
+  const h = harness(undefined, undefined, undefined, undefined, history); h.message.id = '333333333333333333';
+  h.message.hasThread = true; h.thread.messageCount = 1; await h.click(); await h.click();
+  assert.deepEqual(h.answers, [h.thread.url, h.thread.url]); assert.equal(writes, 1); assert.equal(warnings.length, 1);
+  now = 60000; await h.click(); assert.equal(writes, 2);
+});
+test('F6 self-evicted oldest parent never rewrites full history on existing-thread clicks', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-self-evict-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); await writeFile(path, JSON.stringify(Array.from({ length: 100000 }, (_, i) => String(200000000000000000n + BigInt(i)))));
+  let writes = 0; const history = new ReplyCreationHistory(path, () => {}, { write: async () => { writes++; } });
+  const h = harness(undefined, undefined, undefined, undefined, history); h.message.id = '100000000000000000';
+  h.message.hasThread = true; h.thread.messageCount = 1; await h.click(); await h.click();
+  assert.equal(writes, 0); assert.deepEqual(h.answers, [h.thread.url, h.thread.url]);
+});
+test('F6 removal during history write refuses startThread after disk completes', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-removal-write-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  let began!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; }); const pending = new Promise<void>(resolve => { release = resolve; });
+  const history = new ReplyCreationHistory(join(dir, 'history.json'), () => {}, { write: async (file, data) => {
+    began(); await pending; await atomicWrite(file, data);
+  } });
+  const h = harness(undefined, undefined, undefined, undefined, history); h.message.id = '333333333333333333';
+  const click = h.click(); await started;
+  const cleanup = h.manager.cleanup({ guildId: 'guild', channelId: 'channel', threadId: h.message.id });
+  release(); await Promise.all([click, cleanup]); assert.equal(h.creates, 0); assert.match(h.answers[0], /removed/);
+});
+
+test('R11 member-owned thread is not remembered and its deletion permits Linky creation', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-R11-member-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); const h = harness(undefined, undefined, path);
+  h.message.hasThread = true; h.thread.ownerId = 'member'; await h.click();
+  assert.equal(h.answers[0], h.thread.url); assert.equal(h.creates, 0);
+  h.message.hasThread = false; h.thread.ownerId = 'bot'; await h.click();
+  assert.equal(h.creates, 1); assert.equal(h.answers.at(-1), h.thread.url);
+});
+test('R11 replies disabled during save forgets unattempted intent and re-enabled click creates', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-R11-off-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); let h!: ReturnType<typeof harness>, writes = 0;
+  const history = new ReplyCreationHistory(path, () => {}, { write: async (file, data) => {
+    await atomicWrite(file, data); if (++writes === 1) h.enabled = false;
+  } });
+  h = harness(undefined, undefined, path, undefined, history); await h.click();
+  assert.equal(h.creates, 0); assert.match(h.answers[0], /removed/);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), []);
+  h.enabled = true; await h.click('other'); assert.equal(h.creates, 1);
+});
+test('R11 mixed-length snowflakes evict the numerically oldest parent', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-R11-lengths-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); const oldest = '999999999999999999';
+  const newer = Array.from({ length: 99999 }, (_, i) => String(1000000000000000000n + BigInt(i)));
+  await writeFile(path, JSON.stringify([...newer, oldest])); const history = new ReplyCreationHistory(path);
+  await history.reserve('2000000000000000000'); const restored = new ReplyCreationHistory(path);
+  assert.equal(restored.has(oldest), false); assert.equal(restored.has(newer[0]), true);
+});
+for (const code of [160004, 160005]) test(`R11 existing-thread conflict ${code} keeps durable intent`, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'F6-R11-conflict-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'history.json'); const h = harness(undefined, undefined, path);
+  h.createError = refusal(code, 400); h.thread.messageCount = 1; await h.click();
+  assert.equal(h.creates, 1); assert.equal(h.answers[0], h.thread.url);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), [h.message.id]);
+  const restarted = harness(undefined, undefined, path); restarted.fetchCode = 10003; await restarted.click();
+  assert.equal(restarted.creates, 0); assert.match(restarted.answers[0], /removed/);
 });
