@@ -1,3 +1,4 @@
+import { linkedInCommentsUrl } from './LinkedInComments';
 import { parsePostId, type BlueskyPost } from './BlueskyPost';
 import { ButtonBuilder, ButtonStyle, ChannelType, ComponentType, MessageFlags, MessageType, PermissionFlagsBits,
   type ButtonInteraction, type Message, type ThreadChannel } from 'discord.js';
@@ -10,7 +11,7 @@ export interface PublicReply {
 }
 /** Counts describe the unfiltered provider page, before the adapter limits the retained entries. */
 export interface ReplyPage {
-  N: number | string; countTime: number; r: number; m: number; replies: PublicReply[]; orderLabel: string; source: string; maxShown?: number; threadHandle?: string;
+  commentsUrl?: string; N: number | string; countTime: number; r: number; m: number; replies: PublicReply[]; orderLabel: string; source: string; maxShown?: number; threadHandle?: string;
 }
 export interface ReplyTarget { id: string; handle: string; valid: (message: Message) => boolean; lookup: () => Promise<ReplyPage | null>; name: string }
 export interface ReplyCleanupTarget { guildId: string; channelId: string; threadId: string }
@@ -45,12 +46,12 @@ export class ReplyLookupError extends Error {}
 export function replyThreadPayloads(page: ReplyPage) {
   const youtube = page.source === 'YouTube';
   const replies = page.replies.slice(0, youtube ? 25 : page.maxShown ?? 10);
-  const header = youtube ? `Showing ${replies.length} of ${page.N} comments from YouTube, in YouTube's relevance order. Count as of <t:${Math.floor(page.countTime / 1000)}:f>.` : `Showing ${replies.length} of ${page.N} replies from ${page.source}, ${page.orderLabel} (${page.source} returned ${page.r}; Linky hid ${page.m}). Count as of <t:${Math.floor(page.countTime / 1000)}:f>.`;
+  const header = page.commentsUrl ? `Showing ${replies.length} of ${page.N} comments from LinkedIn's public page, in LinkedIn's order (LinkedIn returned ${page.r}; Linky hid ${page.m}). Count as of <t:${Math.floor(page.countTime / 1000)}:f>. [Open post](<${page.commentsUrl}>)` : youtube ? `Showing ${replies.length} of ${page.N} comments from YouTube, in YouTube's relevance order. Count as of <t:${Math.floor(page.countTime / 1000)}:f>.` : `Showing ${replies.length} of ${page.N} replies from ${page.source}, ${page.orderLabel} (${page.source} returned ${page.r}; Linky hid ${page.m}). Count as of <t:${Math.floor(page.countTime / 1000)}:f>.`;
   const groups: { type: ComponentType.TextDisplay; content: string }[][] = [];
   let components: { type: ComponentType.TextDisplay; content: string }[] = [{ type: ComponentType.TextDisplay, content: header }];
   let size = header.length, entries = 0;
   for (const reply of replies) {
-    const content = (youtube ? `**${sanitizeReplyText(reply.name, 100, true)}** \u00b7 ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}\n[Open video](<${reply.url}>)` : `**${sanitizeReplyText(reply.name, 100, true)}** [@${reply.handle.replace(/@/g, '@\u200b')}](<${reply.profileUrl}>) · ${reply.likes} likes · <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}${reply.hasMedia ? '\n· has media' : ''}\n[Open reply](<${reply.url}>)`);
+    const content = page.commentsUrl ? `**${sanitizeReplyText(reply.name, 300, true)}** \u00b7 ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>\n${reply.text}` : (youtube ? `**${sanitizeReplyText(reply.name, 100, true)}** \u00b7 ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}\n[Open video](<${reply.url}>)` : `**${sanitizeReplyText(reply.name, 100, true)}** [@${reply.handle.replace(/@/g, '@\u200b')}](<${reply.profileUrl}>) · ${reply.likes} likes · <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}${reply.hasMedia ? '\n· has media' : ''}\n[Open reply](<${reply.url}>)`);
     if (size + content.length > 3800 || entries >= 10) { groups.push(components); components = []; size = 0; entries = 0; }
     components.push({ type: ComponentType.TextDisplay, content }); size += content.length; entries++;
   }
@@ -70,7 +71,7 @@ export class ReplyThreads {
     botUserId: () => string;
     enabled: (guildId: string) => boolean;
     tracked: (message: Message) => boolean;
-    lookup: (id: string, platform?: 'x' | 'bsky') => Promise<ReplyPage | null>;
+    lookup: (id: string, platform?: 'x' | 'bsky' | 'linkedin') => Promise<ReplyPage | null>;
     fetchThread: (id: string) => Promise<ThreadChannel | null>;
     now?: () => number;
     resolveTarget?: (interaction: ButtonInteraction) => ReplyTarget | undefined;
@@ -89,7 +90,8 @@ export class ReplyThreads {
     const bluesky = interaction.customId.startsWith('linky:replies:bsky:') ? interaction.customId.slice(19) : '';
     const identity = parsePostId(bluesky);
     const target = this.options.resolveTarget?.(interaction);
-    if (!match && !identity && !target) return false;
+    const linkedin = /^linky:replies:linkedin:(\d{15,22})$/.exec(interaction.customId);
+    if (!match && !identity && !target && !linkedin) return false;
     const message = interaction.message;
     const answer = async (content: string) => {
       const payload = { content: target ? content.replace(/Replies/g, 'Comments').replace(/replies/g, 'comments') : content, allowedMentions: { parse: [] as never[] } };
@@ -100,6 +102,8 @@ export class ReplyThreads {
         message.author.id !== this.options.botUserId() || !(target ? target.valid(message) : this.options.tracked(message))) {
       await answer('Replies are unavailable for this post'); return true;
     }
+    const commentsUrl = linkedin ? linkedInCommentsUrl(message, linkedin[1]) : null;
+    if (linkedin && !commentsUrl) { await answer('No comments Linky can show for this post'); return true; }
     const member = interaction.guild?.members.me;
     const permissions = member && 'permissionsFor' in message.channel ? message.channel.permissionsFor(member) : null;
     const missing = ([['Create Public Threads', PermissionFlagsBits.CreatePublicThreads],
@@ -109,7 +113,7 @@ export class ReplyThreads {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let flight = this.flights.get(message.id);
     if (!flight) {
-      flight = this.open(message, target?.id ?? (match ? match[1] : bluesky), target?.handle ?? (match ? match[2] : identity!.actor), interaction.user.id, match ? 'x' : 'bsky', target);
+      flight = this.open(message, target?.id ?? (match ? match[1] : commentsUrl ?? bluesky), target?.handle ?? (match ? match[2] : identity?.actor ?? ''), interaction.user.id, match ? 'x' : linkedin ? 'linkedin' : 'bsky', target);
       this.flights.set(message.id, flight);
       void flight.finally(() => this.flights.delete(message.id)).catch(() => {});
     }
@@ -123,7 +127,7 @@ export class ReplyThreads {
     return true;
   }
 
-  private async open(message: Message, id: string, handle: string, userId: string, platform: 'x' | 'bsky', target?: ReplyTarget): Promise<string> {
+  private async open(message: Message, id: string, handle: string, userId: string, platform: 'x' | 'bsky' | 'linkedin', target?: ReplyTarget): Promise<string> {
     if (this.removing.has(message.id)) return REMOVED;
     const latest = await message.fetch();
     if (!(target ? target.valid(latest) : this.options.tracked(latest))) return REMOVED;
@@ -142,12 +146,12 @@ export class ReplyThreads {
       this.users.set(userId, now + 10_000); this.channels.set(message.channelId, [...times, now]);
     }
     const page = await (target ? target.lookup() : this.options.lookup(id, platform));
-    if (!page?.replies.length) return EMPTY;
+    if (!page?.replies.length) return platform === 'linkedin' ? 'No comments Linky can show for this post' : EMPTY;
     if (this.removing.has(message.id) || !(target ? target.valid(latest) : this.options.tracked(latest)) || !this.options.enabled(latest.guildId!)) return REMOVED;
     if (!thread) {
       // Keep history across completed flights; cap memory by conservatively disabling skips once full.
       if (this.created.size < 10_000) this.created.add(message.id); else this.creationHistoryFull = true;
-      const name = (target?.name ?? `Replies to @${page.threadHandle ?? handle}`).replace(/[\u0000-\u001f\u007f]/g, '');
+      const name = (target?.name ?? `${platform === 'linkedin' ? 'Comments on ' : 'Replies to @'}${page.threadHandle ?? handle}`).replace(/[\u0000-\u001f\u007f]/g, '');
       try { thread = await latest.startThread({ name: name.length > 100 ? name.slice(0, 99) + '\u2026' : name, autoArchiveDuration: 1440 }); }
       catch (error) {
         if (![160004, 160005].includes(code(error) ?? 0)) throw error;

@@ -1,3 +1,4 @@
+import { linkedInCommentsButton } from './LinkedInComments';
 import type { BlueskyPost } from './BlueskyPost';
 import { blueskyRepliesButton, xRepliesButton } from './ReplyThreads';
 import { mapLinks, visibleLink } from './LinkTokens';
@@ -250,7 +251,7 @@ export function createLinkRepostHandler(
         rollback = undefined;
       };
       const articleStage = articleLinks.length ? delivery.context.trace?.startStage('resolve') : undefined;
-      const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, delivery.context.signal) : [];
+      const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, delivery.context.signal, preferences.replies === true) : [];
       // Truth Social and LinkedIn media is uploaded with its card; without Attach Files the card links the original addresses.
       const articles = prepared && fitArticleFiles(prepared, Boolean(permissions?.has(PermissionFlagsBits.AttachFiles)));
       articleStage?.finish(articles ? 'ok' : delivery.context.signal?.aborted ? 'cancelled' : 'unavailable');
@@ -672,7 +673,7 @@ export function createLinkRepostHandler(
       const albumControl = originalMedia && eromeSource && rememberRepost ? albums?.register({ media: originalMedia,
         source: eromeSource, requesterId: message.author.id, guildId: message.guildId, channelId,
         messageId: replacement.id, ...(reply ? { sourceMessageId: message.id } : {}), mode: 'automatic' }) : undefined;
-      const replyButton = xRepliesButton(repliesTweet, message.channel.type, preferences.replies === true) ?? blueskyRepliesButton(repliesBluesky, message.channel.type, preferences.replies === true);
+      const replyButton = xRepliesButton(repliesTweet, message.channel.type, preferences.replies === true) ?? blueskyRepliesButton(repliesBluesky, message.channel.type, preferences.replies === true) ?? linkedInCommentsButton(articleEmbeds(articles), message.channel.type, preferences.replies === true);
       const finalControls = () => repostControls(inputContent, { replies: replyButton });
       if (rememberRepost) await replacement.edit({
         components: originalMedia ? eromeMediaComponents(originalMedia, content,

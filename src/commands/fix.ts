@@ -1,3 +1,4 @@
+import { linkedInCommentsButton } from '../services/LinkedInComments';
 import type { BlueskyPost } from '../services/BlueskyPost';
 import { blueskyRepliesButton, xRepliesButton, type ReplyCleanupTarget } from '../services/ReplyThreads';
 import { ActionRowBuilder, ApplicationCommandType, ApplicationIntegrationType, ContextMenuCommandBuilder, InteractionContextType, MessageFlags,
@@ -240,7 +241,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     }
     if (articleLinks.length) context.trace?.setPath('explicit');
     const articleStage = articleLinks.length ? context.trace?.startStage('resolve') : undefined;
-    const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal) : [];
+    const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, context.signal, preferences.replies === true) : [];
     // Truth Social and LinkedIn media is uploaded with its card; without Attach Files the card links the original addresses.
     const articles = prepared && fitArticleFiles(prepared,
       !interaction.inGuild() || Boolean(interaction.appPermissions?.has(PermissionFlagsBits.AttachFiles)), eromeBudget);
@@ -352,7 +353,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
         : blueskyPanel ? blueskyPanelComponents(blueskyPanel, '') : instagramPanelComponents(instagramPanel!, '') : null;
     const repliesButton = () => preferences.replies === true && !privateResponse &&
       interaction.authorizingIntegrationOwners?.[ApplicationIntegrationType.GuildInstall] === interaction.guildId && interaction.guild?.members.me
-      ? xRepliesButton(repliesTweet, interaction.channel?.type, true) ?? blueskyRepliesButton(repliesBluesky, interaction.channel?.type, true) : undefined;
+      ? xRepliesButton(repliesTweet, interaction.channel?.type, true) ?? blueskyRepliesButton(repliesBluesky, interaction.channel?.type, true) ?? linkedInCommentsButton(articleEmbeds(articles), interaction.channel?.type, true) : undefined;
     const confirmedButtonRows = () => {
       const replyButton = repliesButton();
       const controls = [...buttons, ...(replyButton ? [replyButton] : [])];

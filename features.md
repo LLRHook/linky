@@ -715,7 +715,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
   - 2026-11-24 decision: Copied comments deleted at the 24 h control expiry; the existing [link] replacement kept as display sanitising under III.I.4. Victor delegated the decision to the driver on 2026-11-24 ("have the driver do all that it doesnt need me I allow it"); the driver chose the recommended option.
 
 ### [FEAT-1795544485] Comments thread for LinkedIn posts from the page's own JSON-LD comments
-- [ ] **Priority:** low
+- [x] **Priority:** low
 - **Area:** previews
 - **File(s):** src/services/LinkedIn.ts, src/services/ArticlePreview.ts, src/services/ReplyThreads.ts, docs/article-previews.md, docs/self-hosting.md, README.md
 - **Req:** none (Victor request, 2026-11-24, via driver-replies-research)
@@ -734,6 +734,10 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Test plan:** Captured-shape JSON-LD fixtures in tests/reply-threads.test.ts and tests/linkedin.test.ts: 6 and 9 comments, an empty `comment` array, an `@id` mismatch, entries without text or author, overlong text and names, a non-ISO date. Mutations: skip the `@id` check, keep entries without an author, raise the cap, follow redirects. Live check from the bot host: one public LinkedIn post shows the same comments (this is the first unproven step: the bot host and Linky's production agent were not tested).
 - **Out of scope:** Comment replies, reactions breakdown, commenter profile links (the page has none), LinkedIn's official API, and pages that need a login.
 - **Bump:** minor
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** shipped-pending-migration
+- **Implementation:** Rebased onto add78a9 preserving YouTube target routing, rendering, exact-creation evidence and two-phase cleanup. R9 follow-ups: cached opted-in null comments are authoritative; LinkedIn adapter is required by createReplyLookup; off-parser CPU path and 300-character author rendering have killing tests. E142 cache/budget isolation retained.
+- **Docs:** README.md, docs/article-previews.md, docs/self-hosting.md, settings and help text. Hosted privacy notice in linky-web remains an approved gap.
 - **Log:**
   - 2026-11-24 decision: LinkedIn User Agreement 8.2 risk for commenters' names and text accepted: Victor delegated the decision to the driver on 2026-11-24 ("have the driver do all that it doesnt need me I allow it"); the driver chose the recommended option (accept; the shipped card relies on the same clause).
+  - 2026-11-24 decision: Driver E142 relaxed E123 condition 3: a separate bounded memory cache for comments-only refreshes is allowed; no disk retention and no writes, merges, shortening or eviction of the card cache. Hosted privacy notice and live-host probe remain external gaps; live probe must check whether zero-like comments omit LikeAction.

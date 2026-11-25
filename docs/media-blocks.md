@@ -58,4 +58,4 @@ The click fetches a public FxTwitter conversation page before creating a public 
 Reply cleanup recognizes a dedicated container marker and Default/Reply message types; it never removes unrelated Linky reposts, manual outputs or Discord system messages. Manual block controls expose Replies only after the controls/media re-verification has succeeded. Failure notices build their controls separately and carry no Replies button.
 
 For Bluesky public reply threads, including the `depth=1` / `parentHeight=0` AppView request,
-limits, filtering and cleanup, see [Replies and comments on X, Bluesky and YouTube](../README.md#replies-and-comments-on-x-bluesky-and-youtube).
+limits, filtering and cleanup, see [Replies and comments on X, Bluesky, YouTube and LinkedIn](../README.md#replies-and-comments-on-x-bluesky-youtube-and-linkedin).
