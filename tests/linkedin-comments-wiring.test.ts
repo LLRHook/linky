@@ -26,9 +26,14 @@ test('production bot adapter composition calls the article comments lookup', asy
   assert.equal(await lookup(url, 'linkedin'), page); assert.deepEqual(calls, [url]);
 });
 
-for (const enabled of [true, false]) test(`/fix LinkedIn production button and comments preparation opt-in ${enabled}`, async () => {
+for (const [enabled, video, usable] of [[true, false, true], [false, false, true], [true, true, true], [true, true, false], [false, true, true]]) test(`/fix LinkedIn production button and comments preparation opt-in ${enabled}, video=${video}, usable=${usable}`, async () => {
   const events: InteractionEvent[] = [], flags: unknown[] = [];
-  const embeds = formatLinkedInPost(parseLinkedInPost([ld()], url)!);
+  const movie = 'https://dms.licdn.com/playlist/vid/sample?e=2147483647&v=beta&t=abcdefgh';
+  const data = video ? { ...ld(url, usable ? [comment({ author: undefined, creator: { '@type': 'Person', name: 'Synthetic Member' } })] : []),
+    '@type': 'VideoObject', creator: { name: 'Synthetic Publisher' }, description: 'Video', contentUrl: movie } : ld();
+  const post = parseLinkedInPost([data], url)!;
+  if (video) post.files = [{ name: `linkedin-${id}.mp4`, url: movie, data: new Uint8Array([1]) }];
+  const embeds = formatLinkedInPost(post);
   const card = { id: '333333333333333333', channelId: 'channel', author: { id: 'bot' }, components: [], embeds: embeds.map(e => ({ ...e, toJSON: () => e })), fetch: async () => card };
   const input = commandInteraction(events, {
     isChatInputCommand: () => true, guildId: 'guild', channelId: 'channel', client: Object.assign(new EventEmitter(), { user: { id: 'bot' } }),
@@ -36,17 +41,17 @@ for (const enabled of [true, false]) test(`/fix LinkedIn production button and c
     channel: { type: ChannelType.GuildText, isThread: () => false },
     appPermissions: new PermissionsBitField(PermissionFlagsBits.AttachFiles), memberPermissions: new PermissionsBitField(PermissionFlagsBits.SendMessages),
     attachmentSizeLimit: 10 * 1024 * 1024, options: { getString: () => url },
-    editReply: async (payload: unknown) => { events.push({ name: 'edit', payload }); return card as unknown as Message; },
+    editReply: async (payload: unknown) => { events.push({ name: 'edit', payload }); Object.assign(card, { components: ((payload as { components?: { toJSON?: () => unknown }[] }).components ?? []).map(c => ({ toJSON: () => c.toJSON ? c.toJSON() : c })) }); return card as unknown as Message; },
     fetchReply: async () => card as unknown as Message,
   });
   await execute(input as unknown as ChatInputCommandInteraction,
     { discordToken: '', channelIds: [], serverIds: [], rewritePlatforms: ['articles'], translateTweets: false, settingsPath: 'unused' }, {
       serverPreferences: () => ({ replies: enabled }),
-      lookupArticle: async (source, _signal, comments) => { flags.push(comments); return { source, url, title: 'LinkedIn post', publisher: 'LinkedIn', linkedIn: parseLinkedInPost([ld()], url)! }; },
+      lookupArticle: async (source, _signal, comments) => { flags.push(comments); return { source, url, title: 'LinkedIn post', publisher: 'LinkedIn', linkedIn: post, linkedInComments: parseLinkedInComments([data], url, 0) }; },
       verifyPreview: async (_message, expected) => ({ ok: true, missing: [], videoMetadata: false, attributed: [...expected] }),
     });
   assert.deepEqual(flags, [enabled]);
-  assert.equal(JSON.stringify(events).includes('Comments (12)'), enabled, JSON.stringify(events));
+  assert.equal(JSON.stringify(events).includes('Comments (12)'), enabled && usable, JSON.stringify(events));
 });
 
 test('comment admission has two flights and ten per minute without using ordinary card slots or requests', async () => {
@@ -133,7 +138,7 @@ test('multi-item JSON-LD selects comments from the matching post only', () => {
 test('video comments refresh never downloads media or extends the five-second window', { timeout: 1000 }, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const calls: string[] = [], signals: AbortSignal[] = [];
-  const video = { ...ld(), '@type': 'VideoObject', creator: { name: 'Sample' }, description: 'Video', contentUrl: 'https://dms.licdn.com/playlist/vid/sample?e=2147483647&v=beta&t=abcdefgh' };
+  const video = { ...ld(url, [comment({ author: undefined, creator: { '@type': 'Person', name: 'Synthetic Member' } })]), '@type': 'VideoObject', creator: { name: 'Sample' }, description: 'Video', contentUrl: 'https://dms.licdn.com/playlist/vid/sample?e=2147483647&v=beta&t=abcdefgh' };
   const lookup = createArticleLookup({ resolve4: async () => ['1.1.1.1'], connect: async (options, signal) => {
     calls.push(String(options.hostname)); signals.push(signal); return response(video);
   } });

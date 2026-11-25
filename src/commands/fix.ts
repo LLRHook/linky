@@ -353,7 +353,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
         : blueskyPanel ? blueskyPanelComponents(blueskyPanel, '') : instagramPanelComponents(instagramPanel!, '') : null;
     const repliesButton = () => preferences.replies === true && !privateResponse &&
       interaction.authorizingIntegrationOwners?.[ApplicationIntegrationType.GuildInstall] === interaction.guildId && interaction.guild?.members.me
-      ? xRepliesButton(repliesTweet, interaction.channel?.type, true) ?? blueskyRepliesButton(repliesBluesky, interaction.channel?.type, true) ?? linkedInCommentsButton(articleEmbeds(articles), interaction.channel?.type, true) : undefined;
+      ? xRepliesButton(repliesTweet, interaction.channel?.type, true) ?? blueskyRepliesButton(repliesBluesky, interaction.channel?.type, true) ?? linkedInCommentsButton(articleEmbeds(articles), interaction.channel?.type, true, articles.length === 1 ? articles[0].linkedInComments : null) : undefined;
     const confirmedButtonRows = () => {
       const replyButton = repliesButton();
       const controls = [...buttons, ...(replyButton ? [replyButton] : [])];
@@ -387,7 +387,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
         failureText: eromeSource ? () => eromeAllowed()
           ? 'The media preview could not be confirmed. The album is unchanged and available below.'
           : 'Erome previews are no longer allowed here. The album is unchanged and available below.' : undefined,
-        preferencesCurrent: () => preferencesCurrent() && (!eromeSource || eromeAllowed()), sourceCurrent, expected, observePreview });
+        preferencesCurrent: () => preferencesCurrent() && (!eromeSource || eromeAllowed()), sourceCurrent, confirmedButtonRows, expected, observePreview });
       return;
     }
     previewWatch = nativeExpected.length ? armPreview?.(interaction.channelId, nativeExpected, context) : undefined;

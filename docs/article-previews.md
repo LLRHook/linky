@@ -62,10 +62,12 @@ The initial requested example is the Manhattan Institute's *The Fiscal Impact of
 `/settings replies:true` also offers **Comments (N)** on a confirmed single LinkedIn
 post in a server text or announcement channel. It is off by default; DMs, personal
 installs and threads have no control. N is the count displayed on the card (including
-its compact notation); zero or unknown counts have no button.
+its compact notation); zero or unknown counts have no button. The button also requires
+at least one usable comment parsed from the same page during card preparation.
 
 The source is the matching post's own signed-out JSON-LD `comment` array, in
-LinkedIn's order, up to ten usable comments. Invalid entries are counted as hidden;
+LinkedIn's order, up to ten usable comments. Video comments use `creator`; text-post
+comments use `author`, matching the parent post type. Invalid entries are counted as hidden;
 valid entries beyond ten are unshown, rather than hidden. The header distinguishes
 shown, total, returned and hidden counts and links the post. Author names are plain
 text: the page supplies no commenter profile or comment permalink. Text is sanitized
