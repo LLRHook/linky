@@ -1,3 +1,4 @@
+import { ChannelType } from 'discord.js';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { afterEach, test, type TestContext } from 'node:test';
@@ -96,7 +97,7 @@ test('Bluesky block readiness needs every image fetched as an image', () => {
   assert.equal(panelMediaReady({ components: block }, POST.images), false, 'not yet fetched');
 });
 
-function automatic({ ready = true, mode = 'replace' as 'replace' | 'reply', lookup = async () => POST as BlueskyPost | null,
+function automatic({ replies = false, ready = true, mode = 'replace' as 'replace' | 'reply', lookup = async () => POST as BlueskyPost | null,
   verifyPreview = forbidden.forbid('A block carries its own media; no native card is checked') as
     (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult> } = {}) {
   const client = new Client({ intents: [] }); Object.assign(client, { user: { id: BOT } });
@@ -122,7 +123,7 @@ function automatic({ ready = true, mode = 'replace' as 'replace' | 'reply', look
     content: `Look ${SOURCE}`, author: { id: SHARER, bot: false },
     guild: { members: { me: { id: BOT } }, premiumTier: 0 },
     fetchReference: forbidden.forbid('A source without a reply reference must not look one up'),
-    channel: sendableChannel({
+    channel: sendableChannel({ type: ChannelType.GuildText,
       send: async (payload: MessageCreateOptions) => {
         sends.push(payload);
         if (!(Number(payload.flags ?? 0) & MessageFlags.IsComponentsV2)) { events.push('send card'); return card; }
@@ -140,7 +141,7 @@ function automatic({ ready = true, mode = 'replace' as 'replace' | 'reply', look
       warn: (...args: unknown[]) => logs.push(args), error: (...args: unknown[]) => logs.push(args) }, undefined, {
       platforms: ['bluesky'], lookupBluesky: async id => { lookups.push(id); return lookup(); },
       rememberRepost: async () => { events.push('ownership'); return true; }, verifyPreview,
-      ...(mode === 'reply' ? { serverPreferences: () => ({ mode }) } : {}),
+      serverPreferences: () => ({ mode, replies }),
     });
     try { await handler(source as unknown as Message); } finally { await client.destroy(); }
   };
@@ -300,3 +301,24 @@ for (const send of [true, false]) {
     assert.equal(f.client.listenerCount(Events.Raw), 0);
   });
 }
+
+for (const replies of [false, true]) test(`Bluesky automatic final controls reuse count with replies=${replies}`, async () => {
+  const f = automatic({ replies, lookup: async () => ({ ...POST, replyCount: 42 }) }); await f.run();
+  assert.deepEqual(f.lookups, [`${HANDLE}/${RKEY}`]);
+  assert.equal(JSON.stringify(f.edits.at(-1)).includes('Replies (42)'), replies);
+});
+
+for (const images of [true, false]) test(`/fix Bluesky replies control on confirmed ${images ? 'block' : 'card'}`, async () => {
+  const f = manual();
+  Object.assign(f.interaction, { authorizingIntegrationOwners: { 0: 'guild' }, guild: { members: { me: { id: BOT } } } });
+  Object.assign(f.interaction.channel!, { type: ChannelType.GuildText });
+  await execute(f.interaction, config, { serverPreferences: () => ({ replies: true }),
+    lookupBluesky: async () => ({ ...POST, images: images ? POST.images : [], replyCount: 42 }), verifyPreview: nativeOk });
+  assert.match(JSON.stringify(f.events.filter(e => e.name === 'edit').at(-1)), /Replies \(42\)/);
+});
+
+test('automatic confirmed Bluesky card receives the Replies control', async () => {
+  const f = automatic({ replies: true, lookup: async () => ({ ...POST, images: [], replyCount: 42 }), verifyPreview: nativeOk });
+  await f.run(); assert.deepEqual(f.lookups, [`${HANDLE}/${RKEY}`]);
+  assert.match(JSON.stringify(f.edits.at(-1)), /Replies \(42\)/);
+});

@@ -1,4 +1,5 @@
-import { xRepliesButton, type ReplyCleanupTarget } from '../services/ReplyThreads';
+import type { BlueskyPost } from '../services/BlueskyPost';
+import { blueskyRepliesButton, xRepliesButton, type ReplyCleanupTarget } from '../services/ReplyThreads';
 import { ActionRowBuilder, ApplicationCommandType, ApplicationIntegrationType, ContextMenuCommandBuilder, InteractionContextType, MessageFlags,
   PermissionFlagsBits, SlashCommandBuilder,
   type ButtonBuilder, type ButtonInteraction, type ChatInputCommandInteraction, type InteractionEditReplyOptions, type Message,
@@ -311,10 +312,11 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
     }
     // A lone X post is one block in any language; the translation setting decides only which words it shows.
     let repliesTweet: TweetTranslation | undefined;
+    let repliesBluesky: BlueskyPost | undefined;
     const tweetPanel = lookupTweet && links.length === 1 && parseSocialUrl(links[0].source)?.platform === 'x'
       ? await tweetPostPanel(links[0].source, activeConfig.rewritePlatforms, async (id, options) => { const tweet = await lookupTweet(id, options); repliesTweet = tweet ?? undefined; return tweet; }, Boolean(tweetTranslator)) : undefined;
     const blueskyPanel = !tweetPanel && lookupBluesky && links.length === 1 && parseSocialUrl(links[0].source)?.platform === 'bluesky'
-      ? await blueskyPostPanel(links[0].source, activeConfig.rewritePlatforms, lookupBluesky) : undefined;
+      ? await blueskyPostPanel(links[0].source, activeConfig.rewritePlatforms, async id => { const post = await lookupBluesky(id); repliesBluesky = post ?? undefined; return post; }) : undefined;
     const presentation = await addInstagramMedia(original, tweetPresentation ?? { content: rendered }, lookupInstagram, 1800);
     if (context.signal?.aborted || !preferencesCurrent()) {
       attempt.finish(context.signal?.aborted ? 'timeout' : 'disabled');
@@ -350,7 +352,7 @@ export async function execute(interaction: ChatInputCommandInteraction | Message
         : blueskyPanel ? blueskyPanelComponents(blueskyPanel, '') : instagramPanelComponents(instagramPanel!, '') : null;
     const repliesButton = () => preferences.replies === true && !privateResponse &&
       interaction.authorizingIntegrationOwners?.[ApplicationIntegrationType.GuildInstall] === interaction.guildId && interaction.guild?.members.me
-      ? xRepliesButton(repliesTweet, interaction.channel?.type, true) : undefined;
+      ? xRepliesButton(repliesTweet, interaction.channel?.type, true) ?? blueskyRepliesButton(repliesBluesky, interaction.channel?.type, true) : undefined;
     const confirmedButtonRows = () => {
       const replyButton = repliesButton();
       const controls = [...buttons, ...(replyButton ? [replyButton] : [])];

@@ -1,9 +1,7 @@
+import { record, count } from './JsonFields';
 import { readBoundedJson } from './BoundedJson';
 import type { ReplyPage } from './ReplyThreads';
 
-const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
-  ? value as Record<string, unknown> : {};
-const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const id = (value: unknown): value is string => typeof value === 'string' && /^\d{1,20}$/.test(value);
 
 /** Validate the one public conversation page; count each discarded entry once. */

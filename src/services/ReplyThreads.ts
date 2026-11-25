@@ -1,3 +1,4 @@
+import { parsePostId, type BlueskyPost } from './BlueskyPost';
 import { ButtonBuilder, ButtonStyle, ChannelType, ComponentType, MessageFlags, MessageType, PermissionFlagsBits,
   type ButtonInteraction, type Message, type ThreadChannel } from 'discord.js';
 import { sanitizeReplyText } from './ReplyText';
@@ -7,9 +8,9 @@ export interface PublicReply {
   name: string; handle: string; profileUrl: string; url: string; text: string;
   likes: number; timestamp: number; hasMedia: boolean;
 }
-/** Counts describe the unfiltered provider page, even when only ten entries are retained. */
+/** Counts describe the unfiltered provider page, before the adapter limits the retained entries. */
 export interface ReplyPage {
-  N: number; countTime: number; r: number; m: number; replies: PublicReply[]; orderLabel: string; source: string;
+  N: number; countTime: number; r: number; m: number; replies: PublicReply[]; orderLabel: string; source: string; maxShown?: number; threadHandle?: string;
 }
 export interface ReplyCleanupTarget { guildId: string; channelId: string; threadId: string }
 export const REPLY_FLAGS = MessageFlags.IsComponentsV2 | MessageFlags.SuppressEmbeds | MessageFlags.SuppressNotifications;
@@ -29,9 +30,19 @@ export function xRepliesButton(tweet: TweetTranslation | undefined, type: Channe
       .setCustomId(`linky:replies:x:${statusId}:${tweet.author.handle}`) : undefined;
 }
 
+/** Use the validated DID identity so even a 253-character handle fits the control. */
+export function blueskyRepliesButton(post: BlueskyPost | undefined, type: ChannelType | undefined, enabled: boolean) {
+  const rkey = post?.url.split('/post/')[1];
+  const identity = post && rkey ? `${post.author.did}/${rkey}` : '';
+  const customId = `linky:replies:bsky:${identity}`;
+  return enabled && repliesChannel(type) && (post?.replyCount ?? 0) > 0 && parsePostId(identity) && customId.length <= 100
+    ? new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel(`Replies (${post!.replyCount})`).setCustomId(customId) : undefined;
+}
+export class ReplyLookupError extends Error {}
+
 /** Greedily pack displays, including the header in the first message's character budget. */
 export function replyThreadPayloads(page: ReplyPage) {
-  const replies = page.replies.slice(0, 10);
+  const replies = page.replies.slice(0, page.maxShown ?? 10);
   const header = `Showing ${replies.length} of ${page.N} replies from ${page.source}, ${page.orderLabel} (${page.source} returned ${page.r}; Linky hid ${page.m}). Count as of <t:${Math.floor(page.countTime / 1000)}:f>.`;
   const groups: { type: ComponentType.TextDisplay; content: string }[][] = [];
   let components: { type: ComponentType.TextDisplay; content: string }[] = [{ type: ComponentType.TextDisplay, content: header }];
@@ -57,7 +68,7 @@ export class ReplyThreads {
     botUserId: () => string;
     enabled: (guildId: string) => boolean;
     tracked: (message: Message) => boolean;
-    lookup: (id: string) => Promise<ReplyPage | null>;
+    lookup: (id: string, platform?: 'x' | 'bsky') => Promise<ReplyPage | null>;
     fetchThread: (id: string) => Promise<ThreadChannel | null>;
     now?: () => number;
   }) {}
@@ -70,7 +81,9 @@ export class ReplyThreads {
 
   async handle(interaction: ButtonInteraction): Promise<boolean> {
     const match = /^linky:replies:x:(\d{1,20}):([A-Za-z0-9_]{1,15})$/.exec(interaction.customId);
-    if (!match) return false;
+    const bluesky = interaction.customId.startsWith('linky:replies:bsky:') ? interaction.customId.slice(19) : '';
+    const identity = parsePostId(bluesky);
+    if (!match && !identity) return false;
     const message = interaction.message;
     const answer = async (content: string) => {
       const payload = { content, allowedMentions: { parse: [] as never[] } };
@@ -90,13 +103,13 @@ export class ReplyThreads {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let flight = this.flights.get(message.id);
     if (!flight) {
-      flight = this.open(message, match[1], match[2], interaction.user.id);
+      flight = this.open(message, match ? match[1] : bluesky, match ? match[2] : identity!.actor, interaction.user.id, match ? 'x' : 'bsky');
       this.flights.set(message.id, flight);
       void flight.finally(() => this.flights.delete(message.id)).catch(() => {});
     }
     try { await answer(await flight); }
     catch (error) {
-      await answer([10003, 10008].includes(code(error) ?? 0) ? REMOVED : [160006, 160007].includes(code(error) ?? 0)
+      await answer(error instanceof ReplyLookupError ? error.message : [10003, 10008].includes(code(error) ?? 0) ? REMOVED : [160006, 160007].includes(code(error) ?? 0)
         ? "This server has reached Discord's active thread limit" : code(error) === 50013
           ? 'Discord denied permission to open the replies thread' : code(error) === 160005
             ? 'Discord cannot create a thread for this post' : 'Could not open replies. Try again later');
@@ -104,7 +117,7 @@ export class ReplyThreads {
     return true;
   }
 
-  private async open(message: Message, id: string, handle: string, userId: string): Promise<string> {
+  private async open(message: Message, id: string, handle: string, userId: string, platform: 'x' | 'bsky'): Promise<string> {
     if (this.removing.has(message.id)) return REMOVED;
     const latest = await message.fetch();
     if (!this.options.tracked(latest)) return REMOVED;
@@ -122,13 +135,14 @@ export class ReplyThreads {
       if ((this.users.get(userId) ?? 0) > now || times.length >= 3 || this.users.size >= 10_000 || this.channels.size >= 10_000) return 'Try again in a minute';
       this.users.set(userId, now + 10_000); this.channels.set(message.channelId, [...times, now]);
     }
-    const page = await this.options.lookup(id);
+    const page = await this.options.lookup(id, platform);
     if (!page?.replies.length) return EMPTY;
     if (this.removing.has(message.id) || !this.options.tracked(latest) || !this.options.enabled(latest.guildId!)) return REMOVED;
     if (!thread) {
       // Keep history across completed flights; cap memory by conservatively disabling skips once full.
       if (this.created.size < 10_000) this.created.add(message.id); else this.creationHistoryFull = true;
-      try { thread = await latest.startThread({ name: `Replies to @${handle}`.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 100), autoArchiveDuration: 1440 }); }
+      const name = `Replies to @${page.threadHandle ?? handle}`.replace(/[\u0000-\u001f\u007f]/g, '');
+      try { thread = await latest.startThread({ name: name.length > 100 ? name.slice(0, 99) + '\u2026' : name, autoArchiveDuration: 1440 }); }
       catch (error) {
         if (![160004, 160005].includes(code(error) ?? 0)) throw error;
         thread = await this.options.fetchThread(message.id);

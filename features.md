@@ -659,7 +659,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
   - 2026-11-24 driver: E58 final extra round authorized by Victor through the driver: accepted R2 fixes implemented and full panel completed. Runtime validation passes, but independent QA confirms MED E58-QA-1: full reply-cleanup journal drops deferred intent after parent deletion. No more runtime cycles; return to driver/Victor. Keep in-progress pending their disposition; do not merge.
 
 ### [FEAT-1795541461] Replies thread for Bluesky posts
-- [ ] **Priority:** med
+- [x] **Priority:** med
 - **Area:** previews
 - **File(s):** src/services/BlueskyPost.ts, src/services/BlueskyPanel.ts, src/services/ReplyThreads.ts, docs/media-blocks.md, docs/self-hosting.md, README.md
 - **Req:** none (Victor request, 2026-11-24)
@@ -678,7 +678,10 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Test plan:** Synthetic getPostThread depth=1 payloads in tests/reply-threads.test.ts and tests/bluesky-post.test.ts: unsorted input, labels on post and author including `!no-unauthenticated`, `threadgate.record.hiddenReplies`, blocked and notFound, a wrong parent uri, a DID-form response to a handle request, a 253-character handle in the thread name, oversize at 1 MiB. Mutations: skip the hidden filter, skip the label filter, accept another parent, compare uris as plain strings, sort by time only, raise the cap. Live check: one Bluesky post in the test server.
 - **Out of scope:** Nested replies (depth > 1), quote-posts as replies, reply images, authenticated AppView, getPostThreadV2 while it is unstable.
 - **Bump:** minor
-- **Status:** open
+- **Assignee:** Victor Ivanov
+- **Status:** shipped-pending-migration
+- **Implementation:** Add bounded public Bluesky replies with shared opt-in controls, 25 direct replies and once-only filtering. E105 adds controlled end-to-end timeout cancellation, DID mismatch, adapter routing, exact byte/header/name boundaries and mutations; dates use earlier created/indexed time for sorting and display. Driver owns external live/privacy acceptance and accepted long identity abstention.
+- **Docs:** README.md; docs/media-blocks.md; docs/self-hosting.md; settings/help copy (hosted privacy notice in linky-web remains driver-owned)
 - **Log:**
   - 2026-11-24 driver: driver-replies-research (lead L2; driver recount of the 2026-11-24 depth=1 probe: 113 direct replies, 4 of 6 author-hidden replies present, 20 replies with author label !no-unauthenticated): add hiddenReplies filter, DID/handle anchor match, DID-form links, shared packing and header, oversize message. Stable v1 kept over getPostThreadV2 (option for Victor).
   - 2026-11-24 decision: Stable getPostThread v1 with local likes sort kept over getPostThreadV2. Victor delegated the decision to the driver on 2026-11-24 ("have the driver do all that it doesnt need me I allow it"); the driver chose the recommended option.
