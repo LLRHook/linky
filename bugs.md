@@ -876,3 +876,90 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Compare VERIFICATION.md Appendix A against src/bot.ts constructors for ReplyCleanupJournal, PersonalPreferences, ServiceCheckpoint and PromptService. Found by: review (R11-11). Pre-existing drift, not fixed in this PR.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1795648664] Reply-thread handles show stray backslashes inside the profile link
+- [x] **Severity:** low
+- **Area:** previews
+- **File(s):** src/services/ReplyThreads.ts, tests/reply-presentation.test.ts
+- **Observation:** Live check on production c2fe1f4 (2026-11-25, Linky test server): X reply header `Truthful · @Truthful\_ast` and Bluesky `@elric\-mtl.bsky.social` show a literal backslash. `replyThreadPayloads` builds `[@${sanitizeReplyText(reply.handle, 256, true)}](<profile>)`; the sanitizer backslash-escapes markdown characters, and Discord does not honour backslash escapes inside a masked-link label. A test message in the same server showed: `[@a\_b](url)` renders `@a\_b`; `[@_abc_](url)` renders `abc` in italics; `[@__u__](url)` renders `u` underlined; `[@a_b_c](url)` and `[@elric-mtl.bsky.social](url)` render literally; plain-text `@a\_b` renders `@a_b`.
+- **Expected:** FEAT-1795645566: each reply header names the author exactly (display name, plus @handle on X and Bluesky), with no stray characters and no markdown formatting applied to the handle.
+- **Req:** none (FEAT-1795645566 acceptance, Victor request 2026-11-25)
+- **Depends on:** none (FEAT-1795645566 shipped in c2fe1f4)
+- **Repro / Notes:** Render an X reply with handle `a_b` and a Bluesky reply with handle `elric-mtl.bsky.social`; the header must not put an escaped handle inside a masked-link label. No escaping can protect a label, so the handle goes in plain escaped text and any profile link uses a fixed label. Sweep other renderers for sanitized provider text inside a masked-link label.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Render escaped X/Bluesky handles as plain text and move validated provider profiles to fixed Profile links; regressions cover a_b, _abc_, hyphenated Bluesky handles, invalid profiles and packing budgets. Sibling renderer defects filed separately.
+- **Docs:** README.md; reviewed docs/article-previews.md and VERIFICATION.md (no changes needed).
+
+### [BUG-1795648784] Bluesky post handle masked label keeps markdown escapes
+- [ ] **Severity:** low
+- **Area:** previews
+- **File(s):** src/services/BlueskyPanel.ts:53
+- **Observation:** heading inserts escapeMarkdown(handle) into a masked-link label. Discord does not honor backslash escapes inside masked-link labels (driver live evidence, 2026-11-25).
+- **Expected:** Provider or member text displays literally; links use fixed labels when needed.
+- **Req:** none (sibling sweep for BUG-1795648664)
+- **Depends on:** none (independent renderer)
+- **Repro / Notes:** Use elric-mtl.bsky.social: the escaped hyphen remains visible inside the label. Found by F9 sibling sweep; outside reply pages, not fixed in this PR.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1795648785] Bluesky facet link labels interpret provider markdown
+- [ ] **Severity:** low
+- **Area:** previews
+- **File(s):** src/services/BlueskyPost.ts:88
+- **Observation:** blueskyText puts arbitrary provider facet text into a masked-link label, escaping only brackets and backslashes. Discord does not honor backslash escapes inside masked-link labels (driver live evidence, 2026-11-25).
+- **Expected:** Provider or member text displays literally; links use fixed labels when needed.
+- **Req:** none (sibling sweep for BUG-1795648664)
+- **Depends on:** none (independent renderer)
+- **Repro / Notes:** Facet text _abc_ becomes italic; square brackets produce visible escape characters. Found by F9 sibling sweep; outside reply pages, not fixed in this PR.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1795648786] Instagram username masked label keeps markdown escapes
+- [ ] **Severity:** low
+- **Area:** previews
+- **File(s):** src/services/InstagramPresentation.ts:25
+- **Observation:** instagramPanelComponents inserts escapeMarkdown(username) into a masked-link label. Discord does not honor backslash escapes inside masked-link labels (driver live evidence, 2026-11-25).
+- **Expected:** Provider or member text displays literally; links use fixed labels when needed.
+- **Req:** none (sibling sweep for BUG-1795648664)
+- **Depends on:** none (independent renderer)
+- **Repro / Notes:** Username a_b produces a literal backslash inside the profile label. Found by F9 sibling sweep; outside reply pages, not fixed in this PR.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1795648787] Post prose URL masked labels interpret member or provider path markdown
+- [ ] **Severity:** low
+- **Area:** previews
+- **File(s):** src/services/TweetTranslation.ts:69
+- **Observation:** formatProse derives a masked-link label from host and pathname and only escapes brackets and backslashes. Discord does not honor backslash escapes inside masked-link labels (driver live evidence, 2026-11-25).
+- **Expected:** Provider or member text displays literally; links use fixed labels when needed.
+- **Req:** none (sibling sweep for BUG-1795648664)
+- **Depends on:** none (independent renderer)
+- **Repro / Notes:** URL https://example.com/_abc_ has formatting interpreted in the displayed path; this helper is also reused by Bluesky prose. Found by F9 sibling sweep; outside reply pages, not fixed in this PR.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1795648788] Article video author masked labels keep markdown escapes
+- [ ] **Severity:** low
+- **Area:** previews
+- **File(s):** src/services/ArticlePosts.ts:125
+- **Observation:** articleVideoComponents inserts inert(author), with markdown escapes, into a masked-link label. Discord does not honor backslash escapes inside masked-link labels (driver live evidence, 2026-11-25).
+- **Expected:** Provider or member text displays literally; links use fixed labels when needed.
+- **Req:** none (sibling sweep for BUG-1795648664)
+- **Depends on:** none (independent renderer)
+- **Repro / Notes:** Author a_b with an author URL produces a literal backslash in the byline. Found by F9 sibling sweep; outside reply pages, not fixed in this PR.
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1795648789] Article video title masked labels interpret provider markdown
+- [ ] **Severity:** low
+- **Area:** previews
+- **File(s):** src/services/ArticlePosts.ts:126
+- **Observation:** articleVideoComponents inserts card.title into a masked-link label; upstream title literals contain escaped markdown. Discord does not honor backslash escapes inside masked-link labels (driver live evidence, 2026-11-25).
+- **Expected:** Provider or member text displays literally; links use fixed labels when needed.
+- **Req:** none (sibling sweep for BUG-1795648664)
+- **Depends on:** none (independent renderer)
+- **Repro / Notes:** Provider title _abc_ or a_b retains escapes or formats text in a masked heading link. Found by F9 sibling sweep; outside reply pages, not fixed in this PR.
+- **Bump:** patch
+- **Status:** open

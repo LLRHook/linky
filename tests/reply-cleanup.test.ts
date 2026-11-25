@@ -159,9 +159,9 @@ test('full header and every entry field use the contract and every page has its 
   assert.equal(payloads[0].components[0].type, ComponentType.Container);
   assert.deepEqual(payloads[0].components[0].components.map(value => 'content' in value ? value.content : undefined), [
     'Showing 2 of 30 replies from X, most liked first (X returned 5; Linky hid 3). Count as of <t:1700000000:f>.',
-    '**Display \\*name\\*** \u00b7 [@foo](<https://x.com/foo>)\n-# 7 likes \u00b7 <t:1700000000:R> \u00b7 [Open reply](<https://x.com/foo/status/21>)\nhi @\u200beveryone \\[link\\]\n-# media not shown \u00b7 [Open reply](<https://x.com/foo/status/21>)',
+    '**Display \\*name\\*** \u00b7 @foo\n-# 7 likes \u00b7 <t:1700000000:R> \u00b7 [Open reply](<https://x.com/foo/status/21>) \u00b7 [Profile](<https://x.com/foo>)\nhi @\u200beveryone \\[link\\]\n-# media not shown \u00b7 [Open reply](<https://x.com/foo/status/21>)',
     undefined,
-    '**Second** \u00b7 [@bar](<https://x.com/bar>)\n-# 2 likes \u00b7 <t:1700000001:R> \u00b7 [Open reply](<https://x.com/bar/status/22>)\nsecond reply',
+    '**Second** \u00b7 @bar\n-# 2 likes \u00b7 <t:1700000001:R> \u00b7 [Open reply](<https://x.com/bar/status/22>) \u00b7 [Profile](<https://x.com/bar>)\nsecond reply',
   ]);
 });
 test('a redirected successful-looking response is refused before parsing', async () => {
