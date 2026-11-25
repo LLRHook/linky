@@ -1,3 +1,6 @@
+import { linkedInPermalink } from './LinkedIn';
+import { parseLinkedInComments } from './LinkedInComments';
+import type { ReplyPage } from './ReplyThreads';
 import { lookup as lookupDns } from 'node:dns/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { RequestOptions } from 'node:https';
@@ -29,6 +32,7 @@ export interface ArticlePreview {
   truthSocial?: TruthSocialPost;
   /** LinkedIn's page metadata names a generic logo; the post's JSON-LD supplies an authored card and its video. */
   linkedIn?: LinkedInPost;
+  linkedInComments?: ReplyPage | null;
 }
 export interface ArticleLookupOptions {
   resolve4?: (hostname: string) => Promise<string[]>;
@@ -607,7 +611,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
       ...(post.text ? { description: post.text } : {}), ...(post.image ? { image: post.image } : {}),
       ...(post.publishedAt ? { publishedAt: post.publishedAt } : {}), linkedIn: post };
   }
-  async function request(source: string, controller: AbortController): Promise<ArticlePreview | null> {
+  async function request(source: string, controller: AbortController, comments = false, commentsOnly = false): Promise<ArticlePreview | null> {
     const { signal } = controller, deadline = Date.now() + timeout, seen = new Set<string>();
     let timer = setTimeout(() => controller.abort(), timeout);
     const extend = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => controller.abort(), ms); };
@@ -635,7 +639,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
           signal.throwIfAborted();
           if ([301, 302, 303, 307, 308].includes(response.status)) {
             const location = response.headers.get('location');
-            if (!location || /[\\\s\u0000-\u001f\u007f]/.test(location)) return null;
+            if (commentsOnly || !location || /[\\\s\u0000-\u001f\u007f]/.test(location)) return null;
             const next = parseArticleUrl(resolveUrl(location, current));
             if (!next) return null;
             current = untracked(new URL(next));
@@ -645,6 +649,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
           // Some servers label PDFs generically; those must also name a .pdf file and start with a PDF header.
           const pdf = /^application\/(?:pdf|x-pdf)(?:\s*;|$)/i.test(type) ||
             /^(?:application\/octet-stream|binary\/octet-stream)(?:\s*;|$)/i.test(type) && /\.pdf$/i.test(current.pathname);
+          if (commentsOnly && pdf) return null;
           if (!pdf && !/^(?:text\/html|application\/xhtml\+xml)(?:\s*;|$)/i.test(type) ||
               ![null, 'identity'].includes(response.headers.get('content-encoding')?.toLowerCase() ?? null)) return null;
           if (response.status === 402 && !pdf) {
@@ -669,7 +674,14 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
           const html = await readHead(response, signal);
           if (isLinkedInPostUrl(current.href)) {
             const head = headMetadata(html), post = parseLinkedInPost(head.json, head.meta.get('og:url'));
-            if (post) return await requestLinkedIn(source, post, signal, extend);
+            if (post) {
+              if (commentsOnly && post.url !== source) return null;
+              const page = comments ? parseLinkedInComments(head.json, head.meta.get('og:url'), now()) : undefined;
+              const article = commentsOnly ? { source, url: post.url, title: 'LinkedIn post', publisher: 'LinkedIn', linkedIn: post }
+                : await requestLinkedIn(source, post, signal, extend);
+              return article && comments ? { ...article, linkedInComments: page } : article;
+            }
+            if (commentsOnly) return null;
           }
           const article = parseMetadata(html, source, current);
           if (article?.image) {
@@ -695,7 +707,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
       }
     }
   }
-  return async (raw: string, signal?: AbortSignal): Promise<ArticlePreview | null> => {
+  const lookup = async (raw: string, signal?: AbortSignal, comments = false): Promise<ArticlePreview | null> => {
     const source = parseArticleUrl(raw);
     if (!source || signal?.aborted) return null;
     for (const [key, entry] of cache) if (entry.expires <= now()) forget(key);
@@ -707,7 +719,7 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     if (pending.size >= 4 || requests >= 30) return null;
     requests++;
     const entry: Pending = { promise: Promise.resolve(null), controller: new AbortController(), subscribers: 0 };
-    entry.promise = request(source, entry.controller).then(value => {
+    entry.promise = request(source, entry.controller, comments).then(value => {
       if (!entry.controller.signal.aborted) {
         forget(source);
         cache.set(source, { value, expires: now() + (value && !value.titleFromUrl ? 300_000 : 15_000) });
@@ -719,6 +731,46 @@ export function createArticleLookup(options: ArticleLookupOptions = {}) {
     pending.set(source, entry);
     return wait(source, entry, signal);
   };
+  // A click cannot consume ordinary preview admission slots or change card retention/eviction.
+  const commentCache = new Map<string, { value: ReplyPage | null; expires: number }>();
+  const commentPending = new Map<string, Promise<ReplyPage | null>>();
+  let commentWindowStart = now(), commentRequests = 0;
+  const cachedCardComments = (url: string): ReplyPage | null => {
+    for (const entry of cache.values()) {
+      if (entry.expires > now() && entry.value?.url === url && entry.value.linkedInComments) return entry.value.linkedInComments;
+    }
+    return null;
+  };
+  const comments = async (raw: string): Promise<ReplyPage | null> => {
+    const url = linkedInPermalink(raw);
+    if (!url || url !== raw) return null;
+    // An opted-in card's null result is authoritative for that page's full cache life.
+    for (const entry of cache.values()) {
+      if (entry.expires > now() && entry.value?.url === url && 'linkedInComments' in entry.value) {
+        return structuredClone(entry.value.linkedInComments ?? null);
+      }
+    }
+    for (const [key, entry] of commentCache) if (entry.expires <= now()) commentCache.delete(key);
+    const hit = commentCache.get(url);
+    if (hit) return structuredClone(hit.value);
+    const existing = commentPending.get(url);
+    if (existing) return structuredClone(await existing);
+    if (now() - commentWindowStart >= 60_000) { commentWindowStart = now(); commentRequests = 0; }
+    if (commentPending.size >= 2 || commentRequests >= 10) return null;
+    commentRequests++;
+    const promise = (async () => {
+      const article = await request(url, new AbortController(), true, true);
+      // An opted-in card may have completed while this refresh failed. Keep its good page.
+      const page = article?.linkedInComments ?? cachedCardComments(url);
+      commentCache.delete(url);
+      if (commentCache.size >= 20) commentCache.delete(commentCache.keys().next().value!);
+      commentCache.set(url, { value: page, expires: now() + (page ? 300_000 : 15_000) });
+      return page;
+    })();
+    commentPending.set(url, promise);
+    try { return structuredClone(await promise); } finally { commentPending.delete(url); }
+  };
+  return Object.assign(lookup, { comments });
 }
 
 function literal(value: string, limit: number): string {
@@ -763,4 +815,4 @@ export function formatArticlePreview(article: ArticlePreview): APIEmbed[] {
     ...(image ? { image: { url: image } } : {}), ...(date ? { timestamp: date } : {}) }];
 }
 
-export type ArticleLookup = ReturnType<typeof createArticleLookup>;
+export type ArticleLookup = (raw: string, signal?: AbortSignal, comments?: boolean) => Promise<ArticlePreview | null>;

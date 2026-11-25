@@ -55,3 +55,42 @@ Retrieval stops after the HTML head, 512 KiB or five seconds, with at most three
 The publisher sees a request from the bot host; for a blocked Telegraph link Bing also receives the link's slug words as a search query. Bing's RSS terms describe personal, non-commercial use in an RSS aggregator; operators running Linky commercially should review them. Discord retrieves the optional public image separately; source changes or Discord's image proxy can still make that image unavailable. A confirmed card proves that Discord returned the prepared fields, not that the article is accurate or an image rendered on every device. Missing usable metadata leaves the original unless a supported Telegraph or PDF card can be prepared; manual requests explain unsupported pages.
 
 The initial requested example is the Manhattan Institute's *The Fiscal Impact of Immigration (2025 Update)*. Article support is based on metadata format, with PDF document cards and separate host-specific exceptions for MyAnimeList catalogue entries and blocked Telegraph editorial links. The reported examples are The Telegraph's *China rejects Mbappe and Real Madrid apologies over ‘outrageous’ Mao joke* and KITP's *Proof by OpenAI of the Existence of Quantum Yang-Mills theory* PDF.
+
+
+### LinkedIn comments threads
+
+`/settings replies:true` also offers **Comments (N)** on a confirmed single LinkedIn
+post in a server text or announcement channel. It is off by default; DMs, personal
+installs and threads have no control. N is the count displayed on the card (including
+its compact notation); zero or unknown counts have no button.
+
+The source is the matching post's own signed-out JSON-LD `comment` array, in
+LinkedIn's order, up to ten usable comments. Invalid entries are counted as hidden;
+valid entries beyond ten are unshown, rather than hidden. The header distinguishes
+shown, total, returned and hidden counts and links the post. Author names are plain
+text: the page supplies no commenter profile or comment permalink. Text is sanitized
+and limited to 500 serialized characters. No nested comments or authenticated API is used.
+
+Opted-in full card preparation may retain ten bounded usable comments in the normal
+five-minute article cache. A replies-off fetch does no comments parsing, but can reuse
+an entry another server's opted-in fetch cached. Clicks copy only the bounded comments
+page, never the cached media bytes.
+
+On a comments miss, one anonymous, cookie-free GET of the card's canonical `/posts/`
+URL uses the existing DNS-pinned fetch: five-second timeout, head-only reading,
+512 KiB cap, no redirects and no media download. Comments refreshes have independent
+limits of two in flight and ten new requests per minute. Their separate memory cache
+holds at most 20 pages: successes for five minutes and failures for 15 seconds.
+Refreshes never write to, shorten, or evict the card cache, and never consume its
+four-in-flight/30-per-minute ordinary preview budget. No comment text is saved to disk.
+Failed, mismatched or empty pages give a private "No comments Linky can show for this
+post" and create no thread. A refused comments-budget request gives the same private notice.
+Ordinary card previews remain independent of comment validity.
+
+The existing replies permissions, cooldowns, single-flight creation and cleanup apply.
+Remove, Retry, source edits and source deletion clean up only Linky's marked pages,
+then rename the thread **Replies removed** and archive it; members' messages remain.
+A source deleted while Linky is offline may leave its thread until ownership retention
+or another cleanup trigger; no retrospective Discord scan is promised. The invite's
+permissions are unchanged. The hosted privacy notice is maintained in linky-web;
+its comments update and the production bot-host fetch probe remain separate release checks.

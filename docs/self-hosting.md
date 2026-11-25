@@ -155,8 +155,12 @@ Live acceptance must verify rename and archive using only the documented invite 
 A manual card can briefly publish Replies before a late source/settings recheck rewrites it into a notice. A thread opened in that window may retain copied pages until Remove or another supported cleanup path. This notice-rewrite gap is not reconciled automatically: the durable manual journal also deletes its parent and cannot safely be reused for a notice that must remain. No new journal schema or reconciler is added here.
 
 For Bluesky public reply threads, including the `depth=1` / `parentHeight=0` AppView request,
-limits, filtering and cleanup, see [Replies and comments on X, Bluesky and YouTube](../README.md#replies-and-comments-on-x-bluesky-and-youtube).
+limits, filtering and cleanup, see [Replies and comments on X, Bluesky, YouTube and LinkedIn](../README.md#replies-and-comments-on-x-bluesky-youtube-and-linkedin).
 
 YouTube comments threads: with `/settings replies:true`, a configured `YOUTUBE_API_KEY`, and `/settings youtube_display:counts-and-comment`, single-video posts with a positive comment count include **Comments (N)**. Clicking opens a public thread with up to 25 top-level comments in YouTube relevance order. Each uncached click costs **1 YouTube Data API quota unit**; parsed comments are cached for 5 minutes in a separate cache of at most 100 videos. Counts-only mode does not offer comments. Cleanup starts when the YouTube controls expire after **24 hours**, removing copied comments and renaming and archiving the thread while preserving members' messages. Transient failures retry through the existing durable queue, but records are dropped after more than seven days of failed cleanup. If the parent is deleted while the bot is offline, the missing parent provides no thread evidence and copied pages may remain. Lost access can also prevent deletion; removal within 24 hours is not guaranteed. Comments link to the video.
 
 YouTube expiry edits controls on the statistics queue, then cleans copied comment pages outside that queue while retaining the original durable expiry record until cleanup succeeds (or reaches the terminal retry limit). Unrelated publication and parent removal do not wait for thread cleanup. Remove/Retry leaves copied-page cleanup to the existing owned-parent removal path, avoiding a second pass. A cached member-owned thread skips discovery; an uncached member thread can still cause one bounded ownership lookup at expiry.
+
+### LinkedIn comments threads
+
+The existing `/settings replies:true` option also enables LinkedIn comments. See the [comments source, limits, retention and cleanup](article-previews.md#linkedin-comments-threads).

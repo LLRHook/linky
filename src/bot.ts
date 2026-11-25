@@ -53,8 +53,15 @@ import { catchUp, ServiceCheckpoint } from './services/ServiceCheckpoint';
 
 /** Route only the selected platform's optional reply lookup. */
 export function createReplyLookup(xReplies: (id: string) => Promise<ReplyPage | null>,
-  blueskyReplies: (id: string) => Promise<ReplyPage | null>) {
-  return (id: string, platform?: 'x' | 'bsky') => platform === 'bsky' ? blueskyReplies(id) : xReplies(id);
+  blueskyReplies: (id: string) => Promise<ReplyPage | null>,
+  linkedInComments: (id: string) => Promise<ReplyPage | null>) {
+  return (id: string, platform?: 'x' | 'bsky' | 'linkedin') => platform === 'linkedin' ? linkedInComments(id) : platform === 'bsky' ? blueskyReplies(id) : xReplies(id);
+}
+
+/** The production adapter composition; tests exercise the same construction as createBot. */
+export function createBotReplyLookup(lookupArticle: Pick<ReturnType<typeof createArticleLookup>, 'comments'>,
+  xReplies: (id: string) => Promise<ReplyPage | null>, blueskyReplies: (id: string) => Promise<ReplyPage | null>) {
+  return createReplyLookup(xReplies, blueskyReplies, lookupArticle.comments);
 }
 
 /** Running deliveries get this long to finish when the bot stops; Compose `stop_grace_period` must exceed it. */
@@ -155,7 +162,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     enabled: guildId => servers.getPreferences(guildId).replies === true,
     tracked: message => !replyCleanup.has(message.id) && Boolean(registry?.isActive(message.id) ||
       message.interactionMetadata?.user.id && message.webhookId === client.application?.id && !message.flags.has(MessageFlags.Ephemeral)),
-    lookup: createReplyLookup(xReplies, blueskyReplies),
+    lookup: createBotReplyLookup(lookupArticle, xReplies, blueskyReplies),
     resolveTarget: interaction => youtubeReplyTarget(interaction, {
       enabled: message => Boolean(message.guildId && youtubeCommentsScope(message) && !replyCleanup.has(message.id) && youtubeCommentsEnabled(
         servers.getPreferences(message.guildId).replies === true, servers.getPreferences(message.guildId).youtubeDisplay ?? 'counts-and-comment',

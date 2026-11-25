@@ -203,7 +203,7 @@ test('DID request rejects a self-consistent anchor belonging to another DID', ()
 });
 test('bot reply lookup routes Bluesky and X in both directions, without calling the other adapter', async () => {
   const calls: string[] = [], x = { ...parse(), source: 'X' }, bluesky = parse();
-  const lookup = createReplyLookup(async id => { calls.push(`x:${id}`); return x; }, async id => { calls.push(`bsky:${id}`); return bluesky; });
+  const lookup = createReplyLookup(async id => { calls.push(`x:${id}`); return x; }, async id => { calls.push(`bsky:${id}`); return bluesky; }, async () => assert.fail('LinkedIn'));
   assert.equal(await lookup('anchor', 'bsky'), bluesky); assert.deepEqual(calls, ['bsky:anchor']);
   calls.length = 0; assert.equal(await lookup('123', 'x'), x); assert.deepEqual(calls, ['x:123']);
   calls.length = 0; assert.equal(await lookup('456'), x); assert.deepEqual(calls, ['x:456']);

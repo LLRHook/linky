@@ -297,7 +297,7 @@ test('replies default off, persist independently per server and fit help when en
   assert.equal(effectivePreferences(config, servers.getPreferences(SERVER)).replies, false);
   const enabled = interaction({ replies: true });
   await execute(enabled.command, config, servers);
-  assert.match(enabled.events[1].payload.content, /Replies: On \(eligible X, Bluesky and YouTube posts\)/);
+  assert.match(enabled.events[1].payload.content, /Replies: On \(eligible X, Bluesky, YouTube and LinkedIn posts\)/);
   assert.equal(new ServerSettings(path).getPreferences(SERVER).replies, true);
   assert.equal(new ServerSettings(path).getPreferences('222222222222222222').replies, undefined);
   const f = interaction(); await help(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS }, servers);
@@ -313,13 +313,14 @@ test('E75 help worst case enables server and every long option within Discord li
   await help(f.command, { ...config, translateTweets: true, channelIds: [], serverIds: [], rewritePlatforms: REWRITE_PLATFORMS }, servers);
   const text = f.events[0].payload.content;
   assert.match(text, /throughout this server/); assert.match(text, /Automatic Erome previews/); assert.match(text, /Non-English tweets/);
+  console.log(`E75 help worst-case length: ${text.length}`);
   assert.ok(text.length <= 1990, `${text.length} characters exceeds 1990 headroom target`);
   assert.ok(text.length <= 2000);
-  assert.match(text, /Replies: On: X 10 \/ Bluesky & YouTube 25 in public threads/);
+  assert.match(text, /Replies: On: X\/LinkedIn 10; Bluesky\/YouTube 25 in threads/);
 });
 
 
 test('replies option description names all public thread providers literally', () => {
   assert.equal(data.toJSON().options?.find(option => option.name === 'replies')?.description,
-    'Show Replies/Comments on eligible X, Bluesky and YouTube posts (off by default).');
+    'Offer X/Bluesky replies and YouTube/LinkedIn comments (off by default).');
 });

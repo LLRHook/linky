@@ -129,7 +129,7 @@ python .cycle\trackers.py install
 ```
 <!-- cycle:tracker-setup end -->
 
-### Replies and comments on X, Bluesky and YouTube
+### Replies and comments on X, Bluesky, YouTube and LinkedIn
 
 Replies are off by default. Server admins can enable `/settings replies:true` (or disable with `replies:false`). Eligible single X and Bluesky posts, including public server `/fix` previews, show **Replies (N)** after publication is confirmed. Replies opens a public thread under Linky's post: up to ten direct, non-sensitive X replies or 25 eligible Bluesky replies, most liked first. Eligible single YouTube videos offer **Comments (N)** for up to 25 top-level comments in relevance order, as detailed below. Existing threads are linked again; no refresh or paging is offered.
 
@@ -151,3 +151,8 @@ X replies behaviour. Nested replies, reply images, authenticated access and the 
 Bluesky reply dates use the earlier of the author creation time and AppView indexing time for both newest-first ties and the displayed time.
 
 YouTube comments threads: with `/settings replies:true`, a configured `YOUTUBE_API_KEY`, and `/settings youtube_display:counts-and-comment`, single-video posts with a positive comment count include **Comments (N)**. Clicking opens a public thread with up to 25 top-level comments in YouTube relevance order. Each uncached click costs **1 YouTube Data API quota unit**; parsed comments are cached for 5 minutes in a separate cache of at most 100 videos. Counts-only mode does not offer comments. Cleanup starts when the YouTube controls expire after **24 hours**, removing copied comments and renaming and archiving the thread while preserving members' messages. Transient failures retry through the existing durable queue, but records are dropped after more than seven days of failed cleanup. If the parent is deleted while the bot is offline, the missing parent provides no thread evidence and copied pages may remain. Lost access can also prevent deletion; removal within 24 hours is not guaranteed. Comments link to the video.
+
+
+### LinkedIn comments threads
+
+The existing `/settings replies:true` option also enables LinkedIn comments. See the [comments source, limits, retention and cleanup](docs/article-previews.md#linkedin-comments-threads).

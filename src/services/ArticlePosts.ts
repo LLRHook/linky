@@ -77,10 +77,10 @@ export function fitArticleFiles(posts: readonly PreparedArticle[], canAttach: bo
 
 /** Publish the whole requested set or leave the source intact. */
 export async function prepareArticlePosts(sources: readonly string[], lookup?: ArticleLookup,
-  signal?: AbortSignal): Promise<PreparedArticle[] | null> {
+  signal?: AbortSignal, comments = false): Promise<PreparedArticle[] | null> {
   if (!sources.length) return [];
   if (!lookup || sources.length > 3 || signal?.aborted) return null;
-  const posts = await Promise.all(sources.map(source => lookup(source, signal).catch(() => null)));
+  const posts = await Promise.all(sources.map(source => lookup(source, signal, comments).catch(() => null)));
   if (signal?.aborted || posts.some((post, index) => !post || post.source !== sources[index])) return null;
   const prepared = posts.map((post, index): PreparedArticle => {
     const embeds = formatArticlePreview(post!), shown = JSON.stringify(embeds);
