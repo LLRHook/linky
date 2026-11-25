@@ -17,7 +17,51 @@ for (const source of ['X', 'Bluesky', 'YouTube', 'LinkedIn']) test(`${source} au
  const texts = parts.filter(c => c.type === C.TextDisplay).slice(1);
  assert.equal(texts.length, 2);
  for (const t of texts) { assert(t.content.startsWith('**Writer**')); assert(t.content.indexOf('Writer') < t.content.indexOf('Hello')); assert(t.content.includes('-# 2 likes')); }
- assert.equal(texts[0].content.includes('[@writer]'), source === 'X' || source === 'Bluesky');
+ assert.equal(texts[0].content.includes(' · @writer\n'), source === 'X' || source === 'Bluesky');
+});
+
+for (const [source, handle, escaped, profileUrl] of [
+ ['X', 'a_b', 'a\\_b', 'https://x.com/a_b'],
+ ['Bluesky', 'elric-mtl.bsky.social', 'elric\\-mtl.bsky.social', 'https://bsky.app/profile/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa'],
+ ['X', '_abc_', '\\_abc\\_', 'https://x.com/_abc_'],
+]) test(`${source} handle ${handle} stays plain with a fixed Profile label`, () => {
+ const p = page(source); p.replies = [{ ...reply, handle, profileUrl }];
+ const payloads = replyThreadPayloads(p);
+ const content = walk(payloads[0].components).filter(c => c.type === C.TextDisplay)[1].content;
+ assert.equal(content, `**Writer** · @${escaped}\n-# 2 likes · <t:1:R> · [Open reply](<${reply.url}>) · [Profile](<${profileUrl}>)\nHello`);
+ const labels = [...JSON.stringify(payloads).matchAll(/\[([^\[\]]*)\]\(</g)].map(m => m[1]);
+ assert.deepEqual(labels, ['Open reply', 'Profile']);
+});
+
+test('Profile links omit missing and invalid targets while retaining plain handles', () => {
+ for (const source of ['X', 'Bluesky']) for (const profileUrl of ['', 'http://x.com/a_b', 'https://x.com.evil.test/a_b', 'https://user@x.com/a_b', 'https://x.com:444/a_b', 'https://x.com/a_b>)[evil](<https://evil.test', 'https://bsky.app/profile/invalid', 'https://bsky.app/profile/did:plc:abc?x=1', 'https://bsky.app/profile/writer.bsky.social/post/x', 'https://bsky.app/profile/writer.bsky.social>)[evil](<https://evil.test']) {
+  const p = page(source); p.replies = [{ ...reply, handle: 'a_b', profileUrl }];
+  const content = walk(replyThreadPayloads(p)[0].components).filter(c => c.type === C.TextDisplay)[1].content;
+  assert(content.startsWith('**Writer** · @a\\_b\n'));
+  assert(!content.includes('[Profile]')); assert(!content.includes(profileUrl) || !profileUrl);
+ }
+ for (const [source, profileUrl] of [['X', 'https://bsky.app/profile/writer.bsky.social'], ['Bluesky', 'https://x.com/writer']]) {
+  const p = page(source); p.replies = [{ ...reply, profileUrl }];
+  assert(!JSON.stringify(replyThreadPayloads(p)).includes('[Profile]'));
+ }
+});
+
+test('maximum serialized reply text packs with Profile subtext within every budget', () => {
+ const p = page('Bluesky');
+ const actor = 'did:web:' + ['a'.repeat(63), 'b'.repeat(63), 'c'.repeat(63), 'd'.repeat(61)].join('.');
+ p.replies = Array.from({ length: 10 }, (_, i) => ({ ...reply, name: '*'.repeat(200), handle: `user-${i}.` + 'a'.repeat(63) + '.' + 'b'.repeat(63) + '.' + 'c'.repeat(63) + '.social', profileUrl: `https://bsky.app/profile/${actor}`, url: `https://bsky.app/profile/${actor}/post/${'r'.repeat(512)}`, text: '*'.repeat(1000), avatarUrl: 'https://cdn.bsky.app/avatar.jpg', media: [{ url: 'https://cdn.bsky.app/image.jpg' }] }));
+ const payloads = replyThreadPayloads(p);
+ const contents = payloads.flatMap(payload => {
+  const parts = walk(payload.components);
+  assert(parts.length <= 40);
+  const texts = parts.filter(c => c.type === C.TextDisplay).map(c => c.content as string);
+  assert(texts.reduce((sum, t) => sum + t.length, 0) <= 3800);
+  assert(parts.filter(c => c.type === C.Section).length <= 10);
+  assert.deepEqual(payload.allowedMentions, { parse: [] });
+  return texts;
+ });
+ assert.equal(contents.filter(t => t.includes(`[Profile](<https://bsky.app/profile/${actor}>)`)).length, 10);
+ assert.equal(payloads.flatMap(p => walk(p.components)).filter(c => c.type === C.Section).length, 10);
 });
 test('avatars accept exact HTTPS provider hosts and reject missing and hostile URLs without empty sections', () => {
  for (const [source, host] of [['X', 'pbs.twimg.com'], ['Bluesky', 'cdn.bsky.app'], ['YouTube', 'yt3.ggpht.com'], ['YouTube', 'yt3.googleusercontent.com']]) {

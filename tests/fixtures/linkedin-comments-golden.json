@@ -69,7 +69,7 @@
                 },
                 {
                   "type": 10,
-                  "content": "**Sample** · [@sample](<https://example.test/profile>)\n-# 2 likes · <t:100:R> · [Open reply](<https://example.test/reply>)\nSynthetic @​everyone \\*reply\\* \\[link\\]"
+                  "content": "**Sample** · @sample\n-# 2 likes · <t:100:R> · [Open reply](<https://example.test/reply>)\nSynthetic @​everyone \\*reply\\* \\[link\\]"
                 }
               ]
             }
@@ -115,7 +115,7 @@
                 },
                 {
                   "type": 10,
-                  "content": "**Sample** · [@sample](<https://example.test/profile>)\n-# 2 likes · <t:100:R> · [Open reply](<https://example.test/reply>)\nSynthetic @​everyone \\*reply\\* \\[link\\]"
+                  "content": "**Sample** · @sample\n-# 2 likes · <t:100:R> · [Open reply](<https://example.test/reply>)\nSynthetic @​everyone \\*reply\\* \\[link\\]"
                 }
               ]
             }

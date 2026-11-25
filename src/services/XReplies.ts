@@ -1,6 +1,7 @@
 import { record, count } from './JsonFields';
 import { readBoundedJson } from './BoundedJson';
 import type { ReplyPage } from './ReplyThreads';
+import { X_HANDLE } from './SocialProviders';
 
 const id = (value: unknown): value is string => typeof value === 'string' && /^\d{1,20}$/.test(value);
 
@@ -13,7 +14,7 @@ export function parseXReplies(value: unknown, statusId: string, now: number): Re
     if (!id(reply.id) || parent.status !== statusId || reply.possibly_sensitive === true ||
         typeof reply.text !== 'string' || reply.text.length > 100_000 ||
         typeof author.name !== 'string' || !author.name.trim() ||
-        typeof author.screen_name !== 'string' || !/^[A-Za-z0-9_]{1,15}$/.test(author.screen_name) ||
+        typeof author.screen_name !== 'string' || !X_HANDLE.test(author.screen_name) ||
         !count(reply.likes) || !count(reply.created_timestamp) || reply.created_timestamp > 8_640_000_000_000) return [];
     const assets = record(reply.media);
     const ordered = Array.isArray(assets.all) ? assets.all

@@ -4,6 +4,7 @@ import { parsePostId, type BlueskyPost } from './BlueskyPost';
 import { ButtonBuilder, ButtonStyle, ChannelType, ComponentType, DiscordAPIError, MessageFlags, MessageType, PermissionFlagsBits,
   type APIComponentInContainer, type ButtonInteraction, type Message, type ThreadChannel } from 'discord.js';
 import { sanitizeReplyText } from './ReplyText';
+import { blueskyActor, X_HANDLE } from './SocialProviders';
 import type { TweetTranslation } from './TweetTranslation';
 
 export interface PublicReply {
@@ -55,6 +56,14 @@ export function replyMediaUrl(value: unknown, source: string, avatar: boolean): 
   } catch { return undefined; }
 }
 
+/** Only canonical provider profiles can be used as reply navigation targets. */
+function profileLinkUrl(source: string, value: string): string | undefined {
+  const prefix = source === 'X' ? 'https://x.com/' : source === 'Bluesky' ? 'https://bsky.app/profile/' : '';
+  if (!prefix || !value.startsWith(prefix)) return undefined;
+  const actor = value.slice(prefix.length);
+  return (source === 'X' ? X_HANDLE.test(actor) : blueskyActor(actor) === actor) ? value : undefined;
+}
+
 /** Greedily pack displays, including the header in the first message's character budget. */
 export function replyThreadPayloads(page: ReplyPage) {
   const youtube = page.source === 'YouTube';
@@ -72,9 +81,11 @@ export function replyThreadPayloads(page: ReplyPage) {
     }).slice(0, 4);
     const missing = supplied.some(item => !replyMediaUrl(item.url, page.source, false)) || (reply.hasMedia && !media.length);
     const author = `**${sanitizeReplyText(reply.name, page.commentsUrl ? 300 : 100, true)}**`;
-    const identity = youtube || page.commentsUrl ? author : `${author} \u00b7 [@${sanitizeReplyText(reply.handle, 256, true)}](<${reply.profileUrl}>)`;
+    const identity = youtube || page.commentsUrl ? author : `${author} \u00b7 @${sanitizeReplyText(reply.handle, 256, true)}`;
     const link = page.commentsUrl ? '' : ` \u00b7 [Open ${youtube ? 'video' : 'reply'}](<${reply.url}>)`;
-    const content = `${identity}\n-# ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>${link}\n${page.commentsUrl ? reply.text : sanitizeReplyText(reply.text, 500, true)}${missing ? `\n-# media not shown${link}` : ''}`;
+    const profile = profileLinkUrl(page.source, reply.profileUrl);
+    const profileLink = !youtube && !page.commentsUrl && profile ? ` \u00b7 [Profile](<${profile}>)` : '';
+    const content = `${identity}\n-# ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>${link}${profileLink}\n${page.commentsUrl ? reply.text : sanitizeReplyText(reply.text, 500, true)}${missing ? `\n-# media not shown${link}` : ''}`;
     const display = { type: ComponentType.TextDisplay as const, content };
     const block: APIComponentInContainer[] = [avatar ? {
       type: ComponentType.Section, components: [display], accessory: { type: ComponentType.Thumbnail, media: { url: avatar } },
