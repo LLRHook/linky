@@ -49,9 +49,9 @@ test('comment payload header, 500 serialized characters, plain authors, flags an
     const page = parseLinkedInComments([ld([comment({ text: 'a'.repeat(length) })])], url, 1000)!;
     const payload = replyThreadPayloads(page)[0];
     assert.equal(payload.flags, 36868); assert.deepEqual(payload.allowedMentions, { parse: [] });
-    const [header, body] = payload.components[0].components;
+    const [header, body] = payload.components[0].components as { content: string }[];
     assert.equal(header.content, `Showing 1 of 12 comments from LinkedIn's public page, in LinkedIn's order (LinkedIn returned 1; Linky hid 0). Count as of <t:1:f>. [Open post](<${url}>)`);
-    assert.equal(body.content.split('\n')[1].length, 500);
+    assert.equal(body.content.split('\n')[2].length, 500);
     assert.equal(body.content.includes('Open reply'), false);
   }
   const page = parseLinkedInComments([ld([comment({ text: '@everyone *bold* https://example.test discord.gg/test' })])], url, 0)!;

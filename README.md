@@ -135,6 +135,8 @@ Replies are off by default. Server admins can enable `/settings replies:true` (o
 
 The click sends the public post ID to `https://api.fxtwitter.com/2/conversation/{id}`. Linky fetches one page without cookies or credentials, with a five-second timeout and a 256 KiB limit; parsed results stay in memory for five minutes (failures for 30 seconds). The header distinguishes the source count, returned entries, hidden entries and shown replies. Copied text escapes Markdown and mentions and replaces embedded links with `[link]`; Open reply opens X. Remove deletes Linky's own copied replies and renames/archives the thread as **Replies removed**; members' messages and other Linky previews stay. Retry and source changes also clean up the old thread.
 
+Each comment has an author heading and a divider before the next comment. X and Bluesky include the handle; available provider avatars appear beside the text. Replies show up to four images or video posters on approved provider hosts. Unavailable media is noted with the source link. Discord loads these URLs through its media proxy; Linky does not fetch or upload the files. Pages pack under 40 components, 3,800 text characters and ten comments per message.
+
 The invite includes **Create Public Threads** and **Send Messages in Threads**. Existing installs may need a server admin to grant Create Public Threads in the bot role and channel overrides. `/diagnose` reports both permissions when replies are enabled. This feature applies to server text and announcement channels; multi-link posts, threads, forum/media posts, voice/stage chat, DMs and personal installation contexts have no Replies button.
 
 Bluesky replies use the same off-by-default `/settings replies:true` opt-in and public thread controls.
@@ -146,7 +148,7 @@ failures stay 30 seconds, with at most 100 entries and eight requests in flight.
 replies sorted by likes then newest, skipping author-hidden, blocked, unavailable and labelled replies (including
 labels on authors). The header reports the fresh source count, returned, hidden and shown entries separately.
 Reply links use DID identities; text, packing, quiet flags, permissions, cooldowns and cleanup follow the shared
-X replies behaviour. Nested replies, reply images, authenticated access and the unstable V2 endpoint are excluded.
+X replies behaviour. Nested replies, authenticated access and the unstable V2 endpoint are excluded.
 
 Bluesky reply dates use the earlier of the author creation time and AppView indexing time for both newest-first ties and the displayed time.
 

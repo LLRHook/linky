@@ -32,8 +32,14 @@ export function parseBlueskyReplies(value: unknown, postId: string, now: number)
         labelled(reply.labels) || labelled(writer.labels) || labelled(words.labels) ||
         typeof writer.handle !== 'string' || blueskyActor(writer.handle) !== writer.handle || writer.handle === 'handle.invalid' ||
         typeof words.text !== 'string' || words.text.length > 100_000 || !count(reply.likeCount) || !Number.isFinite(timestamp) || timestamp < 0) return [];
+    const outer = record(reply.embed);
+    const embed = outer.$type === 'app.bsky.embed.recordWithMedia#view' ? record(outer.media) : outer;
+    const media = embed.$type === 'app.bsky.embed.images#view' && Array.isArray(embed.images) ? embed.images.slice(0, 4).map(value => {
+      const image = record(value);
+      return { url: typeof image.fullsize === 'string' ? image.fullsize : typeof image.thumb === 'string' ? image.thumb : '', alt: typeof image.alt === 'string' ? image.alt : undefined };
+    }) : embed.$type === 'app.bsky.embed.video#view' ? [{ url: typeof embed.thumbnail === 'string' ? embed.thumbnail : '' }] : [];
     const profileUrl = `https://bsky.app/profile/${identity.actor}`;
-    return [{ name: typeof writer.displayName === 'string' && writer.displayName.trim() ? writer.displayName.slice(0, 256) : writer.handle,
+    return [{ avatarUrl: typeof writer.avatar === 'string' ? writer.avatar : undefined, media, name: typeof writer.displayName === 'string' && writer.displayName.trim() ? writer.displayName.slice(0, 256) : writer.handle,
       handle: writer.handle, profileUrl, url: `${profileUrl}/post/${identity.rkey}`, text: words.text.slice(0, 501),
       likes: reply.likeCount, timestamp: Math.floor(timestamp), hasMedia: ['app.bsky.embed.images#view', 'app.bsky.embed.video#view', 'app.bsky.embed.gallery#view', 'app.bsky.embed.recordWithMedia#view'].includes(String(record(reply.embed).$type)) }];
   });

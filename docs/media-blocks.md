@@ -59,3 +59,9 @@ Reply cleanup recognizes a dedicated container marker and Default/Reply message 
 
 For Bluesky public reply threads, including the `depth=1` / `parentHeight=0` AppView request,
 limits, filtering and cleanup, see [Replies and comments on X, Bluesky, YouTube and LinkedIn](../README.md#replies-and-comments-on-x-bluesky-youtube-and-linkedin).
+
+## Reply thread media
+
+Copied replies use author headings, optional avatar thumbnails and dividers. X and Bluesky show up to four images or video posters per comment, preserving provider order. Only HTTPS URLs without credentials or custom ports and up to 2,048 characters are accepted: `pbs.twimg.com` for X; `cdn.bsky.app` and `video.bsky.app` for Bluesky; `yt3.ggpht.com` and `yt3.googleusercontent.com` for YouTube avatars. Rejected media leaves a source-linked media-not-shown note. Video playback is not offered: galleries use posters. LinkedIn public comments supply text only. Discord proxies these assets; Linky never downloads or uploads them.
+
+Each page keeps the cleanup marker and quiet flags, disables mentions, and contains no buttons. Packing counts nested sections and thumbnails within the 40-component cap, as well as the existing 3,800-character and ten-comment caps. Alt text is sanitized and limited to 1,024 characters.

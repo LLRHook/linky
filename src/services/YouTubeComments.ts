@@ -12,7 +12,7 @@ export function parseYouTubeComments(value: unknown, videoId: string): ReplyPage
         typeof snippet.textDisplay !== 'string' || !snippet.textDisplay.trim() || snippet.textDisplay.length > 100_000 ||
         typeof snippet.authorDisplayName !== 'string' || !snippet.authorDisplayName.trim() ||
         typeof snippet.likeCount !== 'number' || !Number.isSafeInteger(snippet.likeCount) || snippet.likeCount < 0 || !Number.isFinite(time) || time < 0) return [];
-    return [{ name: snippet.authorDisplayName.slice(0, 256), handle: '', profileUrl: '',
+    return [{ avatarUrl: typeof snippet.authorProfileImageUrl === 'string' ? snippet.authorProfileImageUrl : undefined, name: snippet.authorDisplayName.slice(0, 256), handle: '', profileUrl: '',
       url: `https://www.youtube.com/watch?v=${videoId}`, text: snippet.textDisplay.slice(0, 501),
       likes: snippet.likeCount, timestamp: Math.floor(time / 1000), hasMedia: false }];
   });
@@ -33,7 +33,7 @@ export function createYouTubeComments(key: string,
         if (pending.size >= 8) return null;
         flight = (async () => {
           const body = await request({ part: 'snippet', videoId, order: 'relevance', maxResults: '25', textFormat: 'plainText',
-            fields: 'items(id,snippet(videoId,topLevelComment(id,snippet(textDisplay,authorDisplayName,authorChannelUrl,likeCount,publishedAt))))' }, true, 256 * 1024);
+            fields: 'items(id,snippet(videoId,topLevelComment(id,snippet(textDisplay,authorDisplayName,authorChannelUrl,authorProfileImageUrl,likeCount,publishedAt))))' }, true, 256 * 1024);
           const parsed = parseYouTubeComments(body, videoId);
           if (cache.size >= 100) cache.delete(cache.keys().next().value!);
           cache.set(videoId, { until: now() + (parsed ? 300_000 : 30_000), page: parsed });

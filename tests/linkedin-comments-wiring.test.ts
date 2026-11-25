@@ -176,11 +176,11 @@ for (const length of [88, 89]) test(`LinkedIn thread title at name boundary ${le
 
 test('hostile comment author names remain inert in the shared renderer', () => {
   const page = parseLinkedInComments([ld(url, [comment({ author: { '@type': 'Person', name: '@everyone [Click](https://example.test) **x**' } })])], url, 0)!;
-  const content = replyThreadPayloads(page)[0].components[0].components[1].content;
-  assert.equal(content.split('\n')[0], '**@\u200beveryone \\[Click\\]\\(\\[link\\] \\*\\*x\\*\\*** · 2 likes · <t:1793534400:R>');
+  const content = (replyThreadPayloads(page)[0].components[0].components[1] as { content: string }).content;
+  assert.equal(content.split('\n')[0], '**@\u200beveryone \\[Click\\]\\(\\[link\\] \\*\\*x\\*\\***');
   const longPage = parseLinkedInComments([ld(url, [comment({ author: { '@type': 'Person', name: 'N'.repeat(300) } })])], url, 0)!;
-  const line = replyThreadPayloads(longPage)[0].components[0].components[1].content;
-  assert.equal(line, `**${'N'.repeat(300)}** \u00b7 2 likes \u00b7 <t:1793534400:R>\nSynthetic text`);
+  const line = (replyThreadPayloads(longPage)[0].components[0].components[1] as { content: string }).content;
+  assert.equal(line, `**${'N'.repeat(300)}**\n-# 2 likes \u00b7 <t:1793534400:R>\nSynthetic text`);
 
 });
 
