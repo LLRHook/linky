@@ -832,3 +832,20 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Status:** open
 - **Log:**
   - 2026-11-24 protocol: Found by: protocol (Stage 1.5). Class: stale verification step, not a product defect.
+
+### [BUG-1795645211] LinkedIn video posts show a Comments button but the thread finds no comments
+- [x] **Severity:** med
+- **Area:** previews, providers
+- **File(s):** src/services/LinkedInComments.ts, src/services/ArticlePosts.ts, src/services/SocialLinkService.ts, src/commands/fix.ts, tests/linkedin-comments.test.ts, tests/linkedin-comments-wiring.test.ts
+- **Observation:** Live check in the Linky test server on 2026-11-25 at 9f908cf: a public LinkedIn video post showed the Comments button with its count, but the click answered "No comments Linky can show for this post". The page's JSON-LD is a `VideoObject` whose `comment` entries carry `creator: {"@type":"Person",...}` instead of `author`; `LinkedInComments.ts:19-23` reads only `c.author` and requires `author['@type'] === 'Person'`, so every comment is dropped. A saved copy of the same post had 9 such comments (likes 12, 15, 2, 2, 6, 6, 6, 6, 4). `LinkedIn.ts:104` already reads `item.creator` for a video's own author. A text post (`SocialMediaPosting`, `author`) worked.
+- **Expected:** FEAT-1795544485: a public LinkedIn post, video or text, shows the same top comments the page carries; the button appears only when Linky can show them.
+- **Req:** none (FEAT-1795544485 acceptance criteria, Victor request 2026-11-24)
+- **Depends on:** none (FEAT-1795544485 shipped in 9f908cf)
+- **Repro / Notes:** Fixture: a VideoObject JSON-LD with comments that use `creator`; `parse` must return them in the same order and like counts as an equivalent `author` fixture. Also check the button gate: a post whose comments all fail parsing must not show the button. F8 (zero-like comments omitting LikeAction) was not observed: neither live post had a zero-like comment.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Read creator for video comments and author for text, retain usable same-page comments through preparation and gate both publication paths; pass confirmedButtonRows to manual video publication (driver-approved review fix).
+- **Docs:** docs/article-previews.md; README.md and ReplyThreads downstream sanitation reviewed
+- **Log:**
+  - 2026-11-25: Independent F7 code review found src/commands/fix.ts:384 omits confirmedButtonRows for inline uploaded LinkedIn videos. Driver approved including only the callback and production video regression in this bug on 2026-11-25.

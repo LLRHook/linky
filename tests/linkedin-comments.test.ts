@@ -114,7 +114,7 @@ test(`production automatic publish gate ${enabled}/${count}/${type}`, async () =
   const source = repostSource({ content: url, channel: sendableChannel({ type, send: async () => card }) });
   const handler = createLinkRepostHandler([TEST_CHANNEL_ID], { info(...v: unknown[]) { logs.push(v); }, warn(...v: unknown[]) { logs.push(v); }, error(...v: unknown[]) { logs.push(v); } }, undefined, {
     platforms: ['articles'], serverPreferences: () => ({ replies: enabled }), rememberRepost: async () => true,
-    lookupArticle: async (raw, _signal, comments) => { flags.push(comments); return { source: raw, url, title: 'LinkedIn post', publisher: 'LinkedIn', linkedIn: post }; },
+    lookupArticle: async (raw, _signal, comments) => { flags.push(comments); return { source: raw, url, title: 'LinkedIn post', publisher: 'LinkedIn', linkedIn: post, linkedInComments: parseLinkedInComments([ld()], url, 0) }; },
     verifyPreview: async (_m, expected) => ({ ok: true, missing: [], videoMetadata: false, attributed: [...expected] }) });
   await handler(source as unknown as Message);
   assert.deepEqual(flags, [enabled]);
@@ -122,7 +122,7 @@ test(`production automatic publish gate ${enabled}/${count}/${type}`, async () =
 });
 
 test('button identity bounded; production click router binds canonical card and abstains mismatch', async () => {
-  const button = linkedInCommentsButton(golden.card, ChannelType.GuildText, true)!.toJSON() as { custom_id: string };
+  const button = linkedInCommentsButton(golden.card, ChannelType.GuildText, true, parseLinkedInComments([ld()], url, 0))!.toJSON() as { custom_id: string };
   assert.equal(button.custom_id, `linky:replies:linkedin:${id}`); assert.ok(button.custom_id!.length <= 100);
   let calls = 0, creates = 0;
   const answers: string[] = [];
@@ -159,7 +159,7 @@ for (const commentsFirst of [true, false]) test(`overlapping full video and comm
   const gate = new Promise<void>(resolve => { release = resolve; });
   let pages = 0;
   const movie = 'https://dms.licdn.com/playlist/vid/sample?e=2147483647&v=beta&t=abcdefgh';
-  const video = { ...ld(), '@type': 'VideoObject', creator: { name: 'Sample Author' }, description: 'Synthetic video', contentUrl: movie };
+  const video = { ...ld([comment({ author: undefined, creator: { '@type': 'Person', name: 'Sample Member' } })]), '@type': 'VideoObject', creator: { name: 'Sample Author' }, description: 'Synthetic video', contentUrl: movie };
   const lookup = createArticleLookup({ resolve4: async () => ['1.1.1.1'], connect: async options => {
     if (options.hostname === 'dms.licdn.com') {
       const bytes = new Uint8Array(64); bytes.set(new TextEncoder().encode('ftypisom'), 4);
@@ -218,4 +218,60 @@ test('malformed comment counter cannot fail an opted-in ordinary card', async ()
   const card = await lookup(url, undefined, true);
   assert.deepEqual(formatLinkedInPost(card!.linkedIn!), golden.card);
   assert.equal(card!.linkedInComments, null);
+});
+
+const videoLd = (comments: unknown[]) => ({ ...ld(comments), '@type': 'VideoObject',
+  creator: { name: 'Synthetic Publisher' }, description: 'Synthetic video',
+  contentUrl: 'https://dms.licdn.com/playlist/vid/sample?e=2147483647&v=beta&t=abcdefgh' });
+
+test('video creator comments preserve equivalent text replies, nine likes, names and times', () => {
+  const likes = [12, 15, 2, 2, 6, 6, 6, 6, 4];
+  const comments = likes.map((n, i) => comment({ author: { '@type': 'Person', name: `Synthetic Member ${i}` },
+    text: `Synthetic reply ${i}`, datePublished: `2026-03-03T20:48:0${i}.696Z`,
+    interactionStatistic: { '@type': 'InteractionCounter', interactionType: 'http://schema.org/LikeAction', userInteractionCount: n } }));
+  const video = parseLinkedInComments([videoLd(comments.map(({ author, ...c }) => ({ ...c, creator: author })))], url, 1000)!;
+  const text = parseLinkedInComments([ld(comments)], url, 1000)!;
+  assert.deepEqual(video.replies, text.replies);
+  assert.deepEqual(video.replies.map(r => r.likes), likes);
+  assert.equal(video.r, 9); assert.equal(video.m, 0);
+});
+
+test('mixed fields follow parent type without fallback and retain invalid-entry accounting', () => {
+  const person = { '@type': 'Person', name: 'Video Member' };
+  const both = comment({ creator: person });
+  const wrong = comment();
+  const malformed = comment({ creator: { '@type': 'Organization', name: 'Synthetic Org' } });
+  const page = parseLinkedInComments([videoLd([both, wrong, malformed])], url, 0)!;
+  assert.deepEqual(page.replies.map(r => r.name), ['Video Member']);
+  assert.equal(page.r, 3); assert.equal(page.m, 2);
+  const text = parseLinkedInComments([ld([both, comment({ author: undefined, creator: person })])], url, 0)!;
+  assert.deepEqual(text.replies.map(r => r.name), ['Sample Member']); assert.equal(text.m, 1);
+});
+
+test('video author names remain inert through the existing downstream sanitizer', () => {
+  const page = parseLinkedInComments([videoLd([comment({ author: undefined,
+    creator: { '@type': 'Person', name: '@everyone **Name** https://example.test discord.gg/test' } })])], url, 0)!;
+  const payload = replyThreadPayloads(page)[0];
+  const output = JSON.stringify(payload);
+  assert.ok(!output.includes('@everyone')); assert.ok(!output.includes('https://example.test')); assert.ok(!output.includes('discord.gg'));
+  assert.ok(output.includes('Name')); assert.deepEqual(payload.allowedMentions, { parse: [] });
+});
+
+for (const usable of [true, false]) test(`publish gate uses already parsed comments, usable=${usable}`, async () => {
+  let calls = 0;
+  const lookup = createArticleLookup({ resolve4: async () => ['1.1.1.1'], connect: async () => {
+    calls++; return response(html(ld(usable ? [comment()] : [comment({ author: {} })])));
+  } });
+  const edits: unknown[] = [];
+  const card = botMessage({ embeds: golden.card.map(e => ({ ...e, toJSON: () => e })), edit: async (p: unknown) => { edits.push(p); return card; } });
+  const source = repostSource({ content: url, channel: sendableChannel({ type: ChannelType.GuildText, send: async () => card }) });
+  const handler = createLinkRepostHandler([TEST_CHANNEL_ID], { info() {}, warn() {}, error() {} }, undefined, {
+    platforms: ['articles'], serverPreferences: () => ({ replies: true }), rememberRepost: async () => true,
+    lookupArticle: lookup, verifyPreview: async (_m, expected) => ({ ok: true, missing: [], videoMetadata: false, attributed: [...expected] }) });
+  await handler(source as unknown as Message);
+  assert.equal(JSON.stringify(edits).includes('Comments ('), usable);
+  assert.equal(calls, 1, 'gate does not fetch a second page');
+  const page = parseLinkedInComments([ld()], url, 0)!;
+  assert.equal(linkedInCommentsButton(golden.card, ChannelType.GuildText, true), undefined);
+  assert.equal(linkedInCommentsButton(golden.card, ChannelType.GuildText, true, { ...page, commentsUrl: url.replace(id, '7500000000000000001') }), undefined);
 });

@@ -16,7 +16,7 @@ export function parseLinkedInComments(json: readonly unknown[], ogUrl: string | 
   const replies: PublicReply[] = [];
   let m = 0;
   for (const value of item.comment) {
-    const c = record(value), author = record(c.author);
+    const c = record(value), author = record(item['@type'] === 'VideoObject' ? c.creator : c.author);
     const likes = (Array.isArray(c.interactionStatistic) ? c.interactionStatistic : [c.interactionStatistic]).map(record)
       .find(s => typeof s.interactionType === 'string' && /^https?:\/\/schema\.org\/LikeAction$/.test(s.interactionType))?.userInteractionCount;
     const date = c.datePublished;
@@ -35,11 +35,11 @@ export function parseLinkedInComments(json: readonly unknown[], ogUrl: string | 
 }
 
 /** Production publish gate; N is read from the same authored card footer visible to the member. */
-export function linkedInCommentsButton(cards: readonly APIEmbed[], type: ChannelType | undefined, enabled: boolean) {
-  if (!enabled || !repliesChannel(type) || cards.length !== 1) return undefined;
+export function linkedInCommentsButton(cards: readonly APIEmbed[], type: ChannelType | undefined, enabled: boolean, page?: ReplyPage | null) {
+  if (!enabled || !repliesChannel(type) || cards.length !== 1 || !page?.replies.length) return undefined;
   const card = cards[0], url = linkedInPermalink(card.url), id = url && linkedInActivity(url);
   const count = /^LinkedIn · [\d.,KMBT]+ reactions · ([\d.,KMBT]+) comments$/.exec(card.footer?.text ?? '')?.[1];
-  return id && count && count !== '0' ? new ButtonBuilder().setStyle(ButtonStyle.Secondary)
+  return id && page.commentsUrl === url && count && count !== '0' ? new ButtonBuilder().setStyle(ButtonStyle.Secondary)
     .setLabel(`Comments (${count})`).setCustomId(`linky:replies:linkedin:${id}`) : undefined;
 }
 

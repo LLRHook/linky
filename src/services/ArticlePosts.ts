@@ -2,6 +2,7 @@ import { AttachmentBuilder, ComponentType, type APIEmbed, type APIMessageTopLeve
 import { findArticleLinks, formatArticlePreview, parseArticleUrl, type ArticleLookup } from './ArticlePreview';
 import type { RewritePlatform } from './LinkConfiguration';
 import { mapLinks, visibleLink } from './LinkTokens';
+import type { ReplyPage } from './ReplyThreads';
 import type { TruthSocialFile } from './TruthSocial';
 import { messageHasUploadedMedia } from './UploadedMedia';
 
@@ -9,7 +10,7 @@ import { messageHasUploadedMedia } from './UploadedMedia';
  * `files` are uploaded with the message; images use `attachment://name`, and a single video can play inside a
  * Components V2 panel. `withoutFiles` is the card to show when the uploads cannot be attached.
  */
-export interface PreparedArticle { source: string; embeds: APIEmbed[]; files?: TruthSocialFile[]; withoutFiles?: APIEmbed[] }
+export interface PreparedArticle { linkedInComments?: ReplyPage | null; source: string; embeds: APIEmbed[]; files?: TruthSocialFile[]; withoutFiles?: APIEmbed[] }
 
 /** A card's uploaded video; Discord lists it as a message attachment, unlike images the card displays. */
 export const isArticleVideo = (name: string | null | undefined): boolean =>
@@ -60,9 +61,9 @@ export function articleAttachments(posts: readonly PreparedArticle[]): Attachmen
 export function withoutArticleFiles(posts: readonly PreparedArticle[]): PreparedArticle[] {
   return posts.map(post => {
     if (!post.files?.length) return post;
-    if (post.withoutFiles) return { source: post.source, embeds: post.withoutFiles };
+    if (post.withoutFiles) return { source: post.source, ...('linkedInComments' in post ? { linkedInComments: post.linkedInComments } : {}), embeds: post.withoutFiles };
     const original = (url?: string) => post.files!.find(file => url === `attachment://${file.name}`)?.url ?? url;
-    return { source: post.source, embeds: post.embeds.map(embed => ({ ...embed,
+    return { source: post.source, ...('linkedInComments' in post ? { linkedInComments: post.linkedInComments } : {}), embeds: post.embeds.map(embed => ({ ...embed,
       ...(embed.author ? { author: { ...embed.author, ...(embed.author.icon_url ? { icon_url: original(embed.author.icon_url) } : {}) } } : {}),
       ...(embed.image ? { image: { ...embed.image, url: original(embed.image.url)! } } : {}) })) };
   });
@@ -90,7 +91,7 @@ export async function prepareArticlePosts(sources: readonly string[], lookup?: A
     const withoutFiles = uploads.length ? formatArticlePreview({ ...post!,
       ...(post!.linkedIn ? { linkedIn: { ...post!.linkedIn!, files: [] } } : {}),
       ...(post!.truthSocial ? { truthSocial: { ...post!.truthSocial!, files: [] } } : {}) }) : [];
-    return { source: sources[index], embeds, ...(files.length ? { files } : {}), ...(withoutFiles.length ? { withoutFiles } : {}) };
+    return { source: sources[index], embeds, ...('linkedInComments' in post! ? { linkedInComments: post!.linkedInComments } : {}), ...(files.length ? { files } : {}), ...(withoutFiles.length ? { withoutFiles } : {}) };
   });
   return articleEmbeds(prepared).length ? prepared : null;
 }
