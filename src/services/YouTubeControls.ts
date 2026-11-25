@@ -13,7 +13,7 @@ export function parseYouTubeControl(customId: string): { action: 'stats' | 'comm
 }
 
 /** Keep the native embed untouched; only small, readable controls carry the counts. */
-export function controlsForYouTube(cards: APIEmbed[]): { controls: YouTubeRow[]; videoIds: string[] } | null {
+export function controlsForYouTube(cards: APIEmbed[], comments = false): { controls: YouTubeRow[]; videoIds: string[] } | null {
   if (!cards.length || cards.length > 3) return null;
   const controls: YouTubeRow[] = [], videoIds: string[] = [];
   for (const [index, card] of cards.entries()) {
@@ -32,6 +32,11 @@ export function controlsForYouTube(cards: APIEmbed[]): { controls: YouTubeRow[];
     if (counts.length) buttons.push(button('stats', `${cards.length > 1 ? `${index + 1} · ` : ''}${counts.join(' · ')}`));
     if (card.fields?.some(field => field.name === 'Top comment' && field.value.trim())) {
       buttons.push(button('comment', cards.length > 1 ? `Top comment ${index + 1}` : 'Top comment'));
+    }
+    const count = card.fields?.find(field => field.name === 'Comments')?.value.replace(/[* ,]/g, '');
+    if (comments && cards.length === 1 && count && /^\d{1,20}$/.test(count) && BigInt(count) > 0n) {
+      buttons.push({ type: ComponentType.Button, style: ButtonStyle.Secondary,
+        custom_id: `linky:yt:replies:${video.id}`, label: `Comments (${count})` });
     }
     if (!buttons.length || buttons.some(value => value.label!.length > 80)) return null;
     controls.push({ type: ComponentType.ActionRow, components: buttons });

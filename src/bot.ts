@@ -1,9 +1,7 @@
-import { createBlueskyReplies } from './services/BlueskyReplies';
-import type { PartialMessage } from 'discord.js';
 import { ReplyThreads, repliesChannel, type ReplyPage } from './services/ReplyThreads';
 import { ReplyCleanupJournal } from './services/ReplyCleanupJournal';
 import { createXReplies } from './services/XReplies';
-import { Client, Events, GatewayIntentBits, MessageFlags, Partials, PermissionFlagsBits, type Interaction, type Message } from 'discord.js';
+import { Client, Events, GatewayIntentBits, MessageFlags, Partials, PermissionFlagsBits, type Interaction, type Message, type PartialMessage } from 'discord.js';
 import { dirname, join } from 'node:path';
 import type { Config } from './config';
 import type { logger } from './logger';
@@ -23,7 +21,9 @@ import { createLinkRepostHandler } from './services/SocialLinkService';
 import { createTweetLookup } from './services/TweetTranslation';
 import { createInstagramLookup } from './services/InstagramPost';
 import { createBlueskyLookup } from './services/BlueskyPost';
+import { createBlueskyReplies } from './services/BlueskyReplies';
 import { createYouTubeLookup } from './services/YouTube';
+import { youtubeCommentsEnabled, youtubeCommentsScopeEnabled, youtubeReplyTarget } from './services/YouTubeReplyTarget';
 import { createYouTubeCommunityLookup } from './services/YouTubeCommunity';
 import { createArticleLookup } from './services/ArticlePreview';
 import { YouTubeStats } from './services/YouTubeStats';
@@ -143,12 +143,26 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     allowed: createEromeAlbumPolicy({ settings, servers, fetchMessage, signal: shutdown.signal }),
   });
   const xReplies = createXReplies(), blueskyReplies = createBlueskyReplies();
+
+  const youtubeCommentsScope = (message: Message) => {
+    if (!message.guildId) return false;
+    const preferences = servers.getPreferences(message.guildId);
+    return youtubeCommentsScopeEnabled({ guildId: message.guildId, channelId: message.channelId, serverEnabled: servers.get(message.guildId),
+      preferences, operatorChannelIds: settings.channelIds, operatorServerIds: settings.serverIds }, settings.rewritePlatforms.includes('youtube'));
+  };
   const replyThreads = new ReplyThreads({
     botUserId: () => client.user?.id ?? '',
     enabled: guildId => servers.getPreferences(guildId).replies === true,
     tracked: message => !replyCleanup.has(message.id) && Boolean(registry?.isActive(message.id) ||
       message.interactionMetadata?.user.id && message.webhookId === client.application?.id && !message.flags.has(MessageFlags.Ephemeral)),
     lookup: createReplyLookup(xReplies, blueskyReplies),
+    resolveTarget: interaction => youtubeReplyTarget(interaction, {
+      enabled: message => Boolean(message.guildId && youtubeCommentsScope(message) && !replyCleanup.has(message.id) && youtubeCommentsEnabled(
+        servers.getPreferences(message.guildId).replies === true, servers.getPreferences(message.guildId).youtubeDisplay ?? 'counts-and-comment',
+        Boolean(lookupYouTube), message.channel.type)),
+      canView: (message, id) => youtubeStats?.canView(message, id) ?? false,
+      lookup: lookupYouTube?.comments,
+    }),
     fetchThread: async id => {
       const channel = await client.channels.fetch(id, { force: true });
       return channel?.isThread() ? channel : null;
@@ -217,7 +231,7 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
     rememberRepost: record => registry?.remember(record) ?? Promise.resolve(false),
     findRepost: id => registry?.findByReplacement(id),
     removeRepost: record => registry?.queueRemoval(record) ?? Promise.resolve(false),
-    publishYouTube: (message, embeds) => youtubeStats?.publish(message, embeds) ?? Promise.resolve(null),
+    publishYouTube: (message, embeds, singleVideo) => youtubeStats?.publish(message, embeds, singleVideo) ?? Promise.resolve(null),
   });
   client.on(Events.MessageCreate, message => {
     if (!accepting) return;
@@ -381,6 +395,13 @@ export function createBot(settings: Config, log: Pick<typeof logger, 'info' | 'w
         path: join(dirname(settings.settingsPath), 'youtube-stats.json'),
         botUserId: readyClient.user.id,
         fetchMessage,
+        commentsEnabled: message => Boolean(message.guildId && 'channel' in message && youtubeCommentsScope(message as Message) && youtubeCommentsEnabled(
+          servers.getPreferences(message.guildId).replies === true, servers.getPreferences(message.guildId).youtubeDisplay ?? 'counts-and-comment',
+          Boolean(lookupYouTube), (message as Message).channel.type)),
+        hasCommentCreation: id => replyThreads.hasExactCreation(id),
+        cleanupComments: async message => {
+          if (message.guildId && (knownReplyThread(message as Message) || replyThreads.hasExactCreation(message.id))) await replyThreads.cleanup({ guildId: message.guildId, channelId: message.channelId, threadId: message.id });
+        },
         onError: error => logCleanupFailure(log, error),
       });
       youtubeStats.start();
