@@ -1,13 +1,14 @@
 import { linkedInCommentsUrl } from './LinkedInComments';
 import { parsePostId, type BlueskyPost } from './BlueskyPost';
 import { ButtonBuilder, ButtonStyle, ChannelType, ComponentType, MessageFlags, MessageType, PermissionFlagsBits,
-  type ButtonInteraction, type Message, type ThreadChannel } from 'discord.js';
+  type APIComponentInContainer, type ButtonInteraction, type Message, type ThreadChannel } from 'discord.js';
 import { sanitizeReplyText } from './ReplyText';
 import type { TweetTranslation } from './TweetTranslation';
 
 export interface PublicReply {
   name: string; handle: string; profileUrl: string; url: string; text: string;
   likes: number; timestamp: number; hasMedia: boolean;
+  avatarUrl?: string; media?: { url: string; alt?: string }[];
 }
 /** Counts describe the unfiltered provider page, before the adapter limits the retained entries. */
 export interface ReplyPage {
@@ -42,18 +43,49 @@ export function blueskyRepliesButton(post: BlueskyPost | undefined, type: Channe
 }
 export class ReplyLookupError extends Error {}
 
+/** Only Discord's proxy reads these provider assets; Linky does not fetch or upload them. */
+export function replyMediaUrl(value: unknown, source: string, avatar: boolean): string | undefined {
+  if (typeof value !== 'string' || value.length > 2048 || /[\s<>\\]/.test(value)) return undefined;
+  try {
+    const url = new URL(value);
+    const hosts = source === 'X' ? ['pbs.twimg.com'] : source === 'Bluesky' ? ['cdn.bsky.app', 'video.bsky.app']
+      : source === 'YouTube' && avatar ? ['yt3.ggpht.com', 'yt3.googleusercontent.com'] : [];
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && url.href.length <= 2048 && hosts.includes(url.hostname) ? url.href : undefined;
+  } catch { return undefined; }
+}
+
 /** Greedily pack displays, including the header in the first message's character budget. */
 export function replyThreadPayloads(page: ReplyPage) {
   const youtube = page.source === 'YouTube';
   const replies = page.replies.slice(0, youtube ? 25 : page.maxShown ?? 10);
   const header = page.commentsUrl ? `Showing ${replies.length} of ${page.N} comments from LinkedIn's public page, in LinkedIn's order (LinkedIn returned ${page.r}; Linky hid ${page.m}). Count as of <t:${Math.floor(page.countTime / 1000)}:f>. [Open post](<${page.commentsUrl}>)` : youtube ? `Showing ${replies.length} of ${page.N} comments from YouTube, in YouTube's relevance order. Count as of <t:${Math.floor(page.countTime / 1000)}:f>.` : `Showing ${replies.length} of ${page.N} replies from ${page.source}, ${page.orderLabel} (${page.source} returned ${page.r}; Linky hid ${page.m}). Count as of <t:${Math.floor(page.countTime / 1000)}:f>.`;
-  const groups: { type: ComponentType.TextDisplay; content: string }[][] = [];
-  let components: { type: ComponentType.TextDisplay; content: string }[] = [{ type: ComponentType.TextDisplay, content: header }];
-  let size = header.length, entries = 0;
+  const groups: APIComponentInContainer[][] = [];
+  let components: APIComponentInContainer[] = [{ type: ComponentType.TextDisplay, content: header }];
+  let size = header.length, entries = 0, componentCount = 2;
   for (const reply of replies) {
-    const content = page.commentsUrl ? `**${sanitizeReplyText(reply.name, 300, true)}** \u00b7 ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>\n${reply.text}` : (youtube ? `**${sanitizeReplyText(reply.name, 100, true)}** \u00b7 ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}\n[Open video](<${reply.url}>)` : `**${sanitizeReplyText(reply.name, 100, true)}** [@${reply.handle.replace(/@/g, '@\u200b')}](<${reply.profileUrl}>) · ${reply.likes} likes · <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}${reply.hasMedia ? '\n· has media' : ''}\n[Open reply](<${reply.url}>)`);
-    if (size + content.length > 3800 || entries >= 10) { groups.push(components); components = []; size = 0; entries = 0; }
-    components.push({ type: ComponentType.TextDisplay, content }); size += content.length; entries++;
+    const avatar = replyMediaUrl(reply.avatarUrl, page.source, true);
+    const supplied = reply.media ?? [];
+    const media = supplied.flatMap(item => {
+      const url = replyMediaUrl(item.url, page.source, false);
+      return url ? [{ media: { url }, description: sanitizeReplyText(item.alt || 'Media from the reply.', 1024, true) }] : [];
+    }).slice(0, 4);
+    const missing = supplied.some(item => !replyMediaUrl(item.url, page.source, false)) || (reply.hasMedia && !media.length);
+    const author = `**${sanitizeReplyText(reply.name, page.commentsUrl ? 300 : 100, true)}**`;
+    const identity = youtube || page.commentsUrl ? author : `${author} \u00b7 [@${sanitizeReplyText(reply.handle, 256, true)}](<${reply.profileUrl}>)`;
+    const link = page.commentsUrl ? '' : ` \u00b7 [Open ${youtube ? 'video' : 'reply'}](<${reply.url}>)`;
+    const content = `${identity}\n-# ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>${link}\n${page.commentsUrl ? reply.text : sanitizeReplyText(reply.text, 500, true)}${missing ? `\n-# media not shown${link}` : ''}`;
+    const display = { type: ComponentType.TextDisplay as const, content };
+    const block: APIComponentInContainer[] = [avatar ? {
+      type: ComponentType.Section, components: [display], accessory: { type: ComponentType.Thumbnail, media: { url: avatar } },
+    } : display];
+    if (media.length) block.push({ type: ComponentType.MediaGallery, items: media });
+    // Count the container, section children and accessory as components too.
+    const cost = (avatar ? 3 : 1) + (media.length ? 1 : 0);
+    if (size + content.length > 3800 || entries >= 10 || componentCount + cost + (entries ? 1 : 0) > 40) {
+      groups.push(components); components = []; size = 0; entries = 0; componentCount = 1;
+    }
+    if (entries) { components.push({ type: ComponentType.Separator, divider: true }); componentCount++; }
+    components.push(...block); size += content.length; componentCount += cost; entries++;
   }
   groups.push(components);
   return groups.map(components => ({ flags: REPLY_FLAGS, components: [{ type: ComponentType.Container as const, id: REPLY_PAGE_MARKER, components }], allowedMentions: { parse: [] as never[] } }));

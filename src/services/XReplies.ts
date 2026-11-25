@@ -15,10 +15,17 @@ export function parseXReplies(value: unknown, statusId: string, now: number): Re
         typeof author.name !== 'string' || !author.name.trim() ||
         typeof author.screen_name !== 'string' || !/^[A-Za-z0-9_]{1,15}$/.test(author.screen_name) ||
         !count(reply.likes) || !count(reply.created_timestamp) || reply.created_timestamp > 8_640_000_000_000) return [];
-    return [{ name: author.name.slice(0, 256), handle: author.screen_name,
+    const assets = record(reply.media);
+    const ordered = Array.isArray(assets.all) ? assets.all
+      : [...(Array.isArray(assets.photos) ? assets.photos : []), ...(Array.isArray(assets.videos) ? assets.videos : [])];
+    const media = ordered.slice(0, 16).map(value => {
+      const item = record(value);
+      return { url: typeof item.thumbnail_url === 'string' ? item.thumbnail_url : typeof item.url === 'string' ? item.url : '', alt: typeof item.altText === 'string' ? item.altText : typeof item.alt_text === 'string' ? item.alt_text : typeof item.alt === 'string' ? item.alt : undefined };
+    });
+    return [{ avatarUrl: typeof author.avatar_url === 'string' ? author.avatar_url : undefined, media, name: author.name.slice(0, 256), handle: author.screen_name,
       profileUrl: `https://x.com/${author.screen_name}`, url: `https://x.com/${author.screen_name}/status/${reply.id}`,
       text: reply.text.slice(0, 501), likes: reply.likes, timestamp: reply.created_timestamp,
-      hasMedia: Array.isArray(record(reply.media).all) && (record(reply.media).all as unknown[]).length > 0 }];
+      hasMedia: media.length > 0 || Array.isArray(record(reply.media).all) && (record(reply.media).all as unknown[]).length > 0 }];
   });
   replies.sort((a, b) => b.likes - a.likes || b.timestamp - a.timestamp);
   return { N: status.replies, countTime: now, r: body.replies.length, m: body.replies.length - replies.length,

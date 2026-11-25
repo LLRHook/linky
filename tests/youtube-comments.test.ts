@@ -19,7 +19,7 @@ test('YouTube exact parameters cost one request, bounded cache TTL and per-call 
   const lookup = createYouTubeLookup('operator-key', { now: () => now, fetch: async (input, init) => {
     calls++; const url = new URL(String(input));
     assert.equal(url.origin + url.pathname, 'https://www.googleapis.com/youtube/v3/commentThreads');
-    assert.deepEqual(Object.fromEntries(url.searchParams), { part: 'snippet', videoId: calls <= 2 ? 'dQw4w9WgXcQ' : expectedId, order: 'relevance', maxResults: '25', textFormat: 'plainText', fields: 'items(id,snippet(videoId,topLevelComment(id,snippet(textDisplay,authorDisplayName,authorChannelUrl,likeCount,publishedAt))))' });
+    assert.deepEqual(Object.fromEntries(url.searchParams), { part: 'snippet', videoId: calls <= 2 ? 'dQw4w9WgXcQ' : expectedId, order: 'relevance', maxResults: '25', textFormat: 'plainText', fields: 'items(id,snippet(videoId,topLevelComment(id,snippet(textDisplay,authorDisplayName,authorChannelUrl,authorProfileImageUrl,likeCount,publishedAt))))' });
     assert.equal(init?.redirect, 'error'); assert.equal(init?.credentials, 'omit'); assert.ok(init?.signal);
     assert.deepEqual(init?.headers, { 'X-Goog-Api-Key': 'operator-key' });
     return new Response(JSON.stringify({ ...body(url.searchParams.get('videoId')!), padding: 'x'.repeat(oversized ? 262144 : 130000) }));
@@ -55,7 +55,7 @@ test('YouTube preserves relevance, top-level identity and 25 cap, exact flags an
   const payloads = replyThreadPayloads(page); const text = JSON.stringify(payloads);
   assert.match(text, /Showing 25 of 99 comments from YouTube, in YouTube's relevance order/); assert.match(text, /Count as of <t:1:f>/);
   assert(!text.includes('evil.test')); assert(text.includes('@\u200beveryone')); assert(!text.includes('&lc='));
-  for (const payload of payloads) { assert.equal(payload.flags, 36868); assert.deepEqual(payload.allowedMentions, { parse: [] }); assert(payload.components[0].components.reduce((sum, display) => sum + display.content.length, 0) <= 3800); }
+  for (const payload of payloads) { assert.equal(payload.flags, 36868); assert.deepEqual(payload.allowedMentions, { parse: [] }); assert(payload.components[0].components.reduce((sum, display) => sum + ('content' in display ? display.content.length : 0), 0) <= 3800); }
 });
 
 test('YouTube button eligibility and longest stable control ID', () => {
@@ -125,7 +125,7 @@ test('YouTube comments cache holds at most 100 videos separately from statistics
   assert.equal(calls, 101); await lookup(ID, '1', 0); assert.equal(calls, 102);
 });
 
-test('shared renderer retains baseline X output byte for byte', async () => {
+test('shared renderer matches the authored X presentation snapshot', async () => {
   const { parseXReplies } = await import('../src/services/XReplies');
   const fixture = (await import('./fixtures/x-conversation.json')).default;
   const golden = (await import('./fixtures/x-reply-payloads.json')).default;

@@ -45,12 +45,12 @@ test('25 shown and literal header, greedy packing and X still capped at ten', ()
   const page = parse(); page.N = 123; page.r = 40; page.m = 5;
   page.replies = Array.from({ length: 30 }, () => ({ ...page.replies[0], text: '@everyone **x** https://bad.test ' + 'x'.repeat(500) }));
   const payloads = replyThreadPayloads(page);
-  assert.equal(payloads[0].components[0].components[0].content, 'Showing 25 of 123 replies from Bluesky, most liked first (Bluesky returned 40; Linky hid 5). Count as of <t:1:f>.');
-  assert.equal(payloads.flatMap(p => p.components[0].components).length, 26);
-  for (const p of payloads) { assert.equal(p.flags, 36868); assert.deepEqual(p.allowedMentions, { parse: [] }); assert.ok(p.components[0].components.map(t => t.content).join('').length <= 3800); }
+  assert.equal((payloads[0].components[0].components[0] as { content: string }).content, 'Showing 25 of 123 replies from Bluesky, most liked first (Bluesky returned 40; Linky hid 5). Count as of <t:1:f>.');
+  assert.equal(payloads.flatMap(p => p.components[0].components).filter(c => c.type === 10).length, 26);
+  for (const p of payloads) { assert.equal(p.flags, 36868); assert.deepEqual(p.allowedMentions, { parse: [] }); assert.ok(p.components[0].components.map(t => 'content' in t ? t.content : '').join('').length <= 3800); }
   assert.doesNotMatch(JSON.stringify(payloads), /https:\/\/bad.test/);
   const x = replyThreadPayloads({ ...page, source: 'X', maxShown: undefined });
-  assert.equal(x.flatMap(p => p.components[0].components).length, 11);
+  assert.equal(x.flatMap(p => p.components[0].components).filter(c => c.type === 10).length, 11);
 });
 test('lookup exact request, five second timeout, no credentials/redirect, TTLs, byte cap and private oversize', async t => {
   let now = 0, calls = 0, large = false;

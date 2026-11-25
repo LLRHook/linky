@@ -157,10 +157,11 @@ test('full header and every entry field use the contract and every page has its 
   const payloads = replyThreadPayloads(page); assert.equal(payloads.length, 1);
   assert.equal(payloads[0].components[0].id, REPLY_PAGE_MARKER);
   assert.equal(payloads[0].components[0].type, ComponentType.Container);
-  assert.deepEqual(payloads[0].components[0].components.map(value => value.content), [
+  assert.deepEqual(payloads[0].components[0].components.map(value => 'content' in value ? value.content : undefined), [
     'Showing 2 of 30 replies from X, most liked first (X returned 5; Linky hid 3). Count as of <t:1700000000:f>.',
-    '**Display \\*name\\*** [@foo](<https://x.com/foo>) \u00b7 7 likes \u00b7 <t:1700000000:R>\nhi @\u200beveryone \\[link\\]\n\u00b7 has media\n[Open reply](<https://x.com/foo/status/21>)',
-    '**Second** [@bar](<https://x.com/bar>) \u00b7 2 likes \u00b7 <t:1700000001:R>\nsecond reply\n[Open reply](<https://x.com/bar/status/22>)',
+    '**Display \\*name\\*** \u00b7 [@foo](<https://x.com/foo>)\n-# 7 likes \u00b7 <t:1700000000:R> \u00b7 [Open reply](<https://x.com/foo/status/21>)\nhi @\u200beveryone \\[link\\]\n-# media not shown \u00b7 [Open reply](<https://x.com/foo/status/21>)',
+    undefined,
+    '**Second** \u00b7 [@bar](<https://x.com/bar>)\n-# 2 likes \u00b7 <t:1700000001:R> \u00b7 [Open reply](<https://x.com/bar/status/22>)\nsecond reply',
   ]);
 });
 test('a redirected successful-looking response is refused before parsing', async () => {

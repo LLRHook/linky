@@ -88,7 +88,7 @@ test('greedy packing, inert mentions/links, counts, flags on every payload', () 
   assert.ok(JSON.stringify(payloads).includes('Showing 10 of 47 replies from X'));
   for (const payload of payloads) {
     assert.equal(payload.flags, 36868); assert.deepEqual(payload.allowedMentions, { parse: [] });
-    const texts = payload.components.flatMap(component => component.components.map(display => display.content));
+    const texts = payload.components.flatMap(component => component.components.map(display => 'content' in display ? display.content : ''));
     assert.ok(texts.join('').length <= 3800); assert.ok(!texts.join('').includes('https://bad.test'));
   }
   assert.ok(JSON.stringify(payloads).includes('@\u200beveryone'));
