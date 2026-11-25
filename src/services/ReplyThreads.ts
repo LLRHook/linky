@@ -10,8 +10,9 @@ export interface PublicReply {
 }
 /** Counts describe the unfiltered provider page, before the adapter limits the retained entries. */
 export interface ReplyPage {
-  N: number; countTime: number; r: number; m: number; replies: PublicReply[]; orderLabel: string; source: string; maxShown?: number; threadHandle?: string;
+  N: number | string; countTime: number; r: number; m: number; replies: PublicReply[]; orderLabel: string; source: string; maxShown?: number; threadHandle?: string;
 }
+export interface ReplyTarget { id: string; handle: string; valid: (message: Message) => boolean; lookup: () => Promise<ReplyPage | null>; name: string }
 export interface ReplyCleanupTarget { guildId: string; channelId: string; threadId: string }
 export const REPLY_FLAGS = MessageFlags.IsComponentsV2 | MessageFlags.SuppressEmbeds | MessageFlags.SuppressNotifications;
 // Reserved for Linky's copied reply pages; ordinary reposts and manual outputs never use it.
@@ -42,13 +43,14 @@ export class ReplyLookupError extends Error {}
 
 /** Greedily pack displays, including the header in the first message's character budget. */
 export function replyThreadPayloads(page: ReplyPage) {
-  const replies = page.replies.slice(0, page.maxShown ?? 10);
-  const header = `Showing ${replies.length} of ${page.N} replies from ${page.source}, ${page.orderLabel} (${page.source} returned ${page.r}; Linky hid ${page.m}). Count as of <t:${Math.floor(page.countTime / 1000)}:f>.`;
+  const youtube = page.source === 'YouTube';
+  const replies = page.replies.slice(0, youtube ? 25 : page.maxShown ?? 10);
+  const header = youtube ? `Showing ${replies.length} of ${page.N} comments from YouTube, in YouTube's relevance order. Count as of <t:${Math.floor(page.countTime / 1000)}:f>.` : `Showing ${replies.length} of ${page.N} replies from ${page.source}, ${page.orderLabel} (${page.source} returned ${page.r}; Linky hid ${page.m}). Count as of <t:${Math.floor(page.countTime / 1000)}:f>.`;
   const groups: { type: ComponentType.TextDisplay; content: string }[][] = [];
   let components: { type: ComponentType.TextDisplay; content: string }[] = [{ type: ComponentType.TextDisplay, content: header }];
   let size = header.length, entries = 0;
   for (const reply of replies) {
-    const content = `**${sanitizeReplyText(reply.name, 100, true)}** [@${reply.handle.replace(/@/g, '@\u200b')}](<${reply.profileUrl}>) · ${reply.likes} likes · <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}${reply.hasMedia ? '\n· has media' : ''}\n[Open reply](<${reply.url}>)`;
+    const content = (youtube ? `**${sanitizeReplyText(reply.name, 100, true)}** \u00b7 ${reply.likes} likes \u00b7 <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}\n[Open video](<${reply.url}>)` : `**${sanitizeReplyText(reply.name, 100, true)}** [@${reply.handle.replace(/@/g, '@\u200b')}](<${reply.profileUrl}>) · ${reply.likes} likes · <t:${reply.timestamp}:R>\n${sanitizeReplyText(reply.text, 500, true)}${reply.hasMedia ? '\n· has media' : ''}\n[Open reply](<${reply.url}>)`);
     if (size + content.length > 3800 || entries >= 10) { groups.push(components); components = []; size = 0; entries = 0; }
     components.push({ type: ComponentType.TextDisplay, content }); size += content.length; entries++;
   }
@@ -71,9 +73,12 @@ export class ReplyThreads {
     lookup: (id: string, platform?: 'x' | 'bsky') => Promise<ReplyPage | null>;
     fetchThread: (id: string) => Promise<ThreadChannel | null>;
     now?: () => number;
+    resolveTarget?: (interaction: ButtonInteraction) => ReplyTarget | undefined;
   }) {}
 
-  /** A false Discord snapshot is safe only if this process never began creating the thread. */
+  /** Fresh YouTube expiry snapshots need exact evidence, without the conservative removal fallback. */
+  hasExactCreation(id: string): boolean { return this.flights.has(id) || this.created.has(id); }
+  /** A false removal snapshot is safe only if creation never began; at capacity stay conservative. */
   hasCreation(id: string): boolean { return this.creationHistoryFull || this.flights.has(id) || this.created.has(id); }
   needsCleanup(guildId: string, id: string, parent: { hasThread?: boolean } | null): boolean {
     return this.options.enabled(guildId) || !parent || Boolean(parent.hasThread) || this.hasCreation(id);
@@ -83,15 +88,16 @@ export class ReplyThreads {
     const match = /^linky:replies:x:(\d{1,20}):([A-Za-z0-9_]{1,15})$/.exec(interaction.customId);
     const bluesky = interaction.customId.startsWith('linky:replies:bsky:') ? interaction.customId.slice(19) : '';
     const identity = parsePostId(bluesky);
-    if (!match && !identity) return false;
+    const target = this.options.resolveTarget?.(interaction);
+    if (!match && !identity && !target) return false;
     const message = interaction.message;
     const answer = async (content: string) => {
-      const payload = { content, allowedMentions: { parse: [] as never[] } };
+      const payload = { content: target ? content.replace(/Replies/g, 'Comments').replace(/replies/g, 'comments') : content, allowedMentions: { parse: [] as never[] } };
       if (interaction.deferred) await interaction.editReply(payload);
       else await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
     };
     if (!interaction.guildId || !this.options.enabled(interaction.guildId) || !repliesChannel(message.channel.type) ||
-        message.author.id !== this.options.botUserId() || !this.options.tracked(message)) {
+        message.author.id !== this.options.botUserId() || !(target ? target.valid(message) : this.options.tracked(message))) {
       await answer('Replies are unavailable for this post'); return true;
     }
     const member = interaction.guild?.members.me;
@@ -103,7 +109,7 @@ export class ReplyThreads {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let flight = this.flights.get(message.id);
     if (!flight) {
-      flight = this.open(message, match ? match[1] : bluesky, match ? match[2] : identity!.actor, interaction.user.id, match ? 'x' : 'bsky');
+      flight = this.open(message, target?.id ?? (match ? match[1] : bluesky), target?.handle ?? (match ? match[2] : identity!.actor), interaction.user.id, match ? 'x' : 'bsky', target);
       this.flights.set(message.id, flight);
       void flight.finally(() => this.flights.delete(message.id)).catch(() => {});
     }
@@ -117,10 +123,10 @@ export class ReplyThreads {
     return true;
   }
 
-  private async open(message: Message, id: string, handle: string, userId: string, platform: 'x' | 'bsky'): Promise<string> {
+  private async open(message: Message, id: string, handle: string, userId: string, platform: 'x' | 'bsky', target?: ReplyTarget): Promise<string> {
     if (this.removing.has(message.id)) return REMOVED;
     const latest = await message.fetch();
-    if (!this.options.tracked(latest)) return REMOVED;
+    if (!(target ? target.valid(latest) : this.options.tracked(latest))) return REMOVED;
     let thread: ThreadChannel | null = null;
     if (latest.hasThread) {
       thread = await this.options.fetchThread(message.id);
@@ -135,13 +141,13 @@ export class ReplyThreads {
       if ((this.users.get(userId) ?? 0) > now || times.length >= 3 || this.users.size >= 10_000 || this.channels.size >= 10_000) return 'Try again in a minute';
       this.users.set(userId, now + 10_000); this.channels.set(message.channelId, [...times, now]);
     }
-    const page = await this.options.lookup(id, platform);
+    const page = await (target ? target.lookup() : this.options.lookup(id, platform));
     if (!page?.replies.length) return EMPTY;
-    if (this.removing.has(message.id) || !this.options.tracked(latest) || !this.options.enabled(latest.guildId!)) return REMOVED;
+    if (this.removing.has(message.id) || !(target ? target.valid(latest) : this.options.tracked(latest)) || !this.options.enabled(latest.guildId!)) return REMOVED;
     if (!thread) {
       // Keep history across completed flights; cap memory by conservatively disabling skips once full.
       if (this.created.size < 10_000) this.created.add(message.id); else this.creationHistoryFull = true;
-      const name = `Replies to @${page.threadHandle ?? handle}`.replace(/[\u0000-\u001f\u007f]/g, '');
+      const name = (target?.name ?? `Replies to @${page.threadHandle ?? handle}`).replace(/[\u0000-\u001f\u007f]/g, '');
       try { thread = await latest.startThread({ name: name.length > 100 ? name.slice(0, 99) + '\u2026' : name, autoArchiveDuration: 1440 }); }
       catch (error) {
         if (![160004, 160005].includes(code(error) ?? 0)) throw error;

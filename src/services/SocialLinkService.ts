@@ -76,7 +76,7 @@ export interface LinkRepostOptions {
   lookupYouTube?: (ids: readonly string[], display?: YouTubeDisplay) => Promise<Map<string, YouTubeStatistics>>;
   lookupYouTubeCommunity?: YouTubeCommunityLookup;
   lookupArticle?: ArticleLookup;
-  publishYouTube?: (message: Message, embeds: APIEmbed[]) => Promise<StatsPublication | null>;
+  publishYouTube?: (message: Message, embeds: APIEmbed[], singleVideo: boolean) => Promise<StatsPublication | null>;
   prepareErome?: EromePreparer;
   eromeAvailable?: (guildId: string) => boolean;
   prepareEromeMedia?: EromeMediaPreparer;
@@ -592,7 +592,7 @@ export function createLinkRepostHandler(
           inlinePost ? 'Post block media confirmed; client playback not checked' :
           expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
       if (youtubeCards.length) {
-        try { publication = await publishYouTube!(replacement, youtubeCards); }
+        try { publication = await publishYouTube!(replacement, youtubeCards, youtubeLinks.length === 1); }
         catch { log.warn(resultContext, 'Could not publish YouTube details'); }
         if (!publication && rewritten === inputContent && !community.length) {
           await removeReplacement();

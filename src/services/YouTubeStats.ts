@@ -22,6 +22,8 @@ export interface StatsMessage {
   channelId: string;
   author: { id: string };
   content: string;
+  hasThread?: boolean;
+  guildId?: string | null;
   components?: readonly { toJSON(): APIMessageTopLevelComponent }[];
   edit(options: MessageEditOptions): Promise<unknown>;
   delete(): Promise<unknown>;
@@ -32,6 +34,9 @@ interface Options {
   fetchMessage(channelId: string, messageId: string): Promise<StatsMessage | null>;
   now?: () => number;
   write?: (path: string, content: string) => Promise<void>;
+  commentsEnabled?: (message: StatsMessage) => boolean;
+  cleanupComments?: (message: StatsMessage) => Promise<void>;
+  hasCommentCreation?: (id: string) => boolean;
   onError?: (error: CleanupFailure) => void;
 }
 
@@ -43,6 +48,7 @@ function missing(error: unknown): boolean {
 /** Track cleanup before publishing API data; the journal never contains API data or message text. */
 export class YouTubeStats {
   private values = new Map<string, ExpiryRecord>();
+  private commentFlights = new Map<string, Promise<void>>();
   private pending: Promise<unknown> = Promise.resolve();
   private timer?: ReturnType<typeof setInterval>;
   private readonly path: string;
@@ -115,26 +121,26 @@ export class YouTubeStats {
     return this.serialize(async () => {
       for (const entry of this.values.values()) {
         if (entry.kind === 'card' ? entry.baseMessageId === baseMessageId : entry.messageId === baseMessageId) {
-          await this.removeEntry(entry).catch(error => this.report(error));
+          await this.removeEntry(entry, true).catch(error => this.report(error));
         }
       }
     });
   }
 
-  private async removeEntry(entry: ExpiryRecord): Promise<void> {
+  private async removeEntry(entry: ExpiryRecord, skipComments = false): Promise<void> {
     const current = this.values.get(entry.messageId);
     if (!current) return;
     const expired = { ...current, expiresAt: Math.min(current.expiresAt, this.now()) };
     try { await this.save(new Map(this.values).set(entry.messageId, expired)); }
     catch (error) { this.values.set(entry.messageId, expired); this.report(error); }
-    if (await this.clean(expired)) {
+    if (await this.clean(expired, undefined, !skipComments) === true) {
       const next = new Map(this.values);
       next.delete(entry.messageId);
       await this.save(next);
     }
   }
 
-  private async clean(entry: ExpiryRecord, report: (error?: unknown) => void = error => this.report(error)): Promise<boolean> {
+  private async clean(entry: ExpiryRecord, report: (error?: unknown) => void = error => this.report(error), comments = true): Promise<boolean | StatsMessage> {
     try {
       const message = await this.options.fetchMessage(entry.channelId, entry.messageId);
       if (message && (message.id !== entry.messageId || message.channelId !== entry.channelId)) {
@@ -148,6 +154,7 @@ export class YouTubeStats {
           if (JSON.stringify(before) !== JSON.stringify(components)) {
             await message.edit({ components, allowedMentions: { parse: [], users: [], roles: [], repliedUser: false } });
           }
+          if (comments && this.options.cleanupComments && (message.hasThread || this.options.hasCommentCreation?.(message.id))) return message;
         }
         else {
           const tail = message.content.slice(entry.baseLength);
@@ -164,7 +171,7 @@ export class YouTubeStats {
     return true;
   }
 
-  publish(message: StatsMessage, embeds: APIEmbed[]): Promise<StatsPublication | null> {
+  publish(message: StatsMessage, embeds: APIEmbed[], singleVideo = embeds.length === 1): Promise<StatsPublication | null> {
     return this.serialize(async () => {
       if (message.author.id !== this.options.botUserId || !DISCORD_ID.test(message.channelId) ||
           !DISCORD_ID.test(message.id)) return null;
@@ -174,7 +181,7 @@ export class YouTubeStats {
         await this.removeEntry(existing).catch(error => this.report(error));
         return null;
       }
-      const presentation = controlsForYouTube(embeds);
+      const presentation = controlsForYouTube(embeds, singleVideo && (this.options.commentsEnabled?.(message) ?? false));
       if (!presentation || !mergeYouTubeControls(message.components?.map(component => component.toJSON()) ?? [], presentation.controls)) return null;
       const entry: ControlsRecord = { kind: 'controls', channelId: message.channelId, messageId: message.id,
         expiresAt: existing?.expiresAt ?? this.now() + YOUTUBE_STATS_TTL, videoIds: presentation.videoIds };
@@ -194,14 +201,49 @@ export class YouTubeStats {
     });
   }
 
-  sweep(): Promise<void> {
-    return this.serialize(async () => {
+  /** Discord thread work runs outside the shared statistics serialization chain. */
+  private cleanComments(entry: ExpiryRecord, message: StatsMessage): Promise<void> {
+    const waiting = this.commentFlights.get(entry.messageId);
+    if (waiting) return waiting;
+    const flight = (async () => {
+      let failure: unknown, failed = false;
+      try { await this.options.cleanupComments!(message); }
+      catch (error) { failure = error; failed = true; }
+      try {
+        await this.serialize(async () => {
+          // Removal or a newer publication may have replaced this entry during cleanup.
+          if (this.values.get(entry.messageId) !== entry) return;
+          const terminal = failed && this.now() - entry.expiresAt > CLEANUP_RETRY_MS;
+          if (!failed || terminal) {
+            const next = new Map(this.values); next.delete(entry.messageId); await this.save(next);
+          }
+          if (failed) this.reportComments(failure, terminal);
+        });
+      } catch (error) { this.reportComments(error); }
+    })();
+    this.commentFlights.set(entry.messageId, flight);
+    void flight.finally(() => this.commentFlights.delete(entry.messageId));
+    return flight;
+  }
+
+  private reportComments(error?: unknown, terminal = false): void {
+    try { this.options.onError?.(cleanupFailure(terminal
+      ? 'YouTube comments cleanup still failed more than seven days after expiry; cleanup record removed.'
+      : 'YouTube comments cleanup failed; retained cleanup records will be retried.', error)); }
+    catch { /* Logging must not break retry state. */ }
+  }
+
+  async sweep(): Promise<void> {
+    const jobs = await this.serialize(async () => {
+      const jobs: { entry: ExpiryRecord; message: StatsMessage }[] = [];
       const next = new Map(this.values);
       const failures: { entry: ExpiryRecord; error: unknown; terminal: boolean }[] = [];
       for (const entry of this.values.values()) {
         if (entry.expiresAt > this.now()) continue;
         let error: unknown;
-        if (await this.clean(entry, failure => { error = failure; })) next.delete(entry.messageId);
+        const result = await this.clean(entry, failure => { error = failure; });
+        if (result === true) next.delete(entry.messageId);
+        else if (result !== false) jobs.push({ entry, message: result });
         else {
           const terminal = this.now() - entry.expiresAt > CLEANUP_RETRY_MS;
           if (terminal) next.delete(entry.messageId);
@@ -210,10 +252,11 @@ export class YouTubeStats {
       }
       try { if (next.size !== this.values.size) await this.save(next); }
       finally {
-        // A failed journal write retains retry state; never claim durable retirement before saving it.
         for (const failure of failures) this.report(failure.error, failure.terminal && !this.values.has(failure.entry.messageId));
       }
+      return jobs;
     });
+    for (const job of jobs) await this.cleanComments(job.entry, job.message);
   }
 
   start(): void {

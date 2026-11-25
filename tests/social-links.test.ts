@@ -2166,3 +2166,13 @@ test('article replies remove stale cards when revocation races Details binding o
     }
   }
 });
+
+test('multi-video partial statistics success never qualifies for comments', async () => {
+  const f = fixture(); f.source.content = `https://youtu.be/${YOUTUBE_ID}\nhttps://youtu.be/abcdefghijk`;
+  let singleVideo: boolean | undefined;
+  await createLinkRepostHandler(CHANNEL_ID, f.log, undefined, {
+    lookupYouTube: async () => new Map([[YOUTUBE_ID, YOUTUBE_STATS]]),
+    publishYouTube: async (_message, cards, single) => { assert.equal(cards.length, 1); singleVideo = single; return { remove: async () => {} }; },
+  })(f.source as unknown as Message);
+  assert.equal(singleVideo, false);
+});

@@ -129,9 +129,9 @@ python .cycle\trackers.py install
 ```
 <!-- cycle:tracker-setup end -->
 
-### Replies to X and Bluesky posts
+### Replies and comments on X, Bluesky and YouTube
 
-Replies are off by default. Server admins can enable `/settings replies:true` (or disable with `replies:false`). Eligible single X posts, including public server `/fix` previews, show **Replies (N)** after publication is confirmed. The button opens a public thread under Linky's post with up to ten direct, non-sensitive replies, most liked first. Existing threads are linked again; no refresh or paging is offered.
+Replies are off by default. Server admins can enable `/settings replies:true` (or disable with `replies:false`). Eligible single X and Bluesky posts, including public server `/fix` previews, show **Replies (N)** after publication is confirmed. Replies opens a public thread under Linky's post: up to ten direct, non-sensitive X replies or 25 eligible Bluesky replies, most liked first. Eligible single YouTube videos offer **Comments (N)** for up to 25 top-level comments in relevance order, as detailed below. Existing threads are linked again; no refresh or paging is offered.
 
 The click sends the public post ID to `https://api.fxtwitter.com/2/conversation/{id}`. Linky fetches one page without cookies or credentials, with a five-second timeout and a 256 KiB limit; parsed results stay in memory for five minutes (failures for 30 seconds). The header distinguishes the source count, returned entries, hidden entries and shown replies. Copied text escapes Markdown and mentions and replaces embedded links with `[link]`; Open reply opens X. Remove deletes Linky's own copied replies and renames/archives the thread as **Replies removed**; members' messages and other Linky previews stay. Retry and source changes also clean up the old thread.
 
@@ -149,3 +149,5 @@ Reply links use DID identities; text, packing, quiet flags, permissions, cooldow
 X replies behaviour. Nested replies, reply images, authenticated access and the unstable V2 endpoint are excluded.
 
 Bluesky reply dates use the earlier of the author creation time and AppView indexing time for both newest-first ties and the displayed time.
+
+YouTube comments threads: with `/settings replies:true`, a configured `YOUTUBE_API_KEY`, and `/settings youtube_display:counts-and-comment`, single-video posts with a positive comment count include **Comments (N)**. Clicking opens a public thread with up to 25 top-level comments in YouTube relevance order. Each uncached click costs **1 YouTube Data API quota unit**; parsed comments are cached for 5 minutes in a separate cache of at most 100 videos. Counts-only mode does not offer comments. Cleanup starts when the YouTube controls expire after **24 hours**, removing copied comments and renaming and archiving the thread while preserving members' messages. Transient failures retry through the existing durable queue, but records are dropped after more than seven days of failed cleanup. If the parent is deleted while the bot is offline, the missing parent provides no thread evidence and copied pages may remain. Lost access can also prevent deletion; removal within 24 hours is not guaranteed. Comments link to the video.
