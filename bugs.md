@@ -849,3 +849,30 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Docs:** docs/article-previews.md; README.md and ReplyThreads downstream sanitation reviewed
 - **Log:**
   - 2026-11-25: Independent F7 code review found src/commands/fix.ts:384 omits confirmedButtonRows for inline uploaded LinkedIn videos. Driver approved including only the callback and production video regression in this bug on 2026-11-25.
+
+### [BUG-1795645210] Replies button recreates a moderator-deleted thread
+- [x] **Severity:** med
+- **Area:** replies
+- **File(s):** src/services/ReplyThreads.ts, src/services/ReplyCreationHistory.ts, src/bot.ts, tests/reply-threads.test.ts
+- **Observation:** Discord clears HasThread after moderator deletion; the next Replies click recreates a thread on production 9f908cf (driver live check 2026-11-25).
+- **Expected:** Remember prior creation and privately report removed without recreating after deletion, including restart within bounded retained history.
+- **Req:** FEAT-1795541460
+- **Depends on:** none
+- **Repro / Notes:** Create thread, moderator deletes it, click again with cleared HasThread. Driver approved durable ID-only intent with oldest-snowflake eviction at capacity and corrupt-state quarantine/warning. 100,000 parent IDs retain about 100 days at assumed 1,000 new IDs/day across bot; evicted very old posts can recreate.
+- **Bump:** patch
+- **Assignee:** Victor Ivanov
+- **Status:** fixed-pending-migration
+- **Fix:** Persist bounded parent-ID creation intent across restarts and respect deleted Linky-owned threads. R11 follow-up: do not record member threads, clear unattempted intent after settings/scope change, clear memory despite failed durable refusal clear, and cover mixed-length eviction, conflict retention and production wiring. Ambiguous errors remain conservative. Validation and per-case source-only revert evidence: driver-replies-build/evidence/F6/R11-fixups. Driver owns final review/live checks and merge.
+- **Docs:** README.md; docs/self-hosting.md; VERIFICATION.md state inventory addition only. Pre-existing inventory omissions filed as BUG-1795648504.
+
+### [BUG-1795648504] Persistent-state inventory omits existing runtime JSON files
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** VERIFICATION.md
+- **Observation:** R11 review found Appendix A at line 228 omits reply-cleanup.json, personal-preferences.json, service-checkpoint.json and prompt-jobs.json, all already wired by src/bot.ts before BUG-1795645210.
+- **Expected:** The persistent-state inspection inventory lists those existing state files and their purposes.
+- **Req:** none; operator documentation accuracy
+- **Depends on:** none
+- **Repro / Notes:** Compare VERIFICATION.md Appendix A against src/bot.ts constructors for ReplyCleanupJournal, PersonalPreferences, ServiceCheckpoint and PromptService. Found by: review (R11-11). Pre-existing drift, not fixed in this PR.
+- **Bump:** patch
+- **Status:** open

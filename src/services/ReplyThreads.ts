@@ -1,6 +1,7 @@
+import { ReplyCreationHistory } from './ReplyCreationHistory';
 import { linkedInCommentsUrl } from './LinkedInComments';
 import { parsePostId, type BlueskyPost } from './BlueskyPost';
-import { ButtonBuilder, ButtonStyle, ChannelType, ComponentType, MessageFlags, MessageType, PermissionFlagsBits,
+import { ButtonBuilder, ButtonStyle, ChannelType, ComponentType, DiscordAPIError, MessageFlags, MessageType, PermissionFlagsBits,
   type APIComponentInContainer, type ButtonInteraction, type Message, type ThreadChannel } from 'discord.js';
 import { sanitizeReplyText } from './ReplyText';
 import type { TweetTranslation } from './TweetTranslation';
@@ -91,8 +92,9 @@ export function replyThreadPayloads(page: ReplyPage) {
   return groups.map(components => ({ flags: REPLY_FLAGS, components: [{ type: ComponentType.Container as const, id: REPLY_PAGE_MARKER, components }], allowedMentions: { parse: [] as never[] } }));
 }
 
-/** Own the per-message lock for creation and cleanup; Discord supplies durable thread identity. */
+/** Own the per-message lock and retain thread identity when Discord clears HasThread on deletion. */
 export class ReplyThreads {
+  private readonly history: ReplyCreationHistory;
   private flights = new Map<string, Promise<string>>();
   private removing = new Set<string>();
   private created = new Set<string>();
@@ -106,8 +108,11 @@ export class ReplyThreads {
     lookup: (id: string, platform?: 'x' | 'bsky' | 'linkedin') => Promise<ReplyPage | null>;
     fetchThread: (id: string) => Promise<ThreadChannel | null>;
     now?: () => number;
+    historyPath?: string;
+    history?: ReplyCreationHistory;
+    onHistoryWarning?: (reason: string) => void;
     resolveTarget?: (interaction: ButtonInteraction) => ReplyTarget | undefined;
-  }) {}
+  }) { this.history = options.history ?? new ReplyCreationHistory(options.historyPath, options.onHistoryWarning); }
 
   /** Fresh YouTube expiry snapshots need exact evidence, without the conservative removal fallback. */
   hasExactCreation(id: string): boolean { return this.flights.has(id) || this.created.has(id); }
@@ -164,11 +169,14 @@ export class ReplyThreads {
     const latest = await message.fetch();
     if (!(target ? target.valid(latest) : this.options.tracked(latest))) return REMOVED;
     let thread: ThreadChannel | null = null;
-    if (latest.hasThread) {
+    if (latest.hasThread || this.history.has(message.id)) {
       thread = await this.options.fetchThread(message.id);
       if (!thread) return REMOVED;
+      // Existing resources remain usable even when new creation cannot be persisted.
+      if (thread.ownerId === this.options.botUserId()) await this.history.reserve(message.id).catch(() => {});
       if (thread.archived || thread.locked || thread.ownerId !== this.options.botUserId() || thread.messageCount !== 0) return thread.url;
     }
+    if (!thread && !this.history.canCreate()) return 'Could not open replies. Try again later';
     const now = (this.options.now ?? Date.now)();
     if (!thread) {
       for (const [key, until] of this.users) if (until <= now) this.users.delete(key);
@@ -181,12 +189,23 @@ export class ReplyThreads {
     if (!page?.replies.length) return platform === 'linkedin' ? 'No comments Linky can show for this post' : EMPTY;
     if (this.removing.has(message.id) || !(target ? target.valid(latest) : this.options.tracked(latest)) || !this.options.enabled(latest.guildId!)) return REMOVED;
     if (!thread) {
+      await this.history.reserve(message.id);
+      if (this.removing.has(message.id) || !(target ? target.valid(latest) : this.options.tracked(latest)) || !this.options.enabled(latest.guildId!)) {
+        // Creation was never attempted, so a temporary setting/scope change must not retain intent.
+        await this.history.forget(message.id).catch(() => {});
+        return REMOVED;
+      }
       // Keep history across completed flights; cap memory by conservatively disabling skips once full.
       if (this.created.size < 10_000) this.created.add(message.id); else this.creationHistoryFull = true;
       const name = (target?.name ?? `${platform === 'linkedin' ? 'Comments on ' : 'Replies to @'}${page.threadHandle ?? handle}`).replace(/[\u0000-\u001f\u007f]/g, '');
       try { thread = await latest.startThread({ name: name.length > 100 ? name.slice(0, 99) + '\u2026' : name, autoArchiveDuration: 1440 }); }
       catch (error) {
-        if (![160004, 160005].includes(code(error) ?? 0)) throw error;
+        if (![160004, 160005].includes(code(error) ?? 0)) {
+          // A Discord refusal cannot have created a thread; transport/5xx failures remain ambiguous.
+          if (error instanceof DiscordAPIError && error.status >= 400 && error.status < 500)
+            await this.history.forget(message.id).catch(() => {});
+          throw error;
+        }
         thread = await this.options.fetchThread(message.id);
         if (!thread) return REMOVED;
         if (thread.archived || thread.locked || thread.ownerId !== this.options.botUserId() || thread.messageCount !== 0) return thread.url;

@@ -139,6 +139,8 @@ Each comment has an author heading and a divider before the next comment. X and 
 
 The invite includes **Create Public Threads** and **Send Messages in Threads**. Existing installs may need a server admin to grant Create Public Threads in the bot role and channel overrides. `/diagnose` reports both permissions when replies are enabled. This feature applies to server text and announcement channels; multi-link posts, threads, forum/media posts, voice/stage chat, DMs and personal installation contexts have no Replies button.
 
+Linky remembers up to **100,000 parent message IDs** in `reply-creation-history.json` before creating reply/comment threads. This respects moderator deletion even after restart when Discord clears the parent's thread flag. At capacity, the oldest parent snowflake is evicted (message age, not insertion order); at an assumed 1,000 new thread parents per day across the bot, this retains about 100 days. A moderator-deleted thread on a very old post outside retained history (evicted or too old to record) can be recreated. The JSON file contains IDs only, with at most 2,300,002 bytes written; files over the 2,400,002-byte read limit are quarantined. Existing deleted threads from before this history was introduced cannot be recovered from Discord's cleared flag.
+
 Bluesky replies use the same off-by-default `/settings replies:true` opt-in and public thread controls.
 A single eligible unlabelled post (image block or bskx.app card) with a positive AppView replyCount shows **Replies (N)**.
 Opening it sends only the post identity to `https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread`

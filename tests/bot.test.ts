@@ -1404,3 +1404,15 @@ test('createBot YouTube terminal comments cleanup retains seven days then drops 
   f.expire(); await f.stats.sweep(); assert.equal(f.records().length, 0);
   assert(f.warnings.some(value => JSON.stringify(value).includes('YouTube comments cleanup still failed more than seven days')));
 });
+
+test('R11 createBot wires the durable reply history literal beside the settings file', async t => {
+  const caseDirectory = mkdtempSync(join(directory, 'F6-R11-wiring-'));
+  const settingsPath = join(caseDirectory, 'custom-settings.json'); let historyPath: unknown;
+  t.mock.method(ReplyThreads.prototype, 'handle', async function(this: ReplyThreads) {
+    historyPath = (this as unknown as { options: { historyPath?: string } }).options.historyPath;
+    return true;
+  });
+  const { client } = fixture({ settingsPath });
+  await dispatch(client, { isButton: () => true, customId: 'linky:replies:x:20:NASA' });
+  assert.equal(historyPath, join(caseDirectory, 'reply-creation-history.json'));
+});
