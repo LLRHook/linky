@@ -513,3 +513,4 @@ Setup/settings, permission diagnostics and invite changes are owned by docs/srs/
 
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
+| 1 | 2026-11-26T15:42:58-05:00 | 6d2131b09cd6 | ADOPT | Initial RPL-FR-001 through RPL-FR-023; RPL-NFR-001 through RPL-NFR-004; RPL-IR-001 |
