@@ -319,7 +319,7 @@ The system shall use only the supported metadata, labelled index/URL fallbacks a
 
 #### 3.7.1 Reliability
 
-See docs/srs/core.md for product-wide attributes; scoped behavior is specified above. 
+See docs/srs/core.md for product-wide attributes; scoped behavior is specified above.
 
 #### 3.7.2 Availability
 
@@ -327,23 +327,23 @@ See docs/srs/core.md for product-wide attributes; scoped behavior is specified a
 
 #### 3.7.3 Security
 
-See docs/srs/core.md for product-wide attributes; scoped behavior is specified above. 
+See docs/srs/core.md for product-wide attributes; scoped behavior is specified above.
 
 #### 3.7.4 Maintainability
 
-See docs/srs/core.md for product-wide attributes; scoped behavior is specified above. 
+See docs/srs/core.md for product-wide attributes; scoped behavior is specified above.
 
 #### 3.7.5 Portability
 
-See docs/srs/core.md for product-wide attributes; scoped behavior is specified above. 
+See docs/srs/core.md for product-wide attributes; scoped behavior is specified above.
 
 #### 3.7.6 Privacy and compliance
 
-See docs/srs/core.md for product-wide attributes; scoped behavior is specified above. 
+See docs/srs/core.md for product-wide attributes; scoped behavior is specified above.
 
 #### 3.7.7 Observability
 
-See docs/srs/core.md for product-wide attributes; scoped behavior is specified above. 
+See docs/srs/core.md for product-wide attributes; scoped behavior is specified above.
 
 ### 3.8 Supporting information
 
