@@ -207,6 +207,8 @@ test('a rejected reconcile cannot erase a concurrent matching Gateway update', a
 for (const [platform, original, rewritten] of [
   ['X', 'https://x.com/public/status/123', 'https://fixupx.com/public/status/123'],
   ['Reddit', 'https://www.reddit.com/r/example/comments/abc123/example/', 'https://vxreddit.com/r/example/comments/abc123/example/'],
+  ['Facebook', 'https://www.facebook.com/reel/1060921586772217', 'https://facebed.com/reel/1060921586772217'],
+  ['Twitch', 'https://clips.twitch.tv/ExampleClip', 'https://fxtwitch.seria.moe/clip/ExampleClip'],
 ]) {
   test(`${platform} video metadata at nine seconds confirms without a premature reconcile`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -255,12 +257,15 @@ test('caller-supplied Gateway waits cannot exceed ten seconds', async t => {
   assert.equal(fetches, 1);
 });
 
-for (const sendMs of [21_000, 25_999]) {
-  test(`a ${sendMs} ms send still reconciles a missed X Gateway preview`, async t => {
+for (const [platform, source, url] of [
+  ['X', 'https://x.com/public/status/123', 'https://fixupx.com/public/status/123'],
+  ['Facebook', 'https://www.facebook.com/reel/1060921586772217', 'https://facebed.com/reel/1060921586772217'],
+  ['Twitch', 'https://clips.twitch.tv/ExampleClip', 'https://fxtwitch.seria.moe/clip/ExampleClip'],
+]) for (const sendMs of [21_000, 25_999]) {
+  test(`a ${sendMs} ms send still reconciles a missed ${platform} Gateway preview`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const { watcher } = fixture(t, { gatewayWaitMs: undefined });
-    const url = 'https://fixupx.com/public/status/123';
-    const items = expectedPreviews('https://x.com/public/status/123', url);
+    const items = expectedPreviews(source, url);
     const watch = watcher.arm(channel, items);
     t.mock.timers.tick(sendMs);
     let fetches = 0;
@@ -411,3 +416,61 @@ test('a useful send snapshot wins over a pre-send error card from the attempted 
   assert.equal(result.ok, true);
   assert.equal(result.providerError, undefined);
 });
+
+for (const [platform, source, fixed] of [
+  ['Facebook', 'https://www.facebook.com/reel/1060921586772217', 'https://facebed.com/reel/1060921586772217'],
+  ['Twitch', 'https://clips.twitch.tv/ExampleClip', 'https://fxtwitch.seria.moe/clip/ExampleClip'],
+]) {
+  test(`${platform} stops after ten seconds and one empty reconcile, ignoring later updates`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { client, watcher } = fixture(t, { gatewayWaitMs: undefined });
+    const items = expectedPreviews(source, fixed);
+    assert.equal(items.length, 1);
+    let fetches = 0;
+    const watch = watcher.arm(channel, items);
+    const pending = watch.verify(message([], async () => { fetches++; return message(); }));
+    t.mock.timers.tick(9_999); await Promise.resolve();
+    assert.equal(fetches, 0);
+    t.mock.timers.tick(1);
+    const result = await pending;
+    assert.equal(fetches, 1);
+    assert.equal(result.ok, false);
+    t.mock.timers.tick(1);
+    raw(client, [{ url: fixed, video: { url: 'https://cdn.example/video.mp4' } }]);
+    assert.equal((await watch.verify(message())).ok, false, 'an update after verification closes cannot confirm');
+  });
+
+  test(`${platform} retains the two-second reconcile window after its ten-second wait`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { watcher } = fixture(t, { gatewayWaitMs: undefined });
+    let fetches = 0, settled = false;
+    const pending = watcher.arm(channel, expectedPreviews(source, fixed))
+      .verify(message([], () => { fetches++; return new Promise(() => {}); }))
+      .then(result => { settled = true; return result; });
+    t.mock.timers.tick(9_999); await Promise.resolve();
+    assert.equal(fetches, 0);
+    t.mock.timers.tick(1); await Promise.resolve();
+    assert.equal(fetches, 1);
+    t.mock.timers.tick(1_999); await Promise.resolve();
+    assert.equal(settled, false);
+    t.mock.timers.tick(1);
+    assert.equal((await pending).ok, false);
+  });
+}
+
+for (const [source, fixed] of [
+  ['https://www.instagram.com/reel/RealPost/', 'https://oginstagram.com/reel/RealPost/'],
+  ['https://www.tiktok.com/@nba/video/7111722063571782958', 'https://tnktok.com/@nba/video/7111722063571782958'],
+]) {
+  test(`${source} still ends its Gateway wait at eight seconds`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { watcher } = fixture(t, { gatewayWaitMs: undefined });
+    let fetches = 0;
+    const pending = watcher.arm(channel, expectedPreviews(source, fixed)).verify(message([], async () => { fetches++; return message(); }));
+    t.mock.timers.tick(7_999); await Promise.resolve();
+    assert.equal(fetches, 0);
+    t.mock.timers.tick(1);
+    assert.equal((await pending).ok, false);
+    assert.equal(fetches, 1);
+  });
+}
