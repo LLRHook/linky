@@ -977,3 +977,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Read each attempt's Details timings and stage reasons on the bot host (Victor's host access) and run `npm run check:providers -- <url>` for each URL from the host. Classify per provider: upstream outage, host blocked, or a Linky regression. BUG-1791830086 (TikTok share identity, fixed-pending-migration) is the prior TikTok fix; this is a new sighting after it shipped. Each of the 4 retained originals is in GAMBA #general for comparison.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1795685854] YouTube comment lookup requests commenters' channel URLs that Linky never uses
+- [ ] **Severity:** low
+- **Area:** privacy, youtube
+- **File(s):** src/services/YouTubeComments.ts
+- **Observation:** src/services/YouTubeComments.ts:36 asks the YouTube Data API commentThreads endpoint for snippet.authorChannelUrl in its fields mask. The parser never reads it (grep: only the fields string and two test fixtures, tests/bot.test.ts:1230 and tests/youtube-comments.test.ts), and the hosted privacy notice says Linky does not copy commenters' channel links.
+- **Expected:** The fields mask requests only the fields the parser reads (textDisplay, authorDisplayName, authorProfileImageUrl, likeCount, publishedAt and the ids), so no unused commenter data is fetched.
+- **Req:** none; data minimisation in the hosted privacy notice (linky-web content/privacy.md, Reply and comment threads)
+- **Depends on:** none
+- **Repro / Notes:** Read the fields string at src/services/YouTubeComments.ts:36 and grep src for authorChannelUrl. Found by: driver review of linky-web PR #67. The value stays in memory only and is discarded by the parser; no disk write or display.
+- **Bump:** patch
+- **Status:** open
