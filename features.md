@@ -770,3 +770,20 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
   - 2026-11-25: Refinement: posters only; no MP4 playback claimed. discord-api-types v10 message.d.ts APISectionComponent, APIThumbnailComponent, APIMediaGalleryItem, APISeparatorComponent and APIComponentInContainer support raw V2 objects; gallery descriptions cap 1024. Component budget counts container, section, child text and thumbnail. Use conservative 3800 text budget below 4000. No dependency change.
   - 2026-11-25: QA follow-up: prefer X media.all to preserve mixed photo/video order, keep photos/videos fallback, and enforce the 2048-character limit on normalized href too. Two regression tests fail before and pass after these fixes. Duplicate README paragraph was already removed. Alt descriptions retain the approved sanitizer; live check should include punctuation-heavy and long alt. Discord component reference defines gallery description as alt text with a separate 1024-character limit.
   - 2026-11-25: Discord developer Component Reference (https://docs.discord.com/developers/components/reference#text-display) states the 4000 budget covers text display components. Media gallery descriptions have their separate 1024-character limit; they do not enter the text-display sum.
+
+### [FEAT-1795575314] Killing tests for reply-thread guards that survive mutation
+- [ ] **Priority:** low
+- **Area:** tests
+- **File(s):** src/services/BlueskyReplies.ts, src/services/ReplyThreads.ts, src/services/YouTubeStats.ts, src/services/ArticlePreview.ts, tests/bluesky-replies.test.ts, tests/reply-threads.test.ts, tests/youtube-comments.test.ts, tests/bot.test.ts, tests/linkedin-comments.test.ts, src/bot.ts, src/services/SocialLinkService.ts
+- **Req:** none (validation lead V1, driver-replies-build brief, 2026-11-24)
+- **Depends on:** FEAT-1795541460, FEAT-1795541461, FEAT-1795541462, FEAT-1795544485
+- **UI:** none (test coverage)
+- **Why:** Independent reviews accepted surviving defensive guard mutants as non-blocking. Unit: mutants; scope: the listed reply/thread provider, lifecycle and cache files. This ticket measures whether each listed mutation is detected by a named test, not production correctness or a score. Baseline: these mutants survived their cited review runs; minimum sample: every listed mutant; noise floor: a deterministic assertion failure with the original passing, excluding setup errors; abstain if a mutation no longer applies and record replacement evidence instead of claiming a kill.
+- **Approach:** Add behavior assertions for Bluesky B08, B09, B10, B12, B13, B16, B17, B18, B37, B38, B39 (R4/R6); YouTube Y17 created.has exact creation, Y23/Y24 publication().remove deferred cleanup, Y14 cleanupComments exact gate, Y25 spurious statistics warning (R8); shared defence-in-depth M9 and M27 (R6); LinkedIn N8b and N14 (R9). Definitions and probes: .git/agent-handoffs/driver-replies-build/evidence/R4, R6, R8, R9. R8-P10 targets Y23/Y24 and R8-P12 targets Y17. X core (R3, evidence/R3): MD bot.ts journal-callback parent-ownership check, MF cleanup thread guild and parent check, MM gateway delete handler skipping registered posts, MR first removing check, MT author check in handle.
+- **Library / dependency notes:** none
+- **Acceptance criteria:**
+  - [ ] Each listed mutant is killed by a named test, with the baseline passing, mutation producing an assertion failure, and restored code passing; record the exact guard, test name and result for each. Inapplicable/equivalent mutations are explicitly abstained and justified, never counted as kills.
+- **Test plan:** Run each affected layer and each exact independent-review mutation in isolated copied inputs; keep original source intact, distinguish assertion failures from harness/setup errors, and restore copied bytes before the final run.
+- **Out of scope:** Production behavior changes, live Discord/provider calls, tokens and already killed or superseded review mutants.
+- **Bump:** patch
+- **Status:** open

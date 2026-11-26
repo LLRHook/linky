@@ -965,3 +965,15 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Provider title _abc_ or a_b retains escapes or formats text in a masked heading link. Found by F9 sibling sweep; outside reply pages, not fixed in this PR.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1795645212] TikTok share, Reddit video, Twitch clip and Facebook Reel previews end unconfirmed from the bot host
+- [ ] **Severity:** med
+- **Area:** providers, previews
+- **File(s):** src/services/SocialProviders.ts, src/services/MobileShareLinks.ts
+- **Observation:** Protocol Stage 3.5 and 3.7 live check in the Linky test server on 2026-11-25 at 9f908cf (production bot host): TikTok share `https://www.tiktok.com/t/ZTU7oFukc/`, Reddit `https://www.reddit.com/r/aww/comments/1wk8pjs/`, Twitch clip `https://clips.twitch.tv/SeductiveHedonisticEelWholeWheat-_z75h_guvIl-kXEL` and Facebook Reel `https://www.facebook.com/share/r/1DTK3shLVM/` each kept the original and posted "Discord preview metadata was not confirmed" Details. A Retry (Fix with Linky) of the Reddit post failed again. Same run: X (1.29 s median), Instagram (about 7 s) and Bluesky confirmed. Local `npm run check:providers` (V1, same day) failed the TikTok share row with tnktok HTTP 404 and Instagram Reel with OGInstagram 403. Scope: 4 links, 1 sample each (Reddit 2); not a rate.
+- **Expected:** VERIFICATION 3.5 and 3.7: each supported provider's public link is replaced with a confirmed native preview, or a provider outage is shown with its Details and logged.
+- **Req:** none (VERIFICATION.md Stage 3.5 and 3.7)
+- **Depends on:** none (bot host provider reachability)
+- **Repro / Notes:** Read each attempt's Details timings and stage reasons on the bot host (Victor's host access) and run `npm run check:providers -- <url>` for each URL from the host. Classify per provider: upstream outage, host blocked, or a Linky regression. BUG-1791830086 (TikTok share identity, fixed-pending-migration) is the prior TikTok fix; this is a new sighting after it shipped. Each of the 4 retained originals is in GAMBA #general for comparison.
+- **Bump:** patch
+- **Status:** open
