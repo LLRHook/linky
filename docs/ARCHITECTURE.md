@@ -421,3 +421,4 @@ Consequences: Operator opt-in/allowlists and uncertain-state reconciliation requ
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
 | 1 | 2026-11-26T15:19:42-05:00 | 041cc00854e8 | ADOPT | CMP-001–CMP-108; ADR-001–ADR-010; detected stack, C4/runtime/deployment views |
+| 2 | 2026-11-26T15:47:22-05:00 | 14cea1ed40b9 | ADOPT | Prose spacing restored in three lines; no component or decision change |

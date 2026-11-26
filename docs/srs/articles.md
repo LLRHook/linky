@@ -381,3 +381,4 @@ The Telegraph fallback is a labelled news-index or URL-derived card, not evidenc
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
 | 1 | 2026-11-26T15:36:20-05:00 | 59a2e7d6f4ec | ADOPT | ART-FR-001 through ART-FR-015; ART-NFR-001 through ART-NFR-002; ART-IR-001 through ART-IR-002; ART-CON-001 |
+| 2 | 2026-11-26T15:40:08-05:00 | f445e07fdd9b | ADOPT | Unicode separators lost in the rev 1 content commit restored, and trailing whitespace trimmed; no requirement change |

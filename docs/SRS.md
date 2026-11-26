@@ -179,3 +179,4 @@ Foundation questions (TBD-S0-) and the questions each area pass raised are liste
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
 | 1 | 2026-11-26T15:19:42-05:00 | 041cc00854e8 | ADOPT | Initial index: seven area homes; foundation TBD-S0-001 through TBD-S0-004; no requirement definitions in this pass |
+| 2 | 2026-11-26T15:47:22-05:00 | 14cea1ed40b9 | ADOPT | Integrated seven area files (234 requirements: CORE 43, SOC 52, ART 20, RPL 28, CMD 26, ERO 30, OPS 35); area TBDs in 5.2; Truth Social and LinkedIn posts moved to Social in 1.4; prose spacing restored |

@@ -777,3 +777,4 @@ Local residency is the operator data volume (hosted: the Hostinger VPS); no geog
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
 | 1 | 2026-11-26T15:19:42-05:00 | 041cc00854e8 | ADOPT | ENT-001–ENT-014; API-001–API-034 exposed; API-035–API-060 consumed; EVT-001–EVT-008 |
+| 2 | 2026-11-26T15:47:22-05:00 | 14cea1ed40b9 | ADOPT | Prose spacing restored after commas, semicolons and colons; no contract change |
