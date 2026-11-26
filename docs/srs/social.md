@@ -238,3 +238,4 @@ Open corpus-stage, latency/measurement and mutation-coverage tickets span operat
 
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
+| 1 | 2026-11-26T15:31:28-05:00 | b7bd5580c7db | ADOPT | SOC-FR-001 through SOC-FR-040; SOC-NFR-001 through SOC-NFR-004; SOC-IR-001 through SOC-IR-007; SOC-CON-001 |
