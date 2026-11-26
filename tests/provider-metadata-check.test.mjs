@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFile } from 'node:fs/promises';
 import { assessSource, embedFromMetadata, formatSummary, parseCorpus, readMetadata, runProviderMetadataCheck, summarize } from '../ops/provider-metadata-check.mjs';
 import * as providers from '../dist/services/SocialProviders.js';
 import * as recovery from '../dist/services/PreviewRecovery.js';
@@ -89,4 +90,13 @@ test('the summary counts sources, provider responses, errors and latency per pla
   output = '';
   assert.equal(await runProviderMetadataCheck(['--json', 'https://x.com/jack/status/20'], { write, services, fetch }), 0);
   assert.equal(JSON.parse(output).scope, 'provider-metadata-only');
+});
+
+test('the TikTok corpus separates unavailable share resolution from the confirmed long video', async () => {
+  const corpus = parseCorpus(await readFile(new URL('../ops/preview-corpus.json', import.meta.url), 'utf8'));
+  const share = corpus.find(entry => entry.source === 'https://www.tiktok.com/t/ZTU7oFukc/');
+  const video = corpus.find(entry => entry.source === 'https://www.tiktok.com/@nba/video/7111722063571782958');
+  assert.equal(share.expect, 'unavailable');
+  assert.match(share.note, /7686471409861659936/);
+  assert.equal(video.expect, 'video');
 });

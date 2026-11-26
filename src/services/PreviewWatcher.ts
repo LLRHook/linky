@@ -81,10 +81,10 @@ export class PreviewWatcher {
       try {
         if (!latest.ok && !latest.providerError && subscribed) {
           await new Promise<void>(resolve => {
-            // Large X/Reddit videos and cold media can arrive late; useful updates still wake immediately.
-            const gatewayWaitMs = expected.some(item => item.platform === 'x' || item.platform === 'reddit') ? 10_000 :
-              expected.some(item => item.platform === 'instagram' || item.platform === 'tiktok' ||
-              item.platform === 'facebook') ? 8_000 : 4_000;
+            // Slow fixer media can arrive late; useful updates still wake immediately.
+            const gatewayWaitMs = expected.some(item => item.platform === 'x' || item.platform === 'reddit' ||
+              item.platform === 'facebook' || item.platform === 'twitch') ? 10_000 :
+              expected.some(item => item.platform === 'instagram' || item.platform === 'tiktok') ? 8_000 : 4_000;
             const timer = setTimeout(resolve, Math.max(0, Math.min(10_000, this.options.gatewayWaitMs ?? gatewayWaitMs)));
             wake = () => { clearTimeout(timer); resolve(); };
             if (latest.ok || latest.providerError || stopped) wake();

@@ -1578,3 +1578,37 @@ test('automatic fallback waits through the stale primary card after a clone edit
   assert.equal(f.sent[0].deleted, false);
   assert.deepEqual(outcomes, ['confirmed']);
 });
+
+for (const source of ['https://www.facebook.com/reel/1060921586772217', 'https://clips.twitch.tv/ExampleClip']) {
+  test(`Replace retains ${source} until a matching preview arrives at nine seconds`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const f = delivery(source);
+    const client = new Client({ intents: [] });
+    Object.defineProperty(client, 'user', { value: { id: BOT } });
+    const watcher = new PreviewWatcher(client);
+    t.after(() => watcher.close());
+    let began!: () => void, output!: { id: string }, items!: readonly ExpectedPreview[];
+    const started = new Promise<void>(resolve => { began = resolve; });
+    const pending = f.create({ armPreview: (channel, expected, context) => {
+      const watch = watcher.arm(channel, expected, context);
+      return { close: () => watch.close(), verify: message => {
+        output = message; items = expected;
+        Object.assign(message, { embeds: [], fetch: async () => message });
+        const result = watch.verify(message);
+        began();
+        return result;
+      } };
+    } })(f.source);
+    await reached(started, pending, 'the armed preview verifier');
+    t.mock.timers.tick(9_000);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    const deletedEarly = f.state.originalDeleted;
+    client.emit('raw', { t: 'MESSAGE_UPDATE', d: { id: output.id, channel_id: CHANNEL,
+      embeds: [{ url: items[0].url, video: { url: 'https://cdn.example/video.mp4' } }] } } as never);
+    await pending;
+    assert.equal(deletedEarly, false, 'keep the source while waiting for metadata');
+    assert.equal(f.state.originalDeleted, true, 'matching late metadata permits Replace');
+    assert.equal(f.sent[0].deleted, false);
+    assert.equal(f.sent.length, 1);
+  });
+}
