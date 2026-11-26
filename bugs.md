@@ -256,3 +256,31 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Repro / Notes:** Compare docs/product-roadmap.md:19 with README Instagram section, src/services/ServerSettings.ts RETIRED_FIELDS, and docs/instagram-media.md. Detection only; historical research remains unchanged.
 - **Bump:** patch
 - **Status:** open
+
+### [BUG-1795723268] Historical security baseline describes obsolete Retry authorization
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** SECURITY_AUDIT.md
+- **Observation:** Application boundaries reviewed says Retry requires author/current-moderator checks. RepostRegistry.handle now uses canRetry and bot.ts checks current channel view/send access and timeout for any member.
+- **Expected:** Describe the current member permission check and distinguish owner-only Remove; keep the audit date and historical measurements qualified.
+- **Req:** none (spec adoption source inspection)
+- **Depends on:** none (documentation correction)
+- **Repro / Notes:** Compare SECURITY_AUDIT.md Application boundaries reviewed with src/services/RepostRegistry.ts handle and src/bot.ts canRetry.
+- **Found by:** build
+- **Class:** docs
+- **Bump:** patch
+- **Status:** open
+
+### [BUG-1795723286] Roadmap implementation summary retains retired Instagram choices
+- [ ] **Severity:** low
+- **Area:** docs
+- **File(s):** docs/product-roadmap.md
+- **Observation:** September 18 implementation describes three Instagram presentation choices as current release work. ServerSettings explicitly retires instagramPresentation and translateInstagram; settings and setup expose only caption-free author/media rendering.
+- **Expected:** Qualify the former presentation choices as historical and point to the current caption-free behavior, consistently with the roadmap preset row updated on November 23.
+- **Req:** none (spec adoption source inspection)
+- **Depends on:** none (documentation correction)
+- **Repro / Notes:** Compare docs/product-roadmap.md September 18 implementation and preset row with src/services/ServerSettings.ts RETIRED_FIELDS and src/commands/settings.ts.
+- **Found by:** build
+- **Class:** docs
+- **Bump:** patch
+- **Status:** open
