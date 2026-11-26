@@ -430,3 +430,4 @@ Preview execution and control behavior are in docs/srs/core.md, docs/srs/social.
 
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
+| 1 | 2026-11-26T15:33:20-05:00 | f57d7502cac5 | ADOPT | Initial CMD-FR-001–024, CMD-IR-001–002 |
