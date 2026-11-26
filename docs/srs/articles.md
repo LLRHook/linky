@@ -1,4 +1,4 @@
-# Articles requirements ? Linky
+# Articles requirements — Linky
 
 Related: [SRS index](../SRS.md). ADOPT baseline `1a69229`, 2026-11-26.
 
@@ -10,7 +10,7 @@ Delivery is conservatively Implemented from inspected code; this pass executes n
 
 ### 3.1 Functions
 
-#### ART-FR-001 ? Public article metadata
+#### ART-FR-001 — Public article metadata
 The system shall prepare a public article card only from a usable title and Open Graph article metadata or matching Article, NewsArticle or BlogPosting JSON-LD in the HTML head.
 
 - Priority: Must
@@ -19,12 +19,12 @@ The system shall prepare a public article card only from a usable title and Open
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (parseMetadata, structuredArticle))
-- UI: Discord ? automatic or manual article card
+- UI: Discord — automatic or manual article card
 - Acceptance:
   - Given a public head with article identity and a usable title, when parsed, then a card is prepared; given neither, when parsed, then no ordinary article card is prepared.
 - Traces: API-043, CMP-006
 
-#### ART-FR-002 ? Compact attributed article card
+#### ART-FR-002 — Compact attributed article card
 The system shall display the linked headline with Publisher attribution, a metadata excerpt of at most 300 characters, and an eligible image and valid publication date when supplied.
 
 - Priority: Must
@@ -33,12 +33,12 @@ The system shall display the linked headline with Publisher attribution, a metad
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (formatArticlePreview))
-- UI: Discord ? article embed
+- UI: Discord — article embed
 - Acceptance:
   - Given metadata with headline, publisher, excerpt, image and valid date, when formatted, then the attributed card contains those fields with the excerpt limited to 300 characters.
 - Traces: API-043, CMP-006, CMP-005
 
-#### ART-FR-003 ? MyAnimeList catalogue exception
+#### ART-FR-003 — MyAnimeList catalogue exception
 The system shall accept MyAnimeList anime or manga entry metadata only when requested, final, canonical and og:url identities name the same entry and the declared type matches anime video.tv_show/video.movie or manga books.book.
 
 - Priority: Must
@@ -47,13 +47,13 @@ The system shall accept MyAnimeList anime or manga entry metadata only when requ
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (myAnimeListEntry, parseMetadata))
-- UI: Discord ? MyAnimeList card
+- UI: Discord — MyAnimeList card
 - Acceptance:
   - Given matching anime or manga entry identities, when the accepted type and usable title exist without player metadata, then a card is prepared.
   - Given a profile, list, entry subpage or identity mismatch, when parsed, then the catalogue exception does not apply.
 - Traces: API-043, CMP-006
 
-#### ART-FR-004 ? Catalogue presentation
+#### ART-FR-004 — Catalogue presentation
 The system shall label a MyAnimeList card Source with Anime or Manga metadata and display the synopsis and cover when available.
 
 - Priority: Must
@@ -62,12 +62,12 @@ The system shall label a MyAnimeList card Source with Anime or Manga metadata an
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (formatArticlePreview))
-- UI: Discord ? MyAnimeList embed
+- UI: Discord — MyAnimeList embed
 - Acceptance:
   - Given a prepared manga or anime entry, when formatted, then its source and catalogue type are labelled and available synopsis and cover are included.
 - Traces: API-043, CMP-006
 
-#### ART-FR-005 ? Preserve native media candidates
+#### ART-FR-005 — Preserve native media candidates
 The system shall decline the ordinary article path for declared video/music or Twitter player pages and known native-media hosts except the narrowly validated MyAnimeList type exception.
 
 - Priority: Must
@@ -76,12 +76,12 @@ The system shall decline the ordinary article path for declared video/music or T
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (EXCLUDED, parseMetadata))
-- UI: Discord ? existing source preview
+- UI: Discord — existing source preview
 - Acceptance:
   - Given a native-media host or declared player even with Article JSON-LD, when evaluated, then no ordinary article card is prepared.
 - Traces: API-043, CMP-006
 
-#### ART-FR-006 ? Bounded complete article set
+#### ART-FR-006 — Bounded complete article set
 The system shall prepare at most three distinct article-family links as one complete set before publishing an authored article message.
 
 - Priority: Must
@@ -90,14 +90,14 @@ The system shall prepare at most three distinct article-family links as one comp
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePosts.ts (prepareArticlePosts, articleEmbeds))
-- UI: Discord ? multi-card message
+- UI: Discord — multi-card message
 - Acceptance:
   - Given one to three prepared distinct links, when all cards succeed, then the complete set can be delivered.
   - Given more than three sources or any failed/mismatched source, when prepared, then the set is rejected.
   - Given canonical aliases, when their card metadata agrees, then they share one card; when it disagrees, then the set is rejected.
 - Traces: API-043, API-035, CMP-005
 
-#### ART-FR-007 ? Mixed-link guidance
+#### ART-FR-007 — Mixed-link guidance
 The system shall retain the source of a mixed article and other-link message with split-message guidance when that response is supported.
 
 - Priority: Must
@@ -106,12 +106,12 @@ The system shall retain the source of a mixed article and other-link message wit
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePosts.ts (hasMixedArticleLinks, ARTICLE_MIXED_GUIDANCE))
-- UI: Discord ? split-message guidance
+- UI: Discord — split-message guidance
 - Acceptance:
   - Given a visible article candidate mixed with another platform link, when mixed-link guidance is available, then it asks the sharer to share articles separately and states the original is unchanged.
 - Traces: API-035, CMP-005, CMP-068
 
-#### ART-FR-008 ? Unusable candidate preserves the message
+#### ART-FR-008 — Unusable candidate preserves the message
 The system shall leave an automatic source message unchanged when any article candidate has no usable metadata or supported PDF/Telegraph fallback.
 
 - Priority: Must
@@ -120,12 +120,12 @@ The system shall leave an automatic source message unchanged when any article ca
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePosts.ts (prepareArticlePosts))
-- UI: Discord ? original message
+- UI: Discord — original message
 - Acceptance:
   - Given an unsupported website beside a supported social link, when the article candidate cannot be prepared, then automatic processing preserves the complete original message.
 - Traces: API-035, API-043, CMP-005, CMP-068
 
-#### ART-FR-009 ? Telegraph refusal admission
+#### ART-FR-009 — Telegraph refusal admission
 The system shall use the Telegraph fallback only for exact Telegraph hosts with matching requested/final dated editorial paths and HTTP 402 containing the specific valid TollBit Token refusal.
 
 - Priority: Must
@@ -134,13 +134,13 @@ The system shall use the Telegraph fallback only for exact Telegraph hosts with 
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (telegraphLinkPreview, request))
-- UI: Discord ? Telegraph card
+- UI: Discord — Telegraph card
 - Acceptance:
   - Given a valid dated matching Telegraph path and the specific refusal, when public metadata is unavailable, then the fallback is eligible.
   - Given an invalid date, foreign host, different final path or another error, when evaluated, then no fallback card is prepared.
 - Traces: API-043, API-044, CMP-006
 
-#### ART-FR-010 ? Bing News provenance
+#### ART-FR-010 — Bing News provenance
 The system shall display the exact matching Telegraph Bing News RSS headline, excerpt and approved thumbnail as Publisher: The Telegraph with Headline via Bing News and no publication timestamp.
 
 - Priority: Must
@@ -149,13 +149,13 @@ The system shall display the exact matching Telegraph Bing News RSS headline, ex
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (parseBingNewsFeed, formatArticlePreview))
-- UI: Discord ? Telegraph Bing News card
+- UI: Discord — Telegraph Bing News card
 - Acceptance:
   - Given an RSS item with the exact supported article path, when selected, then its headline is credited to Bing News without its indexing timestamp.
   - Given an unrelated URL or foreign thumbnail host, when parsed, then that item or thumbnail is not used.
 - Traces: API-044, CMP-006
 
-#### ART-FR-011 ? URL-title abstention
+#### ART-FR-011 — URL-title abstention
 The system shall show a readable Telegraph slug title labelled Title from URL and Site: The Telegraph with no excerpt, image or publication time when the eligible Bing lookup has no timely usable match.
 
 - Priority: Must
@@ -164,13 +164,13 @@ The system shall show a readable Telegraph slug title labelled Title from URL an
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (telegraphLinkPreview, request, formatArticlePreview))
-- UI: Discord ? Telegraph URL-title card
+- UI: Discord — Telegraph URL-title card
 - Acceptance:
   - Given a qualifying refusal and absent, failed or slow Bing result, when fallback is formatted within the article deadline, then only the labelled URL title is shown.
   - Given usable public metadata, when the page succeeds, then normal metadata takes precedence.
 - Traces: API-043, API-044, CMP-006
 
-#### ART-FR-012 ? PDF recognition
+#### ART-FR-012 — PDF recognition
 The system shall prepare PDF cards only for a successful accepted PDF MIME response or an accepted octet-stream response on a .pdf path whose prefix contains a PDF header.
 
 - Priority: Must
@@ -179,13 +179,13 @@ The system shall prepare PDF cards only for a successful accepted PDF MIME respo
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/ArticlePreview.ts (request))
-- UI: Discord ? PDF card
+- UI: Discord — PDF card
 - Acceptance:
   - Given application/pdf or application/x-pdf with a PDF header in the first 1024 bytes, when read, then a PDF card can be prepared.
   - Given application/octet-stream or binary/octet-stream, when the path ends in .pdf and the header is present, then it can be prepared; otherwise it is rejected.
 - Traces: API-043, CMP-006, CMP-044
 
-#### ART-FR-013 ? PDF title provenance
+#### ART-FR-013 — PDF title provenance
 The system shall choose a usable PDF information-dictionary title or XMP title before a usable largest upright first-page heading and finally the file name with the corresponding title-source footer.
 
 - Priority: Must
@@ -194,14 +194,14 @@ The system shall choose a usable PDF information-dictionary title or XMP title b
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/PdfPreview.ts (parsePdf, headingTitle, usableTitle))
-- UI: Discord ? PDF title/footer
+- UI: Discord — PDF title/footer
 - Acceptance:
   - Given a usable declared title, when parsed, then metadata takes precedence and the footer says Title from document metadata.
   - Given no usable declared title and a qualifying first-page heading, when parsed, then the footer says Title from first page; otherwise it says Title from file name.
   - Given first-page extraction, when headingTitle evaluates runs, then its baseline is the text-length-dominant font size, its largest size must be at least 1.15 times that baseline, and runs within 0.25 size units of the largest are joined; unreadable or inadequate evidence abstains to the file name.
 - Traces: API-043, CMP-044, CMP-006
 
-#### ART-FR-014 ? PDF declared facts
+#### ART-FR-014 — PDF declared facts
 The system shall display a PDF document card labelled with its host and available declared author, page count, full declared file size and creation time.
 
 - Priority: Must
@@ -210,14 +210,14 @@ The system shall display a PDF document card labelled with its host and availabl
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/PdfPreview.ts (parsePdf, formatPdfSize))
-- UI: Discord ? PDF facts
+- UI: Discord — PDF facts
 - Acceptance:
   - Given parsed facts, when formatted, then available document facts accompany PDF document: host.
   - Given a page count, when shown, then it is a positive integer at most 100000 from parsed page-tree structure; absent or invalid counts are omitted.
   - Given a known full size, when displayed, then values below 1024 use bytes, below 1048576 use rounded binary KB, and larger sizes use one decimal binary MB; missing sizes are omitted, with no comparative baseline or statistical sample claimed.
 - Traces: API-043, CMP-044, CMP-006
 
-#### ART-FR-015 ? Encrypted or incomplete PDFs
+#### ART-FR-015 — Encrypted or incomplete PDFs
 The system shall retain only safely available structural PDF facts with a labelled file-name fallback when encryption or incomplete structure prevents title extraction.
 
 - Priority: Must
@@ -226,7 +226,7 @@ The system shall retain only safely available structural PDF facts with a labell
 - Verification: Test
 - Status: Approved
 - Delivery: Implemented (code: src/services/PdfPreview.ts (parsePdf))
-- UI: Discord ? PDF fallback card
+- UI: Discord — PDF fallback card
 - Acceptance:
   - Given an encrypted PDF, when parsed, then the title stays the file name and decrypted title, author and creation time are not invented.
   - Given a truncated prefix whose first page is unavailable, when parsing fails, then the labelled file name remains with safely available size or structure.
@@ -234,7 +234,7 @@ The system shall retain only safely available structural PDF facts with a labell
 
 ### 3.2 Performance requirements
 
-#### ART-NFR-001 ? Retrieval capacity
+#### ART-NFR-001 — Retrieval capacity
 The system shall bound article-family retrieval admission and retention to the implemented process-wide limits.
 
 - Priority: Must
@@ -249,7 +249,7 @@ The system shall bound article-family retrieval admission and retention to the i
   - Given cached success or failure, when its reuse window expires, then it is not reused.
 - Traces: API-043, API-044, CMP-006
 
-#### ART-NFR-002 ? Bounded PDF parsing
+#### ART-NFR-002 — Bounded PDF parsing
 The system shall limit PDF structural and first-page parsing to its fixed parser budgets.
 
 - Priority: Must
@@ -269,7 +269,7 @@ No separate area requirement: shared Discord interaction and accessibility behav
 
 ### 3.4 Interface requirements
 
-#### ART-IR-001 ? Public-page transport exception
+#### ART-IR-001 — Public-page transport exception
 The system shall retrieve article/PDF candidates through the validated public-page API-043 transport.
 
 - Priority: Must
@@ -283,7 +283,7 @@ The system shall retrieve article/PDF candidates through the validated public-pa
   - Given a compressed response or unsupported response/error, when read, then it is rejected; HTML stops at the head or 512 KiB and PDFs at a 4 MiB prefix within five seconds and at most three validated redirects.
 - Traces: API-043, CMP-006
 
-#### ART-IR-002 ? Scoped Telegraph index request
+#### ART-IR-002 — Scoped Telegraph index request
 The system shall request one fixed-host Bing News RSS lookup using Telegraph slug words under the article deadline.
 
 - Priority: Must
@@ -302,7 +302,7 @@ No separate area requirement: shared Discord interaction and accessibility behav
 
 ### 3.6 Design constraints
 
-#### ART-CON-001 ? Metadata-only purpose
+#### ART-CON-001 — Metadata-only purpose
 The system shall use only the supported metadata, labelled index/URL fallbacks and bounded first-page PDF text rather than generate summaries, fact-check, translate, execute page scripts or bypass login/paywall restrictions.
 
 - Priority: Must
@@ -355,28 +355,29 @@ The Telegraph fallback is a labelled news-index or URL-derived card, not evidenc
 
 | Req | Priority | Delivery | Entities | APIs / Events | Components | Verification |
 |---|---|---|---|---|---|---|
-| `ART-FR-001` | Must | Implemented | ? | API-043 | CMP-006 | Test |
-| `ART-FR-002` | Must | Implemented | ? | API-043 | CMP-006, CMP-005 | Test |
-| `ART-FR-003` | Must | Implemented | ? | API-043 | CMP-006 | Test |
-| `ART-FR-004` | Must | Implemented | ? | API-043 | CMP-006 | Test |
-| `ART-FR-005` | Must | Implemented | ? | API-043 | CMP-006 | Test |
-| `ART-FR-006` | Must | Implemented | ? | API-043, API-035 | CMP-005 | Test |
-| `ART-FR-007` | Must | Implemented | ? | API-035 | CMP-005, CMP-068 | Test |
-| `ART-FR-008` | Must | Implemented | ? | API-035, API-043 | CMP-005, CMP-068 | Test |
-| `ART-FR-009` | Must | Implemented | ? | API-043, API-044 | CMP-006 | Test |
-| `ART-FR-010` | Must | Implemented | ? | API-044 | CMP-006 | Test |
-| `ART-FR-011` | Must | Implemented | ? | API-043, API-044 | CMP-006 | Test |
-| `ART-FR-012` | Must | Implemented | ? | API-043 | CMP-006, CMP-044 | Test |
-| `ART-FR-013` | Must | Implemented | ? | API-043 | CMP-044, CMP-006 | Test |
-| `ART-FR-014` | Must | Implemented | ? | API-043 | CMP-044, CMP-006 | Test |
-| `ART-FR-015` | Must | Implemented | ? | API-043 | CMP-044 | Test |
-| `ART-NFR-001` | Must | Implemented | ? | API-043, API-044 | CMP-006 | Test |
-| `ART-NFR-002` | Must | Implemented | ? | API-043 | CMP-044 | Test |
-| `ART-IR-001` | Must | Implemented | ? | API-043 | CMP-006 | Test |
-| `ART-IR-002` | Must | Implemented | ? | API-044 | CMP-006 | Test |
-| `ART-CON-001` | Must | Implemented | ? | API-043, API-044 | CMP-006, CMP-044 | Analysis |
+| `ART-FR-001` | Must | Implemented | — | API-043 | CMP-006 | Test |
+| `ART-FR-002` | Must | Implemented | — | API-043 | CMP-006, CMP-005 | Test |
+| `ART-FR-003` | Must | Implemented | — | API-043 | CMP-006 | Test |
+| `ART-FR-004` | Must | Implemented | — | API-043 | CMP-006 | Test |
+| `ART-FR-005` | Must | Implemented | — | API-043 | CMP-006 | Test |
+| `ART-FR-006` | Must | Implemented | — | API-043, API-035 | CMP-005 | Test |
+| `ART-FR-007` | Must | Implemented | — | API-035 | CMP-005, CMP-068 | Test |
+| `ART-FR-008` | Must | Implemented | — | API-035, API-043 | CMP-005, CMP-068 | Test |
+| `ART-FR-009` | Must | Implemented | — | API-043, API-044 | CMP-006 | Test |
+| `ART-FR-010` | Must | Implemented | — | API-044 | CMP-006 | Test |
+| `ART-FR-011` | Must | Implemented | — | API-043, API-044 | CMP-006 | Test |
+| `ART-FR-012` | Must | Implemented | — | API-043 | CMP-006, CMP-044 | Test |
+| `ART-FR-013` | Must | Implemented | — | API-043 | CMP-044, CMP-006 | Test |
+| `ART-FR-014` | Must | Implemented | — | API-043 | CMP-044, CMP-006 | Test |
+| `ART-FR-015` | Must | Implemented | — | API-043 | CMP-044 | Test |
+| `ART-NFR-001` | Must | Implemented | — | API-043, API-044 | CMP-006 | Test |
+| `ART-NFR-002` | Must | Implemented | — | API-043 | CMP-044 | Test |
+| `ART-IR-001` | Must | Implemented | — | API-043 | CMP-006 | Test |
+| `ART-IR-002` | Must | Implemented | — | API-044 | CMP-006 | Test |
+| `ART-CON-001` | Must | Implemented | — | API-043, API-044 | CMP-006, CMP-044 | Analysis |
 
 ## Revision history
 
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
+| 1 | 2026-11-26T15:36:20-05:00 | 59a2e7d6f4ec | ADOPT | ART-FR-001 through ART-FR-015; ART-NFR-001 through ART-NFR-002; ART-IR-001 through ART-IR-002; ART-CON-001 |
