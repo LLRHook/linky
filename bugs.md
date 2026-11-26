@@ -135,26 +135,6 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **Bump:** patch
 - **Status:** open
 
-### [BUG-1795540133] tests/bot.test.ts sometimes aborts partway through a full npm test run
-- [ ] **Severity:** high
-- **Area:** tests
-- **File(s):** tests/bot.test.ts
-- **Observation:** In the V&V run on b5f281f (Windows 11, Node 24.15.0), the first `npm test` straight after `npm ci` reported `ℹ tests 1429` / `ℹ fail 1`. The failure was the file itself: `✖ tests\bot.test.ts (3705ms)`, 'test failed' at tests/bot.test.ts:1:1, with no failing test named and no error output. The file stopped after 25 of its 47 tests. The last test reported was 'failed startup registration disconnects without reporting readiness'. The next test, 'startup restores repost ownership and fetches reply excerpts across bot restarts' (timeout 5000 ms), never reported. The npm test chain then stopped before the ESM suite. The same SHA then passed 7 more times: bot.test.ts alone (47/47), the TypeScript suite 3 times (1451/1451), and `npm test` 4 times, 2 of them after a fresh `npm ci` (1451 TS and 85 ESM, 8 skipped).
-- **Expected:** Every test file reports the same result on every run at one SHA. A file that stops early prints the error that stopped it.
-- **Req:** none (found by the V&V protocol run, 2026-11-24)
-- **Depends on:** none
-- **Repro / Notes:** Seen 1 time in 8 runs of `npm test` / `npx tsx --test tests/*.test.ts` on the host; CI (Linux) passed at b5f281f. The logs are local: .vv/logs/2.1-npm-test.log (failing run) and 2.1-*repro*/afterci-*.log (passing runs). The file stopped at about 3.7 s, before the 5 s per-test timeout, and printed nothing on stderr, so this looks like the child process exiting rather than a timeout. Leads: an exception or rejection after a test finished (for example a fixture's `assert.fail` in a callback that is not awaited), or a Windows file-lock error while the repost registry writes under the temp directory. Loop the file (`for i in $(seq 50); do npx tsx --test tests/*.test.ts || break; done`) with `--test-reporter=tap` to keep the child's output.
-- **Bump:** patch
-- **Assignee:** Victor Ivanov
-- **Status:** in-progress
-- **Log:**
-  - 2026-11-24 protocol: Found by: protocol (Stage 2.1, release run on b5f281f). Class: flaky test (local-gate counts flaky as RED).
-  - 2026-11-24 Investigation: B1 investigation on Windows 11 / Node 24.15.0: 100 isolated TAP runs passed (50 with four CPU busy workers; 50 through tsx CLI with fatal-error/exit preload), eight consecutive full npm test runs and baseline validate passed. Original silent file abort did not reproduce; no root cause or corrective change established. Evidence: .git/agent-handoffs/driver-replies-build/evidence/B1/B1.md. Keep in-progress; blocked per implementation brief rather than guessing a fix.
-  - 2026-11-24 Investigation: B1 round 2 on b0fa652: Node 24.15.0 embedded runner/harness source and deliberate tsx child exits show the silent file-only failure fits abrupt nonzero termination; late throw/rejection emits an async diagnostic and timeout increments cancelled. Targeted timing probes contain delayed startup cleanup, final-edit rejection, forced sweep assertion after stop and forced EPERM rollback assertion; none reproduces the original silent abort. Root cause remains unproved. Evidence: .git/agent-handoffs/driver-replies-build/evidence/B1/round2 and B1.md.
-  - 2026-11-24 Diagnostics: Round 2 established abrupt nonzero test-child termination; its cause and exit code/signal are unrecoverable from the old spec log. This PR adds a parallel TAP file while preserving spec stdout, failed-test CI artifacts, and shutdown-before-error assertions. Root cause is not found and Status stays in-progress. On the next occurrence, read exitCode and signal from .vv/npm-test.tap before retrying.
-  - 2026-11-26 Sighting: Sighting 2 on 2026-11-25: direct tsx pair (reply-threads.test.ts and bot.test.ts) ended after 83/84 reported tests with the same bot file-only failure, immediately after failed startup registration. No TAP captured by this direct invocation. Source: .git/agent-handoffs/driver-replies-build/evidence/F6/R11-fixups/focused.txt; immediate bot recheck passed.
-  - 2026-11-26 Investigation: B2 round 3 on d856a61 (Windows 11, Node 24.15.0): audited 93 local imported modules; index.ts is not imported, register.ts exit is CLI-guarded. Ten instrumented original two-file runs passed 133/133 each; no exit/abort/kill or application child-process calls observed in bot test context. Handler-install trace found only Node test harness handlers and probe listeners. Forced EBUSY/EPERM after-hook errors and a real rmSync argument failure report hookFailed with explicit errors, unlike both sightings. Existing non-joining sweep shutdown remains a known lead, not a demonstrated cause. Application event IDs 1000/1001 have no node/esbuild/tsx match for Nov 24-26. Validate passed (1742 TS, 77/85 ESM with 8 expected container skips). No forced reproduction or root cause, no guessed fix; keep in-progress and escalate after final round. Preserve TAP before retrying. Evidence: .git/agent-handoffs/driver-replies-build/evidence/B2.
-
 ### [BUG-1795540134] VERIFICATION.md 1.5 host grep does not exclude the LinkedIn and Truth Social post modules
 - [ ] **Severity:** low
 - **Area:** docs
