@@ -596,3 +596,4 @@ Daily review first checks coverage, then the previous daily window and seven-day
 
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
+| 1 | 2026-11-26T15:44:02-05:00 | 63dff025bffe | ADOPT | Initial OPS-FR-001 through OPS-FR-031; OPS-NFR-001 through OPS-NFR-002; OPS-IR-001; OPS-CON-001 |
