@@ -546,3 +546,4 @@ Verification targets: tests/erome-album.test.ts, tests/erome-availability.test.t
 
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
+| 1 | 2026-11-26T15:39:30-05:00 | 0b6589df05d0 | ADOPT | ERO-FR-001 through ERO-FR-022; ERO-NFR-001 through ERO-NFR-003; ERO-IR-001 through ERO-IR-004; ERO-CON-001 |
