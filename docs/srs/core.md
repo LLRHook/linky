@@ -676,3 +676,4 @@ Platform eligibility and media selection are in docs/srs/social.md; public retri
 
 | Rev | Date | Commit | Mode | Summary |
 |---|---|---|---|---|
+| 1 | 2026-11-26T15:33:08-05:00 | 0329a493616f | ADOPT | Initial CORE-FR-001–030, CORE-NFR-001–007, CORE-IR-001, CORE-CON-001–005 |
