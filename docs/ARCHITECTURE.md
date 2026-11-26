@@ -415,3 +415,9 @@ Consequences: Operator opt-in/allowlists and uncertain-state reconciliation requ
 | Selected trials mistaken for SLO | Medium | Unsupported claims | Dated evidence, denominators and explicit target decision | TBD-S0-002 |
 | Record-only caps on some state files | Medium | Large read/startup failure | Document actual limits, avoid universal cap claim | ENT-001, ENT-004, ENT-007, ENT-008, ENT-014 |
 | Shared-volume replicas | High if attempted | Conflicting ownership writes | Single owner; new ADR before distributed scaling | ADR-002 |
+
+## Revision history
+
+| Rev | Date | Commit | Mode | Summary |
+|---|---|---|---|---|
+| 1 | 2026-11-26T15:19:42-05:00 | 041cc00854e8 | ADOPT | CMP-001–CMP-108; ADR-001–ADR-010; detected stack, C4/runtime/deployment views |

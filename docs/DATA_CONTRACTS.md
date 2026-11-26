@@ -771,3 +771,9 @@ Local residency is the operator data volume (hosted:the Hostinger VPS);no geogra
 | ENT-012 | Stored v1 → v2 | Explicit MIME | Infer MP4 v1;read both | No removal scheduled |
 | Regional protocol | Earlier → v3 | Canonical exact representation/one-use claim | Compatible coordinator/workers together;wrong version rejected | No dual-version support promised |
 | Documentation | None → v1.0.0 | First adopted inventory | No runtime/state mutation | Not applicable |
+
+## Revision history
+
+| Rev | Date | Commit | Mode | Summary |
+|---|---|---|---|---|
+| 1 | 2026-11-26T15:19:42-05:00 | 041cc00854e8 | ADOPT | ENT-001–ENT-014; API-001–API-034 exposed; API-035–API-060 consumed; EVT-001–EVT-008 |

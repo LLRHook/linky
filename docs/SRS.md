@@ -160,3 +160,9 @@ Only foundation-owned issues are listed;area-owned questions belong to their are
 | MiB | 1,048,576 bytes |
 | SLO/RPO/RTO | Service-level/recovery-point/recovery-time objective |
 | Must/Should/Could | Scope priority distinct from delivery/verification state |
+
+## Revision history
+
+| Rev | Date | Commit | Mode | Summary |
+|---|---|---|---|---|
+| 1 | 2026-11-26T15:19:42-05:00 | 041cc00854e8 | ADOPT | Initial index: seven area homes; foundation TBD-S0-001 through TBD-S0-004; no requirement definitions in this pass |
