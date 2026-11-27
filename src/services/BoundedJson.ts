@@ -1,10 +1,12 @@
+export class JsonBodyTooLargeError extends Error { constructor() { super('JSON response exceeds its byte limit'); } }
+
 /** Limit decoded response bytes while reading; Content-Length alone cannot bound chunked or compressed bodies. */
 export async function readBoundedJson(response: Response, maxBytes: number, signal?: AbortSignal): Promise<unknown> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('Invalid JSON response limit');
   if (!response.body) throw new Error('Missing JSON response body');
   if (Number(response.headers.get('content-length')) > maxBytes) {
     void response.body.cancel().catch(() => {});
-    throw new Error('JSON response exceeds its byte limit');
+    throw new JsonBodyTooLargeError();
   }
   const reader = response.body.getReader();
   const cancel = () => { void reader.cancel().catch(() => {}); };
@@ -18,7 +20,7 @@ export async function readBoundedJson(response: Response, maxBytes: number, sign
       signal?.throwIfAborted();
       if (next.done) break;
       size += next.value.byteLength;
-      if (size > maxBytes) throw new Error('JSON response exceeds its byte limit');
+      if (size > maxBytes) throw new JsonBodyTooLargeError();
       chunks.push(next.value);
     }
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size))) as unknown;

@@ -8,11 +8,16 @@ import base64, datetime, fnmatch, http.client, json, os, re, subprocess, sys, ti
 HEAD_RE = re.compile(r'^### \[((?:BUG|FEAT)-\d+[a-z]*)\] (\S.*?)\s*$')
 FIELD_RE = re.compile(r'^- (\[[ xX]\] )?\*\*(.+?):\*\*(?: (.*?))?\s*$')
 FENCE_RE = re.compile(r'^(\s*)(```|~~~)')
+FENCE_RUN_RE = re.compile(r'^\s*(`{3,}|~{3,})')
+NESTED_RE = re.compile(r'^\s+#{2,3} \[((?:BUG|FEAT)-\d+[a-z]*)\]')
 KEY_RE = re.compile(r'^[A-Z][A-Z0-9]+-\d+$')
 ANYKEY_RE = re.compile(r'\b[A-Z][A-Z0-9]+-\d+\b')
 DATE_RE = re.compile(r'\b(\d{4}-\d{2}-\d{2})\b')
 LEVELS = ('crit', 'high', 'med', 'low')
 BUMPS = ('major', 'minor', 'patch')
+# Where a finding was found (E33): the stage it escaped to, so `escapes` can count findings per stage.
+FOUND_BY = ('build', 'panel-qa', 'panel-review', 'panel-security', 'protocol', 'gui-walkthrough', 'audit',
+            'ci', 'human-qa', 'human-review', 'human-security', 'staging', 'production', 'user')
 ACTIVE = {'bug': ('open', 'in-progress', 'fixed-pending-migration'),
           'feature': ('open', 'in-progress', 'shipped-pending-migration')}
 CLOSE_REASONS = ('duplicate', 'wontfix', 'superseded', 'cannot-reproduce', 'not-a-defect')
@@ -20,14 +25,16 @@ CLOSED_RE = re.compile(r'migrated|shipped(?!-pending)|fixed(?!-pending)|closed|r
                        r'duplicate|superseded|rejected|cannot-reproduce|not-a-defect|obsolete|withdrawn|invalid', re.I)
 SCHEMA = {
     'bug': ['Severity', 'Area', 'File(s)', 'Observation', 'Expected', 'Req', 'Depends on', 'Repro / Notes',
-            'Bump', 'Jira', 'Jira parent?', 'Bundle?', 'Assignee?', 'Status', 'Fix?', 'Docs?', 'Cross-ref?', 'Log?'],
+            'Found by?', 'Class?', 'Bump', 'Target?', 'Jira', 'Jira parent?', 'Bundle?', 'Assignee?', 'Status', 'Fix?', 'Docs?', 'Cross-ref?', 'Log?'],
     'feature': ['Priority', 'Area', 'File(s)', 'Req', 'Depends on', 'UI', 'Why', 'Approach',
                 'Library / dependency notes', 'Acceptance criteria', 'Test plan', 'Out of scope',
-                'Bump', 'Jira', 'Jira parent?', 'Bundle?', 'Assignee?', 'Status', 'Implementation?', 'Docs?', 'Cross-ref?', 'Log?'],
+                'Found by?', 'Class?', 'Bump', 'Target?', 'Jira', 'Jira parent?', 'Bundle?', 'Assignee?', 'Status', 'Implementation?', 'Docs?', 'Cross-ref?', 'Log?'],
 }
-ENUMS = {'Severity': LEVELS, 'Priority': LEVELS, 'Bump': BUMPS}
-NO_UNKNOWN = {'Severity', 'Priority', 'Bump', 'Status', 'Jira', 'Jira parent', 'Bundle', 'Area'}
-ISSUE_TYPES = {'bug': 'Bug', 'feature': 'Story', 'bundle': 'Task'}  # jira.issueTypes overrides each
+ENUMS = {'Severity': LEVELS, 'Priority': LEVELS, 'Bump': BUMPS, 'Found by': FOUND_BY}
+NO_UNKNOWN = {'Severity', 'Priority', 'Bump', 'Status', 'Jira', 'Jira parent', 'Bundle', 'Area', 'Target', 'Found by'}
+TARGET_RE = re.compile(r'^(v\d+\.\d+\.\d+|unscheduled)$')
+VERSION_NAME_RE = re.compile(r'^v\d+\.\d+\.\d+$')
+ISSUE_TYPES = {'bug': 'Bug', 'feature': 'Story', 'bundle': 'Task', 'epic': 'Epic'}  # jira.issueTypes overrides each
 BUNDLE_LABEL = 'cycle-bundle'
 ALIASES = {'Blocked-on': 'Depends on', 'Blocked on': 'Depends on', 'Blocked by': 'Depends on',
            'Docs (required — do not close without them)': 'Docs', 'Parent': 'Jira parent',
@@ -51,6 +58,14 @@ def required_of(kind, jira=None):
 def kind_of(path):
     b = os.path.basename(path).lower()
     return 'bug' if b == 'bugs.md' else 'feature' if b == 'features.md' else None
+
+
+def rel_or_abs(p, root):
+    """os.path.relpath, or the absolute path when P and ROOT sit on different Windows drives."""
+    try:
+        return os.path.relpath(p, root)
+    except ValueError:
+        return os.path.abspath(p)
 
 
 def today():
@@ -158,6 +173,32 @@ def parse_entry(text):
     return e
 
 
+def fence_step(fence, line):
+    """Fence state after LINE (None = outside code). CommonMark: a fence is a line-start run of 3+ `
+    or ~ (an inline ``` in a field value is not one, nor a ` run followed by more `); it closes on a
+    bare run of the same character at least as long as the opener."""
+    m = FENCE_RUN_RE.match(line)
+    if not m:
+        return fence
+    run, rest = m.group(1), line[m.end():]
+    if fence is None:
+        return None if run[0] == '`' and '`' in rest else run
+    return None if run[0] == fence[0] and len(run) >= len(fence) and not rest.strip() else fence
+
+
+def split_blocks(text):
+    """Split at `## ` and `### [` lines outside fenced code; ''.join(result) == text."""
+    chunks, cur, fence = [], [], None
+    for line in text.split('\n'):
+        if fence is None and cur and line.startswith(('### [', '## ')):
+            chunks.append('\n'.join(cur) + '\n')
+            cur = []
+        cur.append(line)
+        fence = fence_step(fence, line)
+    chunks.append('\n'.join(cur))
+    return chunks
+
+
 # ---------------------------------------------------------------- lint
 
 def lint_entry(e, kind):
@@ -197,9 +238,15 @@ def lint_entry(e, kind):
         v = e.value(n)
         if v is not None and n in allowed and v not in vals:
             out.append(('ENUM', 'E', '%s "%s" not in %s' % (n, v, '|'.join(vals))))
+    ui = (e.value('UI') or '').strip()
+    if ui.lower().startswith('deferred') and not re.search(r'\b(?:[A-Z][A-Z0-9]*-)?(?:FR|FEAT|BUG)-\d+\b|\b[A-Z][A-Z0-9]+-\d+\b', ui):
+        out.append(('UIDEFER', 'W', '`UI: deferred (...)` names no FR or ticket id that delivers the UI (spec ui-ux.md §1)'))
     j = e.value('Jira')
     if j is not None and j != 'pending' and not KEY_RE.match(j):
         out.append(('JIRA', 'E', 'Jira must be a key or `pending`, got "%s"' % j[:40]))
+    tg = e.value('Target')
+    if tg is not None and not TARGET_RE.match(tg):
+        out.append(('TARGET', 'E', 'Target must be vX.Y.Z or `unscheduled`, got "%s"' % tg[:40]))
     area = e.value('Area') or ''
     if re.search(r'\s/\s|[()—]', area):
         out.append(('AREA', 'W', 'Area is comma-separated tags; move notes to Log ("%s")' % area[:40]))
@@ -238,6 +285,8 @@ def lint_entry(e, kind):
 def fix_entry(e, kind):
     """Safe mechanical repairs: order, checkbox, indentation, blank runs."""
     allowed = fields_of(kind)
+    if 'Jira' in required_of(kind) and e.find('Jira') is None:
+        e.set(kind, 'Jira', 'pending')  # Jira enforced after filing: the placeholder `jira sync` fills
     known = [f for f in e.fields if f[0] in allowed]
     other = [f for f in e.fields if f[0] not in allowed]
     known.sort(key=lambda f: allowed.index(f[0]))
@@ -488,7 +537,7 @@ def tracker_files(root):
 
 
 def app_of(root, path, cfg):
-    rel = os.path.relpath(os.path.dirname(os.path.abspath(path)), root).replace('\\', '/')
+    rel = rel_or_abs(os.path.dirname(os.path.abspath(path)), root).replace('\\', '/')
     apps = cfg.get('apps', {})
     if rel in apps:
         return apps[rel]
@@ -606,30 +655,14 @@ def check_or_die(e, kind):
 
 # ---------------------------------------------------------------- commands: writers
 
-def cmd_add(argv):
-    """add --tracker PATH (--json FILE|- | --field 'Name=value'...) [--id ID] [--no-jira]"""
-    o, _ = opts(argv, flags=('no-jira', 'dry-run'), multi=('field',))
-    root = repo_root()
-    if 'tracker' not in o:
-        sys.exit('add: --tracker PATH is required')
-    path = os.path.abspath(o['tracker'])
-    kind = kind_of(path)
-    if not kind:
-        sys.exit('add: --tracker must be a bugs.md or features.md')
-    data = {}
-    if 'json' in o:
-        src = sys.stdin.read() if o['json'] == '-' else read(o['json'])
-        data = json.loads(src)
-    for f in o.get('field', []):
-        k, _, v = f.partition('=')
-        data[k.strip()] = v
+def _new_entry(root, path, kind, data, taken, eid=None):
+    """Build and validate one entry (no write). `taken` gains the id it allocates."""
+    data = dict(data)
     title = (data.pop('title', None) or data.pop('Title', '') or '').strip()
     if not title:
         sys.exit('add: a title is required')
     pref = 'BUG' if kind == 'bug' else 'FEAT'
-    taken = all_ids(root)
-    if o.get('id'):
-        eid = o['id']
+    if eid:
         if not eid.startswith(pref + '-'):
             sys.exit('add: %s does not belong in the %s tracker' % (eid, kind))
         if path in [os.path.abspath(p) for p in taken.get(eid, [])]:
@@ -639,20 +672,60 @@ def cmd_add(argv):
         while '%s-%d' % (pref, n) in taken:
             n += 1
         eid = '%s-%d' % (pref, n)
+    taken.setdefault(eid, []).append(path)
     e = Entry(eid, title)
     for k, v in data.items():
         k = ALIASES.get(k, k)
-        if k in ('Status', 'Jira'):
+        if k in ('Status', 'Jira', 'tracker', 'prov'):
             continue
         e.set(kind, k, str(v))
-    mode = jira_mode(root)
-    if mode == 'enforce':
+    if jira_mode(root) == 'enforce':
         e.set(kind, 'Jira', 'pending')
     e.set(kind, 'Status', 'open')
     if not e.value('Bump'):
         e.set(kind, 'Bump', 'patch' if kind == 'bug' else 'minor')
     e.box = ' '
     e.boxes = 1
+    return e
+
+
+def _tracker_kind(path, who='add'):
+    kind = kind_of(path)
+    if not kind:
+        sys.exit('%s: --tracker must be a bugs.md or features.md (%s)' % (who, path))
+    return kind
+
+
+def _taken_with(root, paths):
+    taken = all_ids(root)
+    for path in set(paths):
+        for m in re.finditer(r'(?m)^### \[((?:BUG|FEAT)-\d+[a-z]*)\]', read(path) if os.path.exists(path) else ''):
+            taken.setdefault(m.group(1), []).append(path)  # the target counts even before git tracks it
+    return taken
+
+
+def cmd_add(argv):
+    """add --tracker PATH (--json FILE|- | --field 'Name=value'...) [--id ID] [--no-jira] [--dry-run]
+
+    --json with an array files a batch: each item may name its own "tracker" and a provisional
+    "prov" id; "Depends on" and "Cross-ref" citing another item's prov id get its real id.
+    Every entry is validated before anything is written: one invalid entry writes nothing."""
+    o, _ = opts(argv, flags=('no-jira', 'dry-run'), multi=('field',))
+    root = repo_root()
+    data = {}
+    if 'json' in o:
+        src = sys.stdin.read() if o['json'] == '-' else read(o['json'])
+        data = json.loads(src)
+    if isinstance(data, list):
+        return _add_batch(root, o, data)
+    if 'tracker' not in o:
+        sys.exit('add: --tracker PATH is required')
+    path = os.path.abspath(o['tracker'])
+    kind = _tracker_kind(path)
+    for f in o.get('field', []):
+        k, _, v = f.partition('=')
+        data[k.strip()] = v
+    e = _new_entry(root, path, kind, data, _taken_with(root, [path]), o.get('id'))
     fix_entry(e, kind)
     check_or_die(e, kind)
     if o.get('dry-run'):
@@ -661,15 +734,102 @@ def cmd_add(argv):
     tf = TrackerFile(path)
     tf.entries.append(e)
     tf.save()
-    print('added %s to %s' % (eid, os.path.relpath(path, root)))
-    if mode != 'off' and not o.get('no-jira'):
-        jira_for_entries(root, [(path, eid)], dry=False, quiet_missing_creds=True)
+    print('added %s to %s' % (e.id, rel_or_abs(path, root)))
+    if jira_mode(root) != 'off' and not o.get('no-jira'):
+        jira_for_entries(root, [(path, e.id)], dry=False, quiet_missing_creds=True)
+    return 0
+
+
+def _add_batch(root, o, items):
+    if not items or not all(isinstance(x, dict) for x in items):
+        sys.exit('add: --json array must hold objects')
+    paths = []
+    for n, it in enumerate(items, 1):
+        t = it.get('tracker') or o.get('tracker')
+        if not t:
+            sys.exit('add: item %d has no "tracker" and no --tracker was given' % n)
+        paths.append(os.path.abspath(t))
+    provs = [str(it.get('prov', '')).strip() for it in items]
+    dup = sorted({p for p in provs if p and provs.count(p) > 1})
+    if dup:
+        sys.exit('add: provisional ids used twice: %s' % ', '.join(dup))
+    taken = _taken_with(root, paths)
+    built = []
+    for it, path in zip(items, paths):
+        built.append((path, _tracker_kind(path), _new_entry(root, path, _tracker_kind(path), it, taken)))
+    real = {p: e.id for p, (_, _, e) in zip(provs, built) if p}
+    pat = re.compile(r'(?<![\w-])(%s)(?![\w-])' % '|'.join(re.escape(p) for p in sorted(real, key=len, reverse=True))) if real else None
+    for path, kind, e in built:
+        for field in ('Depends on', 'Cross-ref'):
+            v = e.value(field) or ''
+            if v and pat:
+                e.set(kind, field, pat.sub(lambda m: real[m.group(1)], v))
+        fix_entry(e, kind)
+        check_or_die(e, kind)
+    if o.get('dry-run'):
+        for _, _, e in built:
+            print(e.render())
+        print('add: %d entries valid (dry run, nothing written)' % len(built))
+        return 0
+    by_path = {}
+    for path, _, e in built:
+        by_path.setdefault(path, []).append(e)
+    for path, es in by_path.items():
+        tf = TrackerFile(path)
+        tf.entries.extend(es)
+        tf.save()
+    for (path, _, e), p in zip(built, provs):
+        print('added %s to %s%s' % (e.id, rel_or_abs(path, root), ' (was %s)' % p if p else ''))
+    if jira_mode(root) != 'off' and not o.get('no-jira'):
+        jira_for_entries(root, [(path, e.id) for path, _, e in built], dry=False, quiet_missing_creds=True)
+    return 0
+
+
+# Fields whose change moves Jira or the entry's identity: one `set` call each, never a batch.
+BATCH_SET_REFUSED = ('Status', 'Target', 'Assignee', 'Jira', 'Jira parent', 'Bundle', 'title')
+
+
+def set_batch(root, items):
+    """set --json: many {id, field, value} edits validated together and written once per tracker.
+
+    All or nothing: a malformed item, an unknown id, a refused field, or an entry that fails the
+    schema exits before any tracker is written. Optional per-item `tracker` / `app` as in `set`.
+    """
+    if not isinstance(items, list) or not items:
+        sys.exit('set --json: expected a non-empty JSON array of {"id", "field", "value"}')
+    files, entries = {}, {}
+    for n, it in enumerate(items, 1):
+        if not isinstance(it, dict) or not all(isinstance(it.get(k), str) for k in ('id', 'field', 'value')):
+            sys.exit('set --json: item %d needs string "id", "field" and "value"' % n)
+        field = ALIASES.get(it['field'], it['field'])
+        if field in BATCH_SET_REFUSED or field.lower() == 'title':
+            sys.exit('set --json: item %d: %s moves Jira or identity; use `set %s %s ...` on its own'
+                     % (n, field, it['id'], field))
+        path = locate(root, it['id'], it.get('tracker'), it.get('app'))[0].path
+        tf = files.setdefault(path, TrackerFile(path))
+        e = tf.get(it['id'])
+        e.set(tf.kind, field, it['value'])
+        entries[(path, e.id)] = (tf, e)
+    for tf, e in entries.values():
+        fix_entry(e, tf.kind)
+        check_or_die(e, tf.kind)
+    for tf in files.values():
+        tf.save()
+    print('set %d field(s) on %d entries in %d tracker(s)' % (len(items), len(entries), len(files)))
     return 0
 
 
 def cmd_set(argv):
-    """set ID FIELD (VALUE | --file F | -) [--tracker P | --app A] [--no-jira]"""
+    """set ID FIELD (VALUE | --file F | -) [--tracker P | --app A] [--no-jira]
+    set --json F|-      a JSON array of {id, field, value[, tracker, app]}: one write, all or nothing"""
     o, pos = opts(argv, flags=('no-jira',))
+    if 'json' in o:
+        src = sys.stdin.read() if o['json'] == '-' else read(o['json'])
+        try:
+            items = json.loads(src)
+        except ValueError as ex:
+            sys.exit('set --json: not JSON (%s)' % ex)
+        return set_batch(repo_root(), items)
     if len(pos) < 2:
         sys.exit('usage: set ID FIELD VALUE|-|--file F')
     eid, field = pos[0], ALIASES.get(pos[1], pos[1])
@@ -685,7 +845,7 @@ def cmd_set(argv):
     tf, e = locate(root, eid, o.get('tracker'), o.get('app'))
     take = field == 'Assignee' and value.strip().lower() == 'me'
     start = field == 'Status' and value.strip().strip('`* ').lower() == 'in-progress'
-    jira = None if o.get('no-jira') or not (take or field == 'Status') else jira_or_none(root)
+    jira = None if o.get('no-jira') or not (take or field in ('Status', 'Target')) else jira_or_none(root)
     if field.lower() == 'title':
         e.title = value.strip()
     elif not take:
@@ -700,6 +860,8 @@ def cmd_set(argv):
     print('%s: %s set' % (eid, field))
     if not jira:
         return 0
+    if field == 'Target' and target_of(e):
+        jira_target(jira, key, target_of(e))
     if field == 'Status':
         wf = fit_workflow(jira, workflow(load_config(root)))
         target = status_target(e.status(), wf)
@@ -872,7 +1034,7 @@ def cmd_migrate(argv):
         changelog_insert(os.path.join(os.path.dirname(p), 'CHANGELOG.md'), changelog_line(e), section, eid)
         tf.remove(eid)
         tf.save()
-        done.append('%s -> %s/CHANGELOG.md %s' % (eid, os.path.relpath(os.path.dirname(p), root), section))
+        done.append('%s -> %s/CHANGELOG.md %s' % (eid, rel_or_abs(os.path.dirname(p), root), section))
         if KEY_RE.match(key):
             keys.append(key)
         if KEY_RE.match(e.value('Bundle') or ''):
@@ -920,6 +1082,71 @@ def cmd_close(argv):
     return 0
 
 
+LEDGER_SECTIONS = ('Verified', 'Added', 'Changed', 'Fixed', 'Removed', 'Security')
+VERSION_RE = re.compile(r'^v?\d+\.\d+\.\d+$')
+
+
+def freeze_changelog(text, version, date):
+    """TEXT with `## Unreleased` moved into `## [VERSION] - DATE` (non-empty sub-sections in ledger
+    order) and a fresh, empty `## Unreleased` above it. Earlier sections are untouched. Returns
+    (new text, error or None)."""
+    lines = text.split('\n')
+    try:
+        start = next(i for i, l in enumerate(lines) if l.strip() == '## Unreleased')
+    except StopIteration:
+        return text, 'no `## Unreleased` section'
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith('## ')), len(lines))
+    sections, cur, extra = {}, None, []
+    for l in lines[start + 1:end]:
+        m = re.match(r'^###\s+(\w+)', l)
+        if m:
+            cur = m.group(1)
+            sections.setdefault(cur, [])
+        elif l.strip():
+            (sections[cur] if cur else extra).append(l)
+    if extra:
+        return text, 'text under `## Unreleased` outside a ### section: %s' % extra[0][:60]
+    unknown = [s for s in sections if s not in LEDGER_SECTIONS and sections[s]]
+    if unknown:
+        return text, 'unknown section(s) under Unreleased: %s' % ', '.join(unknown)
+    if not any(sections.get(s) for s in LEDGER_SECTIONS[1:]):
+        return text, 'nothing to release: Added, Changed, Fixed, Removed and Security are empty'
+    fresh = ['## Unreleased', ''] + [x for s in LEDGER_SECTIONS for x in ('### ' + s, '')]
+    frozen = ['## [%s] - %s' % (version, date), '']
+    for s in LEDGER_SECTIONS:
+        if sections.get(s):
+            frozen += ['### ' + s, ''] + sections[s] + ['']
+    return '\n'.join(lines[:start] + fresh + frozen + lines[end:]), None
+
+
+def cmd_freeze(argv):
+    """freeze vX.Y.Z [--date YYYY-MM-DD] [--dry-run] [--changelog P]: /release Stage 2."""
+    o, pos = opts(argv, flags=('dry-run',))
+    if not pos or not VERSION_RE.match(pos[0]):
+        sys.exit('usage: freeze vX.Y.Z [--date YYYY-MM-DD] [--dry-run] [--changelog CHANGELOG.md]')
+    version = pos[0]
+    path = o.get('changelog') or os.path.join(repo_root(), 'CHANGELOG.md')
+    text = read(path)
+    if re.search(r'^## \[%s\]' % re.escape(version), text, re.M):
+        print('%s is already frozen in %s; nothing to do' % (version, os.path.basename(path)))
+        return 0
+    date = o.get('date') or time.strftime('%Y-%m-%d')
+    crlf = '\r\n' in text
+    new, err = freeze_changelog(text.replace('\r\n', '\n'), version, date)
+    if crlf:
+        new = new.replace('\n', '\r\n')
+    if err:
+        sys.exit('freeze: %s' % err)
+    if o.get('dry-run'):
+        import difflib
+        sys.stdout.writelines(difflib.unified_diff(text.splitlines(True), new.splitlines(True), path, path))
+        return 0
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(new)
+    print('froze Unreleased into [%s] - %s' % (version, date))
+    return 0
+
+
 def cmd_show(argv):
     """show ID [--app A]"""
     o, pos = opts(argv)
@@ -931,7 +1158,7 @@ def cmd_show(argv):
     if o.get('app'):
         hits = [p for p in hits if app_of(root, p, cfg) == o['app']]
     for p in hits:
-        print('# %s (current)\n' % os.path.relpath(p, root))
+        print('# %s (current)\n' % rel_or_abs(p, root))
         print(TrackerFile(p).get(eid).render())
     if hits:
         return 0
@@ -957,10 +1184,57 @@ def cmd_show(argv):
 
 # ---------------------------------------------------------------- export
 
+TICKET_ID_RE = re.compile(r'\b(?:BUG|FEAT)-\d+\b')
+# Requirement ids as the spec skill's req_index.py parses them, plus brief capability ids.
+REQ_ID_RE = re.compile(r'\b(?:(?:[A-Z][A-Z0-9]{0,7}-)?(?:FR|NFR|IR|CON)(?:-[A-Z]{2,8})?-\d{1,4}[a-z]?|CAP-\d+)\b')
+
+
+def entry_record(root, p, e, cfg):
+    """One entry as plain data for planning tools (`export --json`)."""
+    def items(name):
+        return [x.strip() for x in re.split(r'[,\n]', e.text(name) or '') if x.strip() and x.strip() != 'unknown']
+    ac = e.text('Acceptance criteria') or ''
+    return {'id': e.id, 'kind': kind_of(p), 'title': e.title, 'tracker': rel_or_abs(p, root).replace('\\', '/'),
+            'app': app_of(root, p, cfg), 'status': e.status(),
+            'priority': e.value('Priority') or e.value('Severity') or '',
+            'area': items('Area'), 'files': items('File(s)'),
+            'depends': sorted(set(TICKET_ID_RE.findall(e.text('Depends on') or '')) - {e.id}),
+            'target': e.value('Target') or '', 'jira': e.value('Jira') or '',
+            'req': sorted(set(REQ_ID_RE.findall(e.text('Req') or ''))),
+            'criteria': len([l for l in ac.splitlines() if l.strip().startswith('- ')]) or (1 if ac.strip() else 0)}
+
+
+def ledger_records(root):
+    """Every ledger line in any CHANGELOG.md next to a tracker: id, Req ids, release section."""
+    paths = {os.path.join(os.path.dirname(p), 'CHANGELOG.md') for p in tracker_files(root)}
+    paths.add(os.path.join(root, 'CHANGELOG.md'))
+    out = []
+    for cl in sorted(paths):
+        if not os.path.exists(cl):
+            continue
+        version = 'Unreleased'
+        for line in read(cl).splitlines():
+            h = re.match(r'^## \[?([^\]\s]+)\]?', line)
+            if h:
+                version = h.group(1)
+                continue
+            m = re.match(r'^- \[((?:BUG|FEAT)-\d+)\](.*)$', line)
+            if m:
+                req = re.search(r'\(Req:([^)]*)\)', m.group(2))
+                out.append({'id': m.group(1), 'req': sorted(set(REQ_ID_RE.findall(req.group(1)))) if req else [],
+                            'version': version})
+    return out
+
+
+def shipped_ids(root):
+    """Ticket ids that have a ledger line in any CHANGELOG.md next to a tracker."""
+    return sorted({r['id'] for r in ledger_records(root)})
+
+
 def cmd_export(argv):
     """export [--status open|todo|in-progress|pending|all] [--type bug|feature] [--area A] [--app A]
-              [--ids I,J] [--no-key] [-o FILE]"""
-    o, _ = opts(argv, flags=('no-key',))
+              [--ids I,J] [--no-key] [-o FILE | --json]"""
+    o, _ = opts(argv, flags=('no-key', 'json'))
     root = repo_root()
     cfg = load_config(root)
     want = o.get('status', 'open')
@@ -994,13 +1268,18 @@ def cmd_export(argv):
         if sel:
             groups.append((p, sel))
             n[kind] += len(sel)
+    if o.get('json'):
+        recs = [entry_record(root, p, e, cfg) for p, sel in groups for e in sel]
+        ledger = ledger_records(root)
+        print(json.dumps({'entries': recs, 'shipped': sorted({r['id'] for r in ledger}), 'ledger': ledger}, indent=1))
+        return 0
     desc = ', '.join('%s=%s' % (k, v) for k, v in sorted(o.items()) if k != 'out') or 'status=open'
     out = ['# Jira export: %s' % desc, '',
            'Generated %s. Edit freely, then create the issues with:' % today(), '',
            '    python .cycle/trackers.py jira push <this file>', '',
            'Totals: %d stories (features) + %d bugs = %d issues.' % (n['feature'], n['bug'], n['feature'] + n['bug']), '']
     for p, sel in groups:
-        out += ['## %s' % os.path.relpath(p, root).replace('\\', '/'), '']
+        out += ['## %s' % rel_or_abs(p, root).replace('\\', '/'), '']
         out += [e.render() for e in sel]
     text = '\n'.join(out).rstrip('\n') + '\n'
     dest = o.get('out') or 'jira-export-%s.md' % today()
@@ -1075,7 +1354,8 @@ class Jira:
                 'Authorization': header, 'Accept': 'application/json',
                 'Content-Type': 'application/json'})
             try:
-                with urllib.request.urlopen(r, timeout=60) as resp:
+                # self.site is always http(s): __init__ gives a bare host https://.
+                with urllib.request.urlopen(r, timeout=60) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
                     raw = resp.read()
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as e:
@@ -1201,12 +1481,15 @@ class Jira:
             self.req('DELETE', '/rest/api/2/issueLink/%s' % i)
         return len(ids)
 
-    def epics(self):
-        """Open epics of the project: [(key, summary)]."""
-        jql = ('project = "%s" AND issuetype = Epic AND statusCategory != Done ORDER BY key'
-               % self.project)
-        res = self.search(jql, ['summary'], 200)
-        return [(i['key'], (i.get('fields') or {}).get('summary', '')) for i in res.get('issues', [])]
+    def epics(self, full=False):
+        """Open epics of the project: [(key, summary)]; FULL adds the description: [(key, summary, description)]."""
+        jql = ('project = "%s" AND issuetype = "%s" AND statusCategory != Done ORDER BY key'
+               % (self.project, self.issue_type('epic')))
+        res = self.search_all(jql, ['summary', 'description'] if full else ['summary'], 1000)
+        if full:
+            return [(i['key'], (i.get('fields') or {}).get('summary', ''), plain_text((i.get('fields') or {}).get('description')))
+                    for i in res]
+        return [(i['key'], (i.get('fields') or {}).get('summary', '')) for i in res]
 
     def epic_for(self, e, app):
         """The entry's epic: its `Jira parent:`, else the first jira.epics.rules match, else default."""
@@ -1374,6 +1657,62 @@ class Jira:
             name, cat = dest(pick)
         raise JiraError('no-path', 'gave up after 8 moves from "%s" toward "%s"' % (start, target))
 
+    def versions(self):
+        return self.req('GET', '/rest/api/2/project/%s/versions' % urllib.parse.quote(self.project)) or []
+
+    def version(self, name):
+        return next((v for v in self.versions() if v.get('name') == name), None)
+
+    def create_version(self, name, description=None, released=False, date=None):
+        proj = self.req('GET', '/rest/api/2/project/%s' % urllib.parse.quote(self.project))
+        body = {'name': name, 'projectId': int(proj['id'])}
+        if description:
+            body['description'] = description
+        if released:
+            body.update(released=True, releaseDate=date or today())
+        return self.req('POST', '/rest/api/2/version', body)
+
+    def update_version(self, vid, fields):
+        return self.req('PUT', '/rest/api/2/version/%s' % vid, fields)
+
+    def set_target(self, key, version):
+        """Set semantics for the planned version: unreleased fix versions become [VERSION] (none when
+        None); released ones are kept. Returns 'already' or 'set'."""
+        cur = ((self.req('GET', '/rest/api/2/issue/%s?fields=fixVersions' % key) or {}).get('fields') or {}).get('fixVersions') or []
+        want = [v['name'] for v in cur if v.get('released')] + ([version] if version else [])
+        if sorted(want) == sorted(v['name'] for v in cur):
+            return 'already'
+        self.req('PUT', '/rest/api/2/issue/%s' % key, {'fields': {'fixVersions': [{'name': n} for n in want]}})
+        return 'set'
+
+    def search_all(self, jql, fields, cap=5000):
+        """Every match (paged): Cloud /rest/api/3/search/jql tokens, else v2 /search startAt."""
+        out, token, start, v2 = [], None, 0, False
+        while len(out) < cap:
+            body = {'jql': jql, 'fields': fields, 'maxResults': 100}
+            if v2:
+                body['startAt'] = start
+            elif token:
+                body['nextPageToken'] = token
+            try:
+                res = self.req('POST', '/rest/api/2/search' if v2 else '/rest/api/3/search/jql', body) or {}
+            except JiraError as e:
+                if v2 or e.code not in (404, 405, 410):
+                    raise
+                v2 = True
+                continue
+            iss = res.get('issues', [])
+            out += iss
+            if v2:
+                start += len(iss)
+                if not iss or start >= res.get('total', 0):
+                    break
+            else:
+                token = res.get('nextPageToken')
+                if not token or res.get('isLast'):
+                    break
+        return out
+
     def add_fix_version(self, keys, version):
         proj = self.req('GET', '/rest/api/2/project/%s' % urllib.parse.quote(self.project))
         names = [v.get('name') for v in self.req('GET', '/rest/api/2/project/%s/versions' % urllib.parse.quote(self.project)) or []]
@@ -1397,7 +1736,7 @@ CL_KEY = re.compile(r'^[-*] \[(?:BUG|FEAT)-\d+[a-z]*\] ([A-Z][A-Z0-9]+-\d+) ')
 
 
 def workflow(cfg):
-    """jira.workflow: inProgress / review / gate / done / order / resolutions (TRACKERS.md, "Jira workflow")."""
+    """jira.workflow: inProgress / review / gate / done / order / resolutions (TRACKERS-jira.md, "Jira workflow")."""
     w = dict((cfg.get('jira') or {}).get('workflow') or {})
     w['inProgress'] = w.get('inProgress') or 'indeterminate'
     w['review'] = w.get('review') or None
@@ -1425,7 +1764,7 @@ def fit_workflow(jira, wf):
     w['order'] = [x for x in wf['order'] if x.lower() in have]
     if gone and not getattr(jira, '_warned', False):
         jira._warned = True
-        print('note: %s has no status %s; skipped (TRACKERS.md, "Jira workflow")' % (
+        print('note: %s has no status %s; skipped (TRACKERS-jira.md, "Jira workflow")' % (
             jira.project, ', '.join('"%s"' % g for g in gone)))
     return w
 
@@ -1573,28 +1912,95 @@ def changelog_keys(root, section=None):
     return sorted(set(keys))
 
 
-def jira_done(root, o):
-    """jira done [--dry-run]: every issue on a CHANGELOG ledger line that is not Done is moved to Done."""
+SECTION_RE = re.compile(r'^## \[?v?(\d+\.\d+\.\d+)\]?(.*)$')
+
+
+def changelog_sections(paths):
+    """{'X.Y.Z': 'YYYY-MM-DD' or ''} for every released '## [v]X.Y.Z' section in these ledgers."""
+    out = {}
+    for p in paths:
+        if os.path.exists(p):
+            for line in read(p).split('\n'):
+                m = SECTION_RE.match(line)
+                if m:
+                    d = DATE_RE.search(m.group(2))
+                    out.setdefault(m.group(1), d.group(1) if d else '')
+    return out
+
+
+def ledger_paths(root):
+    paths = {os.path.join(os.path.dirname(p), 'CHANGELOG.md') for p in tracker_files(root)}
+    paths.add(os.path.join(root, 'CHANGELOG.md'))
+    return sorted(paths)
+
+
+def target_of(e):
+    """The entry's planned version, 'unscheduled', or None when it carries no Target."""
+    t = e.value('Target')
+    return t if t and TARGET_RE.match(t) else None
+
+
+def jira_target(jira, key, target, made=None):
+    """Make KEY's planned fix version match TARGET (vX.Y.Z; 'unscheduled' clears it). Released fix
+    versions stay. A missing version is created bare (MADE caches names). Prints; never raises."""
+    try:
+        if target != 'unscheduled' and (made is None or target not in made):
+            if not jira.version(target):
+                jira.create_version(target)
+                print('  created version %s (describe it: `jira version edit %s --description ...`)' % (target, target))
+            if made is not None:
+                made.add(target)
+        res = jira.set_target(key, None if target == 'unscheduled' else target)
+        print('  %s: fix version %s%s' % (key, 'already ' if res == 'already' else '', 'cleared' if target == 'unscheduled' else target))
+        return True
+    except NET_ERRORS as ex:
+        print('  warning: %s fix version not set to %s: %s' % (key, target, ex))
+        return False
+
+
+def resolution_for(status, wf):
+    """Resolution a removed entry's status implies: a close reason maps through jira.workflow.resolutions;
+    fixed / shipped / migrated -> None (the Done transition's default)."""
+    s = (status or '').lower()
+    if re.search(r"won.?t", s):
+        return wf['resolutions'].get('wontfix')
+    return next((wf['resolutions'].get(r) for r in CLOSE_REASONS if r in s or r.replace('-', ' ') in s), None)
+
+
+def done_keys(jira, wf, pairs, dry):
+    """Move [(key, tracker status or None)] to Done; prints one summary line plus each move. Returns failures."""
+    try:
+        st = jira.statuses([k for k, _ in pairs])
+    except NET_ERRORS as ex:
+        print('  warning: Jira unreachable: %s' % ex)
+        return len(pairs)
+    todo = [(k, s) for k, s in dict(pairs).items() if k in st and st[k][1] != 'done']
+    gone = [k for k, _ in pairs if k not in st]
+    print('  %d already done, %d to move%s' % (len(st) - len(todo), len(todo),
+                                              ', not found: %s' % ', '.join(gone) if gone else ''))
+    bad = 0
+    for k, s in todo:
+        res = resolution_for(s, wf)
+        if dry:
+            print('  %s: %s -> %s%s' % (k, st[k][0], wf['done'], ' (%s)' % res if res else ''))
+        elif not jira_move(jira, k, wf['done'], wf, res):
+            bad += 1
+    return bad
+
+
+def jira_done(root, o, pos=()):
+    """jira done [KEY...] [--dry-run]: move to Done every issue on a CHANGELOG ledger line, or the named
+    KEYs (issues whose entries left the trackers with no keyed ledger line, e.g. removed by `adopt`)."""
     jira = jira_or_none(root)
     if not jira:
         sys.exit('jira done: Jira is off or credentials are missing (jira doctor)')
+    bad = [k for k in pos if not KEY_RE.match(k)]
+    if bad:
+        sys.exit('jira done: not issue keys: %s' % ', '.join(bad))
     wf = fit_workflow(jira, workflow(load_config(root)))
-    proj = jira.project + '-'
-    keys = [k for k in changelog_keys(root) if k.startswith(proj)]
-    try:
-        st = jira.statuses(keys)
-    except NET_ERRORS as ex:
-        sys.exit('jira done: %s' % ex)
-    todo = [k for k in keys if k in st and st[k][1] != 'done']
-    print('jira done: %d ledger keys, %d already done, %d to move%s' % (
-        len(keys), len(keys) - len(todo) - (len(keys) - len(st)), len(todo),
-        ', %d not found' % (len(keys) - len(st)) if len(keys) != len(st) else ''))
-    if o.get('dry-run'):
-        for k in todo:
-            print('  %s: %s -> %s' % (k, st[k][0], wf['done']))
-        return 0
-    bad = sum(0 if jira_move(jira, k, wf['done'], wf) else 1 for k in todo)
-    return 1 if bad else 0
+    keys = list(dict.fromkeys(pos)) or [k for k in changelog_keys(root) if k.startswith(jira.project + '-')]
+    print('jira done: %d %s keys%s' % (len(keys), 'named' if pos else 'ledger', ' (dry run)' if o.get('dry-run') else ''))
+    return 1 if done_keys(jira, wf, [(k, None) for k in keys], o.get('dry-run')) else 0
 
 
 def jira_release(root, o, pos):
@@ -1608,6 +2014,23 @@ def jira_release(root, o, pos):
     if not keys:
         print('jira release: no Jira keys in CHANGELOG section %s' % pos[0])
         return 0
+    try:  # a planned version with the same name would end up mixing shipped and planned issues
+        names = [v.get('name') for v in jira.req('GET', '/rest/api/2/project/%s/versions'
+                                                 % urllib.parse.quote(jira.project)) or []]
+        held = jira.search('project = "%s" AND fixVersion = "%s"' % (jira.project, pos[0]), ['summary'],
+                           100).get('issues', []) if pos[0] in names else []
+    except NET_ERRORS as ex:
+        sys.exit('jira release: %s' % ex)
+    extra = sorted(i['key'] for i in held if i['key'] not in keys)
+    if extra and not o.get('force'):
+        planned = ['%s (%s)' % (e.id, e.value('Jira')) for p in tracker_files(root) for e in TrackerFile(p).entries
+                   if e.value('Jira') in extra and target_of(e) == pos[0]]
+        sys.exit('jira release: version %s already holds %d issue(s) not in CHANGELOG section %s: %s\n%s'
+                 % (pos[0], len(extra), pos[0], ', '.join(extra[:20]),
+                    ('Open entries still planned for it: %s. Move them first: `set <ID> Target <next>|unscheduled`.'
+                     % ', '.join(planned)) if planned else
+                    'It is a planned version with the same name: `jira version renumber %s=<new>` first, then re-run; '
+                    '--force adds the shipped issues to it anyway.' % pos[0]))
     if o.get('dry-run'):
         print('jira release: would set fixVersion %s on %s' % (pos[0], ', '.join(keys)))
         return 0
@@ -1617,6 +2040,523 @@ def jira_release(root, o, pos):
         sys.exit('jira release: %s' % ex)
     print('jira release: fixVersion %s set on %d issues' % (pos[0], len(done)))
     return 0
+
+
+def planned_entries(root):
+    """[(tracker path, Entry)] for every active entry."""
+    return [(p, e) for p in tracker_files(root) for e in TrackerFile(p).entries]
+
+
+def jira_versions(root, o):
+    """jira versions [--json]: the project's versions with issue counts and the entries planned for each."""
+    jira = jira_or_none(root)
+    if not jira:
+        sys.exit('jira versions: Jira is off or credentials are missing (jira doctor)')
+    planned = {}
+    for _, e in planned_entries(root):
+        if target_of(e):
+            planned[target_of(e)] = planned.get(target_of(e), 0) + 1
+    rows = []
+    try:
+        for v in jira.versions():
+            iss = jira.search_all('project = "%s" AND fixVersion = "%s"' % (jira.project, v['name']), ['status'])
+            rows.append({'name': v['name'], 'id': v.get('id'), 'released': bool(v.get('released')),
+                         'date': v.get('releaseDate') or '', 'issues': len(iss),
+                         'open': sum(1 for i in iss if i['fields']['status']['statusCategory']['key'] != 'done'),
+                         'entries': planned.pop(v['name'], 0), 'description': v.get('description') or ''})
+    except NET_ERRORS as ex:
+        sys.exit('jira versions: %s' % ex)
+    planned.pop('unscheduled', None)
+    if o.get('json'):
+        print(json.dumps({'versions': rows, 'targets_without_version': planned}, indent=1))
+        return 0
+    print('%-12s %-8s %-10s %6s %5s %7s  %s' % ('version', 'released', 'date', 'issues', 'open', 'entries', 'description'))
+    for r in rows:
+        print('%-12s %-8s %-10s %6d %5d %7d  %s' % (r['name'], 'yes' if r['released'] else 'no', r['date'] or '-',
+                                                   r['issues'], r['open'], r['entries'], r['description'][:60]))
+    for name, n in sorted(planned.items()):
+        print('%-12s not in Jira: %d entries target it (`jira version add %s`)' % (name, n, name))
+    return 0
+
+
+REPORT_FIELDS = ['summary', 'status', 'issuetype', 'fixVersions', 'created', 'resolutiondate', 'assignee']
+
+
+def report_issue(i, epic_field):
+    """One issue as status-log data: key, type, status category, epic or parent, fix versions, dates."""
+    f = i.get('fields') or {}
+    par = f.get(epic_field)
+    if isinstance(par, dict):
+        pkey, ptype = par.get('key'), ((par.get('fields') or {}).get('issuetype') or {}).get('name')
+    else:
+        pkey, ptype = par, ('epic' if par else None)  # Data Center Epic Link holds the epic's key
+    st = f.get('status') or {}
+    return {'key': i['key'], 'summary': f.get('summary') or '', 'type': (f.get('issuetype') or {}).get('name') or '',
+            'status': st.get('name') or '', 'category': (st.get('statusCategory') or {}).get('key') or '',
+            'parent': pkey, 'parent_type': ptype,
+            'fix_versions': [v.get('name') for v in f.get('fixVersions') or []],
+            'assignee': (f.get('assignee') or {}).get('displayName'),
+            'created': (f.get('created') or '')[:10], 'resolved': (f.get('resolutiondate') or '')[:10]}
+
+
+def report_worklog(key, x, since, until):
+    """A worklog row when it started inside [SINCE, UNTIL] (dates, inclusive), else None. Comments are
+    left out: only whether the cycle's worklog marker is present."""
+    day = (x.get('started') or '')[:10]
+    if not day or day < since or day > until:
+        return None
+    a = x.get('author') or {}
+    return {'key': key, 'author': a.get('displayName') or a.get('name') or '',
+            'author_id': a.get('accountId') or a.get('key') or a.get('name') or '',
+            'started': x.get('started'), 'seconds': int(x.get('timeSpentSeconds') or 0),
+            'cycle': '[cycle-worklog ' in str(x.get('comment') or '')}
+
+
+def jira_report(root, o):
+    """jira report [--since D] [--until D] [--out F]: read-only status-log data as JSON: the project's
+    versions; every issue that is unresolved, on an unreleased version, resolved since D, or has a worklog
+    in the window (with its epic); and every worklog by any author started in the window."""
+    jira = jira_or_none(root)
+    if not jira:
+        sys.exit('jira report: Jira is off or credentials are missing (jira doctor)')
+    today = datetime.date.today()
+    until = o.get('until') or today.isoformat()
+    since = o.get('since') or (today - datetime.timedelta(days=365)).isoformat()
+    for d in (since, until):
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', d):
+            sys.exit('jira report: dates are YYYY-MM-DD, got %r' % d)
+    epic_field = (jira.cfg.get('epics') or {}).get('field', 'parent')
+    fields = REPORT_FIELDS + [epic_field]
+    proj = jira.project
+    try:
+        versions = [{'name': v['name'], 'released': bool(v.get('released')), 'date': v.get('releaseDate') or '',
+                     'description': v.get('description') or ''} for v in jira.versions()]
+        found = jira.search_all('project = "%s" AND (statusCategory != Done OR fixVersion in unreleasedVersions() '
+                                'OR resolved >= "%s")' % (proj, since), fields)
+        logged = jira.search_all('project = "%s" AND worklogDate >= "%s" AND worklogDate <= "%s"'
+                                 % (proj, since, until), fields)
+        issues = {i['key']: report_issue(i, epic_field) for i in found + logged}
+        worklogs = []
+        for i in logged:
+            start = 0
+            while True:
+                page = jira.req('GET', '/rest/api/2/issue/%s/worklog?startAt=%d&maxResults=1000'
+                                % (urllib.parse.quote(i['key']), start)) or {}
+                rows = page.get('worklogs') or []
+                worklogs += [w for w in (report_worklog(i['key'], x, since, until) for x in rows) if w]
+                start += len(rows)
+                if not rows or start >= int(page.get('total') or 0):
+                    break
+    except NET_ERRORS as ex:
+        sys.exit('jira report: %s' % ex)
+    out = {'project': proj, 'since': since, 'until': until, 'epic_type': jira.issue_type('epic'),
+           'versions': versions, 'issues': sorted(issues.values(), key=lambda r: r['key']),
+           'worklogs': sorted(worklogs, key=lambda w: (w['started'] or '', w['key']))}
+    text = json.dumps(out, indent=1)
+    if o.get('out'):
+        with open(o['out'], 'w', encoding='utf-8') as fh:
+            fh.write(text + '\n')
+        print('jira report: %d issues, %d worklogs -> %s' % (len(out['issues']), len(worklogs), o['out']))
+    else:
+        print(text)
+    return 0
+
+
+VERSION_FIELDS = ['summary', 'status', 'issuetype', 'assignee', 'fixVersions']
+
+
+def entries_by_key(root, app=None):
+    """{Jira key: [(app, path, Entry)]} for active entries (a cross-app id has one slice per tracker)."""
+    cfg, out = load_config(root), {}
+    for p in tracker_files(root):
+        a = app_of(root, p, cfg)
+        if app and a != app:
+            continue
+        for e in TrackerFile(p).entries:
+            k = e.value('Jira') or ''
+            if KEY_RE.match(k):
+                out.setdefault(k, []).append((a, p, e))
+    return out
+
+
+def version_drift(jira, wf, name, issues, by_key, ledger, root, app=None):
+    """One row per issue in version NAME or entry targeting it. Each row: key, ids, jira status,
+    tracker status, state (left | done), drift (None or text), fix ((verb, key, arg) or None).
+    The trackers are the source: Target decides membership, Status decides the column
+    (moves only forward); everything else is reported, never changed."""
+    rows, seen = [], set()
+    for iss in issues:
+        k, f = iss['key'], iss['fields']
+        seen.add(k)
+        st = (f['status']['name'], f['status']['statusCategory']['key'])
+        slices = by_key.get(k, [])
+        r = {'key': k, 'ids': sorted({e.id for _, _, e in slices}), 'summary': f.get('summary') or '',
+             'type': (f.get('issuetype') or {}).get('name', ''), 'jira': st[0],
+             'assignee': (f.get('assignee') or {}).get('displayName') or '',
+             'tracker': ', '.join(sorted({e.status() for _, _, e in slices})) or ('ledger' if k in ledger else '-'),
+             'state': 'done' if st[1] == 'done' else 'left', 'drift': None, 'fix': None, 'in_jira': True}
+        targets = {target_of(e) for _, _, e in slices}
+        if not slices:
+            if k in ledger:
+                if st[1] != 'done':
+                    r.update(drift='shipped (CHANGELOG) but not Done in Jira', fix=('done', k, None))
+            elif not app:
+                r['drift'] = 'no tracker entry (made in Jira, or its entry left without a ledger line: `jira done %s`)' % k
+        elif len(targets) > 1:
+            r['drift'] = 'slices disagree on Target: %s (fix the trackers first)' % ', '.join(sorted(t or 'none' for t in targets))
+        elif targets == {None}:
+            r['drift'] = 'entry has no Target (planned only in Jira: `set %s Target %s` keeps it)' % (r['ids'][0], name)
+        elif name not in targets:
+            t = targets.pop()
+            r.update(drift='entry Target is %s' % t, fix=('target', k, t))
+        if r['drift'] is None and slices:
+            r['drift'], r['fix'] = status_drift(jira, wf, k, st, slices[0][2])
+        rows.append(r)
+    absent = [k for k, sl in sorted(by_key.items()) if k not in seen and name in {target_of(e) for _, _, e in sl}]
+    cols = jira.statuses(absent) if absent else {}
+    for k in absent:
+        slices = by_key[k]
+        st = cols.get(k)
+        rows.append({'key': k, 'ids': sorted({e.id for _, _, e in slices}), 'summary': slices[0][2].title,
+                     'type': '', 'jira': st[0] if st else 'not found', 'assignee': '', 'in_jira': False,
+                     'tracker': ', '.join(sorted({e.status() for _, _, e in slices})),
+                     'state': 'done' if st and st[1] == 'done' else 'left',
+                     'drift': 'targets %s; issue lacks the fix version' % name if st else 'issue %s not found in Jira' % k,
+                     'fix': ('target', k, name) if st else None})
+    for p in tracker_files(root):
+        if app and app_of(root, p, load_config(root)) != app:
+            continue
+        for e in TrackerFile(p).entries:
+            if target_of(e) == name and not KEY_RE.match(e.value('Jira') or ''):
+                rows.append({'key': '-', 'ids': [e.id], 'summary': e.title, 'type': '', 'jira': '-', 'assignee': '', 'in_jira': False,
+                             'tracker': e.status(), 'state': 'left',
+                             'drift': 'no Jira issue yet (`jira sync`)', 'fix': None})
+    return rows
+
+
+def status_drift(jira, wf, key, st, e):
+    """(drift, fix) for an active entry against its issue's column; the board only moves forward."""
+    name, cat = st
+    s = e.status()
+    if cat == 'done':
+        return 'Done in Jira, still %s in the tracker' % s, None
+    if s == 'in-progress':
+        goal = wf['inProgress']
+        behind = CAT_RANK[cat] < CAT_RANK[goal] if goal in CAT_RANK else jira.rank(name, cat, wf) < jira.target_rank(goal, wf)
+        return ('in-progress in the tracker, "%s" in Jira' % name, ('move', key, goal)) if behind else (None, None)
+    if s.endswith('pending-migration'):
+        v = gate_verdict(jira, wf, key, st)
+        return ('moved back on the board ("%s"): `jira status --apply`' % name, None) if v == 'rejected' else (None, None)
+    if s == 'open' and cat != 'new':
+        return 'open in the tracker, "%s" in Jira (`set %s Status in-progress` if work started)' % (name, e.id), None
+    return None, None
+
+
+def version_names(jira, root, pos, everything):
+    """NAMEs given, else every unreleased Jira version plus every Target the trackers use."""
+    if pos:
+        return list(pos)
+    names = [v['name'] for v in jira.versions() if everything or not v.get('released')]
+    names += sorted({target_of(e) for _, e in planned_entries(root)} - set(names) - {None, 'unscheduled'})
+    return names
+
+
+def jira_version_show(root, o, pos, reconcile=False):
+    """jira version show|reconcile [NAME...] [--open] [--app A] [--json] [--dry-run]."""
+    verb = 'reconcile' if reconcile else 'show'
+    jira = jira_or_none(root)
+    if not jira:
+        sys.exit('jira version %s: Jira is off or credentials are missing (jira doctor)' % verb)
+    dry, app = bool(o.get('dry-run')), o.get('app')
+    try:
+        wf = fit_workflow(jira, workflow(load_config(root)))
+        meta = {v['name']: v for v in jira.versions()}
+        names = version_names(jira, root, pos, False)
+        by_key, ledger = entries_by_key(root, app), set(changelog_keys(root))
+        report, left_drift = [], 0
+        for name in names:
+            v = meta.get(name)
+            issues = jira.search_all('project = "%s" AND fixVersion = "%s"' % (jira.project, name), VERSION_FIELDS) if v else []
+            rows = version_drift(jira, wf, name, issues, by_key, ledger, root, app)
+            report.append((name, v, rows))
+    except NET_ERRORS as ex:
+        sys.exit('jira version %s: %s' % (verb, ex))
+    if o.get('json') and not reconcile:
+        print(json.dumps([{'version': n, 'in_jira': bool(v), 'released': bool(v and v.get('released')),
+                           'date': (v or {}).get('releaseDate') or '',
+                           'issues': [dict((k, x) for k, x in r.items() if k != 'fix') for r in rows
+                                      if not o.get('open') or r['state'] == 'left']} for n, v, rows in report], indent=1))
+        return 0
+    made = set(meta)
+    for name, v, rows in report:
+        inj = [r for r in rows if r['in_jira']]
+        left = [r for r in inj if r['state'] == 'left']
+        cols = {}
+        for r in left:
+            cols[r['jira']] = cols.get(r['jira'], 0) + 1
+        extra = len(rows) - len(inj)
+        print('%s  %s  %d in Jira: %d left (%s), %d done%s%s' % (
+            name, 'not in Jira' if not v else 'released %s' % v.get('releaseDate', '') if v.get('released')
+            else 'unreleased' + (' (%s)' % v['releaseDate'] if v.get('releaseDate') else ''),
+            len(inj), len(left), ', '.join('%d %s' % (n, c) for c, n in sorted(cols.items())) or '-',
+            len(inj) - len(left), '; +%d planned in the trackers only' % extra if extra else '',
+            '' if v else '  (`jira version add %s`)' % name))
+        shown = [r for r in rows if not o.get('open') or r['state'] == 'left' or r['drift']]
+        shown.sort(key=lambda r: (r['state'] != 'left', r['key']))
+        for r in shown:
+            print('  %-11s %-22s %-14s %-24s %-14s %s' % (r['key'], ','.join(r['ids']) or '-', r['jira'][:14],
+                                                       r['tracker'][:24], r['assignee'][:14], r['summary'][:60]))
+            if r['drift']:
+                print('              drift: %s%s' % (r['drift'], '  [fixable]' if r['fix'] and not reconcile else ''))
+        drift = [r for r in rows if r['drift']]
+        if not reconcile:
+            fixable = sum(1 for r in drift if r['fix'])
+            if drift:
+                print('  %d drift: %s' % (len(drift), '%d fixable (`jira version reconcile %s --dry-run`), the rest by hand'
+                                          % (fixable, name) if fixable else 'none fixable from the trackers; act on each line'))
+            continue
+        for r in drift:
+            if not r['fix']:
+                left_drift += 1
+                continue
+            verb_, key, arg = r['fix']
+            if dry:
+                col = lambda t: {'indeterminate': 'an in-progress status', 'done': 'a done status'}.get(t, '"%s"' % t)
+                print('  would %s' % {'target': 'set %s fix version to %s' % (key, arg), 'move': 'move %s to %s' % (key, col(arg)),
+                                       'done': 'move %s to %s' % (key, col(wf['done']))}[verb_])
+                left_drift += 1
+                continue
+            if verb_ == 'target':
+                ok = jira_target(jira, key, arg, made)  # creates a missing version bare
+            elif verb_ == 'move':
+                ok = jira_move(jira, key, arg, wf)
+            else:
+                ok = not done_keys(jira, wf, [(key, None)], False)
+            left_drift += 0 if ok else 1
+    if reconcile:
+        print('jira version reconcile: %d version(s); %d drift %s%s' % (
+            len(report), left_drift, 'left (report-only or dry run)' if left_drift else 'left', ' (dry run)' if dry else ''))
+        return 1 if left_drift else 0
+    return 0
+
+
+def rename_steps(pairs, existing):
+    """Order renames OLD->NEW so no step hits a name in use; a cycle goes through a temporary name."""
+    occupied, todo, steps = set(existing), dict(pairs), []
+    while todo:
+        ready = sorted(old for old, new in todo.items() if new not in occupied)
+        if ready:
+            old = ready[-1]
+            new = todo.pop(old)
+        else:
+            old = sorted(todo)[-1]
+            new = old + '-renumber'
+            while new in occupied:
+                new += '-'
+            todo[new] = todo.pop(old)
+        steps.append((old, new))
+        occupied.discard(old)
+        occupied.add(new)
+    return steps
+
+
+def retarget(root, mapping, dry):
+    """Rewrite Target OLD -> NEW on every entry; returns the number of entries that change."""
+    n = 0
+    for p in tracker_files(root):
+        tf = TrackerFile(p)
+        hit = [e for e in tf.entries if target_of(e) in mapping]
+        if hit and not dry:
+            for e in hit:
+                e.set(tf.kind, 'Target', mapping[target_of(e)])
+            tf.save()
+        n += len(hit)
+    return n
+
+
+def jira_version(root, o, pos):
+    """jira version add|edit|renumber|release ...: planned and shipped versions, through this script only."""
+    if pos and pos[0] in ('show', 'reconcile'):
+        return jira_version_show(root, o, pos[1:], reconcile=pos[0] == 'reconcile')
+    if not pos or pos[0] not in ('add', 'edit', 'renumber', 'release') or len(pos) < 2:
+        sys.exit('usage: jira version add NAME [--description D] [--released [--date D]] | edit NAME [--rename NEW] '
+                 '[--description D] | renumber OLD=NEW... | release NAME [--date D]   (--dry-run on all)\n'
+                 '       jira version show [NAME...] [--open] [--app A] [--json] | reconcile [NAME...] [--app A] [--dry-run]')
+    verb, args, dry = pos[0], pos[1:], bool(o.get('dry-run'))
+    tag = ' (dry run)' if dry else ''
+    jira = jira_or_none(root)
+    if verb == 'renumber':
+        pairs = [tuple(a.split('=', 1)) for a in args]
+        if any(len(x) != 2 or not VERSION_NAME_RE.match(x[1]) for x in pairs):
+            sys.exit('jira version renumber: give OLD=NEW pairs, NEW as vX.Y.Z')
+        if len({n for _, n in pairs}) != len(pairs):
+            sys.exit('jira version renumber: two versions renamed to the same name')
+        mapping = dict(pairs)
+        if jira:
+            try:
+                existing = {v['name']: v for v in jira.versions()}
+            except NET_ERRORS as ex:
+                sys.exit('jira version renumber: %s' % ex)
+            gone = [a for a in mapping if a not in existing]
+            taken = [b for b in mapping.values() if b in existing and b not in mapping]
+            if gone or taken:
+                sys.exit('jira version renumber: %s%s' % ('not in Jira: %s. ' % ', '.join(gone) if gone else '',
+                                                          'already used: %s' % ', '.join(taken) if taken else ''))
+            ids = {n: v['id'] for n, v in existing.items()}
+            for old, new in rename_steps(pairs, existing):
+                print('  rename %s -> %s%s' % (old, new, tag))
+                if not dry:
+                    jira.update_version(ids[old], {'name': new})
+                ids[new] = ids.pop(old)
+        else:
+            print('jira version renumber: Jira off or no credentials; trackers only')
+        n = retarget(root, mapping, dry)
+        print('jira version renumber: %d version(s); Target rewritten on %d entries%s' % (len(pairs), n, tag))
+        return 0
+    name = args[0]
+    if not jira:
+        sys.exit('jira version %s: Jira is off or credentials are missing (jira doctor)' % verb)
+    try:
+        cur = jira.version(name)
+        if verb == 'add':
+            if cur:
+                sys.exit('jira version add: %s already exists' % name)
+            print('jira version add: %s%s%s' % (name, ' (released %s)' % (o.get('date') or today()) if o.get('released') else '', tag))
+            if not dry:
+                jira.create_version(name, o.get('description'), bool(o.get('released')), o.get('date'))
+            return 0
+        if not cur:
+            sys.exit('jira version %s: no version %s in %s' % (verb, name, jira.project))
+        if verb == 'edit':
+            fields = {}
+            if o.get('rename'):
+                if jira.version(o['rename']):
+                    sys.exit('jira version edit: %s already exists (`renumber` swaps names)' % o['rename'])
+                fields['name'] = o['rename']
+            if 'description' in o:
+                fields['description'] = o['description']
+            if not fields:
+                sys.exit('jira version edit: nothing to change (--rename, --description)')
+            print('jira version edit %s: %s%s' % (name, ', '.join('%s=%s' % kv for kv in sorted(fields.items())), tag))
+            if 'name' in fields:
+                print('  Target rewritten on %d entries' % retarget(root, {name: fields['name']}, dry))
+            if not dry:
+                jira.update_version(cur['id'], fields)
+            return 0
+        date = o.get('date') or changelog_sections(ledger_paths(root)).get(name.lstrip('v')) or today()
+        still = [e.id for _, e in planned_entries(root) if target_of(e) == name]
+        if still:
+            print('  note: entries still planned for %s: %s (`set <ID> Target <next>|unscheduled`)' % (name, ', '.join(still)))
+        print('jira version release: %s %s %s%s' % (name, 'already released' if cur.get('released') else 'released', date, tag))
+        if not dry and not cur.get('released'):
+            jira.update_version(cur['id'], {'released': True, 'releaseDate': date})
+        return 0
+    except NET_ERRORS as ex:
+        sys.exit('jira version %s: %s' % (verb, ex))
+
+
+def read_plan(path):
+    """Plan file -> ([(version, description, [ids])], [unscheduled ids]). JSON
+    {"versions": [{"name", "description", "ids"}], "unscheduled": [ids]}, or Markdown: a heading
+    `## vX.Y.Z - description` or `## Unscheduled`, then any lines naming BUG-/FEAT- ids."""
+    text = read(path)
+    if text.lstrip().startswith('{'):
+        d = json.loads(text)
+        return ([(v['name'], v.get('description'), list(v.get('ids') or [])) for v in d.get('versions') or []],
+                list(d.get('unscheduled') or []))
+    vers, unsched, cur = [], [], None
+    for line in text.split('\n'):
+        m = re.match(r'^#{1,4}\s+(v\d+\.\d+\.\d+|unscheduled)\b[\s:—–-]*(.*)$', line, re.I)
+        if m:
+            if m.group(1).lower() == 'unscheduled':
+                cur = unsched
+            else:
+                vers.append((m.group(1), m.group(2).strip() or None, []))
+                cur = vers[-1][2]
+        elif line.startswith('#'):
+            cur = None
+        elif cur is not None:
+            cur += re.findall(r'\b((?:BUG|FEAT)-\d+[a-z]*)\b', line)
+    return vers, unsched
+
+
+def cmd_plan(argv):
+    """plan --from FILE [--dry-run] [--no-jira]: write Target on the planned entries; in Jira create or
+    describe the versions and set each issue's planned fix version (set semantics)."""
+    o, _ = opts(argv, flags=('dry-run', 'no-jira'))
+    if not o.get('from'):
+        sys.exit('usage: plan --from FILE [--dry-run] [--no-jira]   (.cycle/TRACKERS-jira.md, "Planned releases")')
+    root, dry = repo_root(), bool(o.get('dry-run'))
+    vers, unsched = read_plan(o['from'])
+    bad = [n for n, _, _ in vers if not VERSION_NAME_RE.match(n)]
+    if bad:
+        sys.exit('plan: version names are vX.Y.Z: %s' % ', '.join(bad))
+    want = {}
+    for name, ids in [(n, i) for n, _, i in vers] + [('unscheduled', unsched)]:
+        for i in ids:
+            want.setdefault(i, set()).add(name)
+    twice = sorted('%s (%s)' % (i, '/'.join(sorted(v))) for i, v in want.items() if len(v) > 1)
+    if twice:
+        sys.exit('plan: ids in more than one version: %s' % ', '.join(twice))
+    want = {i: v.pop() for i, v in want.items()}
+    entries = planned_entries(root)
+    missing = sorted(set(want) - {e.id for _, e in entries})
+    if missing:
+        sys.exit('plan: not active in any tracker: %s' % ', '.join(missing))
+    order = [n for n, _, _ in vers] + ['unscheduled']
+    rows = {}
+    for _, e in entries:
+        old, new = target_of(e), want.get(e.id)
+        if new:
+            rows.setdefault(new, [set(), set(), set()])[0 if old != new else 2].add(e.id)
+        if old and old != new and new:
+            rows.setdefault(old, [set(), set(), set()])[1].add(e.id)
+    print('%-12s %6s %6s %6s' % ('version', 'added', 'left', 'kept'))
+    for v in order + sorted(set(rows) - set(order)):
+        if v in rows or v != 'unscheduled':
+            a, l, k = rows.get(v, (set(), set(), set()))
+            print('%-12s %6d %6d %6d%s' % (v, len(a), len(l), len(k), '  + ' + ' '.join(sorted(a)) if a else ''))
+    unplanned = sorted({e.id for _, e in entries if e.id not in want})
+    if unplanned:
+        print('unplanned, Target left as is: %s' % ', '.join(unplanned))
+    changed = 0
+    for p in tracker_files(root):
+        tf = TrackerFile(p)
+        hit = [e for e in tf.entries if e.id in want and target_of(e) != want[e.id]]
+        changed += len(hit)
+        if hit and not dry:
+            for e in hit:
+                e.set(tf.kind, 'Target', want[e.id])
+            tf.save()
+    tag = ' (dry run)' if dry else ''
+    jira = None if o.get('no-jira') else jira_or_none(root)
+    if not jira:
+        print('plan: Target %s on %d entries%s; Jira %s' % ('would change' if dry else 'written', changed, tag,
+                                                             'skipped' if o.get('no-jira') else 'off or no credentials'))
+        return 0
+    try:
+        have = {v['name']: v for v in jira.versions()}
+        for name, desc, _ in vers:
+            cur = have.get(name)
+            if not cur:
+                print('  create version %s%s%s' % (name, ' - ' + desc if desc else '', tag))
+                if not dry:
+                    jira.create_version(name, desc)
+            elif cur.get('released'):
+                print('  warning: %s is released in Jira; plan onto a new number' % name)
+            elif desc and (cur.get('description') or '') != desc:
+                print('  describe %s%s' % (name, tag))
+                if not dry:
+                    jira.update_version(cur['id'], {'description': desc})
+    except NET_ERRORS as ex:
+        sys.exit('plan: %s' % ex)
+    keyed = [(e.value('Jira'), want[e.id]) for _, e in entries if e.id in want and KEY_RE.match(e.value('Jira') or '')]
+    made = set(have) | {n for n, _, _ in vers}
+    fails = 0 if dry else sum(0 if jira_target(jira, k, t, made) else 1 for k, t in keyed)
+    print('plan: Target %s on %d entries; %d issues %s%s' % ('would change' if dry else 'written', changed, len(keyed),
+                                                            'would get their fix version' if dry else 'checked', tag)
+          + (', %d failed' % fails if fails else ''))
+    return 1 if fails else 0
 
 
 def doctor_workflow(jira, j, write_it):
@@ -1785,24 +2725,25 @@ def jira_for_entries(root, targets, dry, quiet_missing_creds=False, source=None,
     if jira_mode(root) == 'off':
         if quiet_missing_creds:
             return 0
-        sys.exit('jira: off for this repo (no `jira` block in .cycle/tracker.json; see .cycle/TRACKERS.md "Jira setup")')
+        sys.exit('jira: off for this repo (no `jira` block in .cycle/tracker.json; see .cycle/TRACKERS-jira.md "Jira setup")')
     jira = Jira(cfg)
     miss = jira.missing()
     if miss and not dry:
         if quiet_missing_creds:
             print('jira: %s not set; saved without a Jira issue (`jira sync` creates it later)' % ', '.join(miss))
             return 0
-        sys.exit('jira: %s not set in this terminal. Set them (.cycle/TRACKERS.md, "Jira setup"), '
+        sys.exit('jira: %s not set in this terminal. Set them (.cycle/TRACKERS-jira.md, "Jira setup"), '
                  'open a new terminal, then run `jira doctor`.' % ', '.join(miss))
     ids = all_ids(root)
     made = linked = failed = gaps = noepic = 0
+    wf, vmade = None, set()
     rows = []
     for item in targets[:limit] if limit else targets:
         path, eid = item[0], item[1]
         tf = TrackerFile(path)
         cur = tf.get(eid)
         if cur is None:
-            print('skip %s: not in %s' % (eid, os.path.relpath(path, root)))
+            print('skip %s: not in %s' % (eid, rel_or_abs(path, root)))
             continue
         e = item[2] if len(item) > 2 and item[2] is not None else cur
         if KEY_RE.match(cur.value('Jira') or ''):
@@ -1861,6 +2802,13 @@ def jira_for_entries(root, targets, dry, quiet_missing_creds=False, source=None,
             cur.set(tf.kind, 'Jira parent', epic)
         tf.save()
         print('%s %s -> %s' % (how, '%s:%s' % (app, eid), key))
+        st = cur.status()
+        if st == 'in-progress' or st.endswith('pending-migration'):  # board follows the entry (TRACKERS.md)
+            wf = wf or fit_workflow(jira, workflow(cfg))
+            if status_target(st, wf):
+                jira_move(jira, key, status_target(st, wf), wf)
+        if target_of(cur):
+            jira_target(jira, key, target_of(cur), vmade)
         if source:
             set_export_key(source, path, root, eid, key)
     if dry:
@@ -1884,7 +2832,7 @@ def jira_for_entries(root, targets, dry, quiet_missing_creds=False, source=None,
 
 def set_export_key(source, path, root, eid, key):
     text = read(source)
-    rel = os.path.relpath(path, root).replace('\\', '/')
+    rel = rel_or_abs(path, root).replace('\\', '/')
     parts = re.split(r'(?m)^(?=## )', text)
     for i, part in enumerate(parts):
         if part.startswith('## ') and part[3:].split('\n')[0].strip() == rel:
@@ -1894,23 +2842,35 @@ def set_export_key(source, path, root, eid, key):
 
 
 def cmd_jira(argv):
-    if not argv or argv[0] not in ('doctor', 'push', 'sync', 'configure', 'epics', 'parents', 'status', 'done', 'release'):
+    if not argv or argv[0] not in ('doctor', 'push', 'sync', 'configure', 'epics', 'epic', 'parents', 'status', 'done',
+                                   'release', 'versions', 'version', 'report'):
         sys.exit('usage: jira doctor [--write] | jira push FILE [--dry-run] | jira sync [--app A] [--dry-run] [--limit N]\n'
-                 '       jira epics | jira parents [--dry-run] [--force] [--app A]\n'
-                 '       jira status [--apply] [--app A] | jira done [--dry-run] | jira release VERSION [--dry-run]\n'
+                 '       jira epics [--json] | jira epic add NAME [--scope S] [--req IDS] [--dry-run] [--json]\n'
+                 '       jira parents [--dry-run] [--force] [--app A] | jira versions [--json] | jira report [--since D] [--until D] [--out F]\n'
+                 '       jira version add NAME [--description D] [--released [--date D]] | edit NAME [--rename NEW] [--description D]\n'
+                 '       jira version renumber OLD=NEW... | release NAME [--date D]   (all take --dry-run)\n'                 '       jira version show [NAME...] [--open] [--app A] [--json] | reconcile [NAME...] [--app A] [--dry-run]\n'
+                 '       jira status [--apply] [--app A] | jira done [KEY...] [--dry-run] | jira release VERSION [--dry-run] [--force]\n'
                  '       jira configure --mode enforce|optional|off [--site URL --project KEY] [--auth basic|bearer]\n'
                  '                      [--email-env VAR --token-env VAR] [--bug-type T --feature-type T]')
     sub, rest = argv[0], argv[1:]
     root = repo_root()
     cfg = load_config(root)
-    o, pos = opts(rest, flags=('dry-run', 'write', 'force', 'apply'))
+    o, pos = opts(rest, flags=('dry-run', 'write', 'force', 'apply', 'json', 'released', 'open'))
     dry = bool(o.get('dry-run'))
     if sub == 'status':
         return jira_status(root, o)
     if sub == 'done':
-        return jira_done(root, o)
+        return jira_done(root, o, pos)
     if sub == 'release':
         return jira_release(root, o, pos)
+    if sub == 'versions':
+        return jira_versions(root, o)
+    if sub == 'report':
+        return jira_report(root, o)
+    if sub == 'version':
+        return jira_version(root, o, pos)
+    if sub == 'epic':
+        return jira_epic(root, o, pos)
     limit = int(o['limit']) if o.get('limit') else None
     if sub == 'doctor':
         return jira_doctor(root, cfg, o)
@@ -1922,6 +2882,9 @@ def cmd_jira(argv):
             sys.exit('jira: %s' % ('off for this repo' if jira_mode(root) == 'off'
                                    else '%s not set' % ', '.join(jira.missing())))
         if sub == 'epics':
+            if o.get('json'):  # with each epic's description: its scope, for matching tickets
+                print(json.dumps([{'key': k, 'name': n, 'description': d[:600]} for k, n, d in jira.epics(full=True)], indent=1))
+                return 0
             for key, summary in jira.epics():
                 print('%-10s %s' % (key, summary))
             return 0
@@ -2088,7 +3051,7 @@ def jira_doctor(root, cfg, o=None):
         print('%-11s %s' % (jira.email_env, 'set' if jira.email else 'MISSING'))
     print('%-11s %s' % (jira.token_env, 'set (%d chars)' % len(jira.token) if jira.token else 'MISSING'))
     if jira.missing():
-        print('FAIL: set %s (see .cycle/TRACKERS.md, "Jira setup")' % ', '.join(jira.missing()))
+        print('FAIL: set %s (see .cycle/TRACKERS-jira.md, "Jira setup")' % ', '.join(jira.missing()))
         return 1
     ok, changed = True, False
     j = dict(cfg.get('jira') or {})
@@ -2139,7 +3102,7 @@ def jira_doctor(root, cfg, o=None):
                     print('            allowed: %s' % ', '.join(m['allowed'][:30]))
                     if miss:
                         print('            %d Area tags match no option (%s%s): they are dropped; an entry with none'
-                              ' left needs a "default" or "valueMap" (TRACKERS.md, "Field map")' % (
+                              ' left needs a "default" or "valueMap" (TRACKERS-jira.md, "Field map")' % (
                                   len(miss), ', '.join(miss[:12]), ', …' if len(miss) > 12 else ''))
             fmap_all[kind] = kmap
         wok, wchanged, wfl = doctor_workflow(jira, j, o.get('write'))
@@ -2149,8 +3112,9 @@ def jira_doctor(root, cfg, o=None):
             changed = True
         if j.get('worklog') != 'off':
             tt = (jira.req('GET', '/rest/api/2/configuration') or {}).get('timeTrackingEnabled')
-            print('worklogs    %s' % ('time tracking on (opt-in per person: TRACKERS.md, "Worklogs")' if tt else
+            print('worklogs    %s' % ('time tracking on (opt-in per person: TRACKERS-worklogs.md)' if tt else
                                       'time tracking OFF on the site: worklogs cannot post (a Jira admin turns it on)'))
+        doctor_epics(jira)
         bl = doctor_bundles(jira, j, fmap_all)
         if bl and bl != j.get('bundles'):
             j['bundles'] = bl
@@ -2176,21 +3140,8 @@ def adopt_file(path, root, report):
     kind = kind_of(path)
     text = read(path)
     h1 = next((l for l in text.split('\n') if l.startswith('# ')), '# %s' % os.path.basename(path))
-    chunks = re.split(r'(?m)^(?=### \[|## )', text)
     entries, removed, section = [], [], ''
-    fence_safe = []
-    # re-split respecting fences: drop splits inside fenced blocks
-    buf = ''
-    for c in chunks:
-        if buf and buf.count('```') % 2 == 1:
-            buf += c
-            continue
-        if buf:
-            fence_safe.append(buf)
-        buf = c
-    if buf:
-        fence_safe.append(buf)
-    for c in fence_safe:
+    for c in split_blocks(text):
         if c.startswith('## '):
             section = c.split('\n')[0]
             continue
@@ -2212,24 +3163,45 @@ def adopt_file(path, root, report):
             continue
         seen.add(e.id)
         uniq.append(e)
-    rel_fmt = os.path.relpath(os.path.join(root, '.cycle', 'TRACKERS.md'), os.path.dirname(path)).replace('\\', '/')
+    rel_fmt = rel_or_abs(os.path.join(root, '.cycle', 'TRACKERS.md'), os.path.dirname(path)).replace('\\', '/')
     pre = ('%s\n\nActive work only. Format and rules: [`.cycle/TRACKERS.md`](%s). Write with '
            '`python .cycle/trackers.py`, never by hand. Shipped and closed entries are removed; '
            'their record is `CHANGELOG.md`, Jira, and `python .cycle/trackers.py show <id>`.\n') % (h1, rel_fmt)
     out = pre + '\n## Open\n\n' + '\n'.join(e.render() for e in uniq)
-    report['files'].append((os.path.relpath(path, root), len(text), len(out), len(uniq), len(removed)))
-    report['removed'] += [(os.path.relpath(path, root),) + r for r in removed]
+    rel = rel_or_abs(path, root)
+    # conservation: every column-0 entry heading in the input is active or removed, and the output
+    # re-splits into exactly the active entries (an unclosed fence would swallow the rest silently)
+    got = {e.id for e in entries} | {r[0] for r in removed}
+    for eid in dict.fromkeys(re.findall(r'(?m)^### \[((?:BUG|FEAT)-\d+[a-z]*)\]', text)):
+        if eid not in got:
+            report['lost'].append((rel, eid, 'inside a fenced block or another entry'))
+    n_out = sum(1 for c in split_blocks(out) if c.startswith('### ['))
+    if n_out != len(uniq):
+        report['lost'].append((rel, '-', 'output re-splits into %d entries, %d written' % (n_out, len(uniq))))
+    report['files'].append((rel, len(text), len(out), len(uniq), len(removed)))
+    report['removed'] += [(rel_or_abs(path, root),) + r for r in removed]
     return out
 
 
 def cmd_adopt(argv):
-    """adopt [PATH...] [--dry-run] [--report FILE]: convert legacy trackers to format 2."""
-    o, pos = opts(argv, flags=('dry-run',))
+    """adopt [PATH...] [--dry-run] [--report FILE] [--accept-missing ID,ID] [--no-jira]: convert legacy
+    trackers to format 2. Writes nothing when an entry would vanish; closes removed entries' Jira issues."""
+    o, pos = opts(argv, flags=('dry-run', 'no-jira'))
     root = repo_root()
     paths = [os.path.abspath(p) for p in pos] or tracker_files(root)
-    report = {'files': [], 'removed': [], 'manual': []}
-    for p in paths:
-        out = adopt_file(p, root, report)
+    report = {'files': [], 'removed': [], 'manual': [], 'lost': []}
+    outs = [(p, adopt_file(p, root, report)) for p in paths]
+    ok_ids = set(filter(None, (o.get('accept-missing') or '').split(',')))
+    lost = [x for x in report['lost'] if x[1] not in ok_ids]
+    if lost:
+        print('adopt: refused, nothing written: %d entr%s would vanish' % (len(lost), 'y' if len(lost) == 1 else 'ies'))
+        for f, eid, why in lost:
+            print('  %s %s: %s' % (f, eid, why))
+        print('Usual cause: a line starting with ``` or ~~~ that opens a code block and never closes. Fix it in the\n'
+              'legacy file and re-run. An id that is only an example inside a code block: --accept-missing %s'
+              % ','.join(x[1] for x in lost if x[1] != '-'))
+        return 1
+    for p, out in outs:
         if not o.get('dry-run'):
             write(p, out)
     cfgp = os.path.join(root, '.cycle', 'tracker.json')
@@ -2255,7 +3227,20 @@ def cmd_adopt(argv):
     print('adopt: %d files, %d KB -> %d KB, %d active, %d removed, %d hand decisions%s' % (
         len(report['files']), tb // 1024, ta // 1024, sum(f[3] for f in report['files']),
         len(report['removed']), len(report['manual']), ' (dry run)' if o.get('dry-run') else ''))
-    return 0
+    pairs = [(r[3], r[2]) for r in report['removed'] if KEY_RE.match(r[3] or '')]
+    if not pairs:
+        return 0
+    jira = None if o.get('no-jira') else jira_or_none(root)
+    if jira:
+        pairs = [x for x in pairs if x[0].startswith(jira.project + '-')]
+    if not jira or not pairs:
+        if pairs:
+            print('%d removed entries have Jira issues; close them: python .cycle/trackers.py jira done %s'
+                  % (len(pairs), ' '.join(k for k, _ in pairs)))
+        return 0
+    print('adopt: %d removed entries have Jira issues%s' % (len(pairs), ' (dry run)' if o.get('dry-run') else ''))
+    wf = fit_workflow(jira, workflow(load_config(root)))
+    return 1 if done_keys(jira, wf, pairs, o.get('dry-run')) else 0
 
 
 def schema_lint(path, fix):
@@ -2265,6 +3250,13 @@ def schema_lint(path, fix):
         return [], []
     text = read(path)
     errs, warns = [], []
+    fence = None
+    for n, l in enumerate(text.split('\n'), 1):
+        m = NESTED_RE.match(l) if fence is None else None
+        if m:
+            errs.append((n, 'NESTED', m.group(1), 'entry heading indented inside another entry (a bad `adopt`): '
+                         'restore the pre-adopt file and re-run `adopt`'))
+        fence = fence_step(fence, l)
     heads = [l for l in text.split('\n') if l.startswith('## ')]
     if heads != ['## Open']:
         errs.append((1, 'SECTION', '-', 'only one `## Open` section allowed, found %s (run `adopt`)' % (heads or 'none')))
@@ -2276,7 +3268,12 @@ def schema_lint(path, fix):
         if m:
             lineno.setdefault(m.group(1), n)
     changed = False
+    frozen = changelog_sections([os.path.join(os.path.dirname(os.path.abspath(path)), 'CHANGELOG.md')])
     for e in tf.entries:
+        tg = (e.value('Target') or '').lstrip('v')
+        if tg in frozen:
+            warns.append((lineno.get(e.id, 0), 'STALE-TARGET', e.id, 'Target v%s is already released (CHANGELOG); '
+                          '`set %s Target <next>|unscheduled`' % (tg, e.id)))
         if fix:
             before = e.render()
             fix_entry(e, kind)
@@ -2307,6 +3304,125 @@ def cmd_hook(argv):
             'Format: .cycle/TRACKERS.md\n' % (os.path.basename(p), p))
         return 2
     return 0
+
+
+GUARD_IMPORT = re.compile(r'\b(?:import\s+(?:tracker_ops|worklog)\b|from\s+(?:tracker_ops|worklog)\s+import|(?:tracker_ops|worklog)\s+as\b)')
+GUARD_API = re.compile(r'/rest/(?:api/[23]|agile/1\.0)/')
+GUARD_NET = re.compile(r'\b(?:curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|requests|urllib|http\.client|httpx|fetch|aiohttp|axios)\b', re.I)
+GUARD_OWN = ('trackers.py', 'tracker_ops.py', 'worklog.py', 'worklog_time.py', 'bundle_check.py')
+# CI/CD (F26): pipelines cost money, so Claude reads finished results only through local-gate's
+# read-only ci_evidence.py and never triggers, re-runs, cancels or reconfigures CI. git push is not
+# covered: pushing is how the team runs CI on purpose.
+CI_CLI = re.compile(r'(?:^|[;&|(`\s])(?:gh\s+(?:api|workflow|run|secret|variable|cache|ruleset)'
+                    r'|glab\s+(?:api|ci|job|pipeline|schedule|variable)'
+                    r'|aws\s+(?:codebuild|codepipeline)\s+(?:start|retry|stop|update|delete|create|put)'
+                    r'|az\s+pipelines\s+(?:run|update|delete|create|variable))\b')
+CI_API = re.compile(r'api\.bitbucket\.org|api\.github\.com|/api/v4/projects\b|/repos/[^\s/]+/[^\s/]+/actions\b'
+                    r'|/rest/(?:api/(?:1\.0|latest)/projects|build-status/1\.0)/|/2\.0/repositories/'
+                    r'|circleci\.com/api|/job/[^\s/]+/build(?:WithParameters)?\b', re.I)
+CI_IMPORT = re.compile(r'\b(?:import\s+ci_evidence\b|from\s+ci_evidence\s+import|ci_evidence\s+as\b)')
+CI_OWN = 'ci_evidence.py'
+
+
+GIT_LEAD = re.compile(r'\s*(?:cd\s+(?:"[^"]*"|\S+)\s*&&\s*)?git\s')
+
+
+def ci_guard_reason(text, command=False):
+    """Why TEXT reaches a CI/CD service outside local-gate's ci_evidence.py, or None. A git command
+    (commit, push) is checked for API calls only, so a commit message naming `gh run` passes."""
+    if CI_IMPORT.search(text):
+        return 'imports ci_evidence instead of running it'
+    m = None if command and GIT_LEAD.match(text) else CI_CLI.search(text)
+    if m:
+        return 'runs `%s`' % m.group(0).strip(' ;&|(`')
+    if GUARD_NET.search(text) and CI_API.search(text):
+        return 'calls a CI/CD API'
+    return None
+
+
+def _ci_own(path):
+    """The sanctioned reader: ci_evidence.py inside an installed local-gate skill."""
+    norm = path.replace('\\', '/')
+    return os.path.basename(norm) == CI_OWN and '/local-gate/scripts/' in norm
+
+
+def jira_guard_reason(text, hosts):
+    """Why TEXT reaches Jira outside trackers.py, or None."""
+    if GUARD_IMPORT.search(text):
+        return 'imports the tracker internals'
+    if not GUARD_NET.search(text):
+        return None
+    if any(h in text for h in hosts):
+        return 'calls the Jira site'
+    if GUARD_API.search(text) and not re.search(r'\b(?:localhost|127\.0\.0\.1)\b', text):
+        return 'calls a Jira REST path'
+    return None
+
+
+def cmd_jira_guard(argv):
+    """Claude Code PreToolUse hook (Bash), also `api-guard`: Jira is reached only through trackers.py, CI/CD
+    only through local-gate's read-only ci_evidence.py. Blocks a command, or a script file it runs, that
+    imports the internals or calls either API. CYCLE_JIRA_GUARD=off / CYCLE_CI_GUARD=off disable one half
+    (set in the hook's environment by the user, never inline in the command)."""
+    jira_on = os.environ.get('CYCLE_JIRA_GUARD') != 'off'
+    ci_on = os.environ.get('CYCLE_CI_GUARD') != 'off'
+    if not (jira_on or ci_on):
+        return 0
+    try:
+        ev = json.load(sys.stdin)
+    except ValueError:
+        return 0
+    cmd = (ev.get('tool_input') or {}).get('command') or ''
+    if ev.get('tool_name') != 'Bash' or not cmd:
+        return 0
+    root = os.environ.get('CLAUDE_PROJECT_DIR') or ev.get('cwd') or os.getcwd()
+    hosts = {'atlassian.net'}
+    try:
+        site = urllib.parse.urlparse((load_config(root).get('jira') or {}).get('site') or '').hostname
+        if site:
+            hosts.add(site)
+    except Exception:
+        pass
+    def reasons(text, command=False):
+        """(kind, why) for the first guard TEXT trips."""
+        if jira_on:
+            w = jira_guard_reason(text, hosts)
+            if w:
+                return 'jira', w
+        if ci_on:
+            w = ci_guard_reason(text, command)
+            if w:
+                return 'ci', w
+        return None, None
+
+    kind, why = reasons(cmd, command=True)
+    for tok in re.findall(r'[\w./\\:~-]+\.(?:py|sh|ps1|js|mjs|cjs|ts)\b', cmd):
+        if why:
+            break
+        p = os.path.join(ev.get('cwd') or root, os.path.expanduser(tok))
+        if os.path.basename(p) in GUARD_OWN or _ci_own(p) or not os.path.isfile(p):
+            continue
+        try:
+            body = open(p, encoding='utf-8', errors='replace').read(200000)
+        except OSError:
+            continue
+        kind, r = reasons(body)
+        why = r and '%s (%s)' % (r, tok)
+    if not why:
+        return 0
+    if kind == 'ci':
+        sys.stderr.write(
+            'Blocked: this command %s. CI/CD is read only through local-gate\'s read-only script:\n'
+            '  python <local-gate>/scripts/ci_evidence.py --sha <sha> --jobs "<CI job>,..."\n'
+            'Triggering, re-running or cancelling pipelines, and changing CI variables, schedules or settings,\n'
+            'is left to the user (it costs money). Commits and pushes are not affected. If the script cannot\n'
+            'answer what is needed, stop and tell the user; do not script around it.\n' % why)
+        return 2
+    sys.stderr.write(
+        'Blocked: this command %s. Jira is read and written only through `python .cycle/trackers.py`\n'
+        '(.cycle/TRACKERS-jira.md): set, jira sync|status|done|release|versions, jira version add|edit|renumber|release, plan.\n'
+        'If no command does what is needed, stop and tell the user which command is missing; do not script around it.\n' % why)
+    return 2
 
 
 BRANCH_MAX = 60  # Bitbucket Data Center: 100 for refs/heads/<name> (89 for the name); Cloud: no documented limit
@@ -2529,6 +3645,107 @@ def cmd_bundle(argv):
     return 0 if bundle_follow(root, jira, wf, pos[0]) else 1
 
 
+def epic_fields(jira, name, scope, reqs):
+    """Create-issue fields for an epic: summary = NAME; the description states its scope and the
+    requirement ids it groups, which is what later grooming matches tickets against. Data Center's
+    required Epic Name field gets NAME; other required fields come from jira.fields.map.epic literals."""
+    lines = ['Scope: %s' % scope] if scope else []
+    if reqs:
+        lines.append('Requirements: %s' % reqs)
+    lines.append('Created by trackers.py jira epic add.')
+    f = {'project': {'key': jira.project}, 'issuetype': {'name': jira.issue_type('epic')},
+         'summary': name if len(name) <= 255 else name[:252] + '...', 'description': '\n'.join(lines)}
+    try:
+        meta = jira.meta('epic')
+    except NET_ERRORS:
+        meta = {}
+    for fid, m in meta.items():
+        if m['name'].lower() == 'epic name':
+            f[fid] = name[:255]
+    pseudo = Entry('EPIC', name)
+    for fid, spec in jira.field_map('epic').items():
+        spec = {'from': spec} if isinstance(spec, str) else spec
+        v = _convert(_source(pseudo, '', spec['from']), spec, meta.get(fid))
+        if v is not None:
+            f[fid] = v
+    return f
+
+
+def plain_text(v):
+    """A description as text: v2 returns wiki text; Cloud's v3 search returns an ADF document."""
+    if v is None:
+        return ''
+    if isinstance(v, str):
+        return v
+    out = []
+
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get('type') == 'text':
+                out.append(n.get('text', ''))
+            for c in n.get('content') or []:
+                walk(c)
+            if n.get('type') in ('paragraph', 'heading', 'listItem'):
+                out.append('\n')
+        elif isinstance(n, list):
+            for c in n:
+                walk(c)
+    walk(v)
+    return re.sub(r'\n{2,}', '\n', ''.join(out)).strip()
+
+
+def norm_name(t):
+    return re.sub(r'\s+', ' ', (t or '').strip().lower())
+
+
+def jira_epic(root, o, pos):
+    """jira epic add NAME [--scope TEXT] [--req IDS] [--dry-run] [--json]: create an epic, or reuse the
+    open epic that already has this name (case and spacing ignored). Prints the key."""
+    if len(pos) < 2 or pos[0] != 'add' or not pos[1].strip():
+        sys.exit('usage: jira epic add "NAME" [--scope "what it covers"] [--req FR-001,FR-002] [--dry-run] [--json]')
+    name = re.sub(r'\s+', ' ', pos[1].strip())
+    jira = jira_or_none(root)
+    if not jira:
+        sys.exit('jira epic add: Jira is off or credentials are missing (jira doctor)')
+    try:
+        same = [(k, s_) for k, s_ in jira.epics() if norm_name(s_) == norm_name(name)]
+        if same:
+            key, made, name = same[0][0], False, same[0][1]
+        elif o.get('dry-run'):
+            key, made = None, True
+        else:
+            key, made = jira.create(epic_fields(jira, name, o.get('scope'), o.get('req'))), True
+    except NET_ERRORS as ex:
+        sys.exit('jira epic add: %s (`jira doctor` checks the %s type)' % (ex, jira.issue_type('epic')))
+    if o.get('json'):
+        print(json.dumps({'key': key, 'name': name, 'created': made and not o.get('dry-run'),
+                          'dry_run': bool(o.get('dry-run'))}))
+    elif not made:
+        print('exists %s "%s" (reused; no new epic)' % (key, same[0][1]))
+    elif o.get('dry-run'):
+        print('would create epic "%s"%s (dry run)' % (name, ' - %s' % o['scope'] if o.get('scope') else ''))
+    else:
+        print('created %s "%s"' % (key, name))
+    return 0
+
+
+def doctor_epics(jira):
+    """The epic type can be created (required fields covered)."""
+    tname = jira.issue_type('epic')
+    try:
+        meta = jira.meta('epic')
+    except JiraError:
+        meta = {}
+    if not meta:
+        print('epic type   %-8s NOT ON THE PROJECT\'S CREATE SCREEN (set jira.issueTypes.epic; `jira epic add` cannot create epics)' % tname)
+        return
+    fmap = jira.field_map('epic')
+    need = [m['name'] for fid, m in meta.items() if m['required'] and fid not in SYSTEM_FIELDS
+            and m['name'].lower() != 'epic name' and fid not in fmap]
+    print('epic type   %-8s OK%s' % (tname, '' if not need else '; required with no value: %s '
+          '(add literals in jira.fields.map.epic, e.g. {"<field id>": "=<value>"})' % ', '.join(need)))
+
+
 def doctor_bundles(jira, j, fmap_all):
     """Bundle Task type and link type. Returns the jira.bundles block to save, or None."""
     tname = jira.issue_type('bundle')
@@ -2646,6 +3863,93 @@ def cmd_worklog(argv):
     return worklog.main(argv)
 
 
+ESCAPE_HEADER = re.compile(r'^[+-]### \[((?:BUG|FEAT)-(\d+))\]')
+ESCAPE_FIELD = re.compile(r'^[+-]- (?:\[[ x]\] )?\*\*(Found by|Class|Severity|Priority):\*\*\s*(.*)$')
+ESCAPE_KEYS = ('Found by', 'Class', 'Severity', 'Priority')
+
+
+def escape_window(root, o):
+    """(label, start epoch) of the range `escapes` counts: --since REF, --days N, else the latest tag,
+    else the last 90 days."""
+    if o.get('days'):
+        return 'last %s days' % o['days'], int(time.time()) - int(o['days']) * 86400
+    ref = o.get('since') or git('describe', '--tags', '--abbrev=0', cwd=root)
+    if ref:
+        when = git('log', '-1', '--format=%ct', ref, cwd=root)
+        if not when:
+            sys.exit('escapes: unknown ref %s' % ref)
+        return 'since %s' % ref, int(when)
+    return 'last 90 days (no tag)', int(time.time()) - 90 * 86400
+
+
+def filed_findings(root, start):
+    """Entries whose epoch id was minted at or after START, as {id: {field: value}}. An entry still
+    in a tracker is read from the file; one migrated or closed since is read from its newest full
+    block in git history (the removal commit's `-` lines hold its final state)."""
+    found = {}
+    for p in tracker_files(root):
+        for e in TrackerFile(p).entries:
+            m = re.match(r'(?:BUG|FEAT)-(\d+)$', e.id)
+            if m and int(m.group(1)) >= start and e.id not in found:
+                found[e.id] = {k: e.value(k) for k in ESCAPE_KEYS if e.value(k)}
+    since = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(start - 86400))
+    log = git('log', '--since=' + since, '--format=', '-p', '-U0', '--no-color', '--', '*bugs.md',
+              '*features.md', cwd=root) or ''
+    cur = None
+    for line in log.splitlines():
+        m = ESCAPE_HEADER.match(line)
+        if m:
+            cur = None
+            if int(m.group(2)) >= start and m.group(1) not in found:
+                cur = found.setdefault(m.group(1), {})
+            continue
+        if line[:1] not in '+-' or line.startswith(('+++', '---')):
+            cur = None
+            continue
+        f = ESCAPE_FIELD.match(line)
+        if f and cur is not None:
+            cur.setdefault(f.group(1), f.group(2).strip())
+    return found
+
+
+def cmd_escapes(argv):
+    """escapes [--since REF | --days N] [--json]: where the bugs (and features with `Found by`) filed in the window were found
+    (`Found by`) and their class (`Class`), so a change to the delivery skills can be judged by its
+    effect on findings (E33). Reads git history; writes nothing."""
+    o, _ = opts(argv, flags=('json',))
+    root = repo_root()
+    label, start = escape_window(root, o)
+    # A feature is planned work unless it says where it was found (a gap the protocol or an audit filed).
+    found = {k: v for k, v in filed_findings(root, start).items() if k.startswith('BUG-') or v.get('Found by')}
+    by, cls = {}, {}
+    for fid, f in found.items():
+        who = f.get('Found by') or 'unstated'
+        sev = (f.get('Severity') or f.get('Priority') or '?').split()[0].lower()
+        by.setdefault(who, {}).setdefault(sev, 0)
+        by[who][sev] += 1
+        c = f.get('Class') or 'unstated'
+        cls[c] = cls.get(c, 0) + 1
+    if o.get('json'):
+        print(json.dumps({'window': label, 'start': start, 'findings': found, 'found_by': by, 'class': cls}, indent=1))
+        return 0
+    print('escapes %s: %d findings filed' % (label, len(found)))
+    if not found:
+        return 0
+    print('| Found by | crit | high | med | low | total |\n|---|---|---|---|---|---|')
+    for who in sorted(by, key=lambda w: (-sum(by[w].values()), w)):
+        row = by[who]
+        print('| %s | %s | %d |' % (who, ' | '.join(str(row.get(s, 0)) for s in LEVELS), sum(row.values())))
+    print('\n| Class | total |\n|---|---|')
+    for c in sorted(cls, key=lambda k: (-cls[k], k)):
+        print('| %s | %d |' % (c, cls[c]))
+    unstated = sum(by.get('unstated', {}).values())
+    if unstated:
+        print('\n%d without `Found by` (set it: `set <ID> "Found by" <%s>`)' % (unstated, '|'.join(FOUND_BY)))
+    return 0
+
+
 COMMANDS = {'branch': cmd_branch, 'add': cmd_add, 'set': cmd_set, 'log': cmd_log, 'migrate': cmd_migrate, 'close': cmd_close,
-            'show': cmd_show, 'export': cmd_export, 'jira': cmd_jira, 'adopt': cmd_adopt, 'hook': cmd_hook,
-            'bundle': cmd_bundle, 'commit-msg': cmd_commit_msg, 'worklog': cmd_worklog}
+            'show': cmd_show, 'freeze': cmd_freeze, 'export': cmd_export, 'jira': cmd_jira, 'adopt': cmd_adopt, 'hook': cmd_hook,
+            'bundle': cmd_bundle, 'commit-msg': cmd_commit_msg, 'worklog': cmd_worklog, 'plan': cmd_plan,
+            'jira-guard': cmd_jira_guard, 'api-guard': cmd_jira_guard,
+            'escapes': cmd_escapes}

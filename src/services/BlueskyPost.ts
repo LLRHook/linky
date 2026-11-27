@@ -1,3 +1,4 @@
+import { record, labelled } from './JsonFields';
 import { readBoundedJson } from './BoundedJson';
 import { blueskyActor } from './SocialProviders';
 import { formatProse } from './TweetTranslation';
@@ -14,7 +15,7 @@ export interface BlueskyPart {
 }
 
 /** A public, unlabelled post and the one post it quotes, when that is a plain or image post. */
-export interface BlueskyPost extends BlueskyPart { quote?: BlueskyPart }
+export interface BlueskyPost extends BlueskyPart { replyCount?: number; quote?: BlueskyPart }
 
 /** Look up one post by the `actor/rkey` identity `parseSocialUrl` gives a Bluesky link. */
 export type BlueskyLookup = (postId: string) => Promise<BlueskyPost | null>;
@@ -27,17 +28,17 @@ const RKEY = /^[A-Za-z0-9._:~-]{1,512}$/;
 const POST_URI = /^at:\/\/([^/]{1,2048})\/app\.bsky\.feed\.post\/([A-Za-z0-9._:~-]{1,512})$/;
 const LINK_FACET = 'app.bsky.richtext.facet#link';
 
-const record = (value: unknown): Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-
-/** Any moderation or self label means Linky leaves the post to the native card. */
-const labelled = (value: unknown): boolean => value !== undefined && (!Array.isArray(value) || value.length > 0);
-
 /** The requested identity: a lowercased handle or a supported DID, and a record key. */
-function parsePostId(postId: string): { actor: string; rkey: string } | null {
+export function parsePostId(postId: string): { actor: string; rkey: string } | null {
   const slash = postId.indexOf('/');
   const actor = postId.slice(0, slash), rkey = postId.slice(slash + 1);
   return slash > 0 && blueskyActor(actor) === actor && RKEY.test(rkey) && rkey !== '.' && rkey !== '..' ? { actor, rkey } : null;
+}
+
+/** Parse the exact AT post URI using the same identity constraints as source links. */
+export function parseBlueskyPostUri(value: unknown): { actor: string; rkey: string } | null {
+  const match = typeof value === 'string' ? POST_URI.exec(value) : null;
+  return match ? parsePostId(`${match[1]}/${match[2]}`) : null;
 }
 
 /** An address on Bluesky's image CDN under the given route and owner, without credentials or a port. */
@@ -90,7 +91,7 @@ export function blueskyText(text: string, facets: unknown): string {
   return result + formatProse(bytes.subarray(cursor).toString('utf8'));
 }
 
-function parseAuthor(value: unknown): BlueskyPart['author'] | null {
+export function parseBlueskyAuthor(value: unknown): BlueskyPart['author'] | null {
   const author = record(value);
   const did = typeof author.did === 'string' && author.did.startsWith('did:') && blueskyActor(author.did) === author.did ? author.did : '';
   const handle = typeof author.handle === 'string' && !author.handle.startsWith('did:') ? blueskyActor(author.handle) : null;
@@ -131,7 +132,7 @@ function postRecord(value: unknown): { text: string; facets: unknown; embedded: 
 /** A quoted post shown with its own words and images; a quote of a quote, a video or a link card abstains. */
 function parseQuote(value: unknown): BlueskyPart | null {
   const quote = record(value);
-  const author = parseAuthor(quote.author);
+  const author = parseBlueskyAuthor(quote.author);
   const uri = typeof quote.uri === 'string' ? POST_URI.exec(quote.uri) : null;
   const words = postRecord(quote.value);
   if (quote.$type !== 'app.bsky.embed.record#viewRecord' || !author || !uri || uri[1] !== author.did || !words ||
@@ -150,7 +151,7 @@ function parseQuote(value: unknown): BlueskyPart | null {
 export function parseBlueskyThread(value: unknown, actor: string, rkey: string): BlueskyPost | null {
   const thread = record(record(value).thread);
   const post = record(thread.post);
-  const author = parseAuthor(post.author);
+  const author = parseBlueskyAuthor(post.author);
   const uri = typeof post.uri === 'string' ? POST_URI.exec(post.uri) : null;
   const words = postRecord(post.record);
   if (thread.$type !== 'app.bsky.feed.defs#threadViewPost' || !author || !uri || uri[2] !== rkey || uri[1] !== author.did ||
@@ -166,7 +167,7 @@ export function parseBlueskyThread(value: unknown, actor: string, rkey: string):
   } else images = viewImages(embed, author.did);
   if (!images || quote === null) return null;
   return { url: postUrl(author.handle, rkey), author, text: blueskyText(words.text, words.facets), images,
-    ...(quote ? { quote } : {}) };
+    ...(quote ? { quote } : {}), ...(typeof post.replyCount === 'number' && Number.isSafeInteger(post.replyCount) && post.replyCount >= 0 ? { replyCount: post.replyCount } : {}) };
 }
 
 /** Fetch one public post from the Bluesky AppView. Only the post's actor and record key are sent. */

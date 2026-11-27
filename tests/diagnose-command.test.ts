@@ -268,3 +268,13 @@ test('community diagnostics explain public cards even without API credentials or
   assert.match(f.events[1].payload.content, /guidance without Retry/);
   assert.match(f.events[1].payload.content, /No post was fetched/);
 });
+
+
+test('replies-on diagnose names both missing thread permissions and clears the line when granted', async () => {
+  const servers = new ServerSettings(file()); await servers.update(SERVER, { replies: true });
+  const missing = interaction(); await execute(missing.command, config, servers);
+  assert.match(missing.events.at(-1)!.payload.content, /Missing channel permissions: Create Public Threads, Send Messages in Threads/);
+  const granted = interaction(null, plain | PermissionFlagsBits.ManageMessages | PermissionFlagsBits.CreatePublicThreads | PermissionFlagsBits.SendMessagesInThreads);
+  await execute(granted.command, config, servers);
+  assert.doesNotMatch(granted.events.at(-1)!.payload.content, /Missing channel permissions/);
+});

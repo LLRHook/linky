@@ -48,3 +48,20 @@ Removing each formatter's image field temporarily makes the corresponding tests 
 ## Evidence and reproduction
 
 All automated tests use synthetic bytes and injected HTTP/Discord responses, without a Discord token or network requests. Run `node --import tsx --test tests/article-video.test.ts tests/linkedin.test.ts tests/truth-social.test.ts tests/social-links.test.ts tests/manual-fix.test.ts tests/erome-delivery.test.ts` on Node 26. The standalone Erome tests cover both media types and both manual entry points, missing-gallery rollback, and metadata rejection for wrong filename, type, proxy, dimensions or host. The article and manual tests cover exact media matching and source/settings/cancellation races. Run `npm run validate` for the repository's complete local gate. Live Discord rendering and client playback remain separate release checks.
+
+### X replies controls
+
+With `/settings replies:true`, eligible single X posts whose status lookup returned a positive replies count gain Replies (N) in the final controls edit, after confirmed publication and saved automatic ownership. Public guild `/fix` previews retain webhook ownership. Personal installation and private responses have no Replies control. First publication and unconfirmed fallbacks have none.
+
+The click fetches a public FxTwitter conversation page before creating a public thread. The shared Components V2 formatter greedily packs up to ten sanitized replies at 3,800 characters per message, suppresses embeds and notifications and disables allowed mentions. Existing and archived threads are linked; an empty bot-owned thread is filled once after restart. Remove, Retry and source deletion or edits clean up Linky's copied reply pages and rename/archive, keeping member messages. Manual removal reserves cleanup intent before deleting a parent that may have a replies thread; with replies off, no HasThread flag and no in-process creation, it deletes directly. Failed manual cleanup and single/bulk gateway deletion use the content-free sibling journal. Automatic removal deletes the parent under the repost journal, then attempts thread cleanup; transient thread failures transfer their IDs to the sibling journal. See README for request limits and self-hosting.md for the settings reader rollback prerequisite.
+
+Reply cleanup recognizes a dedicated container marker and Default/Reply message types; it never removes unrelated Linky reposts, manual outputs or Discord system messages. Manual block controls expose Replies only after the controls/media re-verification has succeeded. Failure notices build their controls separately and carry no Replies button.
+
+For Bluesky public reply threads, including the `depth=1` / `parentHeight=0` AppView request,
+limits, filtering and cleanup, see [Replies and comments on X, Bluesky, YouTube and LinkedIn](../README.md#replies-and-comments-on-x-bluesky-youtube-and-linkedin).
+
+## Reply thread media
+
+Copied replies use author headings, optional avatar thumbnails and dividers. X and Bluesky show up to four images or video posters per comment, preserving provider order. Only HTTPS URLs without credentials or custom ports and up to 2,048 characters are accepted: `pbs.twimg.com` for X; `cdn.bsky.app` and `video.bsky.app` for Bluesky; `yt3.ggpht.com` and `yt3.googleusercontent.com` for YouTube avatars. Rejected media leaves a source-linked media-not-shown note. Video playback is not offered: galleries use posters. LinkedIn public comments supply text only. Discord proxies these assets; Linky never downloads or uploads them.
+
+Each page keeps the cleanup marker and quiet flags, disables mentions, and contains no buttons. Packing counts nested sections and thumbnails within the 40-component cap, as well as the existing 3,800-character and ten-comment caps. Alt text is sanitized and limited to 1,024 characters.

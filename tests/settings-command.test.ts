@@ -68,7 +68,7 @@ test('settings is restricted to server installs and Manage Server with optional 
   assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
   assert.deepEqual(command.integration_types, [ApplicationIntegrationType.GuildInstall]);
   assert.equal(command.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
-  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'facebook', 'articles', 'erome', 'erome_channels', 'translate_tweets', 'youtube_display']);
+  assert.deepEqual(command.options?.map(option => option.name), ['mode', 'instagram', 'tiktok', 'x', 'youtube', 'bluesky', 'reddit', 'twitch', 'facebook', 'articles', 'erome', 'erome_channels', 'replies', 'translate_tweets', 'youtube_display']);
   const eromeChannels = command.options?.find(option => option.name === 'erome_channels');
   assert(eromeChannels && 'choices' in eromeChannels);
   assert.deepEqual(eromeChannels.choices?.map(({ name, value }) => ({ name, value })), [{ name: 'Age-restricted channels', value: 'age-restricted' },
@@ -289,4 +289,38 @@ test('settings and help apply operator Erome restrictions per server without adv
   }
   assert.equal(effectivePreferences(restricted, { platforms: { erome: true } }, SERVER).platforms.includes('erome'), false);
   assert.equal(effectivePreferences(restricted, {}, other).platforms.includes('erome'), true);
+});
+
+
+test('replies default off, persist independently per server and fit help when enabled', async () => {
+  const path = file(), servers = new ServerSettings(path);
+  assert.equal(effectivePreferences(config, servers.getPreferences(SERVER)).replies, false);
+  const enabled = interaction({ replies: true });
+  await execute(enabled.command, config, servers);
+  assert.match(enabled.events[1].payload.content, /Replies: On \(eligible X, Bluesky, YouTube and LinkedIn posts\)/);
+  assert.equal(new ServerSettings(path).getPreferences(SERVER).replies, true);
+  assert.equal(new ServerSettings(path).getPreferences('222222222222222222').replies, undefined);
+  const f = interaction(); await help(f.command, { ...config, rewritePlatforms: REWRITE_PLATFORMS }, servers);
+  assert.match(f.events[0].payload.content, /Replies: On/); assert.ok(f.events[0].payload.content.length <= 2000);
+  await execute(interaction({ replies: false }).command, config, servers);
+  assert.equal(new ServerSettings(path).getPreferences(SERVER).replies, false);
+});
+
+test('E75 help worst case enables server and every long option within Discord limit', async () => {
+  const servers = new ServerSettings(file()); await servers.set(SERVER, true);
+  await servers.update(SERVER, { replies: true, mode: 'replace', eromeChannels: 'all', platforms: { erome: true } });
+  const f = interaction();
+  await help(f.command, { ...config, translateTweets: true, channelIds: [], serverIds: [], rewritePlatforms: REWRITE_PLATFORMS }, servers);
+  const text = f.events[0].payload.content;
+  assert.match(text, /throughout this server/); assert.match(text, /Automatic Erome previews/); assert.match(text, /Non-English tweets/);
+  console.log(`E75 help worst-case length: ${text.length}`);
+  assert.ok(text.length <= 1990, `${text.length} characters exceeds 1990 headroom target`);
+  assert.ok(text.length <= 2000);
+  assert.match(text, /Replies: On: X\/LinkedIn 10; Bluesky\/YouTube 25 in threads/);
+});
+
+
+test('replies option description names all public thread providers literally', () => {
+  assert.equal(data.toJSON().options?.find(option => option.name === 'replies')?.description,
+    'Offer X/Bluesky replies and YouTube/LinkedIn comments (off by default).');
 });

@@ -1,3 +1,6 @@
+import { linkedInCommentsButton } from './LinkedInComments';
+import type { BlueskyPost } from './BlueskyPost';
+import { blueskyRepliesButton, xRepliesButton } from './ReplyThreads';
 import { mapLinks, visibleLink } from './LinkTokens';
 import { randomBytes } from 'node:crypto';
 import {
@@ -74,7 +77,7 @@ export interface LinkRepostOptions {
   lookupYouTube?: (ids: readonly string[], display?: YouTubeDisplay) => Promise<Map<string, YouTubeStatistics>>;
   lookupYouTubeCommunity?: YouTubeCommunityLookup;
   lookupArticle?: ArticleLookup;
-  publishYouTube?: (message: Message, embeds: APIEmbed[]) => Promise<StatsPublication | null>;
+  publishYouTube?: (message: Message, embeds: APIEmbed[], singleVideo: boolean) => Promise<StatsPublication | null>;
   prepareErome?: EromePreparer;
   eromeAvailable?: (guildId: string) => boolean;
   prepareEromeMedia?: EromeMediaPreparer;
@@ -84,6 +87,7 @@ export interface LinkRepostOptions {
   verifyErome?: typeof verifyEromeAttachment;
   verifyPreview?: (message: Message, expected: readonly ExpectedPreview[]) => Promise<PreviewResult>;
   observePreview?: (expected: readonly ExpectedPreview[], result: PreviewResult) => void;
+  removeRepost?: (record: RepostRecord) => Promise<boolean>;
   rememberRepost?: (record: RepostRecord) => Promise<boolean>;
   findRepost?: (replacementId: string) => RepostRecord | undefined;
   diagnostics?: DeliveryDiagnostics;
@@ -103,7 +107,7 @@ export function createLinkRepostHandler(
     lookupYouTube, lookupYouTubeCommunity, lookupArticle, publishYouTube, prepareErome, prepareEromeMedia, bindEromeMedia, releaseEromeMedia, cancelMediaReservation,
     eromeAvailable = () => true,
     verifyErome = verifyEromeAttachment,
-    verifyPreview = waitForPreviews, observePreview, rememberRepost, findRepost, diagnostics, armPreview, providerHealth, albums,
+    verifyPreview = waitForPreviews, observePreview, rememberRepost, removeRepost, findRepost, diagnostics, armPreview, providerHealth, albums,
     normalizeMobileLinks, isOptedOut, signal }: LinkRepostOptions = {}
 ): (message: Message, options?: { refresh?: boolean; forceReply?: boolean; manualRetry?: boolean }) => Promise<RepostRefreshResult> {
   const allowedChannelIds = typeof channelIds === 'string' ? [channelIds] : channelIds;
@@ -247,7 +251,7 @@ export function createLinkRepostHandler(
         rollback = undefined;
       };
       const articleStage = articleLinks.length ? delivery.context.trace?.startStage('resolve') : undefined;
-      const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, delivery.context.signal) : [];
+      const prepared = articleLinks.length ? await prepareArticlePosts(articleLinks, lookupArticle, delivery.context.signal, preferences.replies === true) : [];
       // Truth Social and LinkedIn media is uploaded with its card; without Attach Files the card links the original addresses.
       const articles = prepared && fitArticleFiles(prepared, Boolean(permissions?.has(PermissionFlagsBits.AttachFiles)));
       articleStage?.finish(articles ? 'ok' : delivery.context.signal?.aborted ? 'cancelled' : 'unavailable');
@@ -315,12 +319,14 @@ export function createLinkRepostHandler(
         return;
       }
       // A lone X post is one block in any language; the translation setting decides only which words it shows.
+      let repliesTweet: TweetTranslation | undefined;
+      let repliesBluesky: BlueskyPost | undefined;
       const tweetPanel = lookupTweet && activePlatforms.includes('x') && !message.flags.has(MessageFlags.SuppressEmbeds)
-        ? await tweetPostPanel(inputContent, activePlatforms, lookupTweet,
+        ? await tweetPostPanel(inputContent, activePlatforms, async (id, options) => { const tweet = await lookupTweet(id, options); repliesTweet = tweet ?? undefined; return tweet; },
           Boolean(translateTweet) && preferences.translateTweets !== false) : undefined;
       // A lone Bluesky post with images is one block too, read from the public AppView.
       const blueskyPanel = !tweetPanel && lookupBluesky && activePlatforms.includes('bluesky') &&
-        !message.flags.has(MessageFlags.SuppressEmbeds) ? await blueskyPostPanel(inputContent, activePlatforms, lookupBluesky) : undefined;
+        !message.flags.has(MessageFlags.SuppressEmbeds) ? await blueskyPostPanel(inputContent, activePlatforms, async id => { const post = await lookupBluesky(id); repliesBluesky = post ?? undefined; return post; }) : undefined;
       const translated: NonNullable<typeof tweetPresentation> & {
         instagramSources?: string[]; instagramVideos?: string[]; instagramPanel?: InstagramPanel;
       } =
@@ -471,7 +477,10 @@ export function createLinkRepostHandler(
       let publication: StatsPublication | null = null;
       const removeReplacement = async () => {
         await publication?.remove();
-        await replacement.delete();
+        const owned = findRepost?.(replacement.id);
+        if (owned && removeRepost) {
+          if (!await removeRepost(owned)) throw new Error('Repost cleanup is pending');
+        } else await replacement.delete();
         if (originalMedia) await releaseEromeMedia?.(replacement.id);
       };
       // Until the source is deleted, an expired attempt can safely discard its copy.
@@ -584,7 +593,7 @@ export function createLinkRepostHandler(
           inlinePost ? 'Post block media confirmed; client playback not checked' :
           expected.length ? 'Useful Discord preview observed' : 'Translated text delivered');
       if (youtubeCards.length) {
-        try { publication = await publishYouTube!(replacement, youtubeCards); }
+        try { publication = await publishYouTube!(replacement, youtubeCards, youtubeLinks.length === 1); }
         catch { log.warn(resultContext, 'Could not publish YouTube details'); }
         if (!publication && rewritten === inputContent && !community.length) {
           await removeReplacement();
@@ -664,12 +673,14 @@ export function createLinkRepostHandler(
       const albumControl = originalMedia && eromeSource && rememberRepost ? albums?.register({ media: originalMedia,
         source: eromeSource, requesterId: message.author.id, guildId: message.guildId, channelId,
         messageId: replacement.id, ...(reply ? { sourceMessageId: message.id } : {}), mode: 'automatic' }) : undefined;
+      const replyButton = xRepliesButton(repliesTweet, message.channel.type, preferences.replies === true) ?? blueskyRepliesButton(repliesBluesky, message.channel.type, preferences.replies === true) ?? linkedInCommentsButton(articleEmbeds(articles), message.channel.type, preferences.replies === true, articles?.length === 1 ? articles[0].linkedInComments : null);
+      const finalControls = () => repostControls(inputContent, { replies: replyButton });
       if (rememberRepost) await replacement.edit({
         components: originalMedia ? eromeMediaComponents(originalMedia, content,
-          [...repostControls(inputContent), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
-          : inlineBlock ? [...inlineBlock, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
-          : inlinePost ? [...inlinePost, ...[...repostControls(inputContent), ...details].map(row => row.toJSON())]
-          : [...repostControls(inputContent), ...publication?.controls ?? [], ...details], allowedMentions,
+          [...finalControls(), ...details].map(row => row.toJSON()).concat(albumControl ? [albumControl] : []))
+          : inlineBlock ? [...inlineBlock, ...[...finalControls(), ...details].map(row => row.toJSON())]
+          : inlinePost ? [...inlinePost, ...[...finalControls(), ...details].map(row => row.toJSON())]
+          : [...finalControls(), ...publication?.controls ?? [], ...details], allowedMentions,
       });
       if ((originalMedia || inlineErome || explicitCards.length) && reply) {
         if (await stopExpired()) return;

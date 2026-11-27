@@ -33,6 +33,7 @@ export interface SourceMessage {
 }
 
 export interface RepostMessage extends SourceMessage {
+  hasThread?: boolean;
   author: { id: string; bot?: boolean };
   delete(): Promise<unknown>;
 }
@@ -62,7 +63,7 @@ interface Options {
   /** Check fresh channel access and send permission; never use cached interaction permissions. */
   canRetry(record: RepostRecord, userId: string): Promise<boolean>;
   removeRelated?: (record: RepostRecord) => Promise<void>;
-  afterReplacementRemoved?: (record: RepostRecord) => Promise<void>;
+  afterReplacementRemoved?: (record: RepostRecord, parent: RepostMessage | null) => Promise<void>;
   regenerate?: Regenerate;
   now?: () => number;
   write?: (path: string, value: string) => Promise<void>;
@@ -209,6 +210,11 @@ export class RepostRegistry {
     return record && { ...record };
   }
 
+  /** Pending deletion is no longer eligible for controls that create related resources. */
+  isActive(replacementId: string): boolean {
+    return Boolean(this.findByReplacement(replacementId)) && !this.journal.remove.includes(replacementId);
+  }
+
   async remember(record: RepostRecord): Promise<boolean> {
     if (!validRecord(record) || record.authorId === this.options.botUserId) return false;
     const copy = { ...record };
@@ -313,7 +319,7 @@ export class RepostRegistry {
       catch (error) { report(error); return false; }
       try { if (message) await message.delete(); }
       catch (error) { if (!missing(error)) { report(error); return false; } }
-      try { await this.options.afterReplacementRemoved?.({ ...record }); }
+      try { await this.options.afterReplacementRemoved?.({ ...record }, message); }
       catch (error) { report(error); return false; }
       await this.change(next => {
         next.remove = next.remove.filter(value => value !== id);
@@ -346,16 +352,42 @@ export class RepostRegistry {
     const record = await this.authorize(interaction);
     if (!record) return true;
     try {
-      const removed = await this.forSource(record.sourceId, async () => {
-        const current = this.findByReplacement(record.replacementId);
-        if (!current) return true;
-        await this.schedule(current, false);
-        return this.process(current.sourceId);
-      });
+      const removed = await this.remove(record);
       await this.reply(interaction, removed ? 'Removed Linky’s repost.' :
         'Could not remove the repost yet. Linky will retry.');
     } catch (error) { this.report(error); await this.reply(interaction, 'Could not save this removal. Try again.'); }
     return true;
+  }
+
+  /** Remove an intermediate replacement without taking an active regeneration's source lock. */
+  async queueRemoval(record: RepostRecord): Promise<boolean> {
+    const current = this.findByReplacement(record.replacementId);
+    if (!current || !FIELDS.every(key => current[key as keyof RepostRecord] === record[key as keyof RepostRecord])) return false;
+    try {
+      await this.change(next => {
+        if (next.records.some(value => value.replacementId === current.replacementId) && !next.remove.includes(current.replacementId)) next.remove.push(current.replacementId);
+      });
+      let message: RepostMessage | null;
+      try { message = await this.options.fetchMessage(current.channelId, current.replacementId); }
+      catch (error) { if (missing(error)) message = null; else throw error; }
+      if (message && !this.owned(message, current)) return false;
+      await this.options.removeRelated?.({ ...current });
+      try { if (message) await message.delete(); } catch (error) { if (!missing(error)) throw error; }
+      await this.options.afterReplacementRemoved?.({ ...current }, message);
+      await this.forget(current.replacementId);
+      return true;
+    } catch (error) { this.report(error); return false; }
+  }
+
+  /** Queue removal of an already-owned replacement, retaining failed cleanup for the sweep. */
+  remove(record: RepostRecord): Promise<boolean> {
+    return this.forSource(record.sourceId, async () => {
+      const current = this.findByReplacement(record.replacementId);
+      if (!current) return true;
+      if (!FIELDS.every(key => current[key as keyof RepostRecord] === record[key as keyof RepostRecord])) return false;
+      await this.schedule(current, false);
+      return this.process(current.sourceId);
+    });
   }
 
   /** The caller must authorize the button first. Recheck ownership after taking the source lock. */

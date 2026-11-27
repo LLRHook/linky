@@ -60,6 +60,7 @@ export async function execute(interaction: ChatInputCommandInteraction, config: 
     serverEnabled: servers.get(interaction.guildId), preferences,
     operatorChannelIds: config.channelIds, operatorServerIds: config.serverIds });
   const required = [
+    ...(effective.replies ? [['Create Public Threads', PermissionFlagsBits.CreatePublicThreads], ['Send Messages in Threads', PermissionFlagsBits.SendMessagesInThreads]] : []),
     ['View Channel', PermissionFlagsBits.ViewChannel],
     ['Read Message History', PermissionFlagsBits.ReadMessageHistory],
     ['Embed Links', PermissionFlagsBits.EmbedLinks],

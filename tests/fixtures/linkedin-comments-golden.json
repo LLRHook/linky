@@ -1,0 +1,130 @@
+{
+  "baseline": "12be141ca43df46edaaa3f87024b6f401306005d",
+  "ld": {
+    "@context": "https://schema.org",
+    "@type": "SocialMediaPosting",
+    "@id": "https://www.linkedin.com/posts/sample_topic-activity-7500000000000000000-AbCd",
+    "author": {
+      "name": "Sample Author"
+    },
+    "articleBody": "Synthetic post",
+    "interactionStatistic": [
+      {
+        "interactionType": "https://schema.org/LikeAction",
+        "userInteractionCount": 3
+      },
+      {
+        "interactionType": "https://schema.org/CommentAction",
+        "userInteractionCount": 12
+      }
+    ]
+  },
+  "card": [
+    {
+      "title": "LinkedIn post",
+      "url": "https://www.linkedin.com/posts/sample_topic-activity-7500000000000000000-AbCd",
+      "color": 681666,
+      "author": {
+        "name": "Sample Author"
+      },
+      "description": "Synthetic post",
+      "footer": {
+        "text": "LinkedIn · 3 reactions · 12 comments"
+      }
+    }
+  ],
+  "pages": [
+    {
+      "input": {
+        "N": 12,
+        "countTime": 100000,
+        "r": 1,
+        "m": 0,
+        "replies": [
+          {
+            "name": "Sample",
+            "handle": "sample",
+            "profileUrl": "https://example.test/profile",
+            "url": "https://example.test/reply",
+            "text": "Synthetic @everyone *reply* https://example.test",
+            "likes": 2,
+            "timestamp": 100,
+            "hasMedia": false
+          }
+        ],
+        "source": "X",
+        "orderLabel": "most liked first"
+      },
+      "output": [
+        {
+          "flags": 36868,
+          "components": [
+            {
+              "type": 17,
+              "id": 1795541460,
+              "components": [
+                {
+                  "type": 10,
+                  "content": "Showing 1 of 12 replies from X, most liked first (X returned 1; Linky hid 0). Count as of <t:100:f>."
+                },
+                {
+                  "type": 10,
+                  "content": "**Sample** · @sample\n-# 2 likes · <t:100:R> · [Open reply](<https://example.test/reply>)\nSynthetic @​everyone \\*reply\\* \\[link\\]"
+                }
+              ]
+            }
+          ],
+          "allowedMentions": {
+            "parse": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "N": 12,
+        "countTime": 100000,
+        "r": 1,
+        "m": 0,
+        "replies": [
+          {
+            "name": "Sample",
+            "handle": "sample",
+            "profileUrl": "https://example.test/profile",
+            "url": "https://example.test/reply",
+            "text": "Synthetic @everyone *reply* https://example.test",
+            "likes": 2,
+            "timestamp": 100,
+            "hasMedia": false
+          }
+        ],
+        "source": "Bluesky",
+        "orderLabel": "most liked first"
+      },
+      "output": [
+        {
+          "flags": 36868,
+          "components": [
+            {
+              "type": 17,
+              "id": 1795541460,
+              "components": [
+                {
+                  "type": 10,
+                  "content": "Showing 1 of 12 replies from Bluesky, most liked first (Bluesky returned 1; Linky hid 0). Count as of <t:100:f>."
+                },
+                {
+                  "type": 10,
+                  "content": "**Sample** · @sample\n-# 2 likes · <t:100:R> · [Open reply](<https://example.test/reply>)\nSynthetic @​everyone \\*reply\\* \\[link\\]"
+                }
+              ]
+            }
+          ],
+          "allowedMentions": {
+            "parse": []
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+import { YouTubeStats } from '../src/services/YouTubeStats';
+import { formatYouTubeStatistics } from '../src/services/YouTube';
+import { ReplyThreads } from '../src/services/ReplyThreads';
+import { ReplyCleanupJournal } from '../src/services/ReplyCleanupJournal';
 import assert from 'node:assert/strict';
 import { after, afterEach, test, type TestContext } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -254,6 +258,7 @@ test('configured media startup failure retains cleanup until a successful bot re
     const f = fixture(overrides, new ServerSettings(settingsPath), startMedia);
     Object.assign(f.client, { user: { id: botId } });
     t.mock.method(f.client.channels, 'fetch', async (id: string) => {
+      if (id === record.replacementId) throw Object.assign(new Error('Unknown thread'), { code: 10003 });
       assert.equal(id, channelId);
       return channel as unknown as Awaited<ReturnType<typeof f.client.channels.fetch>>;
     });
@@ -1116,4 +1121,298 @@ test('source edits are synchronized while running and ignored once shutdown star
   await closing;
   assert.equal(updates.mock.callCount(), 1);
   clients.splice(clients.indexOf(client), 1);
+});
+
+
+test('gateway single and bulk manual-parent deletion queue reply cleanup without registry records', async t => {
+  const path = join(directory, 'F2-gateway-on.json'), servers = new ServerSettings(path);
+  await servers.update('111111111111111111', { replies: true });
+  const f = fixture({ settingsPath: path }, servers); const queued: unknown[] = [];
+  Object.assign(f.client, { user: { id: 'bot' }, application: { id: 'app' } });
+  t.mock.method(ReplyCleanupJournal.prototype, 'enqueue', async (entry: Parameters<ReplyCleanupJournal['enqueue']>[0]) => { queued.push(entry); });
+  const parent = { id: '333333333333333333', guildId: '111111111111111111', channelId: '222222222222222222',
+    author: { id: 'bot' }, webhookId: 'app', interactionMetadata: { user: { id: 'owner' } }, channel: { type: 0 }, partial: false };
+  Reflect.apply(f.client.emit, f.client, [Events.MessageDelete, parent]);
+  const second = { ...parent, id: '444444444444444444' };
+  Reflect.apply(f.client.emit, f.client, [Events.MessageBulkDelete, new Collection([[second.id, second]]), {}]);
+  assert.deepEqual(queued, [parent, second].map(message => ({ guildId: message.guildId, channelId: message.channelId, threadId: message.id })));
+});
+
+
+test('manual reply clicks cannot bypass a pending cleanup reservation', async t => {
+  const path = join(directory, 'F2-reserved-settings.json'), servers = new ServerSettings(path);
+  const guildId = '111111111111111111'; await servers.update(guildId, { replies: true });
+  const f = fixture({ settingsPath: path }, servers); Object.assign(f.client, { user: { id: 'bot' }, application: { id: 'app' } });
+  t.mock.method(ReplyCleanupJournal.prototype, 'has', () => true);
+  const replies: string[] = [];
+  await dispatch(f.client, { isButton: () => true, customId: 'linky:replies:x:20:NASA', guildId,
+    user: { id: 'owner' }, message: { id: '333333333333333333', guildId, channelId: '222222222222222222',
+      author: { id: 'bot' }, webhookId: 'app', interactionMetadata: { user: { id: 'owner' } }, flags: new MessageFlagsBitField(),
+      channel: { type: 0 } },
+    reply: async (payload: { content: string }) => { replies.push(payload.content); } });
+  assert.deepEqual(replies, ['Replies are unavailable for this post']);
+});
+
+
+for (const parentExists of [false, true]) test(`rejected manual deletion reconciles ${parentExists ? 'existing' : 'already gone'} parent on the same-process sweep without gateway events`, async t => {
+  const caseDirectory = mkdtempSync(join(directory, 'F2-settled-removal-'));
+  const settingsPath = join(caseDirectory, 'servers.json'), servers = new ServerSettings(settingsPath);
+  const guildId = '111111111111111111', channelId = '222222222222222222', threadId = '333333333333333333';
+  await servers.update(guildId, { replies: true });
+  const f = fixture({ settingsPath }, servers);
+  Object.assign(f.client, { user: { id: 'bot' }, application: { id: 'app' } });
+  let journal: ReplyCleanupJournal | undefined, parentDeleted = 0, cleaned = 0;
+  const reserve = ReplyCleanupJournal.prototype.reserve;
+  t.mock.method(ReplyCleanupJournal.prototype, 'reserve', async function (this: ReplyCleanupJournal, entry: Parameters<ReplyCleanupJournal['reserve']>[0]) {
+    journal = this; await reserve.call(this, entry);
+  });
+  const parent = { id: threadId, guildId, channelId, author: { id: 'bot' }, webhookId: 'app', interactionMetadata: { user: { id: 'owner' } },
+    flags: new MessageFlagsBitField(), channel: { type: 0 }, delete: async () => { parentDeleted++; } };
+  t.mock.method(f.client.channels, 'fetch', async () => ({ messages: { fetch: async () => {
+    if (!parentExists) throw Object.assign(new Error('Unknown message'), { code: 10008 });
+    return parent;
+  } } }) as never);
+  t.mock.method(ReplyThreads.prototype, 'cleanup', async () => { cleaned++; });
+  await dispatch(f.client, { isButton: () => true, customId: 'linky:remove-manual', guildId, channelId,
+    applicationId: 'app', client: f.client, user: { id: 'owner' }, message: parent,
+    deferUpdate: async () => {}, deleteReply: async () => { throw Error('Deletion request failed ambiguously'); } });
+  assert.ok(journal); assert.equal(journal.has(threadId), true);
+  const replies: string[] = [];
+  const click = () => dispatch(f.client, { isButton: () => true, customId: 'linky:replies:x:20:NASA', guildId,
+    user: { id: 'owner' }, message: parent, reply: async (payload: { content: string }) => { replies.push(payload.content); } });
+  await click(); assert.equal(replies.at(-1), 'Replies are unavailable for this post');
+  await journal.sweep();
+  assert.equal(parentDeleted, parentExists ? 1 : 0); assert.equal(cleaned, 1);
+  assert.equal(journal.has(threadId), false);
+  assert.deepEqual(JSON.parse(readFileSync(join(caseDirectory, 'reply-cleanup.json'), 'utf8')), []);
+  await click(); assert.match(replies.at(-1)!, /Missing permission:/);
+});
+
+/** Capture createBot's real expiry queue; all policy and cleanup callbacks remain production wiring. */
+async function youtubeCommentsBot(t: TestContext, options: { replies?: boolean; display?: 'counts' | 'counts-and-comment'; key?: boolean; scope?: boolean; channelType?: number } = {}) {
+  const caseDirectory = mkdtempSync(join(directory, 'F4-production-youtube-'));
+  const settingsPath = join(caseDirectory, 'servers.json');
+  const servers = new ServerSettings(settingsPath);
+  await servers.set(restartGuildId, true);
+  await servers.update(restartGuildId, { replies: options.replies ?? true, ...(options.display ? { youtubeDisplay: options.display } : {}),
+    ...(options.scope === false ? { channelIds: [] } : {}) });
+  let stats!: YouTubeStats, now = Date.now(), lookups = 0, threadFetches = 0, creates = 0, edits = 0;
+  let visibleThread = true, failingThread = false;
+  let lookupRelease: (() => void) | undefined, lookupEntered: (() => void) | undefined;
+  let sendRelease: (() => void) | undefined, sendEntered: (() => void) | undefined;
+  let lookupGate: Promise<void> | undefined, sendGate: Promise<void> | undefined;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(YouTubeStats.prototype, 'start', function(this: YouTubeStats) { stats = this; });
+  const copied = new Map<string, any>(), answers: string[] = [];
+  const thread: any = { id: '1491242185331576885', guildId: restartGuildId, parentId: restartChannelId, ownerId: restartBotId,
+    name: 'YouTube comments', archived: false, locked: false, messageCount: 0, url: 'https://discord.com/channels/thread',
+    isThread: () => true, permissionsFor: () => new PermissionsBitField(PermissionsBitField.All & ~PermissionFlagsBits.ManageMessages),
+    send: async (payload: any) => { sendEntered?.(); await sendGate;
+      const id = String(BigInt(message.id) + BigInt(copied.size + 1));
+      copied.set(id, { id, author: { id: restartBotId }, type: MessageType.Default, components: payload.components,
+        createdTimestamp: now, delete: async () => { copied.delete(id); } }); thread.messageCount++; },
+    messages: { fetch: async () => new Collection(copied) },
+    setName: async (name: string) => { thread.name = name; }, setArchived: async (value: boolean) => { thread.archived = value; } };
+  const channel: any = { id: restartChannelId, guildId: restartGuildId, type: options.channelType ?? 0, isThread: () => false, isTextBased: () => true,
+    permissionsFor: () => new PermissionsBitField(PermissionsBitField.All), threads: { cache: new Collection() },
+    messages: { fetch: async () => message } };
+  let components: any[] = [];
+  const message: any = { id: thread.id, guildId: restartGuildId, channelId: restartChannelId, author: { id: restartBotId, bot: true },
+    createdTimestamp: now, content: '', hasThread: false, channel, get components() { return components; },
+    fetch: async () => message,
+    edit: async (payload: any) => { edits++; components = payload.components.map((row: any) => ({ ...row,
+      components: row.components.map((button: any) => ({ ...button, customId: button.custom_id })), toJSON: () => row })); return message; },
+    startThread: async (options: { name: string }) => { thread.name = options.name; creates++; message.hasThread = visibleThread; return thread; }, delete: async () => {} };
+  t.mock.method(globalThis, 'fetch', async (input: any) => {
+    const url = new URL(String(input)); assert.equal(url.origin, 'https://www.googleapis.com');
+    lookups++; lookupEntered?.(); await lookupGate;
+    return new Response(JSON.stringify({ items: [{ id: 'thread', snippet: { videoId: 'dQw4w9WgXcQ', topLevelComment: { id: 'comment', snippet: {
+      textDisplay: 'Comment text', authorDisplayName: 'Viewer', authorChannelUrl: 'https://www.youtube.com/channel/test', likeCount: 1, publishedAt: '2026-11-24T00:00:00Z' } } } }] }));
+  });
+  const f = fixture({ settingsPath, channelIds: [], serverIds: [], rewritePlatforms: ['youtube'], youtubeApiKey: options.key === false ? undefined : 'synthetic-key' }, servers);
+  t.mock.method(f.client.channels, 'fetch', async (id: string) => {
+    if (id === message.id) { threadFetches++; if (failingThread) throw Error('transient thread fetch'); return thread; }
+    assert.equal(id, restartChannelId); return channel;
+  });
+  await startBot(f.client);
+  const publish = () => stats.publish(message, [formatYouTubeStatistics({ commentCount: '7' }, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')!]);
+  const click = () => dispatch(f.client, { isButton: () => true, customId: 'linky:yt:replies:dQw4w9WgXcQ', guildId: restartGuildId,
+    channelId: restartChannelId, channel, message, guild: { members: { me: { id: restartBotId } } }, user: { id: 'member' },
+    reply: async (p: any) => { answers.push(p.content); }, deferReply: async () => {}, editReply: async (p: any) => { answers.push(p.content); }, deferred: true });
+  return { ...f, stats, servers, message, thread, channel, copied, answers, publish, click,
+    get lookups() { return lookups; }, get threadFetches() { return threadFetches; }, get creates() { return creates; }, get edits() { return edits; },
+    controls: () => JSON.stringify(components.map(row => row.toJSON())),
+    expire: () => { now += 86400000; }, hideThreadFlag: () => { visibleThread = false; },
+    failThread: () => { failingThread = true; }, allowThread: () => { failingThread = false; },
+    holdLookup: () => { assert(JSON.stringify(components).includes('linky:yt:replies:')); const entered = new Promise<void>(r => { lookupEntered = r; }); lookupGate = new Promise<void>(r => { lookupRelease = r; }); return { entered, release: () => lookupRelease!() }; },
+    holdSend: () => { assert(JSON.stringify(components).includes('linky:yt:replies:')); const entered = new Promise<void>(r => { sendEntered = r; }); sendGate = new Promise<void>(r => { sendRelease = r; }); return { entered, release: () => sendRelease!() }; },
+    records: () => JSON.parse(readFileSync(join(caseDirectory, 'youtube-stats.json'), 'utf8')),
+  };
+}
+
+for (const scenario of [
+  { name: 'default display enabled', allowed: true },
+  { name: 'replies off', replies: false, allowed: false },
+  { name: 'counts only', display: 'counts' as const, allowed: false },
+  { name: 'key absent', key: false, allowed: false },
+  { name: 'channel out of scope', scope: false, allowed: false },
+  { name: 'forum channel', channelType: 15, allowed: false },
+  { name: 'thread channel', channelType: 11, allowed: false },
+]) test(`createBot YouTube publication gate: ${scenario.name}`, async t => {
+  const f = await youtubeCommentsBot(t, scenario); await f.publish();
+  assert.equal(f.controls().includes('linky:yt:replies:'), scenario.allowed);
+  assert.equal(f.lookups, 0); assert.deepEqual(f.errors, []);
+});
+
+test('createBot YouTube clicks recheck current scope and pending cleanup before requests', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish();
+  await f.servers.update(restartGuildId, { channelIds: [] }); await f.click();
+  assert.equal(f.lookups, 0); assert.match(f.answers.at(-1)!, /Comments are unavailable/);
+  await f.servers.update(restartGuildId, { channelIds: [restartChannelId] });
+  t.mock.method(ReplyCleanupJournal.prototype, 'has', () => true); await f.click();
+  assert.equal(f.lookups, 0); assert.equal(f.creates, 0); assert.deepEqual(f.errors, []);
+});
+
+for (const hidden of [false, true]) test(`createBot YouTube expiry cleans pages with ${hidden ? 'in-process creation' : 'HasThread'} evidence`, async t => {
+  const f = await youtubeCommentsBot(t); await f.publish();
+  if (hidden) f.hideThreadFlag();
+  const send = f.holdSend(), click = f.click(); await send.entered;
+  f.expire(); const sweep = f.stats.sweep(); await new Promise<void>(r => setImmediate(r));
+  const controlsRemoved = !f.controls().includes('linky:yt:');
+  send.release(); await click; await sweep;
+  assert(controlsRemoved, 'Controls never wait for the thread in-flight send');
+  assert.equal(f.copied.size, 0); assert.equal(f.thread.name, 'Replies removed'); assert.equal(f.thread.archived, true);
+  assert.equal(f.records().length, 0); assert.deepEqual(f.errors, []);
+});
+
+test('createBot YouTube expiry bypasses cached member-owned thread discovery even when fetch would fail', async t => {
+  const f = await youtubeCommentsBot(t, { replies: false }); await f.publish();
+  f.message.hasThread = true; f.thread.ownerId = 'member'; f.channel.threads.cache.set(f.message.id, f.thread); f.failThread();
+  f.expire(); await f.stats.sweep();
+  assert(!f.controls().includes('linky:yt:')); assert.equal(f.threadFetches, 0); assert.equal(f.records().length, 0);
+});
+
+test('createBot YouTube expiry removes controls before transient thread failure and retries cleanup alone', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish(); await f.click();
+  assert(f.copied.size > 0); f.failThread(); f.expire(); const edits = f.edits; await f.stats.sweep();
+  assert(!f.controls().includes('linky:yt:')); assert.equal(f.edits, edits + 1); assert.equal(f.records().length, 1);
+  await f.stats.sweep(); assert.equal(f.edits, edits + 1); assert.equal(f.records().length, 1);
+  f.allowThread(); await f.stats.sweep(); assert.equal(f.edits, edits + 1); assert.equal(f.records().length, 0);
+  assert.equal(f.copied.size, 0); assert.equal(f.thread.name, 'Replies removed'); assert.equal(f.thread.archived, true);
+});
+
+test('createBot YouTube lookup racing expiry refuses thread creation after lookup returns', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish(); const gate = f.holdLookup(), click = f.click(); await gate.entered;
+  f.expire(); gate.release(); await click;
+  assert.equal(f.creates, 0); assert.equal(f.copied.size, 0); assert.match(f.answers.at(-1)!, /comments thread.*removed/);
+  assert.deepEqual(f.errors, []);
+});
+
+test('createBot YouTube header count time is the parent publication time rather than click time', async t => {
+  const f = await youtubeCommentsBot(t); f.message.createdTimestamp = Date.now() - 123000;
+  await f.publish(); await f.click();
+  assert.equal(f.thread.name, 'YouTube comments');
+  const output = JSON.stringify([...f.copied.values()].map(message => message.components));
+  assert(output.includes(`Count as of <t:${Math.floor(f.message.createdTimestamp / 1000)}:f>`));
+  assert(!output.includes(`Count as of <t:${Math.floor(Date.now() / 1000)}:f>`));
+});
+
+test('createBot YouTube expiry uses exact history membership after the conservative cap is full', async t => {
+  let manager!: ReplyThreads; const handle = ReplyThreads.prototype.handle;
+  t.mock.method(ReplyThreads.prototype, 'handle', function(this: ReplyThreads, ...args: Parameters<typeof handle>) { manager = this; return handle.apply(this, args); });
+  const f = await youtubeCommentsBot(t, { replies: false }); await f.publish(); await f.click();
+  Object.assign(manager, { created: new Set(Array.from({ length: 10000 }, (_, i) => `history-${i}`)), creationHistoryFull: true });
+  assert.equal(manager.hasCreation(f.message.id), true); assert.equal(manager.hasExactCreation(f.message.id), false);
+  assert.equal((f.stats as any).options.hasCommentCreation(f.message.id), false);
+  f.expire(); await f.stats.sweep(); assert.equal(f.threadFetches, 0); assert.equal(f.lookups, 0); assert.equal(f.records().length, 0);
+});
+
+test('createBot YouTube held comment cleanup never holds unrelated publication or parent removal', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish();
+  const send = f.holdSend(), click = f.click(); await send.entered;
+  f.expire(); const sweep = f.stats.sweep(); await new Promise<void>(r => setImmediate(r));
+  let published = false, removed = false, publishedBeforeRelease = false, removedBeforeRelease = false;
+  const unrelated: any = { ...f.message, id: '1491242185331576886', guildId: '987654321098765433', hasThread: false, components: [],
+    edit: async () => { published = true; } };
+  await f.servers.set(unrelated.guildId, true); // Its replies preference stays off.
+  const publish = f.stats.publish(unrelated, [formatYouTubeStatistics({ commentCount: '7' }, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')!]);
+  const remove = f.stats.removeForMessage(f.message.id).then(() => { removed = true; });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([Promise.all([publish, remove]), new Promise<void>(resolve => { timer = setTimeout(resolve, 500); })]);
+    publishedBeforeRelease = published; removedBeforeRelease = removed;
+  } finally { clearTimeout(timer); send.release(); await click; await sweep; await publish; await remove; }
+  assert.equal(publishedBeforeRelease, true, 'An unrelated replies-off server publishes before thread cleanup is released');
+  assert.equal(removedBeforeRelease, true, 'Parent pre-delete removal completes before thread cleanup is released');
+  assert.equal(f.threadFetches, 1, 'Only the expiry job performs thread cleanup, not removeForMessage');
+});
+
+test('createBot YouTube removeForMessage skips comment cleanup before parent removal', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish(); await f.click();
+  await f.stats.removeForMessage(f.message.id);
+  assert.equal(f.threadFetches, 0); assert(f.copied.size > 0); assert.equal(f.records().length, 0);
+});
+
+test('createBot YouTube failed comments cleanup has the correct log subsystem', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish(); await f.click(); f.failThread(); f.expire();
+  await f.stats.sweep();
+  assert(f.warnings.some(value => JSON.stringify(value).includes('YouTube comments cleanup')));
+  assert(!f.warnings.some(value => JSON.stringify(value).includes('YouTube statistics cleanup')));
+});
+
+test('createBot YouTube concurrent expiry sweeps share cleanup and cannot retire a newer publication', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish();
+  const send = f.holdSend(), click = f.click(); await send.entered; f.expire();
+  const first = f.stats.sweep(); await new Promise<void>(r => setImmediate(r));
+  const second = f.stats.sweep(); await new Promise<void>(r => setImmediate(r));
+  let replaced = false, replacedBeforeRelease = false;
+  const replace = (async () => { await f.stats.removeForMessage(f.message.id); await f.publish(); replaced = true; })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([replace, new Promise<void>(resolve => { timer = setTimeout(resolve, 500); })]);
+    replacedBeforeRelease = replaced;
+  } finally { clearTimeout(timer); send.release(); await click; await first; await second; await replace; }
+  assert(replacedBeforeRelease, 'Replacement must complete outside the held comment cleanup');
+  assert.equal(f.threadFetches, 1); assert.equal(f.records().length, 1);
+  assert(f.stats.canView(f.message, 'dQw4w9WgXcQ'), 'Old cleanup cannot retire the replacement entry');
+});
+
+test('createBot YouTube comment cleanup retirement write failure preserves retry state', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish(); await f.click(); f.expire();
+  const writer = (f.stats as any).write;
+  t.mock.method(f.stats as any, 'write', async (path: string, content: string) => {
+    if (f.thread.archived) throw Error('retirement write failure'); return writer(path, content);
+  });
+  await f.stats.sweep(); assert.equal(f.records().length, 1); assert.equal(f.copied.size, 0);
+  assert(f.warnings.some(value => JSON.stringify(value).includes('YouTube comments cleanup')));
+  t.mock.method(f.stats as any, 'write', writer); await f.stats.sweep(); assert.equal(f.records().length, 0);
+});
+
+test('createBot YouTube resolver itself rejects forum channels before the core channel guard', async t => {
+  let manager!: ReplyThreads; const handle = ReplyThreads.prototype.handle;
+  t.mock.method(ReplyThreads.prototype, 'handle', function(this: ReplyThreads, ...args: Parameters<typeof handle>) { manager = this; return handle.apply(this, args); });
+  const f = await youtubeCommentsBot(t); await f.publish(); await f.click();
+  f.channel.type = 15;
+  const target = (manager as any).options.resolveTarget({ customId: 'linky:yt:replies:dQw4w9WgXcQ', message: f.message });
+  assert.equal(target.valid(f.message), false);
+});
+
+test('createBot YouTube terminal comments cleanup retains seven days then drops with comments logging', async t => {
+  const f = await youtubeCommentsBot(t); await f.publish(); await f.click(); f.failThread(); f.expire();
+  for (let i = 0; i < 7; i++) f.expire();
+  await f.stats.sweep(); assert.equal(f.records().length, 1);
+  f.expire(); await f.stats.sweep(); assert.equal(f.records().length, 0);
+  assert(f.warnings.some(value => JSON.stringify(value).includes('YouTube comments cleanup still failed more than seven days')));
+});
+
+test('R11 createBot wires the durable reply history literal beside the settings file', async t => {
+  const caseDirectory = mkdtempSync(join(directory, 'F6-R11-wiring-'));
+  const settingsPath = join(caseDirectory, 'custom-settings.json'); let historyPath: unknown;
+  t.mock.method(ReplyThreads.prototype, 'handle', async function(this: ReplyThreads) {
+    historyPath = (this as unknown as { options: { historyPath?: string } }).options.historyPath;
+    return true;
+  });
+  const { client } = fixture({ settingsPath });
+  await dispatch(client, { isButton: () => true, customId: 'linky:replies:x:20:NASA' });
+  assert.equal(historyPath, join(caseDirectory, 'reply-creation-history.json'));
 });

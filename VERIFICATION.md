@@ -1,6 +1,6 @@
 # Linky — End-to-End Verification & Validation Protocol
 
-Last verified: none — see `CHANGELOG.md / Verified`
+Last verified: 2026-11-26 — SHA 61f5ee8 — see `CHANGELOG.md / Verified`
 
 This document is the canonical checklist for taking Linky from "compiles" to
 "ship-ready". Run it before any release, after any large refactor, and any
@@ -96,14 +96,14 @@ A failure in 1.0–1.3 is a hard block.
 ## Stage 2 — Automated builds & tests
 
 Run `local-gate` as the run kind says (`/protocol-v-and-v` §3.0a). Each suite runs once;
-counts come from that run. Baseline (2026-09-24, SHA d4d6e32, Node 24.15.0 on the host;
+counts come from that run. Baseline (2026-11-26, SHA 61f5ee8, Node 24.15.0 on the host;
 rows overwritten by each run with fresh counts):
 
 | Layer | Tier | Runner | Count | Command | CI job | Needs stack | Mem (low-mem) |
 |-------|------|--------|-------|---------|--------|-------------|---------------|
-| TypeScript unit/integration | bot | tsx test runner | 1,190 | `npm test` | Test link fixing and bot startup | no | — |
-| Node ESM ops/runtime | ops | node --test | 62 (8 skipped off Linux) | `npm test` | Test link fixing and bot startup | no | — |
-| Deployment safeguards | deploy | bash | 24 checks | `bash tests/deploy.test.sh` | Test deployment safeguards | no | — |
+| TypeScript unit/integration | bot | tsx test runner | 1,756 | `npm test` | Test link fixing and bot startup | no | — |
+| Node ESM ops/runtime | ops | node --test | 86 (8 skipped off Linux) | `npm test` | Test link fixing and bot startup | no | — |
+| Deployment safeguards | deploy | bash | 27 checks | `bash tests/deploy.test.sh` | Test deployment safeguards | no | — |
 | Container: modules and settings storage | container | docker run | 1 | `docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --volume /app/data linky:ci node -e` | Production container | no | — |
 | Container: delivery archive runtime | container | node --test in the image | 1 | `linky:ci node --test /tmp/delivery-archive-runtime.test.mjs` | Production container | no | — |
 | Container: FFmpeg video runtime | container | node --test in the image | 7 | `linky:ci node --test /tmp/video-runtime.test.mjs` | Production container | no | — |
@@ -114,7 +114,7 @@ The exploratory benchmark (`benchmarks/erome-scheduling.mjs`) is Stage 4.8, not 
 Node's test runner has no list-only mode; the count is the `ℹ tests` line each
 runner prints. A changed count means tests appeared or vanished — investigate before ticking.
 
-- [ ] 2.1 Test suite (CI step "Test link fixing and bot startup"): `npm test` exits 0. The tsx run prints `ℹ tests 1190` / `ℹ fail 0`; the node run prints `ℹ tests 62` / `ℹ fail 0` with 8 skipped on a non-Linux host.
+- [ ] 2.1 Test suite (CI step "Test link fixing and bot startup"): `npm test` exits 0. The tsx run prints `ℹ tests 1756` / `ℹ fail 0`; the node run prints `ℹ tests 86` / `ℹ fail 0` with 8 skipped on a non-Linux host.
 - [ ] 2.2 Deployment safeguards (CI step "Test deployment safeguards"): `bash tests/deploy.test.sh` exits 0 and every line starts with `PASS:`.
 - [ ] Recognised provider-error regression: run `npx tsx --test tests/preview-watcher.test.ts tests/preview-recovery.test.ts tests/delivery-recovery.test.ts tests/manual-fix.test.ts`. Captured sanitised cards from the attempted provider end waits early without confirmation, stale prior-provider/canonical cards and partial or unknown evidence abstain, and automatic/manual failures retain the source. Fake timers measure the early-exit path; they do not establish live Discord latency.
 - [ ] 2.3 **2a — Per-ticket acceptance.** For every ticket at `shipped-pending-migration` / `fixed-pending-migration` (and every PR merged since the last Verified SHA), name the test that proves it and confirm it passed in this run's Stage 2 (executed, `ci-green` or carried); start from the PR's Acceptance evidence section, and do not tick from its claims alone. A ticket with no proving test is a hard block: file a `FEAT`/`BUG` (area `tests`). Record the mapping in `.vv/last-run.md` (§ 6.4).
@@ -154,7 +154,7 @@ observation in a Discord client.
 - [ ] 3.2 `/setup` in a test channel: private panel; **Enable server** persists across `docker compose restart linky`.
 - [ ] 3.3 `/settings` without options shows the effective configuration; `/settings mode:reply` then `/settings mode:replace` round-trips.
 - [ ] 3.4 X text post (`https://x.com/jack/status/20`): preview appears in under 4 s; Replace mode removes the source and credits the sharer; **Original post** and owner-only **Remove** work. X post `https://x.com/ArcoCunnivoro/status/2124451245704261749` (an English post quoting a video) appears as one block with the author, text, quoted text and gallery, and no `fixupx.com` card beside it; if the block media is not confirmed within 10 s, the usual card replaces it.
-- [ ] 3.5 TikTok share link (`https://www.tiktok.com/t/ZTU7oFukc/`) and long URL: share resolves to the exact video/photo ID; preview confirmed (no "Discord preview metadata was not confirmed" notice), including a delayed matching Gateway update within the eight-second window. Verify actual playback separately in the client; keep the source when an unrelated preview is returned.
+- [ ] 3.5 TikTok share link (`https://www.tiktok.com/t/ZTU7oFukc/`): share resolves to the exact video ID `7686471409861659936`. This fixture is unavailable from every fixer as of November 26, 2026; keep the original with Details explaining the unavailable preview. Prove a confirmed preview separately with `https://www.tiktok.com/@nba/video/7111722063571782958` (no "Discord preview metadata was not confirmed" notice), including a delayed matching Gateway update within the eight-second window. Verify actual playback separately in the client; keep the source when an unrelated preview is returned. Any video every fixer reports unavailable must keep the original with Details.
 - [ ] 3.6 Instagram Reel `DdFKS1ABmK4`: preview within 8 s; note separately whether the video plays in the client (metadata is not playback).
 - [ ] 3.7 Bluesky, Reddit `/comments/` video, Twitch clip and Facebook `/share/r/` Reel from `ops/preview-corpus.json`: each previews once. The Bluesky image post (`https://bsky.app/profile/bsky.app/post/3mv3shqdfuc2e`) appears as one block with the author, text and image, and no `bskx.app` card beside it; if its image is not confirmed within 10 s, the `bskx.app` card replaces it.
 - [ ] 3.8 Public article (Open Graph `article` page): card shows publisher label, headline, excerpt; a Tenor GIF link keeps Discord's native player (PR #58); `/settings articles:false` disables it.
@@ -225,7 +225,7 @@ All state is JSON under the data directory (`LINK_SETTINGS_PATH` directory, defa
 docker exec linky ls -la /app/data
 ```
 
-Files: `servers.json` (server settings), `reposts.json` (ownership), `reposts-permission.json` (expendable permission-failure clocks), `youtube-stats.json`, `delivery-diagnostics.json`, `delivery-logs/` (daily files), `media/` (Erome assets, self-hosted only). Never copy these off the host with user data intact; the archive is the sanitized view.
+Files: `reply-creation-history.json` (bounded replies/comments creation IDs; see docs/self-hosting.md), `servers.json` (server settings), `reposts.json` (ownership), `reposts-permission.json` (expendable permission-failure clocks), `youtube-stats.json`, `delivery-diagnostics.json`, `delivery-logs/` (daily files), `media/` (Erome assets, self-hosted only). Never copy these off the host with user data intact; the archive is the sanitized view.
 
 ## Appendix B — Reusable command recipes
 

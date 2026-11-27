@@ -57,6 +57,8 @@ const REDDIT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'old.reddit.com'])
 const TWITCH_HOSTS = new Set(['twitch.tv', 'www.twitch.tv', 'm.twitch.tv']);
 export const FACEBOOK_HOSTS: ReadonlySet<string> = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com', 'web.facebook.com']);
 
+export const X_HANDLE = /^[A-Za-z0-9_]{1,15}$/;
+
 // AT Protocol handle/record-key syntax; only handle and the supported DID forms are accepted.
 const HANDLE = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
 export function blueskyActor(value: string): string | null {

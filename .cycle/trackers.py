@@ -5,11 +5,13 @@
   trackers.py lint [--fix] [--staged] [PATH]  integrity + format-2 schema; exit 1 on errors
   trackers.py install [--auto]        set up the repo and this clone (driver, hooks, docs)
   trackers.py add|set|log|migrate|close|show|export|adopt   writers (tracker_ops.py)
+  trackers.py freeze vX.Y.Z [--date D] [--dry-run]          /release: Unreleased -> [vX.Y.Z]
   trackers.py branch ID [ID...]                            branch name: feature|bugfix|hotfix|bundle/KEY-slug
   trackers.py bundle create|add|remove|sync                 a Jira bundle for a batch (implements links)
   trackers.py commit-msg FILE                               git commit-msg hook: KEY on line 1 (Jira enforce)
   trackers.py jira doctor|push FILE|sync                    Jira issue creation + key write-back
-  trackers.py worklog state|mode|start|pause|resume|finish|undo|status   opt-in Jira worklogs (worklog.py)
+  trackers.py worklog state|mode|start|pause|resume|retarget|finish|log|backfill|undo|sync|status
+                                                            opt-in Jira worklogs (worklog.py, worklog_time.py)
 
 Format and command reference: .cycle/TRACKERS.md.
 
@@ -19,7 +21,7 @@ instead of being duplicated the way `merge=union` duplicates it.
 """
 import os, re, shutil, subprocess, sys, tempfile
 
-BUNDLE_VERSION = '2026.11.14.1'  # bump with every change that projects must re-vendor (bundle_check.py)
+BUNDLE_VERSION = '2026.11.18'  # bump with every change that projects must re-vendor (bundle_check.py)
 
 TRK_ID = re.compile(r'^###\s+\[((?:BUG|FEAT)-\d+[a-z]*)\]')
 CL_ID = re.compile(r'^[-*]\s+\[((?:BUG|FEAT)-\d+[a-z]*)\]')
@@ -223,6 +225,14 @@ def field_merge(o, a, b):
     return out.render() + ('\n' if a.endswith('\n\n') else '')
 
 
+def _same(x, y):
+    """Entry texts equal apart from blank lines and trailing whitespace (the separator before the
+    next entry belongs to an entry's text, so appending after the last entry changes it)."""
+    def norm(t):
+        return [l.rstrip() for l in t.splitlines() if l.strip()]
+    return norm(x) == norm(y)
+
+
 def merge_docs(o, a, b, mode):
     """Return (text, conflicts, notes)."""
     if a == b or b == o:
@@ -268,8 +278,18 @@ def merge_docs(o, a, b, mode):
             final[k] = [loc[0], loc[1], t]
         else:
             it = ia or ib
-            if io and it[2] == io[2] and tuple(it[:2]) == tuple(io[:2]):
-                continue  # deleted on one side, untouched on the other
+            if io and tuple(it[:2]) == tuple(io[:2]) and _same(it[2], io[2]):
+                continue  # deleted on one side; untouched (or whitespace only) on the other
+            if io and mode == 'tracker':
+                # deleted (migrate/close) on one side, edited on the other: never keep it silently
+                gone = 'ours' if ib else 'theirs'
+                head = '%s (deleted on %s: migrated or closed)\n' % (k, gone)
+                t = it[2].rstrip('\n') + '\n'
+                body = (head, t) if gone == 'ours' else (t, head)
+                final[k] = [it[0], it[1], '<<<<<<< ours\n%s=======\n%s>>>>>>> theirs\n' % body]
+                conflicts += 1
+                notes.append('%s: deleted on %s, edited on the other side; resolve by hand' % (k, gone))
+                continue
             final[k] = list(it)
 
     # containers: A's order, B's new ones after their predecessor
@@ -359,7 +379,8 @@ def git(*args, cwd=None):
 
 
 def find_files(root):
-    ls = git('ls-files', cwd=root)
+    # Untracked trackers count too: /cycle-init lints them before their first commit.
+    ls = git('ls-files', '--cached', '--others', '--exclude-standard', cwd=root)
     if ls is not None:
         files = [f for f in ls.splitlines() if os.path.basename(f) in TRACKERS and 'node_modules/' not in f]
         return [os.path.join(root, f) for f in files]
@@ -496,7 +517,7 @@ def cmd_lint(argv):
             warns = [w for w in warns if w[1] != 'PLACE']
             e2, w2 = ops.schema_lint(f, fix)
             errs, warns = errs + e2, warns + w2
-        rel = os.path.relpath(f, root)
+        rel = ops.rel_or_abs(f, root)
         shown = {}
         for n, code, i, msg in sorted(errs) + sorted(warns):
             shown[code] = shown.get(code, 0) + 1
@@ -510,6 +531,9 @@ def cmd_lint(argv):
         nf += sum(1 for w in warns if w[1] == 'FIXED')
         nw += len(warns) - sum(1 for w in warns if w[1] == 'FIXED')
     if not paths:
+        if not files:
+            print('%s: NOFILES no bugs.md, features.md or CHANGELOG.md found; set up with /cycle-init' % ops.rel_or_abs(root, root))
+            nw += 1
         if not is_strict and files:
             print('.cycle/tracker.json: ADOPT trackers are not format 2; run: python .cycle/trackers.py adopt')
             nw += 1
@@ -540,10 +564,8 @@ def cmd_install(argv):
     root = git('rev-parse', '--show-toplevel')
     if '--auto' in argv:
         if root:
-            try:
-                _clone_setup(root, quiet=True)
-            except Exception:
-                pass
+            _auto_setup(root)
+            _worklog_notice(root)
         return 0
     if not root:
         sys.exit('install: not inside a git repository')
@@ -565,7 +587,10 @@ def _vendor(root):
     srcs = [(os.path.join(here, 'trackers.py'), os.path.join(cyc, 'trackers.py')),
             (os.path.join(here, 'tracker_ops.py'), os.path.join(cyc, 'tracker_ops.py')),
             (os.path.join(here, 'worklog.py'), os.path.join(cyc, 'worklog.py')),
-            (os.path.join(here, '..', 'references', 'tracker-format.md'), os.path.join(cyc, 'TRACKERS.md'))]
+            (os.path.join(here, 'worklog_time.py'), os.path.join(cyc, 'worklog_time.py')),
+            (os.path.join(here, '..', 'references', 'tracker-format.md'), os.path.join(cyc, 'TRACKERS.md')),
+            (os.path.join(here, '..', 'references', 'tracker-format-jira.md'), os.path.join(cyc, 'TRACKERS-jira.md')),
+            (os.path.join(here, '..', 'references', 'tracker-format-worklogs.md'), os.path.join(cyc, 'TRACKERS-worklogs.md'))]
     for src, dest in srcs:
         if os.path.exists(src) and os.path.normcase(os.path.abspath(src)) != os.path.normcase(os.path.abspath(dest)):
             if not os.path.exists(dest) or open(src, 'rb').read() != open(dest, 'rb').read():
@@ -593,12 +618,13 @@ def _repo_hooks(root):
     sp = os.path.join(root, '.claude', 'settings.json')
     cfg = json.load(open(sp, encoding='utf-8')) if os.path.exists(sp) else {}
     hooks = cfg.setdefault('hooks', {})
-    want = {
-        'PreToolUse': ({'matcher': 'Edit|Write|MultiEdit'}, 'trackers.py" hook', ' hook'),
-        'SessionStart': ({}, 'trackers.py" install --auto', ' install --auto'),
-    }
+    want = [  # (event, extra, probe, args)
+        ('PreToolUse', {'matcher': 'Edit|Write|MultiEdit'}, 'trackers.py" hook', ' hook'),
+        ('PreToolUse', {'matcher': 'Bash'}, 'trackers.py" jira-guard', ' jira-guard'),
+        ('SessionStart', {}, 'trackers.py" install --auto', ' install --auto'),
+    ]
     changed = []
-    for event, (extra, probe, args) in want.items():
+    for event, extra, probe, args in want:
         lst = hooks.setdefault(event, [])
         if not any(probe in c.get('command', '') for h in lst for c in h.get('hooks', [])):
             cmd = PY_SH + ' "$CLAUDE_PROJECT_DIR/.cycle/trackers.py"' + args
@@ -631,7 +657,7 @@ def _git_hook(hp, root, name, quiet=False):
     os.makedirs(os.path.dirname(hp), exist_ok=True)
     with open(hp, 'w', encoding='utf-8', newline='\n') as f:
         f.write(body.rstrip('\n') + '\n\n# %s\n%s\n' % (comment, line))
-    os.chmod(hp, 0o755)
+    os.chmod(hp, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- git runs hooks only when executable
     if not quiet:
         print('%s: %s added' % (os.path.relpath(hp, root), what))
     return True
@@ -671,6 +697,14 @@ def _clone_setup(root, quiet, force=False):
                 done.append(GIT_HOOKS[name][2])
     if done and quiet:
         sys.stderr.write('trackers: set up this clone (%s)\n' % ', '.join(done))
+
+
+def _auto_setup(root):
+    """Clone setup on a session start or any trackers.py run: never fails, but says why it did not happen."""
+    try:
+        _clone_setup(root, quiet=True)
+    except Exception as ex:
+        sys.stderr.write('trackers: clone setup failed (%s); run: python .cycle/trackers.py install\n' % ex)
 
 
 def _block(root, fname, name, tpl):
@@ -768,17 +802,48 @@ def _ops():
 
 def _utf8_io():
     """Tracker text has non-ASCII (≤, →, —). A Windows console or pipe on cp1252 would raise
-    UnicodeEncodeError: write UTF-8 when not a real console, and never fail on a character."""
+    UnicodeEncodeError: write UTF-8 when not a real console, and never fail on a character.
+    Piped stdin (`add --json -`, `set ... -`, hook events) is read as UTF-8 too, or a locale
+    decode stores mojibake ("§" becomes "Â§"); `utf-8-sig` drops a PowerShell BOM. Decoding
+    stays strict: invalid UTF-8 fails the command instead of storing replacement characters."""
     for s in (sys.stdout, sys.stderr):
         try:
             if (s.encoding or '').lower().replace('-', '') != 'utf8':
                 s.reconfigure(encoding=s.encoding if s.isatty() else 'utf-8', errors='replace')
         except (AttributeError, ValueError, OSError):
             pass
+    try:
+        if not sys.stdin.isatty():
+            sys.stdin.reconfigure(encoding='utf-8-sig')
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
+# Words any blocked command or hand edit must contain: a superset of the patterns tracker_ops'
+# cmd_hook and cmd_jira_guard check. Hooks run on every Edit/Write/Bash call, so a call without
+# them returns before importing tracker_ops (about 0.1 s each).
+HOOK_HINT = re.compile(r'bugs\.md|features\.md')
+GUARD_HINT = re.compile(r'tracker_ops|worklog|ci_evidence|curl|wget|invoke-|\biwr\b|\birm\b|requests|urllib|'
+                        r'http\.client|httpx|fetch|aiohttp|axios|\bgh\b|\bglab\b|\baws\b|\baz\b|atlassian|/rest/|'
+                        r'\.(?:py|sh|ps1|js|mjs|cjs|ts)\b', re.I)
+
+
+def _hook_fast_path(name):
+    """Runs hook NAME's quick pre-check on stdin. Returns 0 when the call cannot be blocked, else
+    None after putting the read event back on stdin for the full check."""
+    import io
+    event = sys.stdin.read()
+    hint = HOOK_HINT if name == 'hook' else GUARD_HINT
+    if not hint.search(event):
+        return 0
+    sys.stdin = io.StringIO(event)
+    return None
 
 
 def main(argv):
     _utf8_io()
+    if argv and argv[0] in ('hook', 'jira-guard', 'api-guard') and _hook_fast_path(argv[0]) == 0:
+        return 0
     cmds = {'merge': cmd_merge, 'lint': cmd_lint, 'install': cmd_install}
     if argv and argv[0] not in cmds:
         cmds.update(_ops().COMMANDS)
@@ -786,16 +851,25 @@ def main(argv):
         sys.exit(__doc__)
     if argv[:2] == ['worklog', 'hook']:  # Claude Code activity hook: no setup, no extra git calls
         return _ops().COMMANDS['worklog'](argv[1:])
-    if argv[0] not in ('merge', 'install', 'hook', 'commit-msg'):
+    if argv[0] not in ('merge', 'install', 'hook', 'jira-guard', 'api-guard', 'commit-msg'):
         root = git('rev-parse', '--show-toplevel')
         if root and os.path.exists(os.path.join(root, '.cycle', 'trackers.py')):
-            try:
-                _clone_setup(root, quiet=True)
-            except Exception:
-                pass
-    if argv[0] not in ('merge', 'install', 'hook', 'worklog'):
+            _auto_setup(root)
+    if argv[0] not in ('merge', 'install', 'hook', 'jira-guard', 'api-guard', 'worklog'):
         _worklog_beat()
     return cmds[argv[0]](argv[1:])
+
+
+def _worklog_notice(root):
+    """Session start: name unposted follow-up worklog time so Claude raises it (worklog.py)."""
+    common = git('rev-parse', '--git-common-dir', cwd=root)
+    if common and os.path.exists(os.path.join(root, common, 'cycle-worklog.json')):
+        try:
+            _ops()
+            import worklog
+            worklog.cmd_notice(root, {}, [])
+        except Exception:
+            pass
 
 
 def _worklog_beat():

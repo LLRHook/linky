@@ -1,3 +1,5 @@
+import { createYouTubeComments } from './YouTubeComments';
+import { sanitizeReplyText as commentText } from './ReplyText';
 import { readBoundedJson } from './BoundedJson';
 import { mapLinks, visibleLink } from './LinkTokens';
 import type { APIEmbed, APIEmbedField } from 'discord.js';
@@ -79,7 +81,7 @@ export function createYouTubeLookup(apiKey: string, options: LookupOptions = {})
     }
   }
 
-  async function request(parameters: Record<string, string>, comment = false): Promise<Record<string, unknown> | null> {
+  async function request(parameters: Record<string, string>, comment = false, byteCap = 128_000): Promise<Record<string, unknown> | null> {
     if (now() < blockedUntil) return null;
     if (now() - windowStart >= 60_000) { windowStart = now(); requests = 0; }
     if (requests >= 30) { blockedUntil = windowStart + 60_000; return null; }
@@ -89,9 +91,9 @@ export function createYouTubeLookup(apiKey: string, options: LookupOptions = {})
     try {
       const operation = (async () => {
         const response = await fetchJson(`https://www.googleapis.com/youtube/v3/${comment ? 'commentThreads' : 'videos'}?${new URLSearchParams(parameters)}`, {
-          headers: { 'X-Goog-Api-Key': apiKey }, signal: controller.signal, redirect: 'error',
+          credentials: 'omit', headers: { 'X-Goog-Api-Key': apiKey }, signal: controller.signal, redirect: 'error',
         });
-        const body = record(await readBoundedJson(response, 128_000, controller.signal));
+        const body = record(await readBoundedJson(response, byteCap, controller.signal));
         if (!response.ok) {
           const errors = record(body.error).errors;
           const quota = Array.isArray(errors) && errors.some(error =>
@@ -160,7 +162,7 @@ export function createYouTubeLookup(apiKey: string, options: LookupOptions = {})
     return undefined;
   }
 
-  return async (videoIds: readonly string[], display: YouTubeDisplay = 'counts-and-comment'): Promise<Map<string, YouTubeStatistics>> => {
+  const lookup = async (videoIds: readonly string[], display: YouTubeDisplay = 'counts-and-comment'): Promise<Map<string, YouTubeStatistics>> => {
     if (display === 'preview' || !apiKey.trim()) return new Map();
     expire();
     const ids = [...new Set(videoIds.filter(id => VIDEO_ID.test(id)))].slice(0, LIMIT);
@@ -185,15 +187,9 @@ export function createYouTubeLookup(apiKey: string, options: LookupOptions = {})
     }));
     return new Map(results.filter((entry): entry is readonly [string, YouTubeStatistics] => entry[1] !== null));
   };
+  return Object.assign(lookup, { comments: createYouTubeComments(apiKey, request, now) });
 }
 
-function commentText(value: string, limit: number): string {
-  const clean = value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f]/g, ' ')
-    .replace(/(?:https?:\/\/|www\.|\bdiscord\.gg\/|\bdiscord(?:app)?\.com\/invite\/)\S+/gi, '[link]')
-    .replace(/\s+/g, ' ').trim();
-  const shortened = clean.length > limit ? clean.slice(0, limit - 1).trimEnd() + '…' : clean;
-  return shortened.replace(/[\\`*_{}\[\]()<>~|#+\-]/g, '\\$&').replace(/@/g, '@\u200b');
-}
 
 export function formatYouTubeStatistics(stats: YouTubeStatistics, videoUrl: string, display: YouTubeDisplay = 'counts-and-comment'): APIEmbed | null {
   if (display === 'preview') return null;

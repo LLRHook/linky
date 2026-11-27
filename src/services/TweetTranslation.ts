@@ -17,6 +17,7 @@ export interface TweetTranslation {
   photos: string[];
   /** Every photo, video and GIF in source order; absent from hand-built values. */
   media?: TweetMedia[];
+  replies?: number;
   hasMedia: boolean;
   hasVideo: boolean;
 }
@@ -128,6 +129,7 @@ function parseStatus(value: unknown, fallbackId?: string, depth = 0, translate =
     ? author.screen_name : undefined;
   return {
     text, url,
+    ...(Number.isSafeInteger(status.replies) && Number(status.replies) >= 0 ? { replies: Number(status.replies) } : {}),
     language: translate && !empty && language ? languageNames.of(language) ?? language : null,
     author: {
       name: author.name.trim().slice(0, 256),
