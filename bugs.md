@@ -10,8 +10,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** .github/workflows/deploy.yml, docs/self-hosting.md
 - **Observation:** Deploy runs for 94e34b2 (2026-09-18) and 8859ab5 (2026-09-24 17:30Z) both ended with `ssh: connect to host *** port 22: Connection timed out` and exit code 255, despite `ConnectTimeout=20` and `ConnectionAttempts=3`. The next push (d4d6e32) deployed successfully, so the host was only stale until another commit landed.
 - **Expected:** A green CI run on `main` reaches the host, or the workflow retries connection establishment for longer before failing; a single merged fix should not sit undeployed until the next unrelated merge.
-- **Req:** unknown
-- **Depends on:** unknown
+- **Req:** OPS-FR-014
+- **Depends on:** none (source: OPS-FR-014)
 - **Repro / Notes:** `gh run list --branch main --workflow Deploy` and `gh run view <id> --log-failed`. Connection retry is safe because the remote `deploy` command is idempotent per SHA and refuses superseded revisions (`ops/deploy.sh`). Options: raise `ConnectionAttempts`, add a job-level retry of the SSH step only, or check whether the Hostinger firewall rate-limits GitHub runner ranges.
 - **Bump:** patch
 - **Status:** open
@@ -22,8 +22,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** docs/self-hosting.md
 - **Observation:** `docs/self-hosting.md:94` says "The container runs Node.js 24"; both `Dockerfile` stages use `node:26-trixie-slim` (PR #52 moved the runtime to Node 26).
 - **Expected:** The guide names the runtime the `Dockerfile` actually builds.
-- **Req:** unknown
-- **Depends on:** unknown
+- **Req:** OPS-CON-001
+- **Depends on:** none (documentation correction)
 - **Repro / Notes:** `grep -n FROM Dockerfile`; found during FEAT-1791990467 recon (pre-existing, not caused by that change).
 - **Bump:** patch
 - **Status:** open
@@ -34,8 +34,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** README.md
 - **Observation:** README "Self-hosting and development" says the hosted bot is free "for the seven social platforms above"; the platform table lists eight (X/Twitter, Instagram, TikTok, YouTube, Bluesky, Reddit, Twitch clips, Facebook) since FEAT-1791951567.
 - **Expected:** The count matches the table, or the sentence avoids a number.
-- **Req:** unknown
-- **Depends on:** unknown
+- **Req:** none (gap: no requirement states the hosted-bot platform count; documentation accuracy)
+- **Depends on:** none (documentation correction)
 - **Repro / Notes:** Found during FEAT-1791990470 docs update (pre-existing, not caused by that change).
 - **Bump:** patch
 - **Status:** open
@@ -46,8 +46,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** src/services/SocialLinkService.ts, src/services/RepostRegistry.ts, tests/social-links.test.ts, tests/repost-sync.test.ts, tests/delivery-recovery.test.ts
 - **Observation:** Fresh-stack GAMBA TikTok, Bluesky and Reddit previews were confirmed and their sources safely deleted, but the resulting Discord messages retained only Original post. The canonical reported TikTok initially displayed Remove and Details, then lost both within seconds. A Bot REST GET confirms this server state; the durable ownership records still exist. X and Instagram controls remain present.
 - **Expected:** A confirmed automatic preview retains the original sharer's Remove action and its delivery Details while its ownership record is valid.
-- **Req:** unknown
-- **Depends on:** unknown
+- **Req:** CORE-FR-013, CORE-FR-015
+- **Depends on:** none (source: CORE-FR-013)
 - **Repro / Notes:** Owned examples: TikTok 1559302634077425725 (canonical), 1559302873437962383 (Retry reply), 1559304300969070615 and 1559304343214231662 (corpus); Bluesky 1559304532083736667; Reddit 1559304570570670212. .vv/discord-fixtures.json, .vv/gui-evidence.json and Hostinger registry/log evidence show the mismatch. No product root cause has been assumed.
 - **Bump:** patch
 - **Status:** in-progress
@@ -62,8 +62,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** src/services/PreviewRecovery.ts, tests/preview-recovery.test.ts, tests/preview-watcher.test.ts, tests/delivery-recovery.test.ts, tests/manual-fix.test.ts
 - **Observation:** Retrying the current unavailable X fixture produced a vxTwitter / fixvx card whose description begins "Failed to scan your link!" and returned a confirmed preview. A read-only invocation of the committed inspectPreviews matcher against the actual Discord embed returns ok:true with no missing expectation.
 - **Expected:** A provider's unavailable/error card cannot satisfy useful post delivery or permit source deletion.
-- **Req:** unknown
-- **Depends on:** unknown
+- **Req:** CORE-FR-008, CORE-FR-010
+- **Depends on:** none (source: CORE-FR-010)
 - **Repro / Notes:** Owned source 1559305894511116288, retry response 1559306040581816402. .vv/live-fixture-analysis.json captures the real embed and current matcher result. Retry kept the source because it forces Reply; the automatic Replace path shares this matcher and remains at risk. No source loss was observed in this fixture.
 - **Bump:** patch
 - **Status:** in-progress
@@ -79,8 +79,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** src/services/MobileShareLinks.ts, src/services/PreviewWatcher.ts, src/services/PreviewRecovery.ts
 - **Observation:** After the approved fresh Hostinger reset at SHA 1bdfa5a, posting the reported public share in GAMBA Replace mode produced an unconfirmed-preview notice. The source remained intact. Private Details reported native TikTok delivery, 8.8 seconds total and an 8.1-second unavailable preview stage. X controls succeeded in the same session.
 - **Expected:** The reported share resolves to video 7695457160653851935 and receives a matching playable preview, with safe source retention when provider delivery is unavailable.
-- **Req:** unknown
-- **Depends on:** unknown
+- **Req:** SOC-FR-006, SOC-FR-002
+- **Depends on:** none (source: SOC-FR-006)
 - **Repro / Notes:** Current owned fixture source 1559302030542118972, notice 1559302069590949890, attempt 5ee06734-e617-46af-adce-9c63f1ac0d23. Browser mutation evidence and screenshot are retained under .vv/. Provider timing and Retry are under investigation; do not infer an identity mismatch or source loss from the unconfirmed notice alone.
 - **Bump:** patch
 - **Status:** open
@@ -91,8 +91,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** src/services/SocialProviders.ts, ops/preview-corpus.json
 - **Observation:** A fresh-stack GAMBA post of the existing public Twitch corpus clip kept its source and returned an unconfirmed-preview notice. The local provider metadata control had passed for that clip in this session.
 - **Expected:** The corpus clip previews once through the configured provider; unavailable delivery retains the source and safe Retry controls.
-- **Req:** unknown
-- **Depends on:** unknown
+- **Req:** SOC-FR-004
+- **Depends on:** none (source: SOC-FR-004)
 - **Repro / Notes:** Owned source 1559304608327929888 and notice 1559304628900991091. The native Twitch source card rendered, but that does not establish Linky provider delivery. Host-network control and Retry are being checked.
 - **Bump:** patch
 - **Status:** open
@@ -105,7 +105,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** VERIFICATION.md:91; VERIFICATION.md:102
 - **Observation:** L8 measured 1418 TypeScript tests and 85 Node ESM tests at PR 109 head 1d8ff1b; VERIFICATION.md still states 1190 and 62. This drift predates L6 changes and round 1 adds further regression tests.
 - **Expected:** Update the current baseline and procedure expectations using exact runner-reported counts at the commit actually tested; keep passed, failed and host-skipped counts separate.
-- **Req:** unknown
+- **Req:** none (gap: verification baseline accuracy is cycle procedure, not product behaviour)
 - **Depends on:** none (driver-requested follow-up)
 - **Repro / Notes:** File only per L6 round 1 driver decision; do not build here. Run npm test once on the target commit and compare each runner summary with the Stage 2 table and 2.1 prose. Unit: test cases per runner at one named commit; baseline documented 1190 TS / 62 ESM versus observed 1418 TS / 85 ESM at 1d8ff1b; minimum one complete run; noise floor zero unexplained count mismatches; abstain if any runner did not complete. Refresh from the final target, not the historical L8 count.
 - **Bump:** patch
@@ -117,7 +117,7 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** ops/pr-evidence-check.mjs; tests/pr-evidence-check.test.mjs
 - **Observation:** On PRs 108 and 109 on 2026-11-16, a PowerShell-written body with a leading UTF-8 mark failed the evidence gate with Section ## Tickets is missing or empty despite containing that section. The checker startsWith heading parser treats the mark as part of the heading.
 - **Expected:** Ignore one leading UTF-8 byte-order mark before parsing required headings; a marked complete body should pass and genuinely absent or empty sections must still fail.
-- **Req:** unknown
+- **Req:** OPS-FR-013
 - **Depends on:** none (driver-requested follow-up)
 - **Repro / Notes:** File only per L6 round 1 driver decision; do not build here. In a regression call missingEvidence with a complete template body prefixed with U+FEFF and expect an empty missing list. Control: the same unmarked body passes; removing Tickets still fails. No token, message content or Discord identity is needed.
 - **Bump:** patch
@@ -129,8 +129,8 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - **File(s):** VERIFICATION.md
 - **Observation:** On main bd86577 the Stage 1.5 command `git grep -nE "https://" src/services | grep -vE "SocialProviders|ArticlePreview|TweetTranslation|YouTube|PromptService|Erome|Regional|MobileShareLinks|Instagram|logger"` prints hits the step does not list as accepted: LinkedIn.ts (canonical permalinks built from LINKEDIN_HOST), TruthSocial.ts (canonical URLs from TRUTH_SOCIAL_HOST and a relay-URL error message), PreviewRecovery.ts (a documentation link in a comment) and TweetPresentation.ts:158 (the g.fixupx.com rewrite, which the step names). The step says any other hit is a finding, so every run reports these as findings.
 - **Expected:** Stage 1.5 lists every accepted host module or hit, so a run reports only a newly hard-coded provider host outside the catalogue.
-- **Req:** unknown
-- **Depends on:** unknown
+- **Req:** CORE-CON-001
+- **Depends on:** none (source: CORE-CON-001)
 - **Repro / Notes:** Found while adding BlueskyPost/BlueskyPanel (FEAT-1795457637), which added `Bluesky` to the exclusion list for its own AppView and profile URLs. Decide per hit whether it is a catalogued host (exclude the module) or a real finding; do not change the code to satisfy the grep.
 - **Bump:** patch
 - **Status:** open

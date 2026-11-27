@@ -8,9 +8,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** high
 - **Area:** previews, providers, tests, ops
 - **File(s):** ops/preview-corpus.json, ops/provider-metadata-check.mjs, ops/delivery-archive-report.mjs, docs/provider-checks.md
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** OPS-FR-028
+- **Depends on:** none (source: OPS-FR-028)
+- **UI:** CLI — opt-in corpus embed runner
 - **Why:** `docs/product-roadmap.md` item 1 ("Ordinary-platform reliability coverage") is marked in progress: only the provider-metadata stage shipped on 2026-09-19 (`npm run check:providers`). The Discord embed stage and the client playback stage are still manual, so the September 18 TikTok 1/5 confirmation rate and the unverified Instagram Reel playback cannot be re-checked repeatably. The corpus also lacks the GIF, unavailable-post, intentional-suppression and article cases the roadmap names.
 - **Approach:** (1) Extend `ops/preview-corpus.json` with a GIF post, a synthetic unavailable post (`expect: "unavailable"`), an `!nolinky` suppression case and one public article entry; teach the metadata check to assess article candidates through `ArticlePreview` the way it already assesses social providers. (2) Add a Discord embed stage: an operator command that posts each corpus entry to an authorised test channel with a bot token, waits with the existing `PreviewWatcher` windows and records `confirmed` / `unconfirmed` per entry with the observed embed identity, then deletes its own messages. (3) Document the playback stage as a dated manual checklist per client (desktop, iOS, Android) in `docs/provider-checks.md`, keeping metadata, embed and playback as three separate columns.
 - **Library / dependency notes:** No new dependencies; reuse discord.js, `PreviewRecovery` and the archive report. Recommendation: keep the embed stage opt-in behind an explicit token and channel argument so `npm test` and CI stay network-free.
@@ -27,9 +27,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** med
 - **Area:** perf, tests
 - **File(s):** benchmarks/, tests/social-links.test.ts, src/services/SocialLinkService.ts, VERIFICATION.md
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** CORE-NFR-004
+- **Depends on:** none (source: CORE-NFR-004)
+- **UI:** none (infra)
 - **Why:** Every Discord message in an enabled channel runs link detection and rewriting on the event loop. The only measurement is a synthetic probe inside `benchmarks/erome-scheduling.mjs` (ordinary rewrite p95 below 1 ms during Erome encoding), which needs Docker, FFmpeg and a generated video and is not a repeatable check. No budget is stated anywhere, so a super-linear regex or per-link await added to the hot path would ship unnoticed.
 - **Approach:** Add a small Node-only benchmark (`benchmarks/link-rewrite.mjs`) that feeds a fixed corpus of 1,000 messages (mixed platforms, hidden links, `!nolinky`, article candidates, plain text) through the rewrite function and prints p50/p95/max; add one `node:test` assertion that the p95 stays under a confirmed budget (proposed 2 ms per message on the CI runner, to be confirmed by the user) so the check runs in `npm test` without network.
 - **Library / dependency notes:** Use `perf_hooks` from Node; no benchmark library needed.
@@ -48,9 +48,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** low
 - **Area:** ops, bot
 - **File(s):** docker-compose.yml, Dockerfile, ops/deploy.sh, src/index.ts, tests/deploy.test.sh
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** OPS-FR-029
+- **Depends on:** none (source: OPS-FR-029)
+- **UI:** CLI — Docker health status
 - **Why:** `ops/deploy.sh` decides readiness by scanning container logs for "Logged in as" and "Serving", and Compose declares no `healthcheck`, so Docker's `restart: unless-stopped` cannot distinguish a hung Gateway session from a healthy one. The media server exposes `/healthz` only when `EROME_MEDIA_ENABLED=true`, which the hosted bot does not set.
 - **Approach:** Write a readiness file (for example `/tmp/linky-ready` updated on `ClientReady` and on each Gateway heartbeat ack) and add a Compose `healthcheck` that checks its age with `node -e`; keep `deploy.sh`'s log check but let it prefer the health status when present. No listening port on the hosted bot.
 - **Library / dependency notes:** None.
@@ -66,9 +66,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** med
 - **Area:** perf, previews, archive
 - **File(s):** src/commands/fix.ts, src/services/SocialLinkService.ts, src/services/DeliveryContext.ts, src/services/DeliveryDiagnostics.ts, tests/delivery-diagnostics.test.ts
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** CORE-FR-028
+- **Depends on:** none (source: CORE-FR-028)
+- **UI:** Discord — preview, progress and private controls
 - **Why:** The 2026-09-30 audit found that both entry points normalize mobile shares before starting the delivery attempt. Redirect latency is therefore absent from reported duration, and unsuccessful resolution may have no recorded attempt. Ordinary-provider caches do not supply observed hit/miss coverage.
 - **Approach:** Define the eligible-attempt boundary before network work, time share resolution, and expose bounded cache decisions from existing translation/metadata lookups. Keep ignored-message and unavailable-source coverage explicit in operator reports. Retain the archive schema's exclusion of URLs, captions and Discord identities.
 - **Library / dependency notes:** Reuse the current trace/archive interfaces and injected clocks; no metrics service is needed.
@@ -82,9 +82,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** low
 - **Area:** tooling, tests
 - **File(s):** package.json, CONTRIBUTING.md, .github/workflows/ci.yml
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** OPS-FR-030
+- **Depends on:** none (source: OPS-FR-030)
+- **UI:** CLI/CI — formatting check
 - **Why:** The 2026-09-30 cleanup found strict TypeScript unused-code checks but no formatter or lint/fix command. Formatting is maintained manually.
 - **Approach:** Select a formatter after checking current docs and repository conventions, then separate its mechanical adoption from behavior changes. Keep a check command available locally and in CI.
 - **Library / dependency notes:** No dependency selected or installed by this cleanup; evaluate and pin an actively maintained tool before implementation.
@@ -98,9 +98,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** low
 - **Area:** commands, previews
 - **File(s):** src/commands/fix.ts, src/commands/fixMedia.ts, tests/manual-fix.test.ts, tests/manual-media.test.ts
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** CMD-FR-024
+- **Depends on:** none (source: CMD-FR-024)
+- **UI:** none (refactor)
 - **Why:** FEAT-1791981014 extracted only the hosted Erome stage and the button builder; the 2026-10-14 audit measured `execute` at about 300 lines with community/article resolution, Erome attachment preparation and the verify/recovery loop still inline.
 - **Approach:** Behaviour-preserving extraction of those three stages behind named functions, passing the `manualButtons` result instead of separate `buttons`/`buttonRows`, and moving `manualButtons` out of the media module.
 - **Library / dependency notes:** None.
@@ -116,9 +116,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** high
 - **Area:** previews
 - **File(s):** src/services/TruthSocial.ts, src/services/ArticlePreview.ts, src/commands/diagnose.ts, tests/truth-social.test.ts, docs/article-previews.md, README.md
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** SOC-FR-031, SOC-FR-032
+- **Depends on:** none (source: SOC-FR-031)
+- **UI:** Discord — Truth Social card
 - **Why:** Truth Social serves the same placeholder head (`og:title` "Truth Social", `og:type=website`) for every post, so Discord shows no post content and Linky's article path answers `/fix` with "Public article metadata is required" (reported 2026-10-26 for `https://truthsocial.com/@realDonaldTrump/117497314507062631`). No maintained embed-fixer service exists for Truth Social.
 - **Approach:** Truth Social post permalinks (`/@user/ID`, `/@user/posts/ID`) stay article candidates, so the existing authored-card pipeline (Replace/Reply, `/fix`, mixed-link guidance, exact-card confirmation, `articles` setting) applies unchanged. The article lookup recognises them and requests the public Mastodon-compatible `GET /api/v1/statuses/{id}` JSON from `truthsocial.com` with the same pinned public DNS, cookie-free request, five-second timeout, shared rate limit and cache. The status must match the requested ID, be public or unlisted, not sensitive, and have text or media. Linky renders one card: author display name and handle with avatar, post text (ReTruths credit the reposter, quotes add the quoted text), the first image or video poster from Truth Social's asset hosts, counts, and the post time. Truth Social's Cloudflare protection returns 403 for the status API from datacenter addresses (Hostinger and Vercel both checked 2026-10-26), so the lookup falls back to signed-out public sources reachable from the hosted bot: for `@realDonaldTrump`, the Trump's Truth archive RSS feed (`www.trumpstruth.org/feed`, latest 100 posts with archived images and MP4s, cached 30 s); otherwise Truth Social's own post-page metadata (rendered only after a first warming visit, so Linky revisits once after 1.2 s) with the oEmbed author name.
 - **Library / dependency notes:** None; reuses `RegionalHttp.connectHttps`.
@@ -137,9 +137,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** high
 - **Area:** previews
 - **File(s):** workers/truth-social-relay/worker.mjs, workers/truth-social-relay/wrangler.toml, src/services/TruthSocial.ts, src/services/ArticlePreview.ts, src/config.ts, src/bot.ts, src/commands/diagnose.ts, tests/truth-social.test.ts, tests/truth-social-relay.test.mjs, docs/truth-social-relay.md, docs/article-previews.md, docs/self-hosting.md, .env.example, README.md
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** SOC-FR-033, SOC-FR-034, SOC-IR-006
+- **Depends on:** FEAT-1793013312
+- **UI:** Discord — uploaded media or poster/Play video
 - **Why:** FEAT-1793013312 cards depend on Truth Social's status API; when its bot protection refuses the host, posts by accounts other than @realDonaldTrump lose their media and video-only posts stay unchanged. On 2026-10-26 the hosted bot's Node HTTPS client was accepted (21/21), but curl and `fetch()` from the same server, IPv6 and twelve Vercel regions got 403, so the acceptance is fragile. API videos also had no playable link. Signed ActivityPub fetches were refused ("Public key not found"; Truth Social never fetched the probe actor). A Cloudflare Worker received 200 for every account tried (WhiteHouse video and four-image posts, DonaldJTrumpJr, TeamTrump, realDonaldTrump).
 - **Approach:** A Cloudflare Worker relay serves only `GET /status/<id>` to callers with a bearer secret, fetches the signed-out status API and returns its JSON. Linky asks the API first, then the relay when `TRUTH_SOCIAL_RELAY_URL` and `TRUTH_SOCIAL_RELAY_TOKEN` are set, then the archive and the page as before. Status API videos hosted on Truth Social's `static-assets` hosts get the same **Play video** link as archived ones. The page fallback also accepts image-only posts by using the page's first image, upgraded from `small` to `original`.
 - **Library / dependency notes:** No new runtime dependency; the Worker is deployed with Wrangler (`npx wrangler`).
@@ -158,9 +158,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** high
 - **Area:** previews, media
 - **File(s):** src/services/LinkedIn.ts (new), src/services/ArticlePreview.ts, src/services/ArticlePosts.ts, src/services/SocialLinkService.ts, src/commands/fix.ts, src/commands/diagnose.ts, tests/linkedin.test.ts (new), tests/social-links.test.ts, tests/manual-fix.test.ts, docs/article-previews.md, README.md
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** SOC-FR-035, SOC-FR-036, SOC-IR-007
+- **Depends on:** none (source: SOC-FR-035)
+- **UI:** Discord — LinkedIn post card
 - **Why:** On 2026-11-11 a user shared `https://lnkd.in/p/eMizdACP` (an RTX video post). Linky's article reader followed the redirect and produced a card with only the excerpt: LinkedIn's signed-out pages label every post `og:type=article` with a generic logo as `og:image` (no file extension, so it was rejected), and the video was absent. Users asked for the video and media to load.
 - **Approach:** For `www.linkedin.com/posts/...` and `/feed/update/urn:li:...` pages (directly or after an `lnkd.in` redirect, with tracking parameters stripped), read the page's Schema.org `VideoObject` or `SocialMediaPosting` JSON-LD whose `@id` equals `og:url`. Build an authored card (author with profile and logo, post text, video title or shared-link title, first image and image count, reactions, comments, time). Download the JSON-LD `contentUrl` MP4 (signed `dms.licdn.com` address, ≤15 MiB, `video/mp4` with an `ftyp` header, 15 s window after metadata) and upload it with the card so Discord plays it; images stay on `media.licdn.com`. Without the upload, the card shows the poster and a Play video link. Discord lists the uploaded video as a message attachment, so the replacement attachment check and the manual-fix failure path account for it.
 - **Library / dependency notes:** No new dependencies.
@@ -179,9 +179,9 @@ Active work only. Format and rules: [`.cycle/TRACKERS.md`](.cycle/TRACKERS.md). 
 - [ ] **Priority:** med
 - **Area:** previews, media
 - **File(s):** src/services/ArticlePosts.ts, src/services/SocialLinkService.ts, tests/linkedin.test.ts, tests/social-links.test.ts, docs/article-previews.md, README.md
-- **Req:** unknown
-- **Depends on:** unknown
-- **UI:** unknown
+- **Req:** SOC-FR-037
+- **Depends on:** FEAT-1794395496
+- **UI:** Discord — single video panel
 - **Why:** After FEAT-1794395496 shipped, a user saw the LinkedIn repost arrive as two pieces: the uploaded video above, and the post card below it. They asked for one block with the post text on top and the video underneath, as TikTok and Facebook embeds look. Discord does not play a video inside a bot-authored embed, so the card and the upload cannot merge as an embed.
 - **Approach:** When the automatic repost is exactly one card with its uploaded video, and nothing else needs embeds or attachments (no copied source files, translation files, other cards or suppressed embeds), publish it as a Components V2 message, as Erome originals already are: the shared-by text, then a container in LinkedIn blue holding the author (with logo thumbnail), the linked title and post text, the video in a media gallery, and the counts and post time. Verification checks that the published container shows the uploaded video; no embed is involved. Every other case keeps the card plus attachment, or the poster and Play video link.
 - **Library / dependency notes:** No new dependencies; discord.js 14 Components V2 types.
